@@ -1,0 +1,16 @@
+[verilog]
+defines = ["O3_SIM"]
+
+[option]
+re_required_port_input = "^[a-z0-9_]+_i$"
+re_required_port_output = "^[a-z0-9_]+_o$"
+re_required_port_inout = "^[a-z0-9_]+_io$"
+linter = true
+
+[syntaxrules]
+prefix_input = false
+prefix_output = false
+prefix_inout = false
+re_required_port_input = true
+re_required_port_output = true
+re_required_port_inout = true
