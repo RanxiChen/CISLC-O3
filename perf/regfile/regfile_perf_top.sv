@@ -10,6 +10,15 @@ module regfile_perf_top #(
     output logic [31:0] signature_latest_o,
     output logic [31:0] mismatch_count_o
 );
+    // ------------------------------------------------------------------------
+    // Top-level intent:
+    // 1) Build ONE identical traffic source (rd/wr addr/data/en).
+    // 2) Feed the same traffic into TWO regfile variants.
+    // 3) Fold both readback results into signatures and expose them as outputs.
+    //
+    // This keeps comparison fair: timing/resource differences mainly come from
+    // DUT micro-architecture, not from different external stimulus.
+    // ------------------------------------------------------------------------
     localparam int ADDR_WIDTH = $clog2(NUM_ENTRIES);
 
     logic [ADDR_WIDTH-1:0] rd_addr   [NUM_READ_PORTS];
@@ -25,6 +34,9 @@ module regfile_perf_top #(
     logic [31:0] sig_b_q;
     logic [31:0] mismatch_q;
 
+    // Keep both DUT hierarchies explicit in synthesized netlist.
+    // Combined with XDC DONT_TOUCH/KEEP_HIERARCHY on these instances, this
+    // prevents Vivado from collapsing the two variants into one shared logic.
     (* DONT_TOUCH = "true", KEEP_HIERARCHY = "yes" *)
     perf_physical_regfile_force_consistent #(
         .NUM_READ_PORTS(NUM_READ_PORTS),
@@ -41,6 +53,7 @@ module regfile_perf_top #(
         .wr_data_i(wr_data)
     );
 
+    // Same traffic, second architecture.
     (* DONT_TOUCH = "true", KEEP_HIERARCHY = "yes" *)
     perf_physical_regfile_latest_tag #(
         .NUM_READ_PORTS(NUM_READ_PORTS),
@@ -57,6 +70,8 @@ module regfile_perf_top #(
         .wr_data_i(wr_data)
     );
 
+    // LFSR is the deterministic internal traffic seed.
+    // No external testbench needed for basic synth/timing comparison.
     always_ff @(posedge clk_i) begin
         if (rst_i) begin
             lfsr_q <= 32'h1;
@@ -65,6 +80,7 @@ module regfile_perf_top #(
         end
     end
 
+    // Generate shared write/read traffic for both DUTs.
     always_comb begin
         for (int wp = 0; wp < NUM_WRITE_PORTS; wp++) begin
             wr_en[wp]   = lfsr_q[wp] | lfsr_q[wp + 8];
@@ -76,6 +92,9 @@ module regfile_perf_top #(
         end
     end
 
+    // Fold DUT outputs into running signatures.
+    // As long as signatures are used as top outputs, DUT logic stays functionally
+    // observable and cannot be removed as dead logic.
     always_ff @(posedge clk_i) begin
         if (rst_i) begin
             sig_a_q    <= 32'h0;
@@ -98,6 +117,9 @@ module regfile_perf_top #(
         end
     end
 
+    // Top outputs are the "observation points" for synthesis.
+    // XDC also marks these nets DONT_TOUCH/MARK_DEBUG to further reduce risk of
+    // trimming or aggressive restructuring around observability logic.
     (* DONT_TOUCH = "true" *) assign signature_consistent_o = sig_a_q;
     (* DONT_TOUCH = "true" *) assign signature_latest_o     = sig_b_q;
     (* DONT_TOUCH = "true" *) assign mismatch_count_o       = mismatch_q;

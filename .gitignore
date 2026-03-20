@@ -1,0 +1,15 @@
+.vscode/
+## vivado
+vivado.jou
+vivado.log
+*.dcp
+*.rpt
+*out/
+*Xil/
+*vivado_*
+
+## waves
+*.vcd
+
+## verilator
+*build/
