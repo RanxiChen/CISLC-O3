@@ -28,7 +28,8 @@ module physical_regfile
     parameter int NUM_WRITE_PORTS = 4,   // 写端口数量
     parameter int NUM_ENTRIES     = 64,  // 物理寄存器数量
     parameter int DATA_WIDTH      = 64,  // 数据宽度
-    parameter bit USE_BANK_LATEST_TAG = 1'b0 // 0: 强制bank一致, 1: bank+latest-tag
+    parameter bit USE_BANK_LATEST_TAG = 1'b1, // 0: 强制bank一致, 1: bank+latest-tag
+    parameter bit USE_NO_BANK_FLAT = 1'b0 // 1: 单数组不分bank（后写端口覆盖前写端口）
 )(
     input  logic clk,
     input  logic rst,
@@ -51,21 +52,73 @@ module physical_regfile
 `else
     localparam bit USE_BANK_LATEST_TAG_CFG = USE_BANK_LATEST_TAG;
 `endif
+`ifdef PRF_USE_NO_BANK_FLAT
+    localparam bit USE_NO_BANK_FLAT_CFG = 1'b1;
+`else
+    localparam bit USE_NO_BANK_FLAT_CFG = USE_NO_BANK_FLAT;
+`endif
     `ifdef FPGA_TARGET
 
     // ========================================================================
     // FPGA实现：使用复制的RAM块实现多端口
     // ========================================================================
-    // 通过 USE_BANK_LATEST_TAG 选择两种方案：
-    // 0) 强制bank一致：每个bank接收所有写端口更新，读固定bank[0]
-    // 1) bank+latest-tag：每个写端口只写本bank，按entry记录最新bank并据此读取
+    // 通过参数选择三种方案：
+    // 0) USE_NO_BANK_FLAT=1：单数组不分bank，多写同址后写端口覆盖前写端口
+    // 1) USE_NO_BANK_FLAT=0 && USE_BANK_LATEST_TAG=0：强制bank一致
+    // 2) USE_NO_BANK_FLAT=0 && USE_BANK_LATEST_TAG=1：bank+latest-tag
     // ========================================================================
 
     // 每个写端口对应一个RAM bank
     logic [DATA_WIDTH-1:0] ram_banks [NUM_WRITE_PORTS][NUM_ENTRIES];
 
     generate
-        if (!USE_BANK_LATEST_TAG_CFG) begin : gen_impl_force_consistent
+        if (USE_NO_BANK_FLAT_CFG) begin : gen_impl_no_bank_flat
+            logic [DATA_WIDTH-1:0] mem_flat [NUM_ENTRIES];
+
+            always_ff @(posedge clk) begin
+                if (rst) begin
+                    // 可选清零
+                end else begin
+                    // 同地址多写时，端口号大的写端口最终生效
+                    for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
+                        if (wr_en_i[i]) begin
+                            mem_flat[wr_addr_i[i]] <= wr_data_i[i];
+                        end
+                    end
+                end
+            end
+
+            genvar rp;
+            for (rp = 0; rp < NUM_READ_PORTS; rp++) begin : gen_read_ports_flat
+                logic [NUM_WRITE_PORTS-1:0] bypass_match;
+                logic [DATA_WIDTH-1:0]      bypass_data;
+                logic                       bypass_valid;
+
+                genvar bp;
+                for (bp = 0; bp < NUM_WRITE_PORTS; bp++) begin : gen_bypass_check
+                    assign bypass_match[bp] = wr_en_i[bp] && (wr_addr_i[bp] == rd_addr_i[rp]);
+                end
+
+                always_comb begin
+                    bypass_valid = 1'b0;
+                    bypass_data  = '0;
+                    for (int i = NUM_WRITE_PORTS-1; i >= 0; i--) begin
+                        if (!bypass_valid && bypass_match[i]) begin
+                            bypass_valid = 1'b1;
+                            bypass_data  = wr_data_i[i];
+                        end
+                    end
+                end
+
+                always_comb begin
+                    if (bypass_valid) begin
+                        rd_data_o[rp] = bypass_data;
+                    end else begin
+                        rd_data_o[rp] = mem_flat[rd_addr_i[rp]];
+                    end
+                end
+            end
+        end else if (!USE_BANK_LATEST_TAG_CFG) begin : gen_impl_force_consistent
             // --------------------------------------------------------------------
             // 方案A：强制bank一致
             // --------------------------------------------------------------------
@@ -126,21 +179,18 @@ module physical_regfile
             // --------------------------------------------------------------------
             logic [BANK_SEL_WIDTH-1:0] latest_bank [NUM_ENTRIES];
 
-            genvar wp;
-            for (wp = 0; wp < NUM_WRITE_PORTS; wp++) begin : gen_write_ports
-                always_ff @(posedge clk) begin
-                    if (rst) begin
-                        for (int e = 0; e < NUM_ENTRIES; e++) begin
-                            latest_bank[e] <= '0;
-                        end
-                    end else begin
-                        // 每个写端口仅写本bank，并更新latest tag
-                        // 同地址多写时，端口号大的写端口最终生效
-                        for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
-                            if (wr_en_i[i]) begin
-                                ram_banks[i][wr_addr_i[i]] <= wr_data_i[i];
-                                latest_bank[wr_addr_i[i]] <= BANK_SEL_WIDTH'(i);
-                            end
+            always_ff @(posedge clk) begin
+                if (rst) begin
+                    for (int e = 0; e < NUM_ENTRIES; e++) begin
+                        latest_bank[e] <= '0;
+                    end
+                end else begin
+                    // 每个写端口仅写本bank，并更新latest tag
+                    // 同地址多写时，端口号大的写端口最终生效
+                    for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
+                        if (wr_en_i[i]) begin
+                            ram_banks[i][wr_addr_i[i]] <= wr_data_i[i];
+                            latest_bank[wr_addr_i[i]] <= BANK_SEL_WIDTH'(i);
                         end
                     end
                 end

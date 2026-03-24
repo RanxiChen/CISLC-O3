@@ -32,11 +32,18 @@ package o3_pkg;
         logic [ILEN-1:0] instruction;  // 32位指令
     } decode_in_t;
 
-    // 解码器输出：寄存器索引
+    // 解码器输出：寄存器索引与最小语义位。
+    // 当前阶段只补齐 rename 需要的最小信息：
+    // - 哪些源寄存器需要读取
+    // - 该指令是否会写 rd
+    // 还没有扩展功能单元类型、立即数、异常、提交等后续字段。
     typedef struct packed {
-        logic [REG_ADDR_WIDTH-1:0] rs1;  // 源寄存器1
-        logic [REG_ADDR_WIDTH-1:0] rs2;  // 源寄存器2
-        logic [REG_ADDR_WIDTH-1:0] rd;   // 目的寄存器
+        logic [REG_ADDR_WIDTH-1:0] rs1;         // 源寄存器1
+        logic [REG_ADDR_WIDTH-1:0] rs2;         // 源寄存器2
+        logic [REG_ADDR_WIDTH-1:0] rd;          // 目的寄存器
+        logic                      rs1_read_en; // 该指令是否真正读取 rs1
+        logic                      rs2_read_en; // 该指令是否真正读取 rs2
+        logic                      rd_write_en; // 该指令是否真正写回 rd
     } decode_out_t;
 
 endpackage
