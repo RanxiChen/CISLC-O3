@@ -4,7 +4,7 @@
  * 第一阶段实现目标：
  * - 只实现“空闲物理寄存器分配”
  * - 不实现“物理寄存器释放/回收”
- * - 每个周期按解码宽度并行提供空闲物理寄存器
+ * - 每个周期按 machine width 并行提供空闲物理寄存器
  * - 分配侧接口采用 ready/valid 风格
  * - 只按“本拍实际请求的 lane 数量”分配空闲寄存器
  *
@@ -18,7 +18,7 @@
  * - 周期 N 开始时，模块内部持有当前的 head_q 和 count_q
  * - 基于当前状态，模块组合地产生：
  *   1) alloc_valid_o：表示当前 free list 是否还能覆盖本拍所有 alloc_req_i 请求
- *   2) alloc_preg_o[0:DECODE_WIDTH-1]：按 lane 顺序给请求的 lane 分配候选空闲物理寄存器
+ *   2) alloc_preg_o[0:MACHINE_WIDTH-1]：按 lane 顺序给请求的 lane 分配候选空闲物理寄存器
  * - 在正常流水线中：
  *   1) free list 作为 valid 侧，告诉 rename 阶段“这一拍是否能提供一整组空闲寄存器”
  *   2) rename 阶段作为 ready 侧，用 alloc_ready_i 表示“这一拍是否接受这组空闲寄存器”
@@ -40,7 +40,7 @@
  */
 
 module free_list #(
-    parameter int DECODE_WIDTH  = 4,
+    parameter int MACHINE_WIDTH = 4,
     parameter int NUM_PHYS_REGS = 64,
     parameter int NUM_ARCH_REGS = 32
 ) (
@@ -49,7 +49,7 @@ module free_list #(
 
     // 每个 lane 是否需要新的物理寄存器。
     // 当前通常由 backend 用 "rd_write_en && (rd != 0)" 生成。
-    input  logic                             alloc_req_i   [DECODE_WIDTH-1:0],
+    input  logic                             alloc_req_i   [MACHINE_WIDTH-1:0],
 
     // rename 阶段的 ready 信号。
     // 当 alloc_valid_o 与 alloc_ready_i 同时为 1 时，本周期完成一次按请求数的分配。
@@ -62,7 +62,7 @@ module free_list #(
     // 当前可提供给 rename 阶段的一组候选空闲物理寄存器编号。
     // 只有 alloc_req_i[lane]=1 的 lane 才会拿到非零的候选号。
     // 只有当 alloc_valid_o 与 alloc_ready_i 同时为 1 时，这些编号才真正被消费。
-    output logic [$clog2(NUM_PHYS_REGS)-1:0] alloc_preg_o [DECODE_WIDTH-1:0]
+    output logic [$clog2(NUM_PHYS_REGS)-1:0] alloc_preg_o [MACHINE_WIDTH-1:0]
 );
 
     localparam int PREG_IDX_WIDTH       = $clog2(NUM_PHYS_REGS);
@@ -95,7 +95,7 @@ module free_list #(
     // 统计本拍真正需要分配的新物理寄存器个数。
     always_comb begin
         alloc_req_count = '0;
-        for (int lane = 0; lane < DECODE_WIDTH; lane++) begin
+        for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
             if (alloc_req_i[lane]) begin
                 alloc_req_count = alloc_req_count + COUNT_WIDTH'(1);
             end
@@ -110,7 +110,7 @@ module free_list #(
 
     generate
         genvar alloc_idx;
-        for (alloc_idx = 0; alloc_idx < DECODE_WIDTH; alloc_idx++) begin : gen_alloc_output
+        for (alloc_idx = 0; alloc_idx < MACHINE_WIDTH; alloc_idx++) begin : gen_alloc_output
             always_comb begin
                 int unsigned req_before_lane;
 
@@ -149,8 +149,8 @@ module free_list #(
     end
 
     initial begin
-        if (DECODE_WIDTH <= 0) begin
-            $error("free_list requires DECODE_WIDTH > 0");
+        if (MACHINE_WIDTH <= 0) begin
+            $error("free_list requires MACHINE_WIDTH > 0");
         end
 
         if (NUM_ARCH_REGS < 2) begin

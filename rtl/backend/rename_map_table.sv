@@ -8,7 +8,7 @@
  * - x0 固定视为常量零寄存器：
  *   1) 组合读取时始终返回物理寄存器 p0
  *   2) 时序更新时不会写入 map table
- * - 支持按 DECODE_WIDTH 并行读取 rs1 / rs2 / rd 的当前映射
+ * - 支持按 MACHINE_WIDTH 并行读取 rs1 / rs2 / rd 的当前映射
  * - 支持在 rename_fire 时，用 free list 分配的新物理寄存器更新 rd 的当前映射
  * - 额外输出 old_dst_preg，作为后续接入 commit / 释放旧物理寄存器时的扩展预留
  *
@@ -34,7 +34,7 @@
  */
 
 module rename_map_table #(
-    parameter int DECODE_WIDTH  = 4,
+    parameter int MACHINE_WIDTH = 4,
     parameter int NUM_ARCH_REGS = 32,
     parameter int NUM_PHYS_REGS = 64
 ) (
@@ -42,17 +42,17 @@ module rename_map_table #(
     input  logic rst,
 
     input  logic                             rename_fire_i,
-    input  logic [$clog2(NUM_ARCH_REGS)-1:0] rs1_addr_i     [DECODE_WIDTH-1:0],
-    input  logic [$clog2(NUM_ARCH_REGS)-1:0] rs2_addr_i     [DECODE_WIDTH-1:0],
-    input  logic [$clog2(NUM_ARCH_REGS)-1:0] rd_addr_i      [DECODE_WIDTH-1:0],
-    input  logic                             rs1_read_en_i  [DECODE_WIDTH-1:0],
-    input  logic                             rs2_read_en_i  [DECODE_WIDTH-1:0],
-    input  logic                             rd_write_en_i  [DECODE_WIDTH-1:0],
-    input  logic [$clog2(NUM_PHYS_REGS)-1:0] new_dst_preg_i [DECODE_WIDTH-1:0],
+    input  logic [$clog2(NUM_ARCH_REGS)-1:0] rs1_addr_i     [MACHINE_WIDTH-1:0],
+    input  logic [$clog2(NUM_ARCH_REGS)-1:0] rs2_addr_i     [MACHINE_WIDTH-1:0],
+    input  logic [$clog2(NUM_ARCH_REGS)-1:0] rd_addr_i      [MACHINE_WIDTH-1:0],
+    input  logic                             rs1_read_en_i  [MACHINE_WIDTH-1:0],
+    input  logic                             rs2_read_en_i  [MACHINE_WIDTH-1:0],
+    input  logic                             rd_write_en_i  [MACHINE_WIDTH-1:0],
+    input  logic [$clog2(NUM_PHYS_REGS)-1:0] new_dst_preg_i [MACHINE_WIDTH-1:0],
 
-    output logic [$clog2(NUM_PHYS_REGS)-1:0] src1_preg_o    [DECODE_WIDTH-1:0],
-    output logic [$clog2(NUM_PHYS_REGS)-1:0] src2_preg_o    [DECODE_WIDTH-1:0],
-    output logic [$clog2(NUM_PHYS_REGS)-1:0] old_dst_preg_o [DECODE_WIDTH-1:0]
+    output logic [$clog2(NUM_PHYS_REGS)-1:0] src1_preg_o    [MACHINE_WIDTH-1:0],
+    output logic [$clog2(NUM_PHYS_REGS)-1:0] src2_preg_o    [MACHINE_WIDTH-1:0],
+    output logic [$clog2(NUM_PHYS_REGS)-1:0] old_dst_preg_o [MACHINE_WIDTH-1:0]
 );
 
     localparam int ARCH_IDX_WIDTH = $clog2(NUM_ARCH_REGS);
@@ -61,7 +61,7 @@ module rename_map_table #(
     logic [PREG_IDX_WIDTH-1:0] map_table_q [NUM_ARCH_REGS-1:0];
 
     always_comb begin
-        for (int lane = 0; lane < DECODE_WIDTH; lane++) begin
+        for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
             src1_preg_o[lane]    = '0;
             src2_preg_o[lane]    = '0;
             old_dst_preg_o[lane] = '0;
@@ -98,7 +98,7 @@ module rename_map_table #(
             // 当前版本按 lane 顺序独立写表，但不处理组内覆盖。
             // 如果同拍多个 lane 写同一个 rd，最终结果取决于 for 循环最后一次赋值。
             // 这正是当前阶段“组内关系暂不处理”的明确限制之一。
-            for (int lane = 0; lane < DECODE_WIDTH; lane++) begin
+            for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
                 if (rd_write_en_i[lane] && (rd_addr_i[lane] != ARCH_IDX_WIDTH'(0))) begin
                     map_table_q[rd_addr_i[lane]] <= new_dst_preg_i[lane];
                 end

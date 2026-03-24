@@ -5,7 +5,7 @@
  * - 维护一个简单的 fetch-entry buffer，用于承接 frontend 输入
  * - 对 buffer 中的指令做基础解码
  * - 接入 free list 与 rename map table，打通最小 rename 数据流
- * - 支持按 DECODE_WIDTH 参数化并行处理多个 lane
+ * - 支持按 MACHINE_WIDTH 参数化并行处理多个 lane
  *
  * 当前没有实现的功能：
  * - 不处理组内依赖、组内覆盖、分支恢复、checkpoint、commit
@@ -30,7 +30,7 @@
 module backend
     import o3_pkg::*;
     #(
-        parameter int DECODE_WIDTH  = 1,  // 解码宽度（每周期解码指令数量）
+        parameter int MACHINE_WIDTH = 1,  // 机器宽度（每周期并行处理指令数量）
         parameter int NUM_PHYS_REGS = 64, // 物理寄存器数量
         parameter int NUM_ARCH_REGS = 32  // 架构寄存器数量
     )
@@ -39,7 +39,7 @@ module backend
     input  logic rst,
 
     // Frontend -> Backend 接口
-    input  fetch_entry_t [DECODE_WIDTH-1:0] fetch_entry_i,
+    input  fetch_entry_t [MACHINE_WIDTH-1:0] fetch_entry_i,
     input  logic                             fetch_valid_i,
     output logic                             fetch_ready_o,
 
@@ -50,12 +50,12 @@ module backend
 
     // 存放 fetch_entry 的寄存器。
     // fetch_entry_valid_q 表示当前 buffer 中是否真的有一组待 rename 的指令。
-    fetch_entry_t [DECODE_WIDTH-1:0] fetch_entry_q;
+    fetch_entry_t [MACHINE_WIDTH-1:0] fetch_entry_q;
     logic                            fetch_entry_valid_q;
 
     // 从寄存器输出连接到解码器
-    decode_in_t  [DECODE_WIDTH-1:0] decode_in;
-    decode_out_t [DECODE_WIDTH-1:0] decode_out;
+    decode_in_t  [MACHINE_WIDTH-1:0] decode_in;
+    decode_out_t [MACHINE_WIDTH-1:0] decode_out;
 
     // rename 阶段内部信号。
     logic                            decode_valid;
@@ -64,20 +64,20 @@ module backend
     logic                            alloc_valid;
     logic                            alloc_ready;
     logic                            fetch_fire;
-    logic                            alloc_req [DECODE_WIDTH-1:0];
-    logic [REG_ADDR_WIDTH-1:0]       rs1_addr   [DECODE_WIDTH-1:0];
-    logic [REG_ADDR_WIDTH-1:0]       rs2_addr   [DECODE_WIDTH-1:0];
-    logic [REG_ADDR_WIDTH-1:0]       rd_addr    [DECODE_WIDTH-1:0];
-    logic                            rs1_read_en [DECODE_WIDTH-1:0];
-    logic                            rs2_read_en [DECODE_WIDTH-1:0];
-    logic                            rd_write_en [DECODE_WIDTH-1:0];
-    logic [PREG_IDX_WIDTH-1:0]       dst_new_preg [DECODE_WIDTH-1:0];
+    logic                            alloc_req [MACHINE_WIDTH-1:0];
+    logic [REG_ADDR_WIDTH-1:0]       rs1_addr   [MACHINE_WIDTH-1:0];
+    logic [REG_ADDR_WIDTH-1:0]       rs2_addr   [MACHINE_WIDTH-1:0];
+    logic [REG_ADDR_WIDTH-1:0]       rd_addr    [MACHINE_WIDTH-1:0];
+    logic                            rs1_read_en [MACHINE_WIDTH-1:0];
+    logic                            rs2_read_en [MACHINE_WIDTH-1:0];
+    logic                            rd_write_en [MACHINE_WIDTH-1:0];
+    logic [PREG_IDX_WIDTH-1:0]       dst_new_preg [MACHINE_WIDTH-1:0];
     /* verilator lint_off UNUSEDSIGNAL */
     // 这些信号当前只是在 backend 内部被正确地产生出来，供后续接入 issue / dispatch / ROB 时继续使用。
     // 本阶段还没有继续向后传，因此对 lint 来说会表现为“已生成但尚未被消费”。
-    logic [PREG_IDX_WIDTH-1:0]       src1_preg    [DECODE_WIDTH-1:0];
-    logic [PREG_IDX_WIDTH-1:0]       src2_preg    [DECODE_WIDTH-1:0];
-    logic [PREG_IDX_WIDTH-1:0]       dst_old_preg [DECODE_WIDTH-1:0];
+    logic [PREG_IDX_WIDTH-1:0]       src1_preg    [MACHINE_WIDTH-1:0];
+    logic [PREG_IDX_WIDTH-1:0]       src2_preg    [MACHINE_WIDTH-1:0];
+    logic [PREG_IDX_WIDTH-1:0]       dst_old_preg [MACHINE_WIDTH-1:0];
     /* verilator lint_on UNUSEDSIGNAL */
 
     assign decode_valid = fetch_entry_valid_q;
@@ -85,14 +85,14 @@ module backend
     // 将fetch_entry_q的instruction字段提取给解码器
     genvar i;
     generate
-        for (i = 0; i < DECODE_WIDTH; i++) begin : decode_input_assign
+        for (i = 0; i < MACHINE_WIDTH; i++) begin : decode_input_assign
             assign decode_in[i].instruction = fetch_entry_q[i].instruction;
         end
     endgenerate
 
     // 实例化多个解码器
     generate
-        for (i = 0; i < DECODE_WIDTH; i++) begin : decoder_array
+        for (i = 0; i < MACHINE_WIDTH; i++) begin : decoder_array
             decoder u_decoder (
                 .decode_i(decode_in[i]),
                 .decode_o(decode_out[i])
@@ -101,7 +101,7 @@ module backend
     endgenerate
 
     generate
-        for (i = 0; i < DECODE_WIDTH; i++) begin : rename_req_assign
+        for (i = 0; i < MACHINE_WIDTH; i++) begin : rename_req_assign
             assign rs1_addr[i]    = decode_out[i].rs1;
             assign rs2_addr[i]    = decode_out[i].rs2;
             assign rd_addr[i]     = decode_out[i].rd;
@@ -124,7 +124,7 @@ module backend
     assign done          = 1'b0;
 
     free_list #(
-        .DECODE_WIDTH(DECODE_WIDTH),
+        .MACHINE_WIDTH(MACHINE_WIDTH),
         .NUM_PHYS_REGS(NUM_PHYS_REGS),
         .NUM_ARCH_REGS(NUM_ARCH_REGS)
     ) u_free_list (
@@ -137,7 +137,7 @@ module backend
     );
 
     rename_map_table #(
-        .DECODE_WIDTH(DECODE_WIDTH),
+        .MACHINE_WIDTH(MACHINE_WIDTH),
         .NUM_ARCH_REGS(NUM_ARCH_REGS),
         .NUM_PHYS_REGS(NUM_PHYS_REGS)
     ) u_rename_map_table (
