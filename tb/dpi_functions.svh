@@ -33,6 +33,45 @@ import "DPI-C" function void dpi_reset_call_counter();
 import "DPI-C" function longint unsigned dpi_get_call_counter();
 
 // ============================================================================
+// Backend 虚拟前端仿真函数
+// ============================================================================
+
+import "DPI-C" function void dpi_backend_stream_reset();
+
+import "DPI-C" function int unsigned dpi_backend_get_total_groups();
+
+import "DPI-C" function bit dpi_backend_has_group(
+    input int unsigned group_idx
+);
+
+import "DPI-C" function void dpi_backend_get_fetch_entry(
+    input int unsigned group_idx,
+    input int unsigned lane_idx,
+    output longint unsigned pc,
+    output int unsigned inst,
+    output bit exception,
+    output bit valid
+);
+
+import "DPI-C" function void dpi_backend_log_fetch_group(
+    input longint unsigned cycle,
+    input int unsigned group_idx,
+    input bit fire,
+    input longint unsigned pc0,
+    input int unsigned inst0,
+    input longint unsigned pc1,
+    input int unsigned inst1,
+    input longint unsigned pc2,
+    input int unsigned inst2,
+    input longint unsigned pc3,
+    input int unsigned inst3
+);
+
+import "DPI-C" function string dpi_backend_disasm_rv64i(
+    input int unsigned inst
+);
+
+// ============================================================================
 // RISC-V 执行模型 - 指令解码
 // ============================================================================
 
