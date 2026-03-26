@@ -16,6 +16,9 @@ set(RTL_SOURCES
     ${PROJ_ROOT_DIR}/rtl/backend/rename_map_table.sv
     ${PROJ_ROOT_DIR}/rtl/backend/uop_queue.sv
     ${PROJ_ROOT_DIR}/rtl/backend/rob.sv
+    ${PROJ_ROOT_DIR}/rtl/backend/issue_queue.sv
+    ${PROJ_ROOT_DIR}/rtl/backend/physical_regfile.sv
+    ${PROJ_ROOT_DIR}/rtl/backend/int_execute_unit.sv
     ${PROJ_ROOT_DIR}/rtl/backend/backend.sv
 )
 

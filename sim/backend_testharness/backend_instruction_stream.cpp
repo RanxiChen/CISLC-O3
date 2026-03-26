@@ -7,8 +7,8 @@
 
 namespace {
 
-constexpr uint32_t kMachineWidth = 4;
-constexpr uint32_t kGroupStrideBytes = 16;
+constexpr uint32_t kMachineWidth = 6;
+constexpr uint32_t kGroupStrideBytes = kMachineWidth * 4;
 
 using InstGroup = std::array<uint32_t, kMachineWidth>;
 
@@ -42,61 +42,60 @@ constexpr uint32_t encode_r_type(uint32_t funct7, uint32_t rs2, uint32_t rs1, ui
 std::vector<InstGroup> build_stream() {
     std::vector<InstGroup> groups;
 
-    // 当前所有指令都故意选成“只读 x0 或彼此无关”的整形运算，便于驱动当前最小 rename 数据流。
+    // 当前所有指令都故意选成“只读 x0 或彼此无关”的整形运算，
+    // 目的是在还没有真实写回网络时，仍然能稳定驱动 decode/rename/issue/regread/execute 主链路。
     groups.push_back({
         encode_i_type(1,  0, 0b000,  1, 0x13),  // addi  x1,  x0, 1
         encode_i_type(18, 0, 0b110,  2, 0x13),  // ori   x2,  x0, 18
         encode_i_type(85, 0, 0b100,  3, 0x13),  // xori  x3,  x0, 85
-        encode_i_type(127,0, 0b111,  4, 0x13)   // andi  x4,  x0, 127
+        encode_i_type(127,0, 0b111,  4, 0x13),  // andi  x4,  x0, 127
+        encode_i_type(-1, 0, 0b000,  5, 0x13),  // addi  x5,  x0, -1
+        encode_i_type(1,  0, 0b010,  6, 0x13)   // slti  x6,  x0, 1
     });
 
     groups.push_back({
-        encode_shift_imm(1, 0b000000, 0, 0b001,  5), // slli  x5,  x0, 1
-        encode_shift_imm(2, 0b000000, 0, 0b101,  6), // srli  x6,  x0, 2
-        encode_shift_imm(3, 0b010000, 0, 0b101,  7), // srai  x7,  x0, 3
-        encode_i_type(1,   0, 0b010,  8, 0x13)       // slti  x8,  x0, 1
+        encode_shift_imm(1, 0b000000, 0, 0b001,  7), // slli  x7,  x0, 1
+        encode_shift_imm(2, 0b000000, 0, 0b101,  8), // srli  x8,  x0, 2
+        encode_shift_imm(3, 0b010000, 0, 0b101,  9), // srai  x9,  x0, 3
+        encode_i_type(1,   0, 0b011, 10, 0x13),      // sltiu x10, x0, 1
+        encode_i_type(0,   0, 0b100, 11, 0x13),      // xori  x11, x0, 0
+        encode_i_type(42,  0, 0b110, 12, 0x13)       // ori   x12, x0, 42
     });
 
     groups.push_back({
-        encode_i_type(1, 0, 0b011,  9, 0x13),          // sltiu x9,  x0, 1
-        encode_r_type(0b0000000, 0, 0, 0b000, 10),    // add   x10, x0, x0
-        encode_r_type(0b0100000, 0, 0, 0b000, 11),    // sub   x11, x0, x0
-        encode_r_type(0b0000000, 0, 0, 0b100, 12)     // xor   x12, x0, x0
+        encode_i_type(31, 0, 0b111, 13, 0x13),        // andi  x13, x0, 31
+        encode_r_type(0b0000000, 0, 0, 0b000, 14),    // add   x14, x0, x0
+        encode_r_type(0b0100000, 0, 0, 0b000, 15),    // sub   x15, x0, x0
+        encode_r_type(0b0000000, 0, 0, 0b100, 16),    // xor   x16, x0, x0
+        encode_r_type(0b0000000, 0, 0, 0b110, 17),    // or    x17, x0, x0
+        encode_r_type(0b0000000, 0, 0, 0b111, 18)     // and   x18, x0, x0
     });
 
     groups.push_back({
-        encode_r_type(0b0000000, 0, 0, 0b110, 13),    // or    x13, x0, x0
-        encode_r_type(0b0000000, 0, 0, 0b111, 14),    // and   x14, x0, x0
-        encode_r_type(0b0000000, 0, 0, 0b001, 15),    // sll   x15, x0, x0
-        encode_r_type(0b0000000, 0, 0, 0b101, 16)     // srl   x16, x0, x0
+        encode_r_type(0b0000000, 0, 0, 0b001, 19),    // sll   x19, x0, x0
+        encode_r_type(0b0000000, 0, 0, 0b101, 20),    // srl   x20, x0, x0
+        encode_r_type(0b0100000, 0, 0, 0b101, 21),    // sra   x21, x0, x0
+        encode_r_type(0b0000000, 0, 0, 0b010, 22),    // slt   x22, x0, x0
+        encode_r_type(0b0000000, 0, 0, 0b011, 23),    // sltu  x23, x0, x0
+        encode_i_type(7,  0, 0b000, 24, 0x13)         // addi  x24, x0, 7
     });
 
     groups.push_back({
-        encode_r_type(0b0100000, 0, 0, 0b101, 17),    // sra   x17, x0, x0
-        encode_r_type(0b0000000, 0, 0, 0b010, 18),    // slt   x18, x0, x0
-        encode_r_type(0b0000000, 0, 0, 0b011, 19),    // sltu  x19, x0, x0
-        encode_i_type(-1, 0, 0b000, 20, 0x13)         // addi  x20, x0, -1
+        encode_i_type(9,  0, 0b000, 25, 0x13),        // addi  x25, x0, 9
+        encode_i_type(3,  0, 0b110, 26, 0x13),        // ori   x26, x0, 3
+        encode_i_type(12, 0, 0b100, 27, 0x13),        // xori  x27, x0, 12
+        encode_i_type(63, 0, 0b111, 28, 0x13),        // andi  x28, x0, 63
+        encode_shift_imm(4, 0b000000, 0, 0b001, 29),  // slli  x29, x0, 4
+        encode_shift_imm(1, 0b000000, 0, 0b101, 30)   // srli  x30, x0, 1
     });
 
     groups.push_back({
-        encode_i_type(7,  0, 0b000, 21, 0x13),        // addi  x21, x0, 7
-        encode_i_type(42, 0, 0b110, 22, 0x13),        // ori   x22, x0, 42
-        encode_i_type(51, 0, 0b100, 23, 0x13),        // xori  x23, x0, 51
-        encode_i_type(31, 0, 0b111, 24, 0x13)         // andi  x24, x0, 31
-    });
-
-    groups.push_back({
-        encode_r_type(0b0000000, 0, 0, 0b000, 25),    // add   x25, x0, x0
-        encode_r_type(0b0100000, 0, 0, 0b000, 26),    // sub   x26, x0, x0
-        encode_r_type(0b0000000, 0, 0, 0b110, 27),    // or    x27, x0, x0
-        encode_r_type(0b0000000, 0, 0, 0b111, 28)     // and   x28, x0, x0
-    });
-
-    groups.push_back({
-        encode_r_type(0b0000000, 0, 0, 0b001, 29),    // sll   x29, x0, x0
-        encode_r_type(0b0000000, 0, 0, 0b101, 30),    // srl   x30, x0, x0
-        encode_i_type(0,  0, 0b000, 31, 0x13),        // addi  x31, x0, 0
-        encode_i_type(0,  0, 0b100,  1, 0x13)         // xori  x1,  x0, 0
+        encode_shift_imm(5, 0b010000, 0, 0b101, 31),  // srai  x31, x0, 5
+        encode_r_type(0b0000000, 0, 0, 0b000, 1),     // add   x1,  x0, x0
+        encode_r_type(0b0100000, 0, 0, 0b000, 2),     // sub   x2,  x0, x0
+        encode_r_type(0b0000000, 0, 0, 0b001, 3),     // sll   x3,  x0, x0
+        encode_r_type(0b0000000, 0, 0, 0b101, 4),     // srl   x4,  x0, x0
+        encode_i_type(0,  0, 0b000, 5, 0x13)          // addi  x5,  x0, 0
     });
 
     return groups;
@@ -145,33 +144,30 @@ void dpi_backend_get_fetch_entry(
     *valid = 1;
 }
 
-void dpi_backend_log_fetch_group(
+void dpi_backend_log_fetch_lane(
     uint64_t cycle,
     uint32_t group_idx,
+    uint32_t lane_idx,
     uint8_t fire,
-    uint64_t pc0,
-    uint32_t inst0,
-    uint64_t pc1,
-    uint32_t inst1,
-    uint64_t pc2,
-    uint32_t inst2,
-    uint64_t pc3,
-    uint32_t inst3
+    uint64_t pc,
+    uint32_t inst
 ) {
     if (!fire) {
         return;
     }
 
-    g_fetch_count++;
+    if (lane_idx == 0) {
+        g_fetch_count++;
+        std::cout << "[BACKEND_DPI] Cycle " << std::dec << cycle
+                  << " accepted group " << group_idx
+                  << " (fetch #" << g_fetch_count << ")"
+                  << std::endl;
+    }
 
-    std::cout << "[BACKEND_DPI] Cycle " << std::dec << cycle
-              << " accepted group " << group_idx
-              << " (fetch #" << g_fetch_count << ")"
+    std::cout << "  lane" << std::dec << lane_idx
+              << " pc=0x" << std::hex << pc
+              << " inst=0x" << inst
               << std::endl;
-    std::cout << "  lane0 pc=0x" << std::hex << pc0 << " inst=0x" << inst0 << std::endl;
-    std::cout << "  lane1 pc=0x" << std::hex << pc1 << " inst=0x" << inst1 << std::endl;
-    std::cout << "  lane2 pc=0x" << std::hex << pc2 << " inst=0x" << inst2 << std::endl;
-    std::cout << "  lane3 pc=0x" << std::hex << pc3 << " inst=0x" << inst3 << std::endl;
 }
 
 }  // extern "C"

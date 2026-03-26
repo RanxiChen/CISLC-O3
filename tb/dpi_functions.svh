@@ -53,18 +53,13 @@ import "DPI-C" function void dpi_backend_get_fetch_entry(
     output bit valid
 );
 
-import "DPI-C" function void dpi_backend_log_fetch_group(
+import "DPI-C" function void dpi_backend_log_fetch_lane(
     input longint unsigned cycle,
     input int unsigned group_idx,
+    input int unsigned lane_idx,
     input bit fire,
-    input longint unsigned pc0,
-    input int unsigned inst0,
-    input longint unsigned pc1,
-    input int unsigned inst1,
-    input longint unsigned pc2,
-    input int unsigned inst2,
-    input longint unsigned pc3,
-    input int unsigned inst3
+    input longint unsigned pc,
+    input int unsigned inst
 );
 
 import "DPI-C" function string dpi_backend_disasm_rv64i(

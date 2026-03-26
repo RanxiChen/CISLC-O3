@@ -6,10 +6,14 @@
  * - 对 fetch-entry buffer 中的指令做基础解码，并组装成 decoded uop
  * - 接入 decode 后、rename 前的 uop queue，形成前两拍骨架
  * - 在 rename 阶段接入 free list、rename map table 和最小 ROB
- * - 产出一组 rename 完成的 uop，并暂存在 backend 内部供后续 issue / dispatch 扩展
+ * - 把 rename 完成后的整数 uop 按 lane 顺序压入单一 integer issue queue
+ * - 在 issue queue 内实现“下一拍默认全部唤醒”的占位 wakeup 逻辑
+ * - 在 issue queue 内实现按年龄顺序的 select，并把最靠前的 ready uop 发给多个整数 ALU
+ * - 在 backend 内接入 3 级整数流水寄存器：issue -> regread -> execute result
+ * - 在 regread 阶段根据物理寄存器编号读取 physical_regfile，并对当前 I-type 立即数做 64 位符号扩展
+ * - 接入多个 `int_execute_unit`，完成 RV64I R/I 整数算术指令的最小执行链路
  * - 支持按 MACHINE_WIDTH 参数化并行处理多个 lane
- * - 在 `O3_SIM` 宏下新增逐周期文本日志，按周期块展示 lane0 在 decode/rename 两级的当前处理对象
- * - 在 `O3_SIM` 宏下可通过 DPI-C 调用 RV64I 反汇编 helper，把 rename 阶段指令显示成汇编字符串
+ * - 在 `O3_SIM` 宏下新增逐周期文本日志，按周期块展示 DECODE/RENAME/WAKEUP/ISSUE/REGREAD/EXECUTE 阶段
  * - 在 backend 内部为每条被接收的指令生成调试用 instruction_id
  *   - 高位表示“第几批被 backend 接收的 fetch group”
  *   - 低位表示“该组内的 lane 编号”
@@ -17,29 +21,36 @@
  * 当前没有实现的功能：
  * - 不处理组内依赖、组内覆盖、分支恢复、checkpoint、commit
  * - ROB 当前只做 entry 编号分配与 exception 存储，不做提交、回收、恢复
- * - 不驱动执行队列、调度队列、回写网络
+ * - issue queue 的 wakeup 当前不接真实广播网络，而是把上一拍已在队列中的有效表项默认全部置 ready
+ * - 不驱动结果写回 physical_regfile，不驱动真实写回广播、提交或异常恢复
  * - done 仍然只是占位信号
  * - 当前阶段不附带测试代码和仿真代码，只先搭功能与注释
  *
  * 时序行为：
  * - 周期 N 开始时：
  *   1) fetch_entry_q / fetch_entry_valid_q 保存“上一拍已经接住”的 fetch 组
- *   2) uop_queue 若非空，则队头保存“上一拍已经解码完成、待 rename”的一组 uop
- * - 周期 N 内：
- *   1) decoder 组合地产生 rs1/rs2/rd、use_imm、原始立即数编码、整数 ALU op 和最小 uop 语义
- *   2) 若 uop_queue 可接收，则当前 fetch 组在本拍完成 decode 并入队
- *   3) rename 阶段从 uop_queue 队头组合读取 alloc_req / rob_req
- *   4) free list 组合地产生本拍候选新物理寄存器
- *   5) rename map table 组合地产生源操作数物理寄存器和 old_dst_preg
- *   6) rob 组合地产生本拍候选 ROB entry 编号
+ *   2) uop_queue 队头保存“上一拍已经解码完成、待 rename”的一组 uop
+ *   3) issue_queue 中保存更早已经 rename 完成、等待 wakeup/select 的整数 uop
+ *   4) alu_issue_q / alu_regread_q / alu_result_q 分别保存前几拍进入整数流水线的 uop
+ * - 周期 N 组合阶段：
+ *   1) decoder 组合地产生 rs1/rs2/rd、use_imm、imm_type、imm_raw、int_alu_op 和最小 uop 语义
+ *   2) rename 阶段从 uop_queue 队头组合读取 alloc_req / rob_req / rename map 结果
+ *   3) issue queue 对旧表项做 wakeup 视图，并从前往后选择最靠前的 ready 表项送往可接收的 ALU issue 端口
+ *   4) alu_issue_q 当前持有的物理寄存器编号直接驱动 physical_regfile 读端口
+ *   5) regread 阶段把 physical_regfile 读值与立即数扩展后的值整理成真正的 src1/src2 操作数
+ *   6) int_execute_unit 基于 alu_regread_q 中的真实操作数组合地产生执行结果
  * - 周期 N 上升沿：
  *   1) 若 decode_fire=1，则当前 fetch 组以 decoded uop 形式进入 uop_queue
- *   2) 若 rename_fire=1，则当前 uop_queue 队头这组 uop 完成本版 rename
- *   3) 若 fetch_fire=1，则同时把 frontend 新送来的指令写入 fetch_entry_q
- *   4) 在 `O3_SIM` 下按固定两行打印 lane0 的 decode/rename 当前处理指令
+ *   2) 若 rename_fire=1，则当前 uop_queue 队头这组 uop 完成 rename，并把其中整数 uop 按 lane 顺序压入 issue_queue
+ *   3) issue_queue 把上一拍已经在队列中的表项默认唤醒，并删除本拍已经被接受发射的表项
+ *   4) 本拍被 select 的整数 uop 进入 alu_issue_q
+ *   5) 上一拍的 alu_issue_q 进入 alu_regread_q
+ *   6) 上一拍的 alu_regread_q 经执行单元计算后进入 alu_result_q
+ *   7) 若 fetch_fire=1，则同时把 frontend 新送来的指令写入 fetch_entry_q
  * - 周期 N+1：
- *   看到的是更新后的 uop_queue / rename map / free list / rob 状态，以及新的 fetch 组
- *   在 `O3_SIM` 下会看到 lane0 的 decode/rename 两行切换到下一批 instruction_id
+ *   1) issue_queue 中看到唤醒、压缩补位、追加入队后的新队列内容
+ *   2) alu_issue_q / alu_regread_q / alu_result_q 分别前进一步
+ *   3) 日志中可看到同一条 instruction_id 按阶段继续向后流动
  */
 
 `ifdef O3_SIM
@@ -49,81 +60,94 @@
 module backend
     import o3_pkg::*;
     #(
-        parameter int MACHINE_WIDTH = 1,  // 机器宽度（每周期并行处理指令数量）
-        parameter int NUM_PHYS_REGS = 64, // 物理寄存器数量
-        parameter int NUM_ARCH_REGS = 32, // 架构寄存器数量
+        parameter int MACHINE_WIDTH = 1,
+        parameter int NUM_PHYS_REGS = 64,
+        parameter int NUM_ARCH_REGS = 32,
         parameter int NUM_ROB_ENTRIES = 64,
-        parameter int DECODE_QUEUE_DEPTH = 2
+        parameter int DECODE_QUEUE_DEPTH = 2,
+        parameter int INT_ISSUE_QUEUE_DEPTH = 16,
+        parameter int NUM_INT_ALUS = 3
     )
 (
     input  logic clk,
     input  logic rst,
-
-    // Frontend -> Backend 接口
     input  fetch_entry_t [MACHINE_WIDTH-1:0] fetch_entry_i,
     input  logic                             fetch_valid_i,
     output logic                             fetch_ready_o,
-
-    output logic done
+    output logic                             done
 );
 
-    localparam int PREG_IDX_WIDTH = $clog2(NUM_PHYS_REGS);
-    localparam int ROB_IDX_WIDTH  = $clog2(NUM_ROB_ENTRIES);
-    localparam int INST_ID_LANE_BITS = (MACHINE_WIDTH <= 1) ? 1 : $clog2(MACHINE_WIDTH);
+    localparam int BACKEND_PREG_IDX_WIDTH = $clog2(NUM_PHYS_REGS);
+    localparam int BACKEND_ROB_IDX_WIDTH  = $clog2(NUM_ROB_ENTRIES);
+    localparam int INST_ID_LANE_BITS      = (MACHINE_WIDTH <= 1) ? 1 : $clog2(MACHINE_WIDTH);
+    localparam int PRF_READ_PORTS         = NUM_INT_ALUS * 2;
+    localparam int PRF_WRITE_PORTS        = 1;
 
-    // 存放 fetch_entry 的寄存器。
-    // fetch_entry_valid_q 表示当前 buffer 中是否真的有一组待 decode 的指令。
     fetch_entry_t [MACHINE_WIDTH-1:0] fetch_entry_q;
-    logic                            fetch_entry_valid_q;
-    logic [INST_ID_WIDTH-1:0]        fetch_instruction_id_q [MACHINE_WIDTH-1:0];
-    logic [INST_ID_WIDTH-1:0]        fetch_instruction_id_d [MACHINE_WIDTH-1:0];
-    logic [INST_ID_WIDTH-1:0]        fetch_group_seq_q;
+    logic                             fetch_entry_valid_q;
+    logic [INST_ID_WIDTH-1:0]         fetch_instruction_id_q [MACHINE_WIDTH-1:0];
+    logic [INST_ID_WIDTH-1:0]         fetch_instruction_id_d [MACHINE_WIDTH-1:0];
+    logic [INST_ID_WIDTH-1:0]         fetch_group_seq_q;
 
-    // 从寄存器输出连接到解码器
-    decode_in_t  [MACHINE_WIDTH-1:0] decode_in;
-    decode_out_t [MACHINE_WIDTH-1:0] decode_out;
-    decoded_uop_t [MACHINE_WIDTH-1:0] decoded_uop;
-    decoded_uop_t [MACHINE_WIDTH-1:0] rename_uop_head;
-    // decode 阶段内部信号。
-    logic                            decode_valid;
-    logic                            decode_ready;
-    logic                            decode_fire;
+    decode_in_t    [MACHINE_WIDTH-1:0] decode_in;
+    decode_out_t   [MACHINE_WIDTH-1:0] decode_out;
+    decoded_uop_t  [MACHINE_WIDTH-1:0] decoded_uop;
+    decoded_uop_t  [MACHINE_WIDTH-1:0] rename_uop_head;
 
-    // rename 阶段内部信号。
-    logic                            rename_valid;
-    logic                            rename_ready;
-    logic                            rename_fire;
-    logic                            alloc_valid;
-    logic                            alloc_ready;
-    logic                            rob_valid;
-    logic                            rob_ready;
-    logic                            uopq_enq_ready;
-    logic                            uopq_deq_valid;
-    logic                            fetch_fire;
-    logic                            alloc_req [MACHINE_WIDTH-1:0];
-    logic                            rob_req   [MACHINE_WIDTH-1:0];
-    logic                            rob_exception [MACHINE_WIDTH-1:0];
-    logic [REG_ADDR_WIDTH-1:0]       rename_rs1_addr    [MACHINE_WIDTH-1:0];
-    logic [REG_ADDR_WIDTH-1:0]       rename_rs2_addr    [MACHINE_WIDTH-1:0];
-    logic [REG_ADDR_WIDTH-1:0]       rename_rd_addr     [MACHINE_WIDTH-1:0];
-    logic                            rename_rs1_read_en [MACHINE_WIDTH-1:0];
-    logic                            rename_rs2_read_en [MACHINE_WIDTH-1:0];
-    logic                            rename_rd_write_en [MACHINE_WIDTH-1:0];
-    /* verilator lint_off UNUSEDSIGNAL */
-    logic [PREG_IDX_WIDTH-1:0]       dst_new_preg [MACHINE_WIDTH-1:0];
-    logic [ROB_IDX_WIDTH-1:0]        rob_idx      [MACHINE_WIDTH-1:0];
-    logic                            renamed_uop_valid_q;
-    // 这些信号当前只是在 backend 内部被正确地产生出来，供后续接入 issue / dispatch / ROB 时继续使用。
-    // 本阶段还没有继续向后传，因此对 lint 来说会表现为“已生成但尚未被消费”。
-    logic [PREG_IDX_WIDTH-1:0]       src1_preg    [MACHINE_WIDTH-1:0];
-    logic [PREG_IDX_WIDTH-1:0]       src2_preg    [MACHINE_WIDTH-1:0];
-    logic [PREG_IDX_WIDTH-1:0]       dst_old_preg [MACHINE_WIDTH-1:0];
-    renamed_uop_t [MACHINE_WIDTH-1:0] renamed_uop_q;
-    /* verilator lint_on UNUSEDSIGNAL */
+    logic decode_valid;
+    logic decode_ready;
+    logic decode_fire;
+    logic rename_valid;
+    logic rename_ready;
+    logic rename_fire;
+    logic alloc_valid;
+    logic alloc_ready;
+    logic rob_valid;
+    logic rob_ready;
+    logic uopq_enq_ready;
+    logic uopq_deq_valid;
+    logic issueq_enq_valid;
+    logic issueq_enq_ready;
+    logic fetch_fire;
+    logic alloc_req [MACHINE_WIDTH-1:0];
+    logic rob_req   [MACHINE_WIDTH-1:0];
+    logic rob_exception [MACHINE_WIDTH-1:0];
+    logic [REG_ADDR_WIDTH-1:0] rename_rs1_addr    [MACHINE_WIDTH-1:0];
+    logic [REG_ADDR_WIDTH-1:0] rename_rs2_addr    [MACHINE_WIDTH-1:0];
+    logic [REG_ADDR_WIDTH-1:0] rename_rd_addr     [MACHINE_WIDTH-1:0];
+    logic                      rename_rs1_read_en [MACHINE_WIDTH-1:0];
+    logic                      rename_rs2_read_en [MACHINE_WIDTH-1:0];
+    logic                      rename_rd_write_en [MACHINE_WIDTH-1:0];
+
+    logic [BACKEND_PREG_IDX_WIDTH-1:0] dst_new_preg [MACHINE_WIDTH-1:0];
+    logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_idx      [MACHINE_WIDTH-1:0];
+    logic [BACKEND_PREG_IDX_WIDTH-1:0] src1_preg    [MACHINE_WIDTH-1:0];
+    logic [BACKEND_PREG_IDX_WIDTH-1:0] src2_preg    [MACHINE_WIDTH-1:0];
+    logic [BACKEND_PREG_IDX_WIDTH-1:0] dst_old_preg [MACHINE_WIDTH-1:0];
+    issue_queue_entry_t [MACHINE_WIDTH-1:0] issueq_enq_entry;
+
+    issue_queue_entry_t [NUM_INT_ALUS-1:0] issueq_issue_entry;
+    logic               [NUM_INT_ALUS-1:0] issueq_issue_valid;
+    logic               [NUM_INT_ALUS-1:0] issueq_issue_ready;
+    issue_queue_entry_t [INT_ISSUE_QUEUE_DEPTH-1:0] issueq_wakeup_entry;
+    logic               [INT_ISSUE_QUEUE_DEPTH-1:0] issueq_wakeup_valid;
+
+    int_issue_pipe_uop_t    alu_issue_q   [NUM_INT_ALUS-1:0];
+    int_regread_pipe_uop_t  alu_regread_q [NUM_INT_ALUS-1:0];
+    int_execute_result_t    alu_result_q  [NUM_INT_ALUS-1:0];
+
+    logic [BACKEND_PREG_IDX_WIDTH-1:0] prf_rd_addr [PRF_READ_PORTS-1:0];
+    logic [XLEN-1:0]                   prf_rd_data [PRF_READ_PORTS-1:0];
+    logic                              prf_wr_en   [PRF_WRITE_PORTS-1:0];
+    logic [BACKEND_PREG_IDX_WIDTH-1:0] prf_wr_addr [PRF_WRITE_PORTS-1:0];
+    logic [XLEN-1:0]                   prf_wr_data [PRF_WRITE_PORTS-1:0];
+
+    logic                              exec_valid   [NUM_INT_ALUS-1:0];
+    logic [XLEN-1:0]                   exec_result  [NUM_INT_ALUS-1:0];
+    logic                              exec_cmp_true[NUM_INT_ALUS-1:0];
 
 `ifdef O3_SIM
-    localparam int O3_SIM_TRACK_LANE = 0;
-    logic [63:0]                    sim_cycle_q;
+    logic [63:0] sim_cycle_q;
 `endif
 
     function automatic logic [INST_ID_WIDTH-1:0] make_instruction_id(
@@ -138,9 +162,53 @@ module backend
         end
     endfunction
 
+    function automatic logic [XLEN-1:0] expand_imm_value(
+        input imm_type_t                imm_type,
+        input logic [IMM_RAW_WIDTH-1:0] imm_raw
+    );
+        logic signed [XLEN-1:0] imm_sext;
+        begin
+            imm_sext = '0;
+            unique case (imm_type)
+                IMM_TYPE_I: imm_sext = XLEN'($signed({{(XLEN-IMM_RAW_WIDTH){imm_raw[IMM_RAW_WIDTH-1]}}, imm_raw}));
+                default:    imm_sext = '0;
+            endcase
+            expand_imm_value = imm_sext;
+        end
+    endfunction
+
+`ifdef O3_SIM
+    function automatic string int_alu_op_name(input int_alu_op_t op);
+        begin
+            unique case (op)
+                INT_ALU_OP_ADD:  int_alu_op_name = "ADD";
+                INT_ALU_OP_SUB:  int_alu_op_name = "SUB";
+                INT_ALU_OP_SLL:  int_alu_op_name = "SLL";
+                INT_ALU_OP_SLT:  int_alu_op_name = "SLT";
+                INT_ALU_OP_SLTU: int_alu_op_name = "SLTU";
+                INT_ALU_OP_XOR:  int_alu_op_name = "XOR";
+                INT_ALU_OP_SRL:  int_alu_op_name = "SRL";
+                INT_ALU_OP_SRA:  int_alu_op_name = "SRA";
+                INT_ALU_OP_OR:   int_alu_op_name = "OR";
+                INT_ALU_OP_AND:  int_alu_op_name = "AND";
+                default:         int_alu_op_name = "UNK";
+            endcase
+        end
+    endfunction
+
+    function automatic string imm_type_name(input imm_type_t imm_type);
+        begin
+            unique case (imm_type)
+                IMM_TYPE_NONE: imm_type_name = "NONE";
+                IMM_TYPE_I:    imm_type_name = "I";
+                default:       imm_type_name = "UNK";
+            endcase
+        end
+    endfunction
+`endif
+
     assign decode_valid = fetch_entry_valid_q;
 
-    // 将fetch_entry_q的instruction字段提取给解码器
     genvar i;
     generate
         for (i = 0; i < MACHINE_WIDTH; i++) begin : decode_input_assign
@@ -148,7 +216,6 @@ module backend
         end
     endgenerate
 
-    // 实例化多个解码器
     generate
         for (i = 0; i < MACHINE_WIDTH; i++) begin : decoder_array
             decoder u_decoder (
@@ -160,59 +227,84 @@ module backend
 
     generate
         for (i = 0; i < MACHINE_WIDTH; i++) begin : decoded_uop_assign
-            assign decoded_uop[i].valid       = decode_valid;
+            assign decoded_uop[i].valid          = decode_valid;
             assign decoded_uop[i].instruction_id = fetch_instruction_id_q[i];
-            assign decoded_uop[i].pc          = fetch_entry_q[i].pc;
-            assign decoded_uop[i].instruction = fetch_entry_q[i].instruction;
-            assign decoded_uop[i].exception   = fetch_entry_q[i].exception;
-            assign decoded_uop[i].rs1         = decode_out[i].rs1;
-            assign decoded_uop[i].rs2         = decode_out[i].rs2;
-            assign decoded_uop[i].rd          = decode_out[i].rd;
-            assign decoded_uop[i].rs1_read_en = decode_out[i].rs1_read_en;
-            assign decoded_uop[i].rs2_read_en = decode_out[i].rs2_read_en;
-            assign decoded_uop[i].rd_write_en = decode_out[i].rd_write_en;
-            assign decoded_uop[i].use_imm     = decode_out[i].use_imm;
-            assign decoded_uop[i].imm_type    = decode_out[i].imm_type;
-            assign decoded_uop[i].imm_raw     = decode_out[i].imm_raw;
-            assign decoded_uop[i].int_alu_op  = decode_out[i].int_alu_op;
-            assign decoded_uop[i].is_int_uop  = decode_out[i].is_int_uop;
+            assign decoded_uop[i].pc             = fetch_entry_q[i].pc;
+            assign decoded_uop[i].instruction    = fetch_entry_q[i].instruction;
+            assign decoded_uop[i].exception      = fetch_entry_q[i].exception;
+            assign decoded_uop[i].rs1            = decode_out[i].rs1;
+            assign decoded_uop[i].rs2            = decode_out[i].rs2;
+            assign decoded_uop[i].rd             = decode_out[i].rd;
+            assign decoded_uop[i].rs1_read_en    = decode_out[i].rs1_read_en;
+            assign decoded_uop[i].rs2_read_en    = decode_out[i].rs2_read_en;
+            assign decoded_uop[i].rd_write_en    = decode_out[i].rd_write_en;
+            assign decoded_uop[i].use_imm        = decode_out[i].use_imm;
+            assign decoded_uop[i].imm_type       = decode_out[i].imm_type;
+            assign decoded_uop[i].imm_raw        = decode_out[i].imm_raw;
+            assign decoded_uop[i].int_alu_op     = decode_out[i].int_alu_op;
+            assign decoded_uop[i].is_int_uop     = decode_out[i].is_int_uop;
         end
     endgenerate
 
     generate
         for (i = 0; i < MACHINE_WIDTH; i++) begin : rename_req_assign
             assign fetch_instruction_id_d[i] = make_instruction_id(fetch_group_seq_q, i);
-            assign rename_rs1_addr[i]    = rename_uop_head[i].rs1;
-            assign rename_rs2_addr[i]    = rename_uop_head[i].rs2;
-            assign rename_rd_addr[i]     = rename_uop_head[i].rd;
-            assign rename_rs1_read_en[i] = rename_uop_head[i].rs1_read_en;
-            assign rename_rs2_read_en[i] = rename_uop_head[i].rs2_read_en;
-            assign rename_rd_write_en[i] = rename_uop_head[i].rd_write_en;
+            assign rename_rs1_addr[i]        = rename_uop_head[i].rs1;
+            assign rename_rs2_addr[i]        = rename_uop_head[i].rs2;
+            assign rename_rd_addr[i]         = rename_uop_head[i].rd;
+            assign rename_rs1_read_en[i]     = rename_uop_head[i].rs1_read_en;
+            assign rename_rs2_read_en[i]     = rename_uop_head[i].rs2_read_en;
+            assign rename_rd_write_en[i]     = rename_uop_head[i].rd_write_en;
 
-            // 当前版本只有“真的写 rd 且 rd!=0”的指令才向 free list 申请新物理寄存器。
             assign alloc_req[i] = rename_uop_head[i].valid
                                && rename_uop_head[i].rd_write_en
                                && (rename_uop_head[i].rd != REG_ADDR_WIDTH'(0));
 
-            // 当前每条真正有效的 uop 都先申请一个 ROB entry。
-            assign rob_req[i] = rename_uop_head[i].valid;
+            assign rob_req[i]       = rename_uop_head[i].valid;
             assign rob_exception[i] = rename_uop_head[i].exception;
+
+            assign issueq_enq_entry[i].valid        = rename_uop_head[i].valid && rename_uop_head[i].is_int_uop;
+            assign issueq_enq_entry[i].instruction_id = rename_uop_head[i].instruction_id;
+            assign issueq_enq_entry[i].src1_preg    = src1_preg[i];
+            assign issueq_enq_entry[i].src2_preg    = src2_preg[i];
+            assign issueq_enq_entry[i].src1_valid   = rename_uop_head[i].rs1_read_en;
+            assign issueq_enq_entry[i].src2_valid   = rename_uop_head[i].rs2_read_en;
+            assign issueq_enq_entry[i].src1_ready   = !rename_uop_head[i].rs1_read_en;
+            assign issueq_enq_entry[i].src2_ready   = (!rename_uop_head[i].rs2_read_en) || rename_uop_head[i].use_imm;
+            assign issueq_enq_entry[i].rob_idx      = rob_idx[i];
+            assign issueq_enq_entry[i].dst_preg     = dst_new_preg[i];
+            assign issueq_enq_entry[i].dst_write_en = rename_uop_head[i].rd_write_en
+                                                   && (rename_uop_head[i].rd != REG_ADDR_WIDTH'(0));
+            assign issueq_enq_entry[i].imm_raw      = rename_uop_head[i].imm_raw;
+            assign issueq_enq_entry[i].imm_valid    = rename_uop_head[i].use_imm;
+            assign issueq_enq_entry[i].imm_type     = rename_uop_head[i].imm_type;
+            assign issueq_enq_entry[i].int_alu_op   = rename_uop_head[i].int_alu_op;
         end
     endgenerate
 
-    // decode queue 有空间时，本拍 decode 结果可以入队。
-    // 如果 fetch buffer 为空，则这一拍天然 ready，可以接收 frontend 新输入。
-    assign decode_ready  = uopq_enq_ready;
-    assign decode_fire   = decode_valid && decode_ready;
-    assign fetch_ready_o = (!fetch_entry_valid_q) || decode_ready;
-    assign fetch_fire    = fetch_valid_i && fetch_ready_o;
+    assign decode_ready    = uopq_enq_ready;
+    assign decode_fire     = decode_valid && decode_ready;
+    assign fetch_ready_o   = (!fetch_entry_valid_q) || decode_ready;
+    assign fetch_fire      = fetch_valid_i && fetch_ready_o;
+    assign rename_valid    = uopq_deq_valid;
+    assign issueq_enq_valid = rename_valid && alloc_valid && rob_valid;
+    assign rename_ready    = alloc_valid && rob_valid && issueq_enq_ready;
+    assign rename_fire     = rename_valid && rename_ready;
+    assign alloc_ready     = rename_valid && rob_valid && issueq_enq_ready;
+    assign rob_ready       = rename_valid && alloc_valid && issueq_enq_ready;
+    assign done            = 1'b0;
+    assign issueq_issue_ready = '1;
 
-    assign rename_valid  = uopq_deq_valid;
-    assign rename_ready  = alloc_valid && rob_valid;
-    assign rename_fire   = rename_valid && rename_ready;
-    assign alloc_ready   = rename_valid && rob_valid;
-    assign rob_ready     = rename_valid && alloc_valid;
-    assign done          = 1'b0;
+    generate
+        for (i = 0; i < NUM_INT_ALUS; i++) begin : prf_read_addr_assign
+            assign prf_rd_addr[(2*i)+0] = alu_issue_q[i].src1_preg;
+            assign prf_rd_addr[(2*i)+1] = alu_issue_q[i].src2_preg;
+        end
+    endgenerate
+
+    assign prf_wr_en[0]   = 1'b0;
+    assign prf_wr_addr[0] = '0;
+    assign prf_wr_data[0] = '0;
 
     uop_queue #(
         .MACHINE_WIDTH(MACHINE_WIDTH),
@@ -274,85 +366,215 @@ module backend
         .old_dst_preg_o(dst_old_preg)
     );
 
-    // buffer 寄存器逻辑。
-    // 这一级的目标只是先把“当前一组待 rename 指令”稳住，不实现更深的流水线。
+    issue_queue #(
+        .MACHINE_WIDTH(MACHINE_WIDTH),
+        .ISSUE_WIDTH(NUM_INT_ALUS),
+        .DEPTH(INT_ISSUE_QUEUE_DEPTH)
+    ) u_int_issue_queue (
+        .clk(clk),
+        .rst(rst),
+        .enq_entry_i(issueq_enq_entry),
+        .enq_valid_i(issueq_enq_valid),
+        .enq_ready_o(issueq_enq_ready),
+        .issue_entry_o(issueq_issue_entry),
+        .issue_valid_o(issueq_issue_valid),
+        .issue_ready_i(issueq_issue_ready),
+        .wakeup_entry_o(issueq_wakeup_entry),
+        .wakeup_valid_o(issueq_wakeup_valid)
+    );
+
+    physical_regfile #(
+        .NUM_READ_PORTS(PRF_READ_PORTS),
+        .NUM_WRITE_PORTS(PRF_WRITE_PORTS),
+        .NUM_ENTRIES(NUM_PHYS_REGS),
+        .DATA_WIDTH(XLEN)
+    ) u_physical_regfile (
+        .clk(clk),
+        .rst(rst),
+        .rd_addr_i(prf_rd_addr),
+        .rd_data_o(prf_rd_data),
+        .wr_en_i(prf_wr_en),
+        .wr_addr_i(prf_wr_addr),
+        .wr_data_i(prf_wr_data)
+    );
+
+    generate
+        for (i = 0; i < NUM_INT_ALUS; i++) begin : int_execute_array
+            int_execute_unit #(
+                .DATA_WIDTH(XLEN)
+            ) u_int_execute_unit (
+                .op_i(int_alu_op_t'(alu_regread_q[i].int_alu_op)),
+                .valid_i(alu_regread_q[i].valid),
+                .src1_value_i(alu_regread_q[i].src1_value),
+                .src2_value_i(alu_regread_q[i].src2_value),
+                .imm_value_i('0),
+                .use_imm_i(1'b0),
+                .is_word_op_i(1'b0),
+                .valid_o(exec_valid[i]),
+                .result_o(exec_result[i]),
+                .cmp_true_o(exec_cmp_true[i])
+            );
+        end
+    endgenerate
+
     always_ff @(posedge clk) begin
         if (rst) begin
-            fetch_entry_q       <= '0;
-            fetch_entry_valid_q <= 1'b0;
+            fetch_entry_q          <= '0;
+            fetch_entry_valid_q    <= 1'b0;
             fetch_instruction_id_q <= '{default: '0};
-            fetch_group_seq_q   <= '0;
-            renamed_uop_q       <= '0;
-            renamed_uop_valid_q <= 1'b0;
+            fetch_group_seq_q      <= '0;
+            alu_issue_q            <= '{default: '0};
+            alu_regread_q          <= '{default: '0};
+            alu_result_q           <= '{default: '0};
 `ifdef O3_SIM
-            sim_cycle_q         <= 64'd0;
+            sim_cycle_q            <= 64'd0;
 `endif
         end else begin
 `ifdef O3_SIM
-            $display("[O3_SIM][backend][cycle=%0d][lane0] ----------------", sim_cycle_q);
+            $display("[O3_SIM][backend][cycle=%0d] ----------------", sim_cycle_q);
+
             if (fetch_entry_valid_q) begin
-                $display("[O3_SIM][backend][cycle=%0d][lane0] DECODE id=0x%0h pc=0x%0h inst=0x%08h",
+                $display("[O3_SIM][backend][cycle=%0d] DECODE id=0x%0h pc=0x%0h inst=0x%08h",
                          sim_cycle_q,
-                         fetch_instruction_id_q[O3_SIM_TRACK_LANE],
-                         fetch_entry_q[O3_SIM_TRACK_LANE].pc,
-                         fetch_entry_q[O3_SIM_TRACK_LANE].instruction);
+                         fetch_instruction_id_q[0],
+                         fetch_entry_q[0].pc,
+                         fetch_entry_q[0].instruction);
             end else begin
-                $display("[O3_SIM][backend][cycle=%0d][lane0] DECODE empty",
-                         sim_cycle_q);
+                $display("[O3_SIM][backend][cycle=%0d] DECODE empty", sim_cycle_q);
             end
 
-            if (rename_valid && rename_uop_head[O3_SIM_TRACK_LANE].valid) begin
-                $display("[O3_SIM][backend][cycle=%0d][lane0] RENAME id=0x%0h asm=%s src1:x%0d->p%0d src2:x%0d->p%0d rd:x%0d old:p%0d new:p%0d rob:%0d",
+            if (rename_valid && rename_uop_head[0].valid) begin
+                $display("[O3_SIM][backend][cycle=%0d] RENAME id=0x%0h asm=%s src1:x%0d->p%0d src2:x%0d->p%0d rd:x%0d old:p%0d new:p%0d rob:%0d",
                          sim_cycle_q,
-                         rename_uop_head[O3_SIM_TRACK_LANE].instruction_id,
-                         dpi_backend_disasm_rv64i(rename_uop_head[O3_SIM_TRACK_LANE].instruction),
-                         rename_uop_head[O3_SIM_TRACK_LANE].rs1, src1_preg[O3_SIM_TRACK_LANE],
-                         rename_uop_head[O3_SIM_TRACK_LANE].rs2, src2_preg[O3_SIM_TRACK_LANE],
-                         rename_uop_head[O3_SIM_TRACK_LANE].rd, dst_old_preg[O3_SIM_TRACK_LANE], dst_new_preg[O3_SIM_TRACK_LANE],
-                         rob_idx[O3_SIM_TRACK_LANE]);
+                         rename_uop_head[0].instruction_id,
+                         dpi_backend_disasm_rv64i(rename_uop_head[0].instruction),
+                         rename_uop_head[0].rs1, src1_preg[0],
+                         rename_uop_head[0].rs2, src2_preg[0],
+                         rename_uop_head[0].rd, dst_old_preg[0], dst_new_preg[0],
+                         rob_idx[0]);
             end else begin
-                $display("[O3_SIM][backend][cycle=%0d][lane0] RENAME empty",
-                         sim_cycle_q);
+                $display("[O3_SIM][backend][cycle=%0d] RENAME empty", sim_cycle_q);
             end
-            $display("[O3_SIM][backend][cycle=%0d][lane0] ----------------", sim_cycle_q);
+
+            if (|issueq_wakeup_valid) begin
+                $write("[O3_SIM][backend][cycle=%0d] WAKEUP", sim_cycle_q);
+                for (int idx = 0; idx < INT_ISSUE_QUEUE_DEPTH; idx++) begin
+                    if (issueq_wakeup_valid[idx]) begin
+                        $write(" id=0x%0h", issueq_wakeup_entry[idx].instruction_id);
+                    end
+                end
+                $write("\n");
+            end else begin
+                $display("[O3_SIM][backend][cycle=%0d] WAKEUP empty", sim_cycle_q);
+            end
+
+            for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
+                if (issueq_issue_valid[alu]) begin
+                    $display("[O3_SIM][backend][cycle=%0d] ISSUE alu%0d id=0x%0h src1:p%0d src2:p%0d dst:p%0d rob:%0d op=%s",
+                             sim_cycle_q,
+                             alu,
+                             issueq_issue_entry[alu].instruction_id,
+                             issueq_issue_entry[alu].src1_preg,
+                             issueq_issue_entry[alu].src2_preg,
+                             issueq_issue_entry[alu].dst_preg,
+                             issueq_issue_entry[alu].rob_idx,
+                             int_alu_op_name(issueq_issue_entry[alu].int_alu_op));
+                end else begin
+                    $display("[O3_SIM][backend][cycle=%0d] ISSUE alu%0d empty", sim_cycle_q, alu);
+                end
+            end
+
+            for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
+                if (alu_issue_q[alu].valid) begin
+                    $display("[O3_SIM][backend][cycle=%0d] REGREAD alu%0d id=0x%0h src1:p%0d->0x%0h src2:%s rob:%0d",
+                             sim_cycle_q,
+                             alu,
+                             alu_issue_q[alu].instruction_id,
+                             alu_issue_q[alu].src1_preg,
+                             prf_rd_data[(2*alu)+0],
+                             alu_issue_q[alu].imm_valid
+                                ? $sformatf("imm[%s]=0x%0h -> 0x%0h",
+                                            imm_type_name(alu_issue_q[alu].imm_type),
+                                            alu_issue_q[alu].imm_raw,
+                                            expand_imm_value(alu_issue_q[alu].imm_type, alu_issue_q[alu].imm_raw))
+                                : (alu_issue_q[alu].src2_valid
+                                    ? $sformatf("p%0d->0x%0h", alu_issue_q[alu].src2_preg, prf_rd_data[(2*alu)+1])
+                                    : "zero"),
+                             alu_issue_q[alu].rob_idx);
+                end else begin
+                    $display("[O3_SIM][backend][cycle=%0d] REGREAD alu%0d empty", sim_cycle_q, alu);
+                end
+            end
+
+            for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
+                if (alu_regread_q[alu].valid) begin
+                    $display("[O3_SIM][backend][cycle=%0d] EXECUTE alu%0d id=0x%0h op=%s src1=0x%0h src2=0x%0h result=0x%0h",
+                             sim_cycle_q,
+                             alu,
+                             alu_regread_q[alu].instruction_id,
+                             int_alu_op_name(alu_regread_q[alu].int_alu_op),
+                             alu_regread_q[alu].src1_value,
+                             alu_regread_q[alu].src2_value,
+                             exec_result[alu]);
+                end else begin
+                    $display("[O3_SIM][backend][cycle=%0d] EXECUTE alu%0d empty", sim_cycle_q, alu);
+                end
+            end
+
+            $display("[O3_SIM][backend][cycle=%0d] ----------------", sim_cycle_q);
 `endif
 
-            if (rename_fire) begin
-                for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
-                    renamed_uop_q[lane].valid        <= rename_uop_head[lane].valid;
-                    renamed_uop_q[lane].instruction_id <= rename_uop_head[lane].instruction_id;
-                    renamed_uop_q[lane].pc           <= rename_uop_head[lane].pc;
-                    renamed_uop_q[lane].instruction  <= rename_uop_head[lane].instruction;
-                    renamed_uop_q[lane].exception    <= rename_uop_head[lane].exception;
-                    renamed_uop_q[lane].rs1          <= rename_uop_head[lane].rs1;
-                    renamed_uop_q[lane].rs2          <= rename_uop_head[lane].rs2;
-                    renamed_uop_q[lane].rd           <= rename_uop_head[lane].rd;
-                    renamed_uop_q[lane].rs1_read_en  <= rename_uop_head[lane].rs1_read_en;
-                    renamed_uop_q[lane].rs2_read_en  <= rename_uop_head[lane].rs2_read_en;
-                    renamed_uop_q[lane].rd_write_en  <= rename_uop_head[lane].rd_write_en;
-                    renamed_uop_q[lane].use_imm      <= rename_uop_head[lane].use_imm;
-                    renamed_uop_q[lane].imm_type     <= rename_uop_head[lane].imm_type;
-                    renamed_uop_q[lane].imm_raw      <= rename_uop_head[lane].imm_raw;
-                    renamed_uop_q[lane].int_alu_op   <= rename_uop_head[lane].int_alu_op;
-                    renamed_uop_q[lane].is_int_uop   <= rename_uop_head[lane].is_int_uop;
-                    renamed_uop_q[lane].src1_preg    <= src1_preg[lane];
-                    renamed_uop_q[lane].src2_preg    <= src2_preg[lane];
-                    renamed_uop_q[lane].dst_preg     <= dst_new_preg[lane];
-                    renamed_uop_q[lane].old_dst_preg <= dst_old_preg[lane];
-                    renamed_uop_q[lane].rob_idx      <= rob_idx[lane];
+            for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
+                alu_result_q[alu].valid        <= exec_valid[alu];
+                alu_result_q[alu].instruction_id <= alu_regread_q[alu].instruction_id;
+                alu_result_q[alu].rob_idx      <= alu_regread_q[alu].rob_idx;
+                alu_result_q[alu].dst_preg     <= alu_regread_q[alu].dst_preg;
+                alu_result_q[alu].dst_write_en <= alu_regread_q[alu].dst_write_en;
+                alu_result_q[alu].result       <= exec_result[alu];
+
+                alu_regread_q[alu].valid        <= alu_issue_q[alu].valid;
+                alu_regread_q[alu].instruction_id <= alu_issue_q[alu].instruction_id;
+                alu_regread_q[alu].rob_idx      <= alu_issue_q[alu].rob_idx;
+                alu_regread_q[alu].dst_preg     <= alu_issue_q[alu].dst_preg;
+                alu_regread_q[alu].dst_write_en <= alu_issue_q[alu].dst_write_en;
+                alu_regread_q[alu].src1_value   <= alu_issue_q[alu].src1_valid ? prf_rd_data[(2*alu)+0] : '0;
+                alu_regread_q[alu].imm_value    <= alu_issue_q[alu].imm_valid
+                                                 ? expand_imm_value(alu_issue_q[alu].imm_type, alu_issue_q[alu].imm_raw)
+                                                 : '0;
+                alu_regread_q[alu].imm_valid    <= alu_issue_q[alu].imm_valid;
+                alu_regread_q[alu].int_alu_op   <= alu_issue_q[alu].int_alu_op;
+                if (alu_issue_q[alu].imm_valid) begin
+                    alu_regread_q[alu].src2_value <= expand_imm_value(alu_issue_q[alu].imm_type, alu_issue_q[alu].imm_raw);
+                end else if (alu_issue_q[alu].src2_valid) begin
+                    alu_regread_q[alu].src2_value <= prf_rd_data[(2*alu)+1];
+                end else begin
+                    alu_regread_q[alu].src2_value <= '0;
                 end
-                renamed_uop_valid_q <= 1'b1;
+
+                alu_issue_q[alu].valid        <= issueq_issue_valid[alu];
+                alu_issue_q[alu].instruction_id <= issueq_issue_entry[alu].instruction_id;
+                alu_issue_q[alu].src1_preg    <= issueq_issue_entry[alu].src1_preg;
+                alu_issue_q[alu].src2_preg    <= issueq_issue_entry[alu].src2_preg;
+                alu_issue_q[alu].src1_valid   <= issueq_issue_entry[alu].src1_valid;
+                alu_issue_q[alu].src2_valid   <= issueq_issue_entry[alu].src2_valid;
+                alu_issue_q[alu].rob_idx      <= issueq_issue_entry[alu].rob_idx;
+                alu_issue_q[alu].dst_preg     <= issueq_issue_entry[alu].dst_preg;
+                alu_issue_q[alu].dst_write_en <= issueq_issue_entry[alu].dst_write_en;
+                alu_issue_q[alu].imm_raw      <= issueq_issue_entry[alu].imm_raw;
+                alu_issue_q[alu].imm_valid    <= issueq_issue_entry[alu].imm_valid;
+                alu_issue_q[alu].imm_type     <= issueq_issue_entry[alu].imm_type;
+                alu_issue_q[alu].int_alu_op   <= issueq_issue_entry[alu].int_alu_op;
             end
 
             if (fetch_fire) begin
-                fetch_entry_q       <= fetch_entry_i;
-                fetch_entry_valid_q <= 1'b1;
+                fetch_entry_q          <= fetch_entry_i;
+                fetch_entry_valid_q    <= 1'b1;
                 fetch_instruction_id_q <= fetch_instruction_id_d;
-                fetch_group_seq_q   <= fetch_group_seq_q + INST_ID_WIDTH'(1);
+                fetch_group_seq_q      <= fetch_group_seq_q + INST_ID_WIDTH'(1);
             end else if (decode_fire) begin
-                // 当前 fetch buffer 已完成 decode 并入队，且这拍没有新输入顶上来，因此清空 valid。
                 fetch_entry_valid_q <= 1'b0;
             end
+
 `ifdef O3_SIM
             sim_cycle_q <= sim_cycle_q + 64'd1;
 `endif

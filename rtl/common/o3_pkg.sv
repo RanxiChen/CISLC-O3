@@ -126,4 +126,74 @@ package o3_pkg;
         logic [ROB_IDX_WIDTH-1:0]  rob_idx;
     } renamed_uop_t;
 
+    // 已完成 rename、等待进入整数 issue queue 的表项。
+    // 当前只保留“进入整数计算队列”所需的最小字段：
+    // - 两个源操作数对应的物理寄存器编号
+    // - 每个源是否真的需要、当前是否已经准备好
+    // - 目的物理寄存器与是否真的写回
+    // - ROB 索引、调试 instruction_id
+    // - 原始立即数字段和是否真的使用立即数
+    // - 整数 ALU 操作类型
+    // 当前还没有加入唤醒标签、旁路结果、异常恢复等更完整字段。
+    typedef struct packed {
+        logic                      valid;
+        logic [INST_ID_WIDTH-1:0]  instruction_id;
+        logic [PREG_IDX_WIDTH-1:0] src1_preg;
+        logic [PREG_IDX_WIDTH-1:0] src2_preg;
+        logic                      src1_valid;
+        logic                      src2_valid;
+        logic                      src1_ready;
+        logic                      src2_ready;
+        logic [ROB_IDX_WIDTH-1:0]  rob_idx;
+        logic [PREG_IDX_WIDTH-1:0] dst_preg;
+        logic                      dst_write_en;
+        logic [IMM_RAW_WIDTH-1:0]  imm_raw;
+        logic                      imm_valid;
+        imm_type_t                 imm_type;
+        int_alu_op_t               int_alu_op;
+    } issue_queue_entry_t;
+
+    // issue queue 选中后、进入具体 ALU 发射寄存器的 uop。
+    // 这一拍仍然只保存物理寄存器编号，不保存真正的寄存器值。
+    typedef struct packed {
+        logic                      valid;
+        logic [INST_ID_WIDTH-1:0]  instruction_id;
+        logic [PREG_IDX_WIDTH-1:0] src1_preg;
+        logic [PREG_IDX_WIDTH-1:0] src2_preg;
+        logic                      src1_valid;
+        logic                      src2_valid;
+        logic [ROB_IDX_WIDTH-1:0]  rob_idx;
+        logic [PREG_IDX_WIDTH-1:0] dst_preg;
+        logic                      dst_write_en;
+        logic [IMM_RAW_WIDTH-1:0]  imm_raw;
+        logic                      imm_valid;
+        imm_type_t                 imm_type;
+        int_alu_op_t               int_alu_op;
+    } int_issue_pipe_uop_t;
+
+    // 完成物理寄存器读取和立即数扩展后、进入执行单元前的 uop。
+    // 当前阶段 src1/src2 都是最终送入 ALU 的真实 64 位操作数。
+    typedef struct packed {
+        logic                      valid;
+        logic [INST_ID_WIDTH-1:0]  instruction_id;
+        logic [ROB_IDX_WIDTH-1:0]  rob_idx;
+        logic [PREG_IDX_WIDTH-1:0] dst_preg;
+        logic                      dst_write_en;
+        logic [XLEN-1:0]           src1_value;
+        logic [XLEN-1:0]           src2_value;
+        logic [XLEN-1:0]           imm_value;
+        logic                      imm_valid;
+        int_alu_op_t               int_alu_op;
+    } int_regread_pipe_uop_t;
+
+    // 整数执行单元输出后、等待后续接 wakeup / writeback / commit 的结果寄存器。
+    typedef struct packed {
+        logic                      valid;
+        logic [INST_ID_WIDTH-1:0]  instruction_id;
+        logic [ROB_IDX_WIDTH-1:0]  rob_idx;
+        logic [PREG_IDX_WIDTH-1:0] dst_preg;
+        logic                      dst_write_en;
+        logic [XLEN-1:0]           result;
+    } int_execute_result_t;
+
 endpackage

@@ -3,10 +3,18 @@
  *
  * 功能：为乱序执行提供物理寄存器存储
  *
- * 设计说明：
- * - 当前实现为FPGA优化版本，使用分布式RAM或BRAM
- * - 读端口和写端口数量通过参数配置
- * - ASIC版本需要重新实现为真多端口寄存器堆
+ * 当前已经实现的功能：
+ * - 支持参数化的多读端口、多写端口物理寄存器文件
+ * - 支持同拍写后读旁路，避免本拍读到旧值
+ * - reset 后把所有物理寄存器清零，保证当前阶段日志和最小执行链路可预测
+ * - 在 `FPGA_TARGET` 下保留原来的 FPGA 优化实现
+ * - 在未定义 `FPGA_TARGET` 时提供一个行为等价的通用实现，便于当前阶段 backend 集成和静态检查
+ *
+ * 当前没有实现的功能：
+ * - 不区分架构零寄存器；是否把 p0 当作常零由上层协议保证
+ * - 不负责 rename / free list / writeback 仲裁
+ * - 不实现 ASIC 工艺下的真多端口寄存器堆优化
+ * - 当前阶段不附带测试代码和仿真代码，只先搭功能与注释
  *
  * 参数说明：
  * - NUM_READ_PORTS:  读端口数量（默认8，支持4发射×2操作数）
@@ -14,10 +22,15 @@
  * - NUM_ENTRIES:     物理寄存器数量（默认64）
  * - DATA_WIDTH:      数据宽度（默认64位）
  *
- * 协作说明：
- * - 当前实现仅适用于FPGA，由全局宏 FPGA_IMPL 控制
- * - 转换为ASIC时，需要将 FPGA_IMPL 设为0，并重新实现本模块
- * - ASIC实现建议：使用标准单元库的多端口寄存器堆或寄存器阵列
+ * 时序行为：
+ * - 周期 N 组合阶段：
+ *   1) 读端口根据 rd_addr_i 直接返回当前寄存器值
+ *   2) 若同拍存在 wr_en_i 且写地址命中某个读端口，则 rd_data_o 优先返回本拍 wr_data_i
+ * - 周期 N 上升沿：
+ *   1) 若 rst=1，则所有物理寄存器清零
+ *   2) 否则把所有 wr_en_i=1 的写端口数据写入对应物理寄存器
+ * - 周期 N+1：
+ *   1) 可从读端口读到更新后的寄存器内容
  */
 
 
@@ -241,6 +254,39 @@ module physical_regfile
                         rd_data_o[rp] = bypass_data;
                     end else begin
                         rd_data_o[rp] = selected_bank_data;
+                    end
+                end
+            end
+        end
+    endgenerate
+    `endif
+
+    `ifndef FPGA_TARGET
+    logic [DATA_WIDTH-1:0] mem_generic [NUM_ENTRIES];
+
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            for (int entry = 0; entry < NUM_ENTRIES; entry++) begin
+                mem_generic[entry] <= '0;
+            end
+        end else begin
+            for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
+                if (wr_en_i[i]) begin
+                    mem_generic[wr_addr_i[i]] <= wr_data_i[i];
+                end
+            end
+        end
+    end
+
+    genvar rp_generic;
+    generate
+        for (rp_generic = 0; rp_generic < NUM_READ_PORTS; rp_generic++) begin : gen_generic_read
+            always_comb begin
+                rd_data_o[rp_generic] = mem_generic[rd_addr_i[rp_generic]];
+
+                for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
+                    if (wr_en_i[i] && (wr_addr_i[i] == rd_addr_i[rp_generic])) begin
+                        rd_data_o[rp_generic] = wr_data_i[i];
                     end
                 end
             end
