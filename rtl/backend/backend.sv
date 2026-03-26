@@ -26,7 +26,7 @@
  *   1) fetch_entry_q / fetch_entry_valid_q 保存“上一拍已经接住”的 fetch 组
  *   2) uop_queue 若非空，则队头保存“上一拍已经解码完成、待 rename”的一组 uop
  * - 周期 N 内：
- *   1) decoder 组合地产生 rs1/rs2/rd、立即数和最小 uop 语义
+ *   1) decoder 组合地产生 rs1/rs2/rd、use_imm、原始立即数编码、整数 ALU op 和最小 uop 语义
  *   2) 若 uop_queue 可接收，则当前 fetch 组在本拍完成 decode 并入队
  *   3) rename 阶段从 uop_queue 队头组合读取 alloc_req / rob_req
  *   4) free list 组合地产生本拍候选新物理寄存器
@@ -171,7 +171,10 @@ module backend
             assign decoded_uop[i].rs1_read_en = decode_out[i].rs1_read_en;
             assign decoded_uop[i].rs2_read_en = decode_out[i].rs2_read_en;
             assign decoded_uop[i].rd_write_en = decode_out[i].rd_write_en;
-            assign decoded_uop[i].imm_value   = decode_out[i].imm_value;
+            assign decoded_uop[i].use_imm     = decode_out[i].use_imm;
+            assign decoded_uop[i].imm_type    = decode_out[i].imm_type;
+            assign decoded_uop[i].imm_raw     = decode_out[i].imm_raw;
+            assign decoded_uop[i].int_alu_op  = decode_out[i].int_alu_op;
             assign decoded_uop[i].is_int_uop  = decode_out[i].is_int_uop;
         end
     endgenerate
@@ -327,7 +330,10 @@ module backend
                     renamed_uop_q[lane].rs1_read_en  <= rename_uop_head[lane].rs1_read_en;
                     renamed_uop_q[lane].rs2_read_en  <= rename_uop_head[lane].rs2_read_en;
                     renamed_uop_q[lane].rd_write_en  <= rename_uop_head[lane].rd_write_en;
-                    renamed_uop_q[lane].imm_value    <= rename_uop_head[lane].imm_value;
+                    renamed_uop_q[lane].use_imm      <= rename_uop_head[lane].use_imm;
+                    renamed_uop_q[lane].imm_type     <= rename_uop_head[lane].imm_type;
+                    renamed_uop_q[lane].imm_raw      <= rename_uop_head[lane].imm_raw;
+                    renamed_uop_q[lane].int_alu_op   <= rename_uop_head[lane].int_alu_op;
                     renamed_uop_q[lane].is_int_uop   <= rename_uop_head[lane].is_int_uop;
                     renamed_uop_q[lane].src1_preg    <= src1_preg[lane];
                     renamed_uop_q[lane].src2_preg    <= src2_preg[lane];

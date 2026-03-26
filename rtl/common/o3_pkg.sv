@@ -16,6 +16,7 @@ package o3_pkg;
     parameter int DEFAULT_NUM_ROB_ENTRIES = 64;
     parameter int PREG_IDX_WIDTH = $clog2(DEFAULT_NUM_PHYS_REGS);
     parameter int ROB_IDX_WIDTH = $clog2(DEFAULT_NUM_ROB_ENTRIES);
+    parameter int IMM_RAW_WIDTH = 12;
 
     // ========================================
     // Frontend -> Backend 接口
@@ -37,11 +38,31 @@ package o3_pkg;
         logic [ILEN-1:0] instruction;  // 32位指令
     } decode_in_t;
 
-    // 解码器输出：寄存器索引与最小 uop 语义。
-    // 当前阶段为后续的 decode queue / rename 两拍拆分补齐最小信息：
+    typedef enum logic [1:0] {
+        IMM_TYPE_NONE = 2'b00,
+        IMM_TYPE_I    = 2'b01
+    } imm_type_t;
+
+    typedef enum logic [3:0] {
+        INT_ALU_OP_ADD  = 4'd0,
+        INT_ALU_OP_SUB  = 4'd1,
+        INT_ALU_OP_SLL  = 4'd2,
+        INT_ALU_OP_SLT  = 4'd3,
+        INT_ALU_OP_SLTU = 4'd4,
+        INT_ALU_OP_XOR  = 4'd5,
+        INT_ALU_OP_SRL  = 4'd6,
+        INT_ALU_OP_SRA  = 4'd7,
+        INT_ALU_OP_OR   = 4'd8,
+        INT_ALU_OP_AND  = 4'd9
+    } int_alu_op_t;
+
+    // 解码器输出：寄存器索引与整数 ALU 最小语义。
+    // 当前阶段为 decode queue / rename 两拍拆分补齐这些信息：
     // - 哪些源寄存器需要读取
     // - 该指令是否会写 rd
-    // - 最小立即数字段
+    // - 第二操作数是否选择立即数
+    // - I-type 12 位原始立即数字段以及对应类型
+    // - 当前整数 ALU 操作类型
     // - 是否属于当前统一整数数据流
     // 还没有扩展异常、提交、执行完成、提交状态等更完整字段。
     typedef struct packed {
@@ -51,7 +72,10 @@ package o3_pkg;
         logic                      rs1_read_en; // 该指令是否真正读取 rs1
         logic                      rs2_read_en; // 该指令是否真正读取 rs2
         logic                      rd_write_en; // 该指令是否真正写回 rd
-        logic [XLEN-1:0]           imm_value;   // 最小立即数字段，供后续执行级继续扩展
+        logic                      use_imm;     // 第二操作数是否取立即数
+        imm_type_t                 imm_type;    // 立即数原始编码类型；全 0 表示无效
+        logic [IMM_RAW_WIDTH-1:0]  imm_raw;     // 原始立即数字段；当前只承载 I-type[31:20]
+        int_alu_op_t               int_alu_op;  // 整数 ALU 操作类型
         logic                      is_int_uop;  // 当前是否纳入统一整数执行流
     } decode_out_t;
 
@@ -69,7 +93,10 @@ package o3_pkg;
         logic                      rs1_read_en;
         logic                      rs2_read_en;
         logic                      rd_write_en;
-        logic [XLEN-1:0]           imm_value;
+        logic                      use_imm;
+        imm_type_t                 imm_type;
+        logic [IMM_RAW_WIDTH-1:0]  imm_raw;
+        int_alu_op_t               int_alu_op;
         logic                      is_int_uop;
     } decoded_uop_t;
 
@@ -87,7 +114,10 @@ package o3_pkg;
         logic                      rs1_read_en;
         logic                      rs2_read_en;
         logic                      rd_write_en;
-        logic [XLEN-1:0]           imm_value;
+        logic                      use_imm;
+        imm_type_t                 imm_type;
+        logic [IMM_RAW_WIDTH-1:0]  imm_raw;
+        int_alu_op_t               int_alu_op;
         logic                      is_int_uop;
         logic [PREG_IDX_WIDTH-1:0] src1_preg;
         logic [PREG_IDX_WIDTH-1:0] src2_preg;

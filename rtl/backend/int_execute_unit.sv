@@ -14,7 +14,7 @@
  * - 当前阶段不附带测试代码和仿真代码，只先搭功能与注释
  *
  * 未来扩展入口：
- * - 后续可将 op 编码统一抽到公共 package
+ * - 当前已经和 `o3_pkg::int_alu_op_t` 对齐；后续可继续把 branch/load-store 控制统一抽到公共 package
  * - 后续可在外部接入 issue/dispatch/forwarding，而不改变本模块单拍接口
  * - 后续可拆分 branch compare / address generation / integer ALU 子路径
  *
@@ -25,7 +25,7 @@
  *   3) 但对外约定只有 `valid_i=1` 时，这一拍的 `valid_o/result_o/cmp_true_o` 才应被下游当成有效执行结果
  * - `op_i`
  *   1) 指定本拍要执行哪一种整数操作
- *   2) 当前支持 add/sub/shift/logic/compare
+ *   2) 当前支持 `ADD/SUB/SLL/SLT/SLTU/XOR/SRL/SRA/OR/AND`
  *   3) 若给到未定义操作码，则输出结果回落为 0，比较结果回落为 0
  * - `src1_value_i`
  *   1) 第一个源操作数
@@ -52,15 +52,14 @@
  *   2) 对比较类操作，当前也会输出一个 0/1 的整数结果，便于后续统一接数据通路
  * - `cmp_true_o`
  *   1) 比较条件是否成立
- *   2) 当前对 EQ/NE/LT/GE/LTU/GEU 和 SLT/SLTU 都会给出对应真假值
+ *   2) 当前对 `SLT/SLTU` 会给出对应真假值
  *   3) 对非比较类操作保持为 0
  *
  * 计算规则：
  * - 第二操作数先由 `use_imm_i` 在 `src2_value_i` 与 `imm_value_i` 之间二选一。
  * - `ADD/SUB/XOR/OR/AND` 直接对两个操作数执行对应运算。
  * - `SLL/SRL/SRA` 在 64 位模式下分别使用 6 位移位量，在 word 模式下使用 5 位移位量。
- * - `SLT/GE/LT` 这类有符号比较使用有符号解释后的 `src1` 与 `src2`。
- * - `SLTU/GEU/LTU` 这类无符号比较使用无符号比较。
+ * - `SLT` 使用有符号比较，`SLTU` 使用无符号比较。
  * - 当 `is_word_op_i=1` 时，最终对 `result_raw[31:0]` 做符号扩展形成 `result_o`。
  *
  * 时序行为：
@@ -77,10 +76,9 @@
 module int_execute_unit
     import o3_pkg::*;
 #(
-    parameter int DATA_WIDTH = XLEN,
-    parameter int OP_WIDTH   = 6
+    parameter int DATA_WIDTH = XLEN
 ) (
-    input  logic [OP_WIDTH-1:0]   op_i,          // 本拍整数操作类型；仅在 valid_i=1 时应被下游视为有效。
+    input  int_alu_op_t           op_i,          // 本拍整数操作类型；仅在 valid_i=1 时应被下游视为有效。
     input  logic                  valid_i,       // 本拍输入是否有效；valid_o 直接透传该信号。
     input  logic [DATA_WIDTH-1:0] src1_value_i,  // 第一个源操作数；所有操作都会读取该值。
     input  logic [DATA_WIDTH-1:0] src2_value_i,  // 第二个寄存器源操作数；仅在 use_imm_i=0 时被选中。
@@ -92,28 +90,6 @@ module int_execute_unit
     output logic [DATA_WIDTH-1:0] result_o,      // 整数执行结果；比较类操作也输出 0/1 整数值。
     output logic                  cmp_true_o     // 比较条件是否成立；非比较类操作保持为 0。
 );
-
-    localparam logic [OP_WIDTH-1:0] INT_OP_ADD  = 6'd0;
-    localparam logic [OP_WIDTH-1:0] INT_OP_SUB  = 6'd1;
-    localparam logic [OP_WIDTH-1:0] INT_OP_SLL  = 6'd2;
-    localparam logic [OP_WIDTH-1:0] INT_OP_SLT  = 6'd3;
-    localparam logic [OP_WIDTH-1:0] INT_OP_SLTU = 6'd4;
-    localparam logic [OP_WIDTH-1:0] INT_OP_XOR  = 6'd5;
-    localparam logic [OP_WIDTH-1:0] INT_OP_SRL  = 6'd6;
-    localparam logic [OP_WIDTH-1:0] INT_OP_SRA  = 6'd7;
-    localparam logic [OP_WIDTH-1:0] INT_OP_OR   = 6'd8;
-    localparam logic [OP_WIDTH-1:0] INT_OP_AND  = 6'd9;
-    localparam logic [OP_WIDTH-1:0] INT_OP_EQ   = 6'd10;
-    localparam logic [OP_WIDTH-1:0] INT_OP_NE   = 6'd11;
-    localparam logic [OP_WIDTH-1:0] INT_OP_LT   = 6'd12;
-    localparam logic [OP_WIDTH-1:0] INT_OP_GE   = 6'd13;
-    localparam logic [OP_WIDTH-1:0] INT_OP_LTU  = 6'd14;
-    localparam logic [OP_WIDTH-1:0] INT_OP_GEU  = 6'd15;
-
-    // op 编码约定：
-    // - INT_OP_ADD/SUB/SLL/XOR/SRL/SRA/OR/AND：对应普通整数 ALU 结果
-    // - INT_OP_SLT/SLTU：既输出比较真假，也把 0/1 写到 result_o
-    // - INT_OP_EQ/NE/LT/GE/LTU/GEU：当前主要服务于后续比较/分支类路径，同样输出 0/1 到 result_o
 
     logic [DATA_WIDTH-1:0] src2_sel;
     logic [DATA_WIDTH-1:0] result_raw;
@@ -130,15 +106,15 @@ module int_execute_unit
         cmp_true_o = 1'b0;
 
         unique case (op_i)
-            INT_OP_ADD: begin
+            INT_ALU_OP_ADD: begin
                 result_raw = src1_value_i + src2_sel;
             end
 
-            INT_OP_SUB: begin
+            INT_ALU_OP_SUB: begin
                 result_raw = src1_value_i - src2_sel;
             end
 
-            INT_OP_SLL: begin
+            INT_ALU_OP_SLL: begin
                 if (is_word_op_i) begin
                     result_raw = DATA_WIDTH'($signed(src1_value_i[31:0] << src2_sel[4:0]));
                 end else begin
@@ -146,21 +122,21 @@ module int_execute_unit
                 end
             end
 
-            INT_OP_SLT: begin
+            INT_ALU_OP_SLT: begin
                 cmp_true_o = (signed_src1 < signed_src2);
                 result_raw = {{(DATA_WIDTH-1){1'b0}}, cmp_true_o};
             end
 
-            INT_OP_SLTU: begin
+            INT_ALU_OP_SLTU: begin
                 cmp_true_o = (src1_value_i < src2_sel);
                 result_raw = {{(DATA_WIDTH-1){1'b0}}, cmp_true_o};
             end
 
-            INT_OP_XOR: begin
+            INT_ALU_OP_XOR: begin
                 result_raw = src1_value_i ^ src2_sel;
             end
 
-            INT_OP_SRL: begin
+            INT_ALU_OP_SRL: begin
                 if (is_word_op_i) begin
                     result_raw = DATA_WIDTH'($signed({1'b0, (src1_value_i[31:0] >> src2_sel[4:0])}[31:0]));
                 end else begin
@@ -168,7 +144,7 @@ module int_execute_unit
                 end
             end
 
-            INT_OP_SRA: begin
+            INT_ALU_OP_SRA: begin
                 if (is_word_op_i) begin
                     result_raw = DATA_WIDTH'($signed($signed(src1_value_i[31:0]) >>> src2_sel[4:0]));
                 end else begin
@@ -176,42 +152,12 @@ module int_execute_unit
                 end
             end
 
-            INT_OP_OR: begin
+            INT_ALU_OP_OR: begin
                 result_raw = src1_value_i | src2_sel;
             end
 
-            INT_OP_AND: begin
+            INT_ALU_OP_AND: begin
                 result_raw = src1_value_i & src2_sel;
-            end
-
-            INT_OP_EQ: begin
-                cmp_true_o = (src1_value_i == src2_sel);
-                result_raw = {{(DATA_WIDTH-1){1'b0}}, cmp_true_o};
-            end
-
-            INT_OP_NE: begin
-                cmp_true_o = (src1_value_i != src2_sel);
-                result_raw = {{(DATA_WIDTH-1){1'b0}}, cmp_true_o};
-            end
-
-            INT_OP_LT: begin
-                cmp_true_o = (signed_src1 < signed_src2);
-                result_raw = {{(DATA_WIDTH-1){1'b0}}, cmp_true_o};
-            end
-
-            INT_OP_GE: begin
-                cmp_true_o = (signed_src1 >= signed_src2);
-                result_raw = {{(DATA_WIDTH-1){1'b0}}, cmp_true_o};
-            end
-
-            INT_OP_LTU: begin
-                cmp_true_o = (src1_value_i < src2_sel);
-                result_raw = {{(DATA_WIDTH-1){1'b0}}, cmp_true_o};
-            end
-
-            INT_OP_GEU: begin
-                cmp_true_o = (src1_value_i >= src2_sel);
-                result_raw = {{(DATA_WIDTH-1){1'b0}}, cmp_true_o};
             end
 
             default: begin

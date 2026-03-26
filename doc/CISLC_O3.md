@@ -14,7 +14,8 @@
 - `backend` 在 `O3_SIM` 宏下已支持逐周期文本调试，按 cycle 把 lane0 的 `DECODE` 与 `RENAME` 两级组织成一个日志块输出；其中 `RENAME` 行可通过 DPI-C 调用 RV64I 反汇编 helper 显示汇编字符串。
 - `backend` 已新增内部 `instruction_id` 体系：每条被 backend 接收的指令都会分配一个 64 位调试编号，高位表示“第几批被接收的 fetch group”，低位表示“该批内的 lane 编号”；当 `MACHINE_WIDTH=6` 时，低 3 位表示 lane id。
 - 当前后端并行宽度命名统一使用 `machine width` / `MACHINE_WIDTH`，表示每周期并行处理的 lane 数。
-- `decoder` 已经能提取 `rs1/rs2/rd`，并给出基础 RVI 的 `rs1_read_en/rs2_read_en/rd_write_en/imm_value/is_int_uop`。
+- `decoder` 已经能提取 `rs1/rs2/rd`，并对 RV64I 的整数 R/I 算术指令给出 `rs1_read_en/rs2_read_en/rd_write_en/use_imm/imm_type/imm_raw/int_alu_op/is_int_uop`。
+- `o3_pkg` 已新增统一的 `int_alu_op_t` 与 `imm_type_t`，用于对齐 `decoder` 和 `int_execute_unit`。
 - `uop_queue` 已新增，作为 decode 后、rename 前的成组缓冲。
 - `free_list` 已经支持“按本拍真实请求数”分配空闲物理寄存器。
 - `rename_map_table` 已新增，负责维护架构寄存器到当前物理寄存器的映射。
@@ -50,9 +51,16 @@
 - 当前未做：不接真实 frontend / icache / 内存，不做执行结果校验，不做更复杂的处理器行为建模。
 
 ### decoder
-- 职责：从 32 位指令中提取寄存器字段、最小立即数和基础 uop 语义。
-- 当前覆盖：基础 RVI 中 `LUI/AUIPC/JAL/JALR/BRANCH/LOAD/STORE/OP-IMM/OP/FENCE/SYSTEM(保守处理)`。
-- 当前未做：更细的功能单元类型、CSR 详细行为、trap 语义。
+- 职责：从 32 位指令中提取寄存器字段、原始立即数编码和基础整数 ALU uop 语义。
+- 当前覆盖：RV64I 中直接走整数 ALU 的 R/I 算术指令。
+  - R-type：`ADD/SUB/SLL/SLT/SLTU/XOR/SRL/SRA/OR/AND`
+  - I-type：`ADDI/SLLI/SLTI/SLTIU/XORI/SRLI/SRAI/ORI/ANDI`
+- 当前输出形态：输出 `decode_out_t`，包含 `rs1/rs2/rd`、`rs1_read_en/rs2_read_en/rd_write_en`、`use_imm`、`imm_type`、`imm_raw[11:0]`、`int_alu_op`、`is_int_uop`。
+- 当前各类指令解码结果：
+  - R-type 算术：读 `rs1/rs2`、写 `rd`，`use_imm=0`，`imm_type=IMM_TYPE_NONE`
+  - I-type 算术：读 `rs1`、写 `rd`，`use_imm=1`，`imm_type=IMM_TYPE_I`，`imm_raw=instruction[31:20]`
+  - 其它 opcode 或未识别的 `funct3/funct7`：保守输出全 0，不触发 rename 侧寄存器分配
+- 当前未做：branch/load/store/jump/system 的完整控制语义、RV64I word 指令、更细的功能单元类型、CSR 详细行为、trap 语义。
 
 ### uop_queue
 - 职责：作为 decode 后、rename 前的成组 uop 缓冲。
@@ -86,7 +94,7 @@
 
 ### int_execute_unit
 - 职责：提供 RV64I 整数算术、逻辑、移位、比较类运算的数据通路。
-- 当前实现：单拍组合执行，支持 64 位与 32 位 word 结果语义。
+- 当前实现：单拍组合执行，当前和 `o3_pkg::int_alu_op_t` 对齐，支持 `ADD/SUB/SLL/SLT/SLTU/XOR/SRL/SRA/OR/AND`，并支持 64 位与 32 位 word 结果语义。
 - 当前未做：不接指令解码、不接 issue/dispatch、不接分支/访存/回写控制。
 
 ### mul_execute_unit
@@ -122,7 +130,7 @@
 - `rtl/backend/div_execute_unit.sv`
   - 独立的除法执行单元，负责 RV64M 的除法/取余类指令。
 - `rtl/common/o3_pkg.sv`
-  - 定义 `fetch_entry_t`、`decode_in_t`、`decode_out_t` 等跨模块接口类型，以及 `decoded_uop/renamed_uop` 使用的 `instruction_id` 字段。
+  - 定义 `fetch_entry_t`、`decode_in_t`、`decode_out_t`、`int_alu_op_t`、`imm_type_t` 等跨模块接口类型，以及 `decoded_uop/renamed_uop` 使用的 `instruction_id` 字段。
 - `rtl/frontend/frontend.sv`
   - frontend 侧实现入口，和 backend 对接时需要一起看接口约束。
 - `rtl/O3.sv`
@@ -139,7 +147,7 @@
 周期 N 组合阶段：
 - `fetch_entry_q` 中保存当前待 decode 的指令组。
 - `fetch_instruction_id_q` 中保存当前 fetch buffer 这组指令对应的调试编号；编号的低位是 lane id，高位是被 backend 接收时的 group 序号。
-- `decoder` 组合输出 `rs1/rs2/rd`、立即数和最小 uop 语义。
+- `decoder` 组合输出 `rs1/rs2/rd`、`rs1_read_en/rs2_read_en/rd_write_en`、`use_imm`、`imm_type`、`imm_raw`、`int_alu_op` 和 `is_int_uop`。
 - 若 `uop_queue` 可接收，则当前 fetch 组在本拍以 `decoded_uop` 形式入队。
 - `uop_queue` 队头保存当前待 rename 的一组 uop。
 - `free_list` 组合输出本拍候选 `new_dst_preg`。
@@ -194,6 +202,22 @@
 - 输入当前 lane 的 `rs1/rs2/rd`。
 - 直接读取 map table，得到 `src1_preg/src2_preg/old_dst_preg`。
 - 若该 lane 需要写 `rd`，backend 同拍还会拿到对应 `new_dst_preg`。
+
+### 当前解码输出到 uop 的样子
+- `decoder` 的直接输出是 `decode_out_t`，字段为：
+  - `rs1/rs2/rd`
+  - `rs1_read_en/rs2_read_en/rd_write_en`
+  - `use_imm`
+  - `imm_type`
+  - `imm_raw`
+  - `int_alu_op`
+  - `is_int_uop`
+- `backend` 会把 frontend 带来的原始信息与这些解码字段拼成 `decoded_uop_t` 后再入 `uop_queue`。
+- 当前 `decoded_uop_t` 的内容是：
+  - frontend 原样透传：`valid/instruction_id/pc/instruction/exception`
+  - decoder 新产生：`rs1/rs2/rd`、`rs1_read_en/rs2_read_en/rd_write_en`、`use_imm`、`imm_type`、`imm_raw`、`int_alu_op`、`is_int_uop`
+- 也就是说，当前 decode 级产出的不是“完整执行控制词”，而是“原始指令 + 最小 rename/整数 ALU 语义”的一组 uop。
+- 当前 decode 不再输出 XLEN 展开的 `imm_value`；立即数的符号扩展计划留到后续寄存器读阶段完成。
 
 周期 N 上升沿：
 - 若 `rename_fire=1 && rd_write_en=1 && rd!=0`，则更新 `map_table[rd] = new_dst_preg`。
