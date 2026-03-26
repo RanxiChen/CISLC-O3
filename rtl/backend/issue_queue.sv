@@ -6,12 +6,13 @@
  * - 每个表项保存 1 条已经完成 rename 的整数 issue entry
  * - 支持一拍从多个 lane 原子入队到同一个队列
  * - 入队时按 lane0 -> lane1 -> ... 的顺序压紧写入，保持组内隐式程序顺序
- * - 支持队列内 ready 位更新、同拍选择多条 ready uop 发往多个 ALU
+ * - 支持根据物理寄存器 ready table 更新队列内源操作数 ready 位
+ * - 支持同拍选择多条 ready uop 发往多个 ALU
  * - 被发射的表项会在同拍从队列中删除，后续表项向前补位
  * - 对上游提供 ready/valid 风格背压
  *
  * 当前没有实现的功能：
- * - 不做真实写回广播网络；当前 wakeup 采用“队列中有效表项下一拍默认全部 ready”的占位策略
+ * - 不做真实旁路广播网络；当前 wakeup 只观察 preg_ready_i，写回结果下一拍才对队列可见
  * - 不做年龄矩阵或更复杂的选择仲裁；当前严格按队列先后顺序选择
  * - 不做 flush / rollback / checkpoint 恢复
  * - 不做部分入队；同一拍要么整批整数 uop 全部进入，要么全部等待
@@ -19,11 +20,11 @@
  *
  * 时序行为：
  * - 周期 N 组合阶段：
- *   1) 根据当前有效表项生成 wakeup 后视图；当前策略是把还未 ready 的有效表项全部标记为 ready
+ *   1) 根据当前有效表项和 preg_ready_i 生成 wakeup 后视图；只有真正等到源物理寄存器 ready 的表项才会被唤醒
  *   2) 从队头开始按顺序扫描 wakeup 后的表项，把最靠前的 ready uop 分配给编号更小的可接收 issue 端口
  *   3) 根据“本拍会被发射出去的条数”与“本拍想入队的条数”共同决定 enq_ready_o
  * - 周期 N 上升沿：
- *   1) 先把当前有效表项的 ready 位更新写回队列
+ *   1) 先把当前有效表项基于 preg_ready_i 计算出的 ready 位更新写回队列
  *   2) 若本拍有被选中且被接受的表项，则把这些表项从队列中删除，并把后面的表项向前补位
  *   3) 若 enq_valid_i && enq_ready_o，则把本拍所有 valid entry 按 lane 顺序连续追加到队尾
  * - 周期 N+1：
@@ -35,13 +36,15 @@ module issue_queue
 #(
     parameter int MACHINE_WIDTH = 4,
     parameter int ISSUE_WIDTH = 3,
-    parameter int DEPTH = 16
+    parameter int DEPTH = 16,
+    parameter int NUM_PHYS_REGS = 64
 ) (
     input  logic                                 clk,
     input  logic                                 rst,
     input  issue_queue_entry_t [MACHINE_WIDTH-1:0] enq_entry_i,
     input  logic                                 enq_valid_i,
     output logic                                 enq_ready_o,
+    input  logic                                 preg_ready_i [NUM_PHYS_REGS-1:0],
     output issue_queue_entry_t [ISSUE_WIDTH-1:0] issue_entry_o,
     output logic              [ISSUE_WIDTH-1:0]  issue_valid_o,
     input  logic              [ISSUE_WIDTH-1:0]  issue_ready_i,
@@ -77,11 +80,22 @@ module issue_queue
             wakeup_entry_o[idx] = '0;
             wakeup_valid_o[idx] = 1'b0;
 
-            if (queue_q[idx].valid && !(queue_q[idx].src1_ready && queue_q[idx].src2_ready)) begin
-                queue_wakeup[idx].src1_ready = 1'b1;
-                queue_wakeup[idx].src2_ready = 1'b1;
-                wakeup_entry_o[idx]          = queue_wakeup[idx];
-                wakeup_valid_o[idx]          = 1'b1;
+            if (queue_q[idx].valid) begin
+                // 队列内只根据物理寄存器 ready table 逐源更新 ready 位。
+                // 本次不接写回旁路，因此新写回结果要到下一拍才会体现在 preg_ready_i 上。
+                if (queue_q[idx].src1_valid && !queue_q[idx].src1_ready && preg_ready_i[queue_q[idx].src1_preg]) begin
+                    queue_wakeup[idx].src1_ready = 1'b1;
+                end
+
+                if (queue_q[idx].src2_valid && !queue_q[idx].src2_ready && preg_ready_i[queue_q[idx].src2_preg]) begin
+                    queue_wakeup[idx].src2_ready = 1'b1;
+                end
+
+                if ((queue_wakeup[idx].src1_ready != queue_q[idx].src1_ready)
+                 || (queue_wakeup[idx].src2_ready != queue_q[idx].src2_ready)) begin
+                    wakeup_entry_o[idx] = queue_wakeup[idx];
+                    wakeup_valid_o[idx] = 1'b1;
+                end
             end
         end
     end
@@ -172,6 +186,10 @@ module issue_queue
 
         if (DEPTH <= 0) begin
             $error("issue_queue requires DEPTH > 0");
+        end
+
+        if (NUM_PHYS_REGS <= 0) begin
+            $error("issue_queue requires NUM_PHYS_REGS > 0");
         end
     end
 

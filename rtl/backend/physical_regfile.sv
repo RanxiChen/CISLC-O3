@@ -7,11 +7,11 @@
  * - 支持参数化的多读端口、多写端口物理寄存器文件
  * - 支持同拍写后读旁路，避免本拍读到旧值
  * - reset 后把所有物理寄存器清零，保证当前阶段日志和最小执行链路可预测
+ * - p0 作为零物理寄存器：读恒为 0，所有写入请求都会被忽略
  * - 在 `FPGA_TARGET` 下保留原来的 FPGA 优化实现
  * - 在未定义 `FPGA_TARGET` 时提供一个行为等价的通用实现，便于当前阶段 backend 集成和静态检查
  *
  * 当前没有实现的功能：
- * - 不区分架构零寄存器；是否把 p0 当作常零由上层协议保证
  * - 不负责 rename / free list / writeback 仲裁
  * - 不实现 ASIC 工艺下的真多端口寄存器堆优化
  * - 当前阶段不附带测试代码和仿真代码，只先搭功能与注释
@@ -70,6 +70,13 @@ module physical_regfile
 `else
     localparam bit USE_NO_BANK_FLAT_CFG = USE_NO_BANK_FLAT;
 `endif
+
+    function automatic logic is_zero_preg(input logic [ADDR_WIDTH-1:0] preg_idx);
+        begin
+            is_zero_preg = (preg_idx == ADDR_WIDTH'(0));
+        end
+    endfunction
+
     `ifdef FPGA_TARGET
 
     // ========================================================================
@@ -92,12 +99,12 @@ module physical_regfile
                 if (rst) begin
                     // 可选清零
                 end else begin
-                    // 同地址多写时，端口号大的写端口最终生效
-                    for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
-                        if (wr_en_i[i]) begin
-                            mem_flat[wr_addr_i[i]] <= wr_data_i[i];
+                        // 同地址多写时，端口号大的写端口最终生效
+                        for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
+                            if (wr_en_i[i] && !is_zero_preg(wr_addr_i[i])) begin
+                                mem_flat[wr_addr_i[i]] <= wr_data_i[i];
+                            end
                         end
-                    end
                 end
             end
 
@@ -109,7 +116,7 @@ module physical_regfile
 
                 genvar bp;
                 for (bp = 0; bp < NUM_WRITE_PORTS; bp++) begin : gen_bypass_check
-                    assign bypass_match[bp] = wr_en_i[bp] && (wr_addr_i[bp] == rd_addr_i[rp]);
+                    assign bypass_match[bp] = wr_en_i[bp] && !is_zero_preg(wr_addr_i[bp]) && (wr_addr_i[bp] == rd_addr_i[rp]);
                 end
 
                 always_comb begin
@@ -124,7 +131,9 @@ module physical_regfile
                 end
 
                 always_comb begin
-                    if (bypass_valid) begin
+                    if (is_zero_preg(rd_addr_i[rp])) begin
+                        rd_data_o[rp] = '0;
+                    end else if (bypass_valid) begin
                         rd_data_o[rp] = bypass_data;
                     end else begin
                         rd_data_o[rp] = mem_flat[rd_addr_i[rp]];
@@ -143,7 +152,7 @@ module physical_regfile
                     end else begin
                         // 同地址多写时，端口号大的写端口最终生效
                         for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
-                            if (wr_en_i[i]) begin
+                            if (wr_en_i[i] && !is_zero_preg(wr_addr_i[i])) begin
                                 ram_banks[wb][wr_addr_i[i]] <= wr_data_i[i];
                             end
                         end
@@ -164,7 +173,7 @@ module physical_regfile
                 end
 
                 for (bp = 0; bp < NUM_WRITE_PORTS; bp++) begin : gen_bypass_check
-                    assign bypass_match[bp] = wr_en_i[bp] && (wr_addr_i[bp] == rd_addr_i[rp]);
+                    assign bypass_match[bp] = wr_en_i[bp] && !is_zero_preg(wr_addr_i[bp]) && (wr_addr_i[bp] == rd_addr_i[rp]);
                 end
 
                 always_comb begin
@@ -179,7 +188,9 @@ module physical_regfile
                 end
 
                 always_comb begin
-                    if (bypass_valid) begin
+                    if (is_zero_preg(rd_addr_i[rp])) begin
+                        rd_data_o[rp] = '0;
+                    end else if (bypass_valid) begin
                         rd_data_o[rp] = bypass_data;
                     end else begin
                         rd_data_o[rp] = bank_data[0];
@@ -201,7 +212,7 @@ module physical_regfile
                     // 每个写端口仅写本bank，并更新latest tag
                     // 同地址多写时，端口号大的写端口最终生效
                     for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
-                        if (wr_en_i[i]) begin
+                        if (wr_en_i[i] && !is_zero_preg(wr_addr_i[i])) begin
                             ram_banks[i][wr_addr_i[i]] <= wr_data_i[i];
                             latest_bank[wr_addr_i[i]] <= BANK_SEL_WIDTH'(i);
                         end
@@ -235,7 +246,7 @@ module physical_regfile
                 end
 
                 for (bp = 0; bp < NUM_WRITE_PORTS; bp++) begin : gen_bypass_check
-                    assign bypass_match[bp] = wr_en_i[bp] && (wr_addr_i[bp] == rd_addr_i[rp]);
+                    assign bypass_match[bp] = wr_en_i[bp] && !is_zero_preg(wr_addr_i[bp]) && (wr_addr_i[bp] == rd_addr_i[rp]);
                 end
 
                 always_comb begin
@@ -250,7 +261,9 @@ module physical_regfile
                 end
 
                 always_comb begin
-                    if (bypass_valid) begin
+                    if (is_zero_preg(rd_addr_i[rp])) begin
+                        rd_data_o[rp] = '0;
+                    end else if (bypass_valid) begin
                         rd_data_o[rp] = bypass_data;
                     end else begin
                         rd_data_o[rp] = selected_bank_data;
@@ -271,7 +284,7 @@ module physical_regfile
             end
         end else begin
             for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
-                if (wr_en_i[i]) begin
+                if (wr_en_i[i] && !is_zero_preg(wr_addr_i[i])) begin
                     mem_generic[wr_addr_i[i]] <= wr_data_i[i];
                 end
             end
@@ -282,10 +295,10 @@ module physical_regfile
     generate
         for (rp_generic = 0; rp_generic < NUM_READ_PORTS; rp_generic++) begin : gen_generic_read
             always_comb begin
-                rd_data_o[rp_generic] = mem_generic[rd_addr_i[rp_generic]];
+                rd_data_o[rp_generic] = is_zero_preg(rd_addr_i[rp_generic]) ? '0 : mem_generic[rd_addr_i[rp_generic]];
 
                 for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
-                    if (wr_en_i[i] && (wr_addr_i[i] == rd_addr_i[rp_generic])) begin
+                    if (wr_en_i[i] && !is_zero_preg(wr_addr_i[i]) && (wr_addr_i[i] == rd_addr_i[rp_generic])) begin
                         rd_data_o[rp_generic] = wr_data_i[i];
                     end
                 end

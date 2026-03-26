@@ -4,7 +4,7 @@
  * 当前已经实现的功能：
  * - 维护架构寄存器到当前物理寄存器的映射
  * - reset 后默认建立：
- *   x1 ~ x31 -> p0 ~ p30
+ *   x0 ~ x31 -> p0 ~ p31
  * - x0 固定视为常量零寄存器：
  *   1) 组合读取时始终返回物理寄存器 p0
  *   2) 时序更新时不会写入 map table
@@ -90,9 +90,10 @@ module rename_map_table #(
 
     always_ff @(posedge clk) begin
         if (rst) begin
-            map_table_q[0] <= '0;
-            for (int arch = 1; arch < NUM_ARCH_REGS; arch++) begin
-                map_table_q[arch] <= PREG_IDX_WIDTH'(arch - 1);
+            // reset 时固定建立 xN -> pN 的一一对应关系。
+            // 后续只有 rd!=0 的真实目的写才会改写映射表。
+            for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
+                map_table_q[arch] <= PREG_IDX_WIDTH'(arch);
             end
         end else if (rename_fire_i) begin
             // 当前版本按 lane 顺序独立写表，但不处理组内覆盖。

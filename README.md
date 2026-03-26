@@ -83,6 +83,3 @@ What is not implemented yet:
 - `agent.md`
   Internal collaboration rules for agents and contributors.
 
-## License
-
-See [`LICENSE`](/home/chen/FUN/CISLC-O3/LICENSE) for license details.

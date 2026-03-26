@@ -6,23 +6,28 @@
  * - 对 fetch-entry buffer 中的指令做基础解码，并组装成 decoded uop
  * - 接入 decode 后、rename 前的 uop queue，形成前两拍骨架
  * - 在 rename 阶段接入 free list、rename map table 和最小 ROB
- * - 把 rename 完成后的整数 uop 按 lane 顺序压入单一 integer issue queue
- * - 在 issue queue 内实现“下一拍默认全部唤醒”的占位 wakeup 逻辑
+ * - 在 backend 内维护最小 preg_ready table，并把 rename 完成后的整数 uop 按 lane 顺序压入单一 integer issue queue
+ * - 在 issue queue 内基于 preg_ready table 做最小真实 wakeup
  * - 在 issue queue 内实现按年龄顺序的 select，并把最靠前的 ready uop 发给多个整数 ALU
  * - 在 backend 内接入 3 级整数流水寄存器：issue -> regread -> execute result
  * - 在 regread 阶段根据物理寄存器编号读取 physical_regfile，并对当前 I-type 立即数做 64 位符号扩展
  * - 接入多个 `int_execute_unit`，完成 RV64I R/I 整数算术指令的最小执行链路
+ * - 在 execute result 后接入整数 writeback：把结果写回 physical_regfile、更新 preg_ready table、并把对应 ROB 项标记为 complete
+ * - 接入最小 3-wide in-order retire：从 ROB 队头连续退休最多 3 条，并把 old_dst_preg 回收到 free list
+ * - 维护从 reset 开始累计的 retired instruction counter，按每拍真实退休条数累加
  * - 支持按 MACHINE_WIDTH 参数化并行处理多个 lane
- * - 在 `O3_SIM` 宏下新增逐周期文本日志，按周期块展示 DECODE/RENAME/WAKEUP/ISSUE/REGREAD/EXECUTE 阶段
+ * - 在 `O3_SIM` 宏下新增逐周期文本日志，按周期块展示 DECODE/RENAME/WAKEUP/ISSUE/REGREAD/EXECUTE/WRITEBACK 阶段
  * - 在 backend 内部为每条被接收的指令生成调试用 instruction_id
  *   - 高位表示“第几批被 backend 接收的 fetch group”
  *   - 低位表示“该组内的 lane 编号”
+ * - 统一 x0/p0 语义：x0 固定映射到 p0，p0 在 physical_regfile 中读恒为 0、写忽略
  *
  * 当前没有实现的功能：
  * - 不处理组内依赖、组内覆盖、分支恢复、checkpoint、commit
- * - ROB 当前只做 entry 编号分配与 exception 存储，不做提交、回收、恢复
- * - issue queue 的 wakeup 当前不接真实广播网络，而是把上一拍已在队列中的有效表项默认全部置 ready
- * - 不驱动结果写回 physical_regfile，不驱动真实写回广播、提交或异常恢复
+ * - ROB 当前只做 entry 编号分配、old_dst_preg/exception 存储与 complete 标记，不做提交、回收、恢复
+ * - issue queue 当前不接写回旁路广播；本拍写回结果只会在下一拍体现在 wakeup 上
+ * - 不实现异常恢复、分支恢复、store 提交等更复杂的 retire/commit 约束
+ * - 当前 retire 只覆盖最小整数主链路
  * - done 仍然只是占位信号
  * - 当前阶段不附带测试代码和仿真代码，只先搭功能与注释
  *
@@ -31,26 +36,33 @@
  *   1) fetch_entry_q / fetch_entry_valid_q 保存“上一拍已经接住”的 fetch 组
  *   2) uop_queue 队头保存“上一拍已经解码完成、待 rename”的一组 uop
  *   3) issue_queue 中保存更早已经 rename 完成、等待 wakeup/select 的整数 uop
- *   4) alu_issue_q / alu_regread_q / alu_result_q 分别保存前几拍进入整数流水线的 uop
+ *   4) preg_ready_q 保存当前每个物理寄存器是否已经持有可读值
+ *   5) ROB 持有当前的队头/队尾、complete 位以及可供 retire 的最老指令
+ *   6) alu_issue_q / alu_regread_q / alu_result_q 分别保存前几拍进入整数流水线的 uop
  * - 周期 N 组合阶段：
  *   1) decoder 组合地产生 rs1/rs2/rd、use_imm、imm_type、imm_raw、int_alu_op 和最小 uop 语义
  *   2) rename 阶段从 uop_queue 队头组合读取 alloc_req / rob_req / rename map 结果
- *   3) issue queue 对旧表项做 wakeup 视图，并从前往后选择最靠前的 ready 表项送往可接收的 ALU issue 端口
+ *   3) issue queue 对旧表项做基于 preg_ready_q 的 wakeup 视图，并从前往后选择最靠前的 ready 表项送往可接收的 ALU issue 端口
  *   4) alu_issue_q 当前持有的物理寄存器编号直接驱动 physical_regfile 读端口
  *   5) regread 阶段把 physical_regfile 读值与立即数扩展后的值整理成真正的 src1/src2 操作数
  *   6) int_execute_unit 基于 alu_regread_q 中的真实操作数组合地产生执行结果
+ *   7) alu_result_q 当前持有的上一拍执行结果会在本拍作为 writeback 源，同时驱动 preg_ready_q 和 ROB complete 更新
+ *   8) ROB 当前会从队头开始连续检查最多 3 项，决定本拍 retire 的前缀长度
  * - 周期 N 上升沿：
  *   1) 若 decode_fire=1，则当前 fetch 组以 decoded uop 形式进入 uop_queue
- *   2) 若 rename_fire=1，则当前 uop_queue 队头这组 uop 完成 rename，并把其中整数 uop 按 lane 顺序压入 issue_queue
- *   3) issue_queue 把上一拍已经在队列中的表项默认唤醒，并删除本拍已经被接受发射的表项
+ *   2) 若 rename_fire=1，则当前 uop_queue 队头这组 uop 完成 rename，并把其中整数 uop 按 lane 顺序压入 issue_queue；其中 rd!=0 的真实目的寄存器会清掉对应 preg_ready
+ *   3) issue_queue 把上一拍已经在队列中的表项按 preg_ready 计算出的新 ready 位写回，并删除本拍已经被接受发射的表项
  *   4) 本拍被 select 的整数 uop 进入 alu_issue_q
  *   5) 上一拍的 alu_issue_q 进入 alu_regread_q
  *   6) 上一拍的 alu_regread_q 经执行单元计算后进入 alu_result_q
- *   7) 若 fetch_fire=1，则同时把 frontend 新送来的指令写入 fetch_entry_q
+ *   7) 本拍有效的 alu_result_q 会把执行结果写回 physical_regfile，并把目的 preg 的 ready 位置 1，同时把对应 ROB 项标记为 complete
+ *   8) 本拍从 ROB 队头退休的指令会把 old_dst_preg 返还给 free list；这些释放回来的寄存器从下一拍起重新参与分配
+ *   9) 若 fetch_fire=1，则同时把 frontend 新送来的指令写入 fetch_entry_q
  * - 周期 N+1：
  *   1) issue_queue 中看到唤醒、压缩补位、追加入队后的新队列内容
- *   2) alu_issue_q / alu_regread_q / alu_result_q 分别前进一步
- *   3) 日志中可看到同一条 instruction_id 按阶段继续向后流动
+ *   2) 刚刚被写回的目的物理寄存器在 preg_ready_q 中表现为 ready，可继续唤醒后继指令
+ *   3) alu_issue_q / alu_regread_q / alu_result_q 分别前进一步
+ *   4) 日志中可看到同一条 instruction_id 按阶段继续向后流动，并在退休后离开 ROB
  */
 
 `ifdef O3_SIM
@@ -81,7 +93,7 @@ module backend
     localparam int BACKEND_ROB_IDX_WIDTH  = $clog2(NUM_ROB_ENTRIES);
     localparam int INST_ID_LANE_BITS      = (MACHINE_WIDTH <= 1) ? 1 : $clog2(MACHINE_WIDTH);
     localparam int PRF_READ_PORTS         = NUM_INT_ALUS * 2;
-    localparam int PRF_WRITE_PORTS        = 1;
+    localparam int PRF_WRITE_PORTS        = NUM_INT_ALUS;
 
     fetch_entry_t [MACHINE_WIDTH-1:0] fetch_entry_q;
     logic                             fetch_entry_valid_q;
@@ -118,6 +130,7 @@ module backend
     logic                      rename_rs1_read_en [MACHINE_WIDTH-1:0];
     logic                      rename_rs2_read_en [MACHINE_WIDTH-1:0];
     logic                      rename_rd_write_en [MACHINE_WIDTH-1:0];
+    logic [INST_ID_WIDTH-1:0]  rob_alloc_instruction_id [MACHINE_WIDTH-1:0];
 
     logic [BACKEND_PREG_IDX_WIDTH-1:0] dst_new_preg [MACHINE_WIDTH-1:0];
     logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_idx      [MACHINE_WIDTH-1:0];
@@ -145,10 +158,21 @@ module backend
     logic                              exec_valid   [NUM_INT_ALUS-1:0];
     logic [XLEN-1:0]                   exec_result  [NUM_INT_ALUS-1:0];
     logic                              exec_cmp_true[NUM_INT_ALUS-1:0];
+    logic                              preg_ready_q [NUM_PHYS_REGS-1:0];
+    logic                              rob_complete_valid [NUM_INT_ALUS-1:0];
+    logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_complete_idx   [NUM_INT_ALUS-1:0];
+    logic                              rob_retire_valid   [NUM_INT_ALUS-1:0];
+    logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_retire_idx     [NUM_INT_ALUS-1:0];
+    logic [BACKEND_PREG_IDX_WIDTH-1:0] rob_retire_old_dst_preg [NUM_INT_ALUS-1:0];
+    logic [INST_ID_WIDTH-1:0]          rob_retire_instruction_id [NUM_INT_ALUS-1:0];
+    logic                              rob_retire_any;
 
 `ifdef O3_SIM
     logic [63:0] sim_cycle_q;
 `endif
+    logic [63:0] retired_inst_count_q;
+    logic [63:0] retired_inst_count_next;
+    logic [1:0]  retire_count_this_cycle;
 
     function automatic logic [INST_ID_WIDTH-1:0] make_instruction_id(
         input logic [INST_ID_WIDTH-1:0] fetch_group_seq,
@@ -248,6 +272,8 @@ module backend
 
     generate
         for (i = 0; i < MACHINE_WIDTH; i++) begin : rename_req_assign
+            logic dst_write_real;
+
             assign fetch_instruction_id_d[i] = make_instruction_id(fetch_group_seq_q, i);
             assign rename_rs1_addr[i]        = rename_uop_head[i].rs1;
             assign rename_rs2_addr[i]        = rename_uop_head[i].rs2;
@@ -255,13 +281,16 @@ module backend
             assign rename_rs1_read_en[i]     = rename_uop_head[i].rs1_read_en;
             assign rename_rs2_read_en[i]     = rename_uop_head[i].rs2_read_en;
             assign rename_rd_write_en[i]     = rename_uop_head[i].rd_write_en;
+            assign dst_write_real            = rename_uop_head[i].valid
+                                            && rename_uop_head[i].rd_write_en
+                                            && (rename_uop_head[i].rd != REG_ADDR_WIDTH'(0));
 
-            assign alloc_req[i] = rename_uop_head[i].valid
-                               && rename_uop_head[i].rd_write_en
-                               && (rename_uop_head[i].rd != REG_ADDR_WIDTH'(0));
+            // 只有 rd!=x0 的真实目的写才会消耗新的物理寄存器资源。
+            assign alloc_req[i] = dst_write_real;
 
             assign rob_req[i]       = rename_uop_head[i].valid;
             assign rob_exception[i] = rename_uop_head[i].exception;
+            assign rob_alloc_instruction_id[i] = rename_uop_head[i].instruction_id;
 
             assign issueq_enq_entry[i].valid        = rename_uop_head[i].valid && rename_uop_head[i].is_int_uop;
             assign issueq_enq_entry[i].instruction_id = rename_uop_head[i].instruction_id;
@@ -269,12 +298,16 @@ module backend
             assign issueq_enq_entry[i].src2_preg    = src2_preg[i];
             assign issueq_enq_entry[i].src1_valid   = rename_uop_head[i].rs1_read_en;
             assign issueq_enq_entry[i].src2_valid   = rename_uop_head[i].rs2_read_en;
-            assign issueq_enq_entry[i].src1_ready   = !rename_uop_head[i].rs1_read_en;
-            assign issueq_enq_entry[i].src2_ready   = (!rename_uop_head[i].rs2_read_en) || rename_uop_head[i].use_imm;
+            // x0 固定映射到 p0，而 p0 的 ready 恒为 1。
+            // 因此源操作数的 ready 初值只取决于“是否真的读取”以及当前 preg_ready 状态。
+            assign issueq_enq_entry[i].src1_ready   = !rename_uop_head[i].rs1_read_en
+                                                   || preg_ready_q[src1_preg[i]];
+            assign issueq_enq_entry[i].src2_ready   = (!rename_uop_head[i].rs2_read_en)
+                                                   || rename_uop_head[i].use_imm
+                                                   || preg_ready_q[src2_preg[i]];
             assign issueq_enq_entry[i].rob_idx      = rob_idx[i];
-            assign issueq_enq_entry[i].dst_preg     = dst_new_preg[i];
-            assign issueq_enq_entry[i].dst_write_en = rename_uop_head[i].rd_write_en
-                                                   && (rename_uop_head[i].rd != REG_ADDR_WIDTH'(0));
+            assign issueq_enq_entry[i].dst_preg     = dst_write_real ? dst_new_preg[i] : BACKEND_PREG_IDX_WIDTH'(0);
+            assign issueq_enq_entry[i].dst_write_en = dst_write_real;
             assign issueq_enq_entry[i].imm_raw      = rename_uop_head[i].imm_raw;
             assign issueq_enq_entry[i].imm_valid    = rename_uop_head[i].use_imm;
             assign issueq_enq_entry[i].imm_type     = rename_uop_head[i].imm_type;
@@ -302,9 +335,38 @@ module backend
         end
     endgenerate
 
-    assign prf_wr_en[0]   = 1'b0;
-    assign prf_wr_addr[0] = '0;
-    assign prf_wr_data[0] = '0;
+    generate
+        for (i = 0; i < NUM_INT_ALUS; i++) begin : prf_writeback_assign
+            // `alu_result_q` 是 execute 后、writeback 前的过渡寄存器。
+            // 只有真正带目的寄存器的新版本才会写回 PRF；rd=x0 的指令虽然会 complete，但不会写回。
+            assign prf_wr_en[i]   = alu_result_q[i].valid && alu_result_q[i].dst_write_en;
+            assign prf_wr_addr[i] = alu_result_q[i].dst_preg;
+            assign prf_wr_data[i] = alu_result_q[i].result;
+
+            // ROB complete 跟“是否真正写回 PRF”不是一回事。
+            // 即使 rd=x0，没有目的寄存器写回，这条整数指令执行完成后也应标记 complete。
+            assign rob_complete_valid[i] = alu_result_q[i].valid;
+            assign rob_complete_idx[i]   = alu_result_q[i].rob_idx;
+        end
+    endgenerate
+
+    always_comb begin
+        rob_retire_any = 1'b0;
+        for (int port = 0; port < NUM_INT_ALUS; port++) begin
+            rob_retire_any |= rob_retire_valid[port];
+        end
+    end
+
+    always_comb begin
+        retire_count_this_cycle = '0;
+        for (int port = 0; port < NUM_INT_ALUS; port++) begin
+            if (rob_retire_valid[port]) begin
+                retire_count_this_cycle = retire_count_this_cycle + 2'd1;
+            end
+        end
+
+        retired_inst_count_next = retired_inst_count_q + 64'(retire_count_this_cycle);
+    end
 
     uop_queue #(
         .MACHINE_WIDTH(MACHINE_WIDTH),
@@ -323,27 +385,40 @@ module backend
     free_list #(
         .MACHINE_WIDTH(MACHINE_WIDTH),
         .NUM_PHYS_REGS(NUM_PHYS_REGS),
-        .NUM_ARCH_REGS(NUM_ARCH_REGS)
+        .NUM_ARCH_REGS(NUM_ARCH_REGS),
+        .RELEASE_WIDTH(NUM_INT_ALUS)
     ) u_free_list (
         .clk(clk),
         .rst(rst),
         .alloc_req_i(alloc_req),
         .alloc_ready_i(alloc_ready),
         .alloc_valid_o(alloc_valid),
-        .alloc_preg_o(dst_new_preg)
+        .alloc_preg_o(dst_new_preg),
+        .release_valid_i(rob_retire_valid),
+        .release_preg_i(rob_retire_old_dst_preg)
     );
 
     rob #(
         .MACHINE_WIDTH(MACHINE_WIDTH),
-        .NUM_ROB_ENTRIES(NUM_ROB_ENTRIES)
+        .NUM_ROB_ENTRIES(NUM_ROB_ENTRIES),
+        .NUM_PHYS_REGS(NUM_PHYS_REGS),
+        .COMPLETE_WIDTH(NUM_INT_ALUS)
     ) u_rob (
         .clk(clk),
         .rst(rst),
         .alloc_req_i(rob_req),
         .alloc_exception_i(rob_exception),
+        .alloc_old_dst_preg_i(dst_old_preg),
+        .alloc_instruction_id_i(rob_alloc_instruction_id),
         .alloc_ready_i(rob_ready),
+        .complete_valid_i(rob_complete_valid),
+        .complete_idx_i(rob_complete_idx),
         .alloc_valid_o(rob_valid),
-        .alloc_idx_o(rob_idx)
+        .alloc_idx_o(rob_idx),
+        .retire_valid_o(rob_retire_valid),
+        .retire_idx_o(rob_retire_idx),
+        .retire_old_dst_preg_o(rob_retire_old_dst_preg),
+        .retire_instruction_id_o(rob_retire_instruction_id)
     );
 
     rename_map_table #(
@@ -369,13 +444,15 @@ module backend
     issue_queue #(
         .MACHINE_WIDTH(MACHINE_WIDTH),
         .ISSUE_WIDTH(NUM_INT_ALUS),
-        .DEPTH(INT_ISSUE_QUEUE_DEPTH)
+        .DEPTH(INT_ISSUE_QUEUE_DEPTH),
+        .NUM_PHYS_REGS(NUM_PHYS_REGS)
     ) u_int_issue_queue (
         .clk(clk),
         .rst(rst),
         .enq_entry_i(issueq_enq_entry),
         .enq_valid_i(issueq_enq_valid),
         .enq_ready_o(issueq_enq_ready),
+        .preg_ready_i(preg_ready_q),
         .issue_entry_o(issueq_issue_entry),
         .issue_valid_o(issueq_issue_valid),
         .issue_ready_i(issueq_issue_ready),
@@ -426,6 +503,10 @@ module backend
             alu_issue_q            <= '{default: '0};
             alu_regread_q          <= '{default: '0};
             alu_result_q           <= '{default: '0};
+            retired_inst_count_q   <= 64'd0;
+            for (int preg = 0; preg < NUM_PHYS_REGS; preg++) begin
+                preg_ready_q[preg] <= (preg < NUM_ARCH_REGS);
+            end
 `ifdef O3_SIM
             sim_cycle_q            <= 64'd0;
 `endif
@@ -521,8 +602,65 @@ module backend
                 end
             end
 
+            for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
+                if (alu_result_q[alu].valid) begin
+                    $display("[O3_SIM][backend][cycle=%0d] WRITEBACK alu%0d id=0x%0h dst:p%0d data=0x%0h rob:%0d dst_write=%0d",
+                             sim_cycle_q,
+                             alu,
+                             alu_result_q[alu].instruction_id,
+                             alu_result_q[alu].dst_preg,
+                             alu_result_q[alu].result,
+                             alu_result_q[alu].rob_idx,
+                             alu_result_q[alu].dst_write_en);
+                end else begin
+                    $display("[O3_SIM][backend][cycle=%0d] WRITEBACK alu%0d empty", sim_cycle_q, alu);
+                end
+            end
+
+            if (rob_retire_any) begin
+                $write("[O3_SIM][backend][cycle=%0d] RETIRE", sim_cycle_q);
+                for (int port = 0; port < NUM_INT_ALUS; port++) begin
+                    if (rob_retire_valid[port]) begin
+                        $write(" id=0x%0h rob:%0d old:p%0d",
+                               rob_retire_instruction_id[port],
+                               rob_retire_idx[port],
+                               rob_retire_old_dst_preg[port]);
+                    end
+                end
+                $write("\n");
+            end else begin
+                $display("[O3_SIM][backend][cycle=%0d] RETIRE empty", sim_cycle_q);
+            end
+
+            $display("[O3_SIM][backend][cycle=%0d] RETIRE_COUNT inc=%0d total=%0d",
+                     sim_cycle_q,
+                     retire_count_this_cycle,
+                     retired_inst_count_next);
+
             $display("[O3_SIM][backend][cycle=%0d] ----------------", sim_cycle_q);
 `endif
+
+            // rename 成功时，新分配的真实目的 preg 要先标记为 not-ready；
+            // 写回阶段再把它置回 ready。这样 issue queue 才会等到真实结果返回再唤醒。
+            for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
+                if (rename_fire
+                 && rename_uop_head[lane].valid
+                 && rename_uop_head[lane].rd_write_en
+                 && (rename_uop_head[lane].rd != REG_ADDR_WIDTH'(0))) begin
+                    preg_ready_q[dst_new_preg[lane]] <= 1'b0;
+                end
+            end
+
+            // 当前整数写回统一从 alu_result_q 发起。
+            // 本拍写回的 ready 变化只会在下一拍对 issue queue 可见，不做同拍旁路。
+            for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
+                if (alu_result_q[alu].valid && alu_result_q[alu].dst_write_en) begin
+                    preg_ready_q[alu_result_q[alu].dst_preg] <= 1'b1;
+                end
+            end
+
+            // 退休计数器按本拍真正退休的 ROB 条数累加，用于后续性能观察和日志统计。
+            retired_inst_count_q <= retired_inst_count_next;
 
             for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
                 alu_result_q[alu].valid        <= exec_valid[alu];
