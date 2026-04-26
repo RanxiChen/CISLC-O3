@@ -3,8 +3,9 @@
 ## 文档定位
 - 本文件保留为“当前实现状态 + 代码索引 + 时序入口”文档。
 - 面向后续 agent / 协作者的执行规则、注释规范、阶段边界，已拆分到 [`agent.md`](/home/chen/FUN/CISLC-O3/agent.md)。
+- 前端当前实现状态、代码索引和时序入口，已拆分到 [`doc/CISLC_O3_frontend.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3_frontend.md)。
 - 使用顺序建议：
-  1. 先读本文件，确认当前实现边界与受影响模块。
+  1. 先按任务方向选择主文档：后端任务读本文件，前端任务读 [`doc/CISLC_O3_frontend.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3_frontend.md)。
   2. 再读相关 RTL。
   3. 最后按 [`agent.md`](/home/chen/FUN/CISLC-O3/agent.md) 中的规则落修改。
 

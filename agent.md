@@ -3,7 +3,8 @@
 ## 目的
 - 本文件服务于后续 agent / 协作者进入仓库时的执行约束。
 - 本文件不承担“当前实现状态索引”的职责。
-- 模块现状、数据流、时序入口、受影响 RTL 路径，统一保留在 [`doc/CISLC_O3.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3.md)。
+- 后端模块现状、数据流、时序入口、受影响 RTL 路径，保留在 [`doc/CISLC_O3.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3.md)。
+- 前端模块现状、数据流、时序入口、受影响 RTL 路径，保留在 [`doc/CISLC_O3_frontend.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3_frontend.md)。
 
 ## 与 `doc/CISLC_O3.md` 的分工
 适合放在本文件中的内容：
@@ -13,9 +14,10 @@
 - 修改顺序建议、阅读顺序建议、提交前自检项。
 - 文档维护约定，例如改完 RTL 后必须同步更新主文档。
 
-应该保留在 `doc/CISLC_O3.md` 中的内容：
+应该保留在实现状态文档中的内容：
 - 当前实现状态。
 - 当前后端数据流。
+- 当前前端数据流。
 - 各模块职责、已实现项、未实现项。
 - 逐周期时序说明。
 - 已知限制。
@@ -27,7 +29,9 @@
 - 如果一段内容描述的是“后续 agent 应该怎么做事”，应放在本文件。
 
 ## 建议阅读顺序
-1. 先读 [`doc/CISLC_O3.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3.md)，确认当前实现边界、模块状态和时序假设。
+1. 先按任务方向选择实现状态文档：
+   - 后端任务先读 [`doc/CISLC_O3.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3.md)。
+   - 前端任务先读 [`doc/CISLC_O3_frontend.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3_frontend.md)。
 2. 再读与任务相关的 RTL。
 3. 最后按本文件的约束执行修改。
 
@@ -37,7 +41,8 @@
 - 当前阶段不写仿真代码。
 - 当前阶段不做完整验证闭环。
 - 保持现有设计风格，不主动引入另一套抽象层次或命名体系。
-- 如果修改影响到模块接口、状态机、映射表、队列、握手或周期级行为，必须同步更新主文档。
+- 前端和后端统一执行同一套约束：模块头注释、关键逻辑注释、逐周期时序说明都必须补齐。
+- 如果修改影响到模块接口、状态机、映射表、队列、握手或周期级行为，必须同步更新对应的实现状态文档。
 
 ## RTL 修改规则
 - 先补功能链路，再补更完整的验证。
@@ -72,9 +77,10 @@
 - 也不要只写文件头注释而不给代码关键块写注释。
 
 ## 文档维护规则
-- 若 RTL 新增模块，需在 [`doc/CISLC_O3.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3.md) 增加该模块的职责与状态说明。
-- 若 RTL 改变数据流，需更新主文档中的“当前后端数据流”。
-- 若 RTL 改变周期级行为，需更新主文档中的“关键时序行为”。
+- 若新增或修改的是后端 RTL，需同步更新 [`doc/CISLC_O3.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3.md)。
+- 若新增或修改的是前端 RTL，需同步更新 [`doc/CISLC_O3_frontend.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3_frontend.md)。
+- 若 RTL 改变数据流，需更新对应文档中的数据流章节。
+- 若 RTL 改变周期级行为，需更新对应文档中的关键时序行为章节。
 - 若本次仅修改协作规范、执行策略、文档分工，应优先更新本文件。
 
 ## 建议保留在主文档中的代码索引
@@ -85,7 +91,10 @@
 - `rtl/backend/rename_map_table.sv`：架构寄存器到物理寄存器映射。
 - `rtl/backend/physical_regfile.sv`：物理寄存器文件实现与后续接入口。
 - `rtl/common/o3_pkg.sv`：跨模块数据结构定义。
-- `rtl/frontend/frontend.sv`、`rtl/O3.sv`、`rtl/Tile.sv`：系统级连接入口。
+
+以下信息建议长期保留在 [`doc/CISLC_O3_frontend.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3_frontend.md)，不要外移：
+- `rtl/frontend/frontend.sv`：前端当前实现入口。
+- `rtl/O3.sv`、`rtl/Tile.sv`：前端最终会经过的系统级连接入口。
 
 ## 修改前自检
 - 任务影响的是“协作规则”还是“实现状态”？
