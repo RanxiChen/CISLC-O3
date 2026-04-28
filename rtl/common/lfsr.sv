@@ -11,7 +11,7 @@ logic lfsr_last;
 assign lfsr_last = lfsr_q[15] ^ lfsr_q[13] ^ lfsr_q[12] ^ lfsr_q[10];
 assign lfsr_d = {lfsr_q[14:0], lfsr_last};
 assign lfsr_out = lfsr_q;
-always_ff @( posedge clk or posedge rst ) begin : lfsr_ff
+always_ff @( posedge clk ) begin : lfsr_ff
     if ( rst ) begin
         lfsr_q <= 16'hACE1; // Non-zero seed value
     end else if ( enable ) begin

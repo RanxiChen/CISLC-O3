@@ -9,6 +9,7 @@ CPP_TB := $(SIM_DIR)/tb_icache.cpp
 
 RTL_SRCS := \
 	$(RTL_DIR)/common/o3_sram.sv \
+	$(RTL_DIR)/common/lfsr.sv \
 	$(RTL_DIR)/frontend/icache.sv
 
 VERILATOR_DEFINES := \
