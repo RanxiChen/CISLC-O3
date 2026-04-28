@@ -15,10 +15,17 @@ module ICache #(
     input  logic                      s0_valid,
     output logic                      s0_ready,
     input  logic [ADDR_WIDTH-1:0]     s0_pc,
+    output logic                      refill_req_valid,
+    output logic [ADDR_WIDTH-1:0]     refill_req_pc,
+    input  logic                      refill_resp_valid,
+    input  logic [ADDR_WIDTH-1:0]     refill_resp_pc,
+    input  logic                      refill_resp_error,
+    input  logic [ICACHE_BLOCK_SIZE_BYTES*8-1:0] refill_resp_data,
     output logic                      out_valid,
     output logic                      out_hit,
     output logic [ADDR_WIDTH-1:0]     out_pc,
-    output logic [FETCH_BYTES*8-1:0]  out_data
+    output logic [FETCH_BYTES*8-1:0]  out_data,
+    output logic                      out_error
 `ifdef O3_ICACHE_DEBUG
     ,
     output logic                      dbg_s0_fire,
@@ -109,10 +116,14 @@ module ICache #(
     assign s0_bank_idx = get_bank_index(s0_pc);
     assign s0_tag = get_tag(s0_pc);
 
+    assign refill_req_valid = 1'b0;
+    assign refill_req_pc = '0;
+
     assign out_hit = s1_hit;
     assign out_valid = s1_valid_q && s1_hit;
     assign out_pc = s1_pc_q;
     assign out_data = s1_selected_data;
+    assign out_error = 1'b0;
 `ifdef O3_ICACHE_DEBUG
     assign dbg_s0_fire = s0_fire;
     assign dbg_s1_valid = s1_valid_q;
