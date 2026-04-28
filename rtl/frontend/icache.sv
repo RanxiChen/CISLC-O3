@@ -168,7 +168,11 @@ module ICache #(
 
             for (int way = 0; way < ICACHE_WAYS; way++) begin
                 for (int set = 0; set < NUM_SETS; set++) begin
+                    `ifdef O3_ICACHE_WAY0_VALID
+                    valid_array_q[way][set] <= (way == 0) ? valid_array_q[way][set] : 1'b0;
+                    `else
                     valid_array_q[way][set] <= 1'b0;
+                    `endif
                 end
             end
         end else begin
@@ -190,6 +194,26 @@ module ICache #(
 
     for (genvar way = 0; way < ICACHE_WAYS; way++) begin : gen_data_way
         for (genvar bank = 0; bank < NUM_BANKS; bank++) begin : gen_data_bank
+            `ifdef O3_SIM
+            o3_sram #(
+                .DATA_WIDTH(DATA_BANK_WIDTH),
+                .SRAM_ENTRIES(NUM_SETS),
+                .INIT_FILE(
+                    (way == 0 && bank == 0) ? "hex/data_way0_bank0.hex" :
+                    (way == 0 && bank == 1) ? "hex/data_way0_bank1.hex" :
+                    (way == 0 && bank == 2) ? "hex/data_way0_bank2.hex" :
+                    (way == 0 && bank == 3) ? "hex/data_way0_bank3.hex" :
+                    ""
+                )
+            ) u_data_sram (
+                .clk_i  (clk),
+                .rst_i  (rst),
+                .we_i   (data_bank_we[way][bank]),
+                .data_o (data_bank_rdata[way][bank]),
+                .data_i (data_bank_wdata[way][bank]),
+                .addr_i (data_bank_addr[way][bank])
+            );
+            `else
             o3_sram #(
                 .DATA_WIDTH(DATA_BANK_WIDTH),
                 .SRAM_ENTRIES(NUM_SETS)
@@ -201,8 +225,23 @@ module ICache #(
                 .data_i (data_bank_wdata[way][bank]),
                 .addr_i (data_bank_addr[way][bank])
             );
+            `endif
         end
 
+        `ifdef O3_SIM
+        o3_sram #(
+            .DATA_WIDTH(TAG_ARRAY_WIDTH),
+            .SRAM_ENTRIES(NUM_SETS),
+            .INIT_FILE((way == 0) ? "hex/tag_way0.hex" : "")
+        ) u_tag_sram (
+            .clk_i  (clk),
+            .rst_i  (rst),
+            .we_i   (tag_array_we[way]),
+            .data_o (tag_array_rdata[way]),
+            .data_i (tag_array_wdata[way]),
+            .addr_i (tag_array_addr[way])
+        );
+        `else
         o3_sram #(
             .DATA_WIDTH(TAG_ARRAY_WIDTH),
             .SRAM_ENTRIES(NUM_SETS)
@@ -214,6 +253,15 @@ module ICache #(
             .data_i (tag_array_wdata[way]),
             .addr_i (tag_array_addr[way])
         );
+        `endif
     end
+
+    `ifdef O3_ICACHE_WAY0_VALID
+    initial begin
+        for (int s = 0; s < NUM_SETS; s++) begin
+            valid_array_q[0][s] = 1'b1;
+        end
+    end
+    `endif
 
 endmodule
