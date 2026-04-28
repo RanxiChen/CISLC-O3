@@ -46,8 +46,11 @@ logic       inst_fire;
 
 o3_sram #(
     .DATA_WIDTH(32),
-    .SRAM_ENTRIES(256),
+    .SRAM_ENTRIES(256)
+`ifdef O3_SIM
+    ,
     .INIT_FILE("inst.hex")
+`endif
 ) inst_sram (
     .clk_i(clk_i),
     .rst_i(rst_i),

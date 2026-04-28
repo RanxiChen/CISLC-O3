@@ -13,3 +13,8 @@ vivado.log
 
 ## verilator
 *build/
+sim/*/obj_dir/
+
+## local planning/docs
+.codex
+docs/
