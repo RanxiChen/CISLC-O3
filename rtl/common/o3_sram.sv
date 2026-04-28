@@ -37,8 +37,16 @@ end
 
 always_ff @(posedge clk_i) begin
     if (we_i) begin
+`ifdef O3_SRAM_DEBUG
+        $display("[o3_sram] t=%0t we=1 addr=%0d data_i=0x%0h", $time, addr_i, data_i);
+`endif
         SRAM_MEM[addr_i] <= data_i;
     end
+`ifdef O3_SRAM_DEBUG
+    else begin
+        $display("[o3_sram] t=%0t read addr=%0d data_q=0x%0h", $time, addr_i, SRAM_MEM[addr_i]);
+    end
+`endif
     data_o <= SRAM_MEM[addr_i];
 end
 endmodule

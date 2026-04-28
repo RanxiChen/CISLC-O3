@@ -36,7 +36,11 @@ module ICache #(
     output logic [ADDR_WIDTH - (2 + $clog2(FETCH_BYTES / 4) + $clog2(ICACHE_BLOCK_SIZE_BYTES / FETCH_BYTES) + $clog2(NUM_SETS)) - 1:0] dbg_s1_tag,
     output logic [ICACHE_WAYS-1:0]    dbg_s1_way_hit,
     output logic                      dbg_out_valid,
-    output logic                      dbg_out_hit
+    output logic                      dbg_out_hit,
+    output logic [1:0]                dbg_state,
+    output logic [FETCH_BYTES*8-1:0]  dbg_done_data,
+    output logic [ADDR_WIDTH-1:0]     dbg_miss_pc,
+    output logic [ADDR_WIDTH-1:0]     dbg_miss_refill_pc
 `endif
 );
 
@@ -181,6 +185,10 @@ module ICache #(
     assign dbg_s1_way_hit = s1_way_hit;
     assign dbg_out_valid = out_valid;
     assign dbg_out_hit = out_hit;
+    assign dbg_state = state_q;
+    assign dbg_done_data = done_data_q;
+    assign dbg_miss_pc = miss_pc_q;
+    assign dbg_miss_refill_pc = miss_refill_pc_q;
 `endif
 
     always_comb begin
