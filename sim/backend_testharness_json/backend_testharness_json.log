@@ -1,0 +1,275 @@
+Kanata	0004
+C=	0
+C	1
+I	0	0	0
+L	0	0	0: addi x1,x0,1
+S	0	0	D
+L	0	1	pc=0x0 inst=0x00100093 asm=addi x1,x0,1
+I	1	1	0
+L	1	0	4: addi x2,x0,2
+S	1	1	D
+L	1	1	pc=0x4 inst=0x00200113 asm=addi x2,x0,2
+I	2	2	0
+L	2	0	8: addi x3,x0,3
+S	2	2	D
+L	2	1	pc=0x8 inst=0x00300193 asm=addi x3,x0,3
+I	3	3	0
+L	3	0	c: addi x4,x0,4
+S	3	3	D
+L	3	1	pc=0xc inst=0x00400213 asm=addi x4,x0,4
+C	1
+I	4	4	0
+L	4	0	10: addi x5,x1,5
+S	4	0	D
+L	4	1	pc=0x10 inst=0x00508293 asm=addi x5,x1,5
+I	5	5	0
+L	5	0	14: addi x6,x2,6
+S	5	1	D
+L	5	1	pc=0x14 inst=0x00610313 asm=addi x6,x2,6
+I	6	6	0
+L	6	0	18: addi x7,x3,7
+S	6	2	D
+L	6	1	pc=0x18 inst=0x00718393 asm=addi x7,x3,7
+I	7	7	0
+L	7	0	1c: addi x8,x4,8
+S	7	3	D
+L	7	1	pc=0x1c inst=0x00820413 asm=addi x8,x4,8
+S	0	0	R
+L	0	1	rs1:x0->p0 rs2:x1->p0 rd:x1 old:p1 new:p32 rob:0
+S	1	1	R
+L	1	1	rs1:x0->p0 rs2:x2->p0 rd:x2 old:p2 new:p33 rob:1
+S	2	2	R
+L	2	1	rs1:x0->p0 rs2:x3->p0 rd:x3 old:p3 new:p34 rob:2
+S	3	3	R
+L	3	1	rs1:x0->p0 rs2:x4->p0 rd:x4 old:p4 new:p35 rob:3
+C	1
+I	8	8	0
+L	8	0	20: slli x2,x1,1
+S	8	0	D
+L	8	1	pc=0x20 inst=0x00109113 asm=slli x2,x1,1
+I	9	9	0
+L	9	0	24: srli x3,x1,2
+S	9	1	D
+L	9	1	pc=0x24 inst=0x0020d193 asm=srli x3,x1,2
+I	10	10	0
+L	10	0	28: ori x4,x1,3
+S	10	2	D
+L	10	1	pc=0x28 inst=0x0030e213 asm=ori x4,x1,3
+I	11	11	0
+L	11	0	2c: andi x5,x1,4
+S	11	3	D
+L	11	1	pc=0x2c inst=0x0040f293 asm=andi x5,x1,4
+S	4	0	R
+L	4	1	rs1:x1->p32 rs2:x5->p0 rd:x5 old:p5 new:p36 rob:4
+S	5	1	R
+L	5	1	rs1:x2->p33 rs2:x6->p0 rd:x6 old:p6 new:p37 rob:5
+S	6	2	R
+L	6	1	rs1:x3->p34 rs2:x7->p0 rd:x7 old:p7 new:p38 rob:6
+S	7	3	R
+L	7	1	rs1:x4->p35 rs2:x8->p0 rd:x8 old:p8 new:p39 rob:7
+S	0	0	IS
+L	0	1	src1:p0 src2:p0 dst:p32 rob:0 op=ADD
+S	1	1	IS
+L	1	1	src1:p0 src2:p0 dst:p33 rob:1 op=ADD
+S	2	2	IS
+L	2	1	src1:p0 src2:p0 dst:p34 rob:2 op=ADD
+C	1
+I	12	12	0
+L	12	0	30: srli x3,x2,1
+S	12	0	D
+L	12	1	pc=0x30 inst=0x00115193 asm=srli x3,x2,1
+I	13	13	0
+L	13	0	34: srli x4,x3,2
+S	13	1	D
+L	13	1	pc=0x34 inst=0x0021d213 asm=srli x4,x3,2
+I	14	14	0
+L	14	0	38: slti x5,x1,3
+S	14	2	D
+L	14	1	pc=0x38 inst=0x0030a293 asm=slti x5,x1,3
+I	15	15	0
+L	15	0	3c: slti x5,x2,4
+S	15	3	D
+L	15	1	pc=0x3c inst=0x00412293 asm=slti x5,x2,4
+S	8	0	R
+L	8	1	rs1:x1->p32 rs2:x1->p0 rd:x2 old:p33 new:p40 rob:8
+S	9	1	R
+L	9	1	rs1:x1->p32 rs2:x2->p0 rd:x3 old:p34 new:p41 rob:9
+S	10	2	R
+L	10	1	rs1:x1->p32 rs2:x3->p0 rd:x4 old:p35 new:p42 rob:10
+S	11	3	R
+L	11	1	rs1:x1->p32 rs2:x4->p0 rd:x5 old:p36 new:p43 rob:11
+S	3	0	IS
+L	3	1	src1:p0 src2:p0 dst:p35 rob:3 op=ADD
+S	0	0	RR
+L	0	1	src1:p0=0x0 src2:imm[I]=0x1->0x1 rob:0
+S	1	1	RR
+L	1	1	src1:p0=0x0 src2:imm[I]=0x2->0x2 rob:1
+S	2	2	RR
+L	2	1	src1:p0=0x0 src2:imm[I]=0x3->0x3 rob:2
+C	1
+S	12	0	R
+L	12	1	rs1:x2->p40 rs2:x1->p0 rd:x3 old:p41 new:p44 rob:12
+S	13	1	R
+L	13	1	rs1:x3->p41 rs2:x2->p0 rd:x4 old:p42 new:p45 rob:13
+S	14	2	R
+L	14	1	rs1:x1->p32 rs2:x3->p0 rd:x5 old:p43 new:p46 rob:14
+S	15	3	R
+L	15	1	rs1:x2->p40 rs2:x4->p0 rd:x5 old:p43 new:p47 rob:15
+S	3	0	RR
+L	3	1	src1:p0=0x0 src2:imm[I]=0x4->0x4 rob:3
+S	0	0	EX
+L	0	1	op=ADD src1=0x0 src2=0x1 result=0x1
+S	1	1	EX
+L	1	1	op=ADD src1=0x0 src2=0x2 result=0x2
+S	2	2	EX
+L	2	1	op=ADD src1=0x0 src2=0x3 result=0x3
+C	1
+S	3	0	EX
+L	3	1	op=ADD src1=0x0 src2=0x4 result=0x4
+S	0	0	WB
+L	0	1	dst:p32 data=0x1 rob:0 dst_write=1
+S	1	1	WB
+L	1	1	dst:p33 data=0x2 rob:1 dst_write=1
+S	2	2	WB
+L	2	1	dst:p34 data=0x3 rob:2 dst_write=1
+C	1
+S	4	0	IS
+L	4	1	src1:p32 src2:p0 dst:p36 rob:4 op=ADD
+S	5	1	IS
+L	5	1	src1:p33 src2:p0 dst:p37 rob:5 op=ADD
+S	6	2	IS
+L	6	1	src1:p34 src2:p0 dst:p38 rob:6 op=ADD
+S	3	0	WB
+L	3	1	dst:p35 data=0x4 rob:3 dst_write=1
+R	0	0	0
+L	0	1	retire_id=0 old:p1
+R	1	1	0
+L	1	1	retire_id=1 old:p2
+R	2	2	0
+L	2	1	retire_id=2 old:p3
+C	1
+S	7	0	IS
+L	7	1	src1:p35 src2:p0 dst:p39 rob:7 op=ADD
+S	8	1	IS
+L	8	1	src1:p32 src2:p0 dst:p40 rob:8 op=SLL
+S	9	2	IS
+L	9	1	src1:p32 src2:p0 dst:p41 rob:9 op=SRL
+S	4	0	RR
+L	4	1	src1:p32=0x1 src2:imm[I]=0x5->0x5 rob:4
+S	5	1	RR
+L	5	1	src1:p33=0x2 src2:imm[I]=0x6->0x6 rob:5
+S	6	2	RR
+L	6	1	src1:p34=0x3 src2:imm[I]=0x7->0x7 rob:6
+R	3	3	0
+L	3	1	retire_id=3 old:p4
+C	1
+S	10	0	IS
+L	10	1	src1:p32 src2:p0 dst:p42 rob:10 op=OR
+S	11	1	IS
+L	11	1	src1:p32 src2:p0 dst:p43 rob:11 op=AND
+S	14	2	IS
+L	14	1	src1:p32 src2:p0 dst:p46 rob:14 op=SLT
+S	7	0	RR
+L	7	1	src1:p35=0x4 src2:imm[I]=0x8->0x8 rob:7
+S	8	1	RR
+L	8	1	src1:p32=0x1 src2:imm[I]=0x1->0x1 rob:8
+S	9	2	RR
+L	9	1	src1:p32=0x1 src2:imm[I]=0x2->0x2 rob:9
+S	4	0	EX
+L	4	1	op=ADD src1=0x1 src2=0x5 result=0x6
+S	5	1	EX
+L	5	1	op=ADD src1=0x2 src2=0x6 result=0x8
+S	6	2	EX
+L	6	1	op=ADD src1=0x3 src2=0x7 result=0xa
+C	1
+S	10	0	RR
+L	10	1	src1:p32=0x1 src2:imm[I]=0x3->0x3 rob:10
+S	11	1	RR
+L	11	1	src1:p32=0x1 src2:imm[I]=0x4->0x4 rob:11
+S	14	2	RR
+L	14	1	src1:p32=0x1 src2:imm[I]=0x3->0x3 rob:14
+S	7	0	EX
+L	7	1	op=ADD src1=0x4 src2=0x8 result=0xc
+S	8	1	EX
+L	8	1	op=SLL src1=0x1 src2=0x1 result=0x2
+S	9	2	EX
+L	9	1	op=SRL src1=0x1 src2=0x2 result=0x0
+S	4	0	WB
+L	4	1	dst:p36 data=0x6 rob:4 dst_write=1
+S	5	1	WB
+L	5	1	dst:p37 data=0x8 rob:5 dst_write=1
+S	6	2	WB
+L	6	1	dst:p38 data=0xa rob:6 dst_write=1
+C	1
+S	10	0	EX
+L	10	1	op=OR src1=0x1 src2=0x3 result=0x3
+S	11	1	EX
+L	11	1	op=AND src1=0x1 src2=0x4 result=0x0
+S	14	2	EX
+L	14	1	op=SLT src1=0x1 src2=0x3 result=0x1
+S	7	0	WB
+L	7	1	dst:p39 data=0xc rob:7 dst_write=1
+S	8	1	WB
+L	8	1	dst:p40 data=0x2 rob:8 dst_write=1
+S	9	2	WB
+L	9	1	dst:p41 data=0x0 rob:9 dst_write=1
+R	4	4	0
+L	4	1	retire_id=4 old:p5
+R	5	5	0
+L	5	1	retire_id=5 old:p6
+R	6	6	0
+L	6	1	retire_id=6 old:p7
+C	1
+S	12	0	IS
+L	12	1	src1:p40 src2:p0 dst:p44 rob:12 op=SRL
+S	13	1	IS
+L	13	1	src1:p41 src2:p0 dst:p45 rob:13 op=SRL
+S	15	2	IS
+L	15	1	src1:p40 src2:p0 dst:p47 rob:15 op=SLT
+S	10	0	WB
+L	10	1	dst:p42 data=0x3 rob:10 dst_write=1
+S	11	1	WB
+L	11	1	dst:p43 data=0x0 rob:11 dst_write=1
+S	14	2	WB
+L	14	1	dst:p46 data=0x1 rob:14 dst_write=1
+R	7	7	0
+L	7	1	retire_id=7 old:p8
+R	8	8	0
+L	8	1	retire_id=8 old:p33
+R	9	9	0
+L	9	1	retire_id=9 old:p34
+C	1
+S	12	0	RR
+L	12	1	src1:p40=0x2 src2:imm[I]=0x1->0x1 rob:12
+S	13	1	RR
+L	13	1	src1:p41=0x0 src2:imm[I]=0x2->0x2 rob:13
+S	15	2	RR
+L	15	1	src1:p40=0x2 src2:imm[I]=0x4->0x4 rob:15
+R	10	10	0
+L	10	1	retire_id=10 old:p35
+R	11	11	0
+L	11	1	retire_id=11 old:p36
+C	1
+S	12	0	EX
+L	12	1	op=SRL src1=0x2 src2=0x1 result=0x1
+S	13	1	EX
+L	13	1	op=SRL src1=0x0 src2=0x2 result=0x0
+S	15	2	EX
+L	15	1	op=SLT src1=0x2 src2=0x4 result=0x1
+C	1
+S	12	0	WB
+L	12	1	dst:p44 data=0x1 rob:12 dst_write=1
+S	13	1	WB
+L	13	1	dst:p45 data=0x0 rob:13 dst_write=1
+S	15	2	WB
+L	15	1	dst:p47 data=0x1 rob:15 dst_write=1
+C	1
+R	12	12	0
+L	12	1	retire_id=12 old:p41
+R	13	13	0
+L	13	1	retire_id=13 old:p42
+R	14	14	0
+L	14	1	retire_id=14 old:p43
+C	1
+R	15	15	0
+L	15	1	retire_id=15 old:p43

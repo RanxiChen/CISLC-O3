@@ -86,7 +86,8 @@ module backend
     input  fetch_entry_t [MACHINE_WIDTH-1:0] fetch_entry_i,
     input  logic                             fetch_valid_i,
     output logic                             fetch_ready_o,
-    output logic                             done
+    output logic                             done,
+    output logic [63:0]                      retired_inst_count_o
 );
 
     localparam int BACKEND_PREG_IDX_WIDTH = $clog2(NUM_PHYS_REGS);
@@ -169,6 +170,9 @@ module backend
 
 `ifdef O3_SIM
     logic [63:0] sim_cycle_q;
+    logic        kanata_header_printed_q;
+    integer      kanata_fd;
+    string       kanata_log_path;
 `endif
     logic [63:0] retired_inst_count_q;
     logic [63:0] retired_inst_count_next;
@@ -327,6 +331,7 @@ module backend
     assign rob_ready       = rename_valid && alloc_valid && issueq_enq_ready;
     assign done            = 1'b0;
     assign issueq_issue_ready = '1;
+    assign retired_inst_count_o = retired_inst_count_q;
 
     generate
         for (i = 0; i < NUM_INT_ALUS; i++) begin : prf_read_addr_assign
@@ -509,9 +514,164 @@ module backend
             end
 `ifdef O3_SIM
             sim_cycle_q            <= 64'd0;
+            kanata_header_printed_q <= 1'b0;
+            kanata_fd              <= 0;
+            kanata_log_path        <= "";
 `endif
         end else begin
 `ifdef O3_SIM
+`ifdef O3_SIM_KANATA
+            if (!kanata_header_printed_q) begin
+                integer fd_next;
+                string  path_next;
+                fd_next = kanata_fd;
+                if (fd_next == 0) begin
+`ifdef O3_SIM_KANATA_LOG_NAME
+                    path_next = {`O3_SIM_KANATA_LOG_NAME, ".log"};
+`else
+                    path_next = "backend.log";
+`endif
+                    fd_next = $fopen(path_next, "w");
+                    kanata_log_path <= path_next;
+                    kanata_fd <= fd_next;
+                    if (fd_next == 0) begin
+                        $display("[O3_SIM][backend] Failed to open kanata log file: %s", path_next);
+                    end
+                end
+                if (fd_next != 0) begin
+                    $fdisplay(fd_next, "Kanata\t0004");
+                    $fdisplay(fd_next, "C=\t%0d", sim_cycle_q);
+                end
+                kanata_header_printed_q <= 1'b1;
+            end else begin
+                if (kanata_fd != 0) begin
+                    $fdisplay(kanata_fd, "C\t1");
+                end
+            end
+
+            if (decode_fire && (kanata_fd != 0)) begin
+                for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
+                    $fdisplay(kanata_fd, "I\t%0d\t%0d\t0",
+                              fetch_instruction_id_q[lane],
+                              fetch_instruction_id_q[lane]);
+                    $fdisplay(kanata_fd, "L\t%0d\t0\t%0h: %s",
+                              fetch_instruction_id_q[lane],
+                              fetch_entry_q[lane].pc,
+                              dpi_backend_disasm_rv64i(fetch_entry_q[lane].instruction));
+                    $fdisplay(kanata_fd, "S\t%0d\t%0d\tD",
+                              fetch_instruction_id_q[lane],
+                              lane);
+                    $fdisplay(kanata_fd, "L\t%0d\t1\tpc=0x%0h inst=0x%08h asm=%s",
+                              fetch_instruction_id_q[lane],
+                              fetch_entry_q[lane].pc,
+                              fetch_entry_q[lane].instruction,
+                              dpi_backend_disasm_rv64i(fetch_entry_q[lane].instruction));
+                end
+            end
+
+            if (rename_fire && (kanata_fd != 0)) begin
+                for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
+                    if (rename_uop_head[lane].valid) begin
+                        $fdisplay(kanata_fd, "S\t%0d\t%0d\tR",
+                                  rename_uop_head[lane].instruction_id,
+                                  lane);
+                        $fdisplay(kanata_fd, "L\t%0d\t1\trs1:x%0d->p%0d rs2:x%0d->p%0d rd:x%0d old:p%0d new:p%0d rob:%0d",
+                                  rename_uop_head[lane].instruction_id,
+                                  rename_uop_head[lane].rs1, src1_preg[lane],
+                                  rename_uop_head[lane].rs2, src2_preg[lane],
+                                  rename_uop_head[lane].rd, dst_old_preg[lane], dst_new_preg[lane],
+                                  rob_idx[lane]);
+                    end
+                end
+            end
+
+            for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
+                if (issueq_issue_valid[alu] && (kanata_fd != 0)) begin
+                    $fdisplay(kanata_fd, "S\t%0d\t%0d\tIS",
+                              issueq_issue_entry[alu].instruction_id,
+                              alu);
+                    $fdisplay(kanata_fd, "L\t%0d\t1\tsrc1:p%0d src2:p%0d dst:p%0d rob:%0d op=%s",
+                              issueq_issue_entry[alu].instruction_id,
+                              issueq_issue_entry[alu].src1_preg,
+                              issueq_issue_entry[alu].src2_preg,
+                              issueq_issue_entry[alu].dst_preg,
+                              issueq_issue_entry[alu].rob_idx,
+                              int_alu_op_name(issueq_issue_entry[alu].int_alu_op));
+                end
+            end
+
+            for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
+                if (alu_issue_q[alu].valid && (kanata_fd != 0)) begin
+                    string src2_desc;
+                    if (alu_issue_q[alu].imm_valid) begin
+                        src2_desc = $sformatf("imm[%s]=0x%0h->0x%0h",
+                                              imm_type_name(alu_issue_q[alu].imm_type),
+                                              alu_issue_q[alu].imm_raw,
+                                              expand_imm_value(alu_issue_q[alu].imm_type, alu_issue_q[alu].imm_raw));
+                    end else if (alu_issue_q[alu].src2_valid) begin
+                        src2_desc = $sformatf("p%0d=0x%0h",
+                                              alu_issue_q[alu].src2_preg,
+                                              prf_rd_data[(2*alu)+1]);
+                    end else begin
+                        src2_desc = "zero";
+                    end
+                    $fdisplay(kanata_fd, "S\t%0d\t%0d\tRR",
+                              alu_issue_q[alu].instruction_id,
+                              alu);
+                    $fdisplay(kanata_fd, "L\t%0d\t1\tsrc1:p%0d=0x%0h src2:%s rob:%0d",
+                              alu_issue_q[alu].instruction_id,
+                              alu_issue_q[alu].src1_preg,
+                              prf_rd_data[(2*alu)+0],
+                              src2_desc,
+                              alu_issue_q[alu].rob_idx);
+                end
+            end
+
+            for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
+                if (alu_regread_q[alu].valid && (kanata_fd != 0)) begin
+                    $fdisplay(kanata_fd, "S\t%0d\t%0d\tEX",
+                              alu_regread_q[alu].instruction_id,
+                              alu);
+                    $fdisplay(kanata_fd, "L\t%0d\t1\top=%s src1=0x%0h src2=0x%0h result=0x%0h",
+                              alu_regread_q[alu].instruction_id,
+                              int_alu_op_name(alu_regread_q[alu].int_alu_op),
+                              alu_regread_q[alu].src1_value,
+                              alu_regread_q[alu].src2_value,
+                              exec_result[alu]);
+                end
+            end
+
+            for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
+                if (alu_result_q[alu].valid && (kanata_fd != 0)) begin
+                    $fdisplay(kanata_fd, "S\t%0d\t%0d\tWB",
+                              alu_result_q[alu].instruction_id,
+                              alu);
+                    $fdisplay(kanata_fd, "L\t%0d\t1\tdst:p%0d data=0x%0h rob:%0d dst_write=%0d",
+                              alu_result_q[alu].instruction_id,
+                              alu_result_q[alu].dst_preg,
+                              alu_result_q[alu].result,
+                              alu_result_q[alu].rob_idx,
+                              alu_result_q[alu].dst_write_en);
+                end
+            end
+
+            if (kanata_fd != 0) begin
+                longint retire_id;
+                retire_id = longint'(retired_inst_count_q);
+                for (int port = 0; port < NUM_INT_ALUS; port++) begin
+                    if (rob_retire_valid[port]) begin
+                        $fdisplay(kanata_fd, "R\t%0d\t%0d\t0",
+                                  rob_retire_instruction_id[port],
+                                  retire_id);
+                        $fdisplay(kanata_fd, "L\t%0d\t1\tretire_id=%0d old:p%0d",
+                                  rob_retire_instruction_id[port],
+                                  retire_id,
+                                  rob_retire_old_dst_preg[port]);
+                        retire_id = retire_id + 1;
+                    end
+                end
+            end
+`else
             $display("[O3_SIM][backend][cycle=%0d] ----------------", sim_cycle_q);
 
             if (fetch_entry_valid_q) begin
@@ -638,6 +798,7 @@ module backend
                      retired_inst_count_next);
 
             $display("[O3_SIM][backend][cycle=%0d] ----------------", sim_cycle_q);
+`endif
 `endif
 
             // rename 成功时，新分配的真实目的 preg 要先标记为 not-ready；
