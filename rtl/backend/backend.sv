@@ -170,6 +170,8 @@ module backend
 
 `ifdef O3_SIM
     logic [63:0] sim_cycle_q;
+    logic [63:0] kanata_id_counter_q;
+    logic [63:0] rob_kanata_id_q [NUM_ROB_ENTRIES-1:0];
     logic        kanata_header_printed_q;
     integer      kanata_fd;
     string       kanata_log_path;
@@ -257,6 +259,9 @@ module backend
         for (i = 0; i < MACHINE_WIDTH; i++) begin : decoded_uop_assign
             assign decoded_uop[i].valid          = decode_valid;
             assign decoded_uop[i].instruction_id = fetch_instruction_id_q[i];
+`ifdef O3_SIM
+            assign decoded_uop[i].kanata_id      = kanata_id_counter_q + 64'(i);
+`endif
             assign decoded_uop[i].pc             = fetch_entry_q[i].pc;
             assign decoded_uop[i].instruction    = fetch_entry_q[i].instruction;
             assign decoded_uop[i].exception      = fetch_entry_q[i].exception;
@@ -298,6 +303,9 @@ module backend
 
             assign issueq_enq_entry[i].valid        = rename_uop_head[i].valid && rename_uop_head[i].is_int_uop;
             assign issueq_enq_entry[i].instruction_id = rename_uop_head[i].instruction_id;
+`ifdef O3_SIM
+            assign issueq_enq_entry[i].kanata_id    = rename_uop_head[i].kanata_id;
+`endif
             assign issueq_enq_entry[i].src1_preg    = src1_preg[i];
             assign issueq_enq_entry[i].src2_preg    = src2_preg[i];
             assign issueq_enq_entry[i].src1_valid   = rename_uop_head[i].rs1_read_en;
@@ -513,10 +521,12 @@ module backend
                 preg_ready_q[preg] <= (preg < NUM_ARCH_REGS);
             end
 `ifdef O3_SIM
-            sim_cycle_q            <= 64'd0;
+            sim_cycle_q             <= 64'd0;
+            kanata_id_counter_q     <= 64'd0;
+            rob_kanata_id_q         <= '{default: '0};
             kanata_header_printed_q <= 1'b0;
-            kanata_fd              <= 0;
-            kanata_log_path        <= "";
+            kanata_fd               <= 0;
+            kanata_log_path         <= "";
 `endif
         end else begin
 `ifdef O3_SIM
@@ -551,18 +561,20 @@ module backend
 
             if (decode_fire && (kanata_fd != 0)) begin
                 for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
+                    logic [63:0] kanata_id;
+                    kanata_id = kanata_id_counter_q + 64'(lane);
                     $fdisplay(kanata_fd, "I\t%0d\t%0d\t0",
-                              fetch_instruction_id_q[lane],
+                              kanata_id,
                               fetch_instruction_id_q[lane]);
                     $fdisplay(kanata_fd, "L\t%0d\t0\t%0h: %s",
-                              fetch_instruction_id_q[lane],
+                              kanata_id,
                               fetch_entry_q[lane].pc,
                               dpi_backend_disasm_rv64i(fetch_entry_q[lane].instruction));
                     $fdisplay(kanata_fd, "S\t%0d\t%0d\tD",
-                              fetch_instruction_id_q[lane],
+                              kanata_id,
                               lane);
                     $fdisplay(kanata_fd, "L\t%0d\t1\tpc=0x%0h inst=0x%08h asm=%s",
-                              fetch_instruction_id_q[lane],
+                              kanata_id,
                               fetch_entry_q[lane].pc,
                               fetch_entry_q[lane].instruction,
                               dpi_backend_disasm_rv64i(fetch_entry_q[lane].instruction));
@@ -573,14 +585,19 @@ module backend
                 for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
                     if (rename_uop_head[lane].valid) begin
                         $fdisplay(kanata_fd, "S\t%0d\t%0d\tR",
-                                  rename_uop_head[lane].instruction_id,
+                                  rename_uop_head[lane].kanata_id,
                                   lane);
                         $fdisplay(kanata_fd, "L\t%0d\t1\trs1:x%0d->p%0d rs2:x%0d->p%0d rd:x%0d old:p%0d new:p%0d rob:%0d",
-                                  rename_uop_head[lane].instruction_id,
+                                  rename_uop_head[lane].kanata_id,
                                   rename_uop_head[lane].rs1, src1_preg[lane],
                                   rename_uop_head[lane].rs2, src2_preg[lane],
                                   rename_uop_head[lane].rd, dst_old_preg[lane], dst_new_preg[lane],
                                   rob_idx[lane]);
+                        if (rename_uop_head[lane].is_int_uop) begin
+                            $fdisplay(kanata_fd, "S\t%0d\t%0d\tIQ",
+                                      rename_uop_head[lane].kanata_id,
+                                      lane);
+                        end
                     end
                 end
             end
@@ -588,10 +605,10 @@ module backend
             for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
                 if (issueq_issue_valid[alu] && (kanata_fd != 0)) begin
                     $fdisplay(kanata_fd, "S\t%0d\t%0d\tIS",
-                              issueq_issue_entry[alu].instruction_id,
+                              issueq_issue_entry[alu].kanata_id,
                               alu);
                     $fdisplay(kanata_fd, "L\t%0d\t1\tsrc1:p%0d src2:p%0d dst:p%0d rob:%0d op=%s",
-                              issueq_issue_entry[alu].instruction_id,
+                              issueq_issue_entry[alu].kanata_id,
                               issueq_issue_entry[alu].src1_preg,
                               issueq_issue_entry[alu].src2_preg,
                               issueq_issue_entry[alu].dst_preg,
@@ -616,10 +633,10 @@ module backend
                         src2_desc = "zero";
                     end
                     $fdisplay(kanata_fd, "S\t%0d\t%0d\tRR",
-                              alu_issue_q[alu].instruction_id,
+                              alu_issue_q[alu].kanata_id,
                               alu);
                     $fdisplay(kanata_fd, "L\t%0d\t1\tsrc1:p%0d=0x%0h src2:%s rob:%0d",
-                              alu_issue_q[alu].instruction_id,
+                              alu_issue_q[alu].kanata_id,
                               alu_issue_q[alu].src1_preg,
                               prf_rd_data[(2*alu)+0],
                               src2_desc,
@@ -630,10 +647,10 @@ module backend
             for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
                 if (alu_regread_q[alu].valid && (kanata_fd != 0)) begin
                     $fdisplay(kanata_fd, "S\t%0d\t%0d\tEX",
-                              alu_regread_q[alu].instruction_id,
+                              alu_regread_q[alu].kanata_id,
                               alu);
                     $fdisplay(kanata_fd, "L\t%0d\t1\top=%s src1=0x%0h src2=0x%0h result=0x%0h",
-                              alu_regread_q[alu].instruction_id,
+                              alu_regread_q[alu].kanata_id,
                               int_alu_op_name(alu_regread_q[alu].int_alu_op),
                               alu_regread_q[alu].src1_value,
                               alu_regread_q[alu].src2_value,
@@ -644,10 +661,10 @@ module backend
             for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
                 if (alu_result_q[alu].valid && (kanata_fd != 0)) begin
                     $fdisplay(kanata_fd, "S\t%0d\t%0d\tWB",
-                              alu_result_q[alu].instruction_id,
+                              alu_result_q[alu].kanata_id,
                               alu);
                     $fdisplay(kanata_fd, "L\t%0d\t1\tdst:p%0d data=0x%0h rob:%0d dst_write=%0d",
-                              alu_result_q[alu].instruction_id,
+                              alu_result_q[alu].kanata_id,
                               alu_result_q[alu].dst_preg,
                               alu_result_q[alu].result,
                               alu_result_q[alu].rob_idx,
@@ -661,10 +678,10 @@ module backend
                 for (int port = 0; port < NUM_INT_ALUS; port++) begin
                     if (rob_retire_valid[port]) begin
                         $fdisplay(kanata_fd, "R\t%0d\t%0d\t0",
-                                  rob_retire_instruction_id[port],
+                                  rob_kanata_id_q[rob_retire_idx[port]],
                                   retire_id);
                         $fdisplay(kanata_fd, "L\t%0d\t1\tretire_id=%0d old:p%0d",
-                                  rob_retire_instruction_id[port],
+                                  rob_kanata_id_q[rob_retire_idx[port]],
                                   retire_id,
                                   rob_retire_old_dst_preg[port]);
                         retire_id = retire_id + 1;
@@ -822,10 +839,25 @@ module backend
 
             // 退休计数器按本拍真正退休的 ROB 条数累加，用于后续性能观察和日志统计。
             retired_inst_count_q <= retired_inst_count_next;
+`ifdef O3_SIM
+            if (decode_fire) begin
+                kanata_id_counter_q <= kanata_id_counter_q + MACHINE_WIDTH;
+            end
+            if (rename_fire) begin
+                for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
+                    if (rename_uop_head[lane].valid) begin
+                        rob_kanata_id_q[rob_idx[lane]] <= rename_uop_head[lane].kanata_id;
+                    end
+                end
+            end
+`endif
 
             for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
                 alu_result_q[alu].valid        <= exec_valid[alu];
                 alu_result_q[alu].instruction_id <= alu_regread_q[alu].instruction_id;
+`ifdef O3_SIM
+                alu_result_q[alu].kanata_id    <= alu_regread_q[alu].kanata_id;
+`endif
                 alu_result_q[alu].rob_idx      <= alu_regread_q[alu].rob_idx;
                 alu_result_q[alu].dst_preg     <= alu_regread_q[alu].dst_preg;
                 alu_result_q[alu].dst_write_en <= alu_regread_q[alu].dst_write_en;
@@ -833,6 +865,9 @@ module backend
 
                 alu_regread_q[alu].valid        <= alu_issue_q[alu].valid;
                 alu_regread_q[alu].instruction_id <= alu_issue_q[alu].instruction_id;
+`ifdef O3_SIM
+                alu_regread_q[alu].kanata_id   <= alu_issue_q[alu].kanata_id;
+`endif
                 alu_regread_q[alu].rob_idx      <= alu_issue_q[alu].rob_idx;
                 alu_regread_q[alu].dst_preg     <= alu_issue_q[alu].dst_preg;
                 alu_regread_q[alu].dst_write_en <= alu_issue_q[alu].dst_write_en;
@@ -852,6 +887,9 @@ module backend
 
                 alu_issue_q[alu].valid        <= issueq_issue_valid[alu];
                 alu_issue_q[alu].instruction_id <= issueq_issue_entry[alu].instruction_id;
+`ifdef O3_SIM
+                alu_issue_q[alu].kanata_id    <= issueq_issue_entry[alu].kanata_id;
+`endif
                 alu_issue_q[alu].src1_preg    <= issueq_issue_entry[alu].src1_preg;
                 alu_issue_q[alu].src2_preg    <= issueq_issue_entry[alu].src2_preg;
                 alu_issue_q[alu].src1_valid   <= issueq_issue_entry[alu].src1_valid;

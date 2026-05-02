@@ -84,6 +84,9 @@ package o3_pkg;
     typedef struct packed {
         logic                      valid;
         logic [INST_ID_WIDTH-1:0]  instruction_id;
+`ifdef O3_SIM
+        logic [63:0]               kanata_id;
+`endif
         logic [PC_WIDTH-1:0]       pc;
         logic [ILEN-1:0]           instruction;
         logic                      exception;
@@ -138,6 +141,9 @@ package o3_pkg;
     typedef struct packed {
         logic                      valid;
         logic [INST_ID_WIDTH-1:0]  instruction_id;
+`ifdef O3_SIM
+        logic [63:0]               kanata_id;
+`endif
         logic [PREG_IDX_WIDTH-1:0] src1_preg;
         logic [PREG_IDX_WIDTH-1:0] src2_preg;
         logic                      src1_valid;
@@ -158,6 +164,9 @@ package o3_pkg;
     typedef struct packed {
         logic                      valid;
         logic [INST_ID_WIDTH-1:0]  instruction_id;
+`ifdef O3_SIM
+        logic [63:0]               kanata_id;
+`endif
         logic [PREG_IDX_WIDTH-1:0] src1_preg;
         logic [PREG_IDX_WIDTH-1:0] src2_preg;
         logic                      src1_valid;
@@ -176,6 +185,9 @@ package o3_pkg;
     typedef struct packed {
         logic                      valid;
         logic [INST_ID_WIDTH-1:0]  instruction_id;
+`ifdef O3_SIM
+        logic [63:0]               kanata_id;
+`endif
         logic [ROB_IDX_WIDTH-1:0]  rob_idx;
         logic [PREG_IDX_WIDTH-1:0] dst_preg;
         logic                      dst_write_en;
@@ -190,6 +202,9 @@ package o3_pkg;
     typedef struct packed {
         logic                      valid;
         logic [INST_ID_WIDTH-1:0]  instruction_id;
+`ifdef O3_SIM
+        logic [63:0]               kanata_id;
+`endif
         logic [ROB_IDX_WIDTH-1:0]  rob_idx;
         logic [PREG_IDX_WIDTH-1:0] dst_preg;
         logic                      dst_write_en;
