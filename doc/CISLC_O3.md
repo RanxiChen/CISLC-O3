@@ -10,7 +10,7 @@
   3. 最后按 [`agent.md`](/home/chen/FUN/CISLC-O3/agent.md) 中的规则落修改。
 
 ## 当前实现状态
-- `backend` 已经具备一个最小 fetch-entry buffer，可以承接 frontend 输入。
+- `backend` 已经具备一个最小 fetch-entry buffer，可以承接 frontend 输入；公共 `fetch_entry_t` 现在包含 lane 级 `valid`、`pc`、`instruction`、`fetch_addr_misaligned` 和 `fetch_access_fault`。
 - `backend` 已经把整数最小主链路拆成 `fetch/decode -> decoded uop queue -> rename/ROB alloc -> issue queue wakeup/select -> issue reg -> regread -> execute -> execute result reg -> writeback/ROB complete -> 3-wide retire/free-list release`。
 - `backend` 在 `O3_SIM` 宏下已支持逐周期文本调试，按 cycle 把 `DECODE/RENAME/WAKEUP/ISSUE/REGREAD/EXECUTE/WRITEBACK/RETIRE` 各级组织成一个日志块输出。
 - `backend` 已新增 `retired_inst_count_q` 计数器，从 reset 开始按每拍真实退休条数累加，表示系统累计已退休的指令数。
@@ -33,6 +33,7 @@
 ## 当前后端数据流
 - 当前数据流是：`frontend -> fetch_entry buffer -> decoder -> decoded uop queue -> free_list + rename_map_table + rob -> integer issue queue -> ALU issue reg -> regread -> execute -> execute result reg -> physical regfile writeback + ROB complete -> ROB retire + free_list release`
 - `backend` 在 `fetch_fire` 时为整组指令生成 `instruction_id`，随后该编号随 `decoded_uop -> rename_uop -> issue_queue_entry -> ALU 流水寄存器` 一路传递，供 `O3_SIM` 和后续调试使用。
+- `fetch_entry_t.valid` 决定该 lane 是否形成真实 decoded uop；前端取指异常当前用 `fetch_addr_misaligned || fetch_access_fault` 合成为后端内部 `exception`。
 - `decoder` 先产生最小 decoded uop 语义。
 - `backend` 基于队头 uop 的 `rd_write_en && rd != 0` 生成 `alloc_req`。
 - `backend` 基于队头 uop 的 `valid` 生成 `rob_req`，并把 uop 中的 `exception` 一起送入 ROB。
@@ -177,6 +178,7 @@
   - 独立的除法执行单元，负责 RV64M 的除法/取余类指令。
 - `rtl/common/o3_pkg.sv`
   - 定义 `fetch_entry_t`、`decode_in_t`、`decode_out_t`、`int_alu_op_t`、`imm_type_t` 等跨模块接口类型，以及 `decoded_uop/renamed_uop` 使用的 `instruction_id` 字段。
+  - `fetch_entry_t` 是前后端共同认可的单 lane 指令包，包含 `valid/pc/instruction/fetch_addr_misaligned/fetch_access_fault`。
 - `rtl/frontend/frontend.sv`
   - frontend 侧实现入口，和 backend 对接时需要一起看接口约束。
 - `rtl/O3.sv`
@@ -193,6 +195,7 @@
 周期 N 组合阶段：
 - `fetch_entry_q` 中保存当前待 decode 的指令组。
 - `fetch_instruction_id_q` 中保存当前 fetch buffer 这组指令对应的调试编号；编号的低位是 lane id，高位是被 backend 接收时的 group 序号。
+- `fetch_entry_q[lane].valid` 决定该 lane 的 `decoded_uop.valid`；两个 fetch 异常位 OR 后形成当前后端内部的 `decoded_uop.exception`。
 - `decoder` 组合输出 `rs1/rs2/rd`、`rs1_read_en/rs2_read_en/rd_write_en`、`use_imm`、`imm_type`、`imm_raw`、`int_alu_op` 和 `is_int_uop`。
 - 若 `uop_queue` 可接收，则当前 fetch 组在本拍以 `decoded_uop` 形式入队。
 - `uop_queue` 队头保存当前待 rename 的一组 uop。

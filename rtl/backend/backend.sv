@@ -257,14 +257,15 @@ module backend
 
     generate
         for (i = 0; i < MACHINE_WIDTH; i++) begin : decoded_uop_assign
-            assign decoded_uop[i].valid          = decode_valid;
+            assign decoded_uop[i].valid          = decode_valid && fetch_entry_q[i].valid;
             assign decoded_uop[i].instruction_id = fetch_instruction_id_q[i];
 `ifdef O3_SIM
             assign decoded_uop[i].kanata_id      = kanata_id_counter_q + 64'(i);
 `endif
             assign decoded_uop[i].pc             = fetch_entry_q[i].pc;
             assign decoded_uop[i].instruction    = fetch_entry_q[i].instruction;
-            assign decoded_uop[i].exception      = fetch_entry_q[i].exception;
+            assign decoded_uop[i].exception      = fetch_entry_q[i].fetch_addr_misaligned
+                                                 || fetch_entry_q[i].fetch_access_fault;
             assign decoded_uop[i].rs1            = decode_out[i].rs1;
             assign decoded_uop[i].rs2            = decode_out[i].rs2;
             assign decoded_uop[i].rd             = decode_out[i].rd;
@@ -841,7 +842,7 @@ module backend
             retired_inst_count_q <= retired_inst_count_next;
 `ifdef O3_SIM
             if (decode_fire) begin
-                kanata_id_counter_q <= kanata_id_counter_q + MACHINE_WIDTH;
+                kanata_id_counter_q <= kanata_id_counter_q + 64'(MACHINE_WIDTH);
             end
             if (rename_fire) begin
                 for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin

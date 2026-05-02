@@ -6,7 +6,7 @@ MACHINE_WIDTH ?= 4
 ifeq ($(KANATA),1)
 	CMAKE_EXTRA_ARGS := -DENABLE_KANATA=ON -DKANATA_LOG_NAME=backend_testharness_json
 else
-	CMAKE_EXTRA_ARGS :=
+	CMAKE_EXTRA_ARGS := -DENABLE_KANATA=OFF
 endif
 
 .PHONY: all build run clean

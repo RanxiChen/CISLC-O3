@@ -138,7 +138,7 @@ module int_execute_unit
 
             INT_ALU_OP_SRL: begin
                 if (is_word_op_i) begin
-                    result_raw = DATA_WIDTH'($signed({1'b0, (src1_value_i[31:0] >> src2_sel[4:0])}[31:0]));
+                    result_raw = {{(DATA_WIDTH-32){1'b0}}, (src1_value_i[31:0] >> src2_sel[4:0])};
                 end else begin
                     result_raw = src1_value_i >> src2_sel[5:0];
                 end

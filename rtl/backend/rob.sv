@@ -107,7 +107,7 @@ module rob #(
                 alloc_idx_o[idx] = '0;
                 req_before_lane  = 0;
 
-                for (int lane = 0; lane < idx; lane++) begin
+                for (int lane = 0; lane < int'(idx); lane++) begin
                     if (alloc_req_i[lane]) begin
                         req_before_lane++;
                     end

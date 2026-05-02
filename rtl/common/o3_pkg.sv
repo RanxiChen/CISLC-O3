@@ -22,11 +22,15 @@ package o3_pkg;
     // Frontend -> Backend 接口
     // ========================================
 
-    // Frontend输出给Backend的数据包
+    // Frontend 输出给 Backend 的单 lane 指令包。
+    // valid 标记该 lane 是否真实携带指令；两个 fetch 异常位先保留为明确来源，
+    // 后端当前阶段会把它们 OR 成统一 exception 继续向后传递。
     typedef struct packed {
-        logic [PC_WIDTH-1:0] pc;          // 程序计数器
-        logic [ILEN-1:0]     instruction; // 32位指令
-        logic                exception;   // 异常标志
+        logic                valid;
+        logic [PC_WIDTH-1:0] pc;
+        logic [ILEN-1:0]     instruction;
+        logic                fetch_addr_misaligned;
+        logic                fetch_access_fault;
     } fetch_entry_t;
 
     // ========================================

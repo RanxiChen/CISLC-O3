@@ -134,7 +134,7 @@ module free_list #(
                 alloc_preg_o[alloc_idx] = '0;
                 req_before_lane         = 0;
 
-                for (int lane = 0; lane < alloc_idx; lane++) begin
+                for (int lane = 0; lane < int'(alloc_idx); lane++) begin
                     if (alloc_req_i[lane]) begin
                         req_before_lane++;
                     end
