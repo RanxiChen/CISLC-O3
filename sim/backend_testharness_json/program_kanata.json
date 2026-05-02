@@ -1,0 +1,26 @@
+{
+  "meta": {
+    "name": "kanata_backend_smoke",
+    "note": "Dependency-heavy integer stream to exercise D/R/IQ/IS/RR/EX/WB/R in Kanata logs"
+  },
+  "instruction": [
+    [
+      "0x00500093",
+      "0x00300113",
+      "0x002081b3",
+      "0x00118213"
+    ],
+    [
+      "0x002202b3",
+      "0x40128333",
+      "0x006333b3",
+      "0x00738413"
+    ],
+    [
+      "0x008404b3",
+      "0x00948533",
+      "0x00000013",
+      "0x00150593"
+    ]
+  ]
+}

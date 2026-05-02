@@ -36,6 +36,24 @@ make run INPUT=program.json
 make run KANATA=1 INPUT=program.json
 ```
 
+推荐先跑仓库自带的 Kanata 冒烟样例：
+
+```bash
+make run KANATA=1 INPUT=program_kanata.json
+```
+
+这个样例刻意放了一条整数依赖链，用来观察：
+- `D`
+- `R`
+- `IQ`
+- `IS`
+- `RR`
+- `EX`
+- `WB`
+- `R`
+
+其中 `IQ` 阶段应能在有依赖等待时表现为更长的停留时间。
+
 ## 改变宽度
 
 ```bash
