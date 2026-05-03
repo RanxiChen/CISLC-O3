@@ -100,12 +100,21 @@ void drive_refill_resp(
 }
 
 void init_inst_mem(std::map<uint64_t, uint32_t>& inst_mem) {
+    uint32_t inst_index = 1;
     for (uint64_t pc = 0; pc < 0x200; pc += 4) {
-        inst_mem[pc] = 0x00000013u + static_cast<uint32_t>(pc << 8);
+        inst_mem[pc] = inst_index;
+        ++inst_index;
     }
 }
 
-void print_fetch_output(const Vfrontend& dut, int cycle) {
+struct CheckerState {
+    uint64_t expected_pc = 0;
+    uint32_t expected_inst = 1;
+    int received_count = 0;
+    bool failed = false;
+};
+
+void check_fetch_output(const Vfrontend& dut, int cycle, CheckerState& checker) {
     if (!dut.fetch_valid_o) {
         return;
     }
@@ -127,6 +136,29 @@ void print_fetch_output(const Vfrontend& dut, int cycle) {
                   << " access_fault=" << entry.fetch_access_fault
                   << " ftq_idx=" << entry.ftq_idx
                   << "\n";
+
+        if (!entry.valid || entry.pc != checker.expected_pc ||
+            entry.inst != checker.expected_inst ||
+            entry.fetch_addr_misaligned || entry.fetch_access_fault) {
+            std::cerr << "MISMATCH cycle=" << std::dec << cycle
+                      << " lane=" << lane
+                      << " expected_pc=0x" << std::hex << checker.expected_pc
+                      << " expected_inst=0x" << std::setw(8) << std::setfill('0')
+                      << checker.expected_inst << std::setfill(' ')
+                      << " actual_pc=0x" << entry.pc
+                      << " actual_inst=0x" << std::setw(8) << std::setfill('0')
+                      << entry.inst << std::setfill(' ')
+                      << " valid=" << std::dec << entry.valid
+                      << " misalign=" << entry.fetch_addr_misaligned
+                      << " access_fault=" << entry.fetch_access_fault
+                      << " ftq_idx=" << entry.ftq_idx
+                      << "\n";
+            checker.failed = true;
+        }
+
+        checker.expected_pc += 4;
+        ++checker.expected_inst;
+        ++checker.received_count;
     }
 }
 
@@ -146,6 +178,7 @@ int main(int argc, char** argv) {
     Vfrontend dut;
     std::map<uint64_t, uint32_t> inst_mem;
     std::deque<PendingRefill> pending_refills;
+    CheckerState checker;
 
     init_inst_mem(inst_mem);
 
@@ -183,7 +216,7 @@ int main(int argc, char** argv) {
         step(dut);
 
         print_refill_req(dut, cycle);
-        print_fetch_output(dut, cycle);
+        check_fetch_output(dut, cycle, checker);
 
         if (dut.refill_req_valid_o) {
             pending_refills.push_back(PendingRefill{
@@ -198,5 +231,17 @@ int main(int argc, char** argv) {
     }
 
     dut.final();
+
+    if (checker.received_count == 0) {
+        std::cerr << "FAIL: zero instructions accepted\n";
+        return 1;
+    }
+
+    if (checker.failed) {
+        return 1;
+    }
+
+    std::cout << "PASS: " << std::dec << checker.received_count
+              << " instructions verified\n";
     return 0;
 }
