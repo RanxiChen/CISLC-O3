@@ -397,6 +397,7 @@ module ICache #(
             o3_sram #(
                 .DATA_WIDTH(DATA_BANK_WIDTH),
                 .SRAM_ENTRIES(NUM_SETS),
+                `ifdef O3_ICACHE_WAY0_VALID
                 .INIT_FILE(
                     (way == 0 && bank == 0) ? "hex/data_way0_bank0.hex" :
                     (way == 0 && bank == 1) ? "hex/data_way0_bank1.hex" :
@@ -404,6 +405,9 @@ module ICache #(
                     (way == 0 && bank == 3) ? "hex/data_way0_bank3.hex" :
                     ""
                 )
+                `else
+                .INIT_FILE("")
+                `endif
             ) u_data_sram (
                 .clk_i  (clk),
                 .rst_i  (rst),
@@ -431,7 +435,11 @@ module ICache #(
         o3_sram #(
             .DATA_WIDTH(TAG_ARRAY_WIDTH),
             .SRAM_ENTRIES(NUM_SETS),
+            `ifdef O3_ICACHE_WAY0_VALID
             .INIT_FILE((way == 0) ? "hex/tag_way0.hex" : "")
+            `else
+            .INIT_FILE("")
+            `endif
         ) u_tag_sram (
             .clk_i  (clk),
             .rst_i  (rst),

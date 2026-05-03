@@ -44,34 +44,42 @@
 - 消费后只标记 `consumed_q`，不清 entry。
 - 尚未实现 BPU 写入端、release 端、flush、redirect。
 
+### Frontend Top
+- `rtl/frontend/frontend.sv` 已实例化并连接 `ftq`、`ifu`、`ICache` 和 `fetch_buffer`。
+- 当前顶层数据流是 `FTQ -> IFU -> fetch_buffer -> frontend output`，其中 IFU 通过 ICache 完成取指数据访问。
+- fetch buffer 出队口暂时直接作为 frontend 顶层输出：`fetch_valid_o` 表示本拍有 fetch group，`fetch_valid_mask_o` 由每个 `fetch_entry_t.valid` 生成。
+- ICache refill request/response 当前从 frontend 顶层透出，后续可接 L2、总线或测试内存模型。
+- ICache line 大小当前由 `o3_pkg::ICACHE_LINE_BYTES` 统一定义，frontend 实例化点不单独覆盖。
+- `flush_i` 当前接到 ICache 和 fetch buffer；尚未实现 FTQ/IFU 的 redirect 精确清除。
+
 ### 尚未实现
-- `frontend.sv` 仍是旧的最小顺序取指骨架，后续会被 IFU 取代或集成。
+- 不接 backend；fetch buffer 出队口还没有连入后端 decode 入口。
 - 未实现分支预测、BPU、BTB、BHT、RAS。
-- 未实现 flush、redirect、异常恢复。
-- 未实现 icache miss 时的 IFU 级 stall / replay（icache 内部已处理 refill）。
+- 未实现 redirect、异常恢复和跨模块精确清除。
 - `rtl/O3.sv` 和 `rtl/Tile.sv` 仍是占位顶层，未接入真实 IFU/FTQ/icache 链路。
 - 未写测试和仿真。
 
 ## 当前前端数据流
 
 ```
-FTQ ──ready/valid──> IFU S0 ──ready/valid──> IFU S1 ──ready/valid──> ICache s0
-                                                           │
-                                                           │ out_valid + out_data + out_error
-                                                           ▼
-                                                    IFU S2（双槽 FIFO）
-                                                           │
-                                                           │ s2_pop（data_valid && fetch_ready_i）
-                                                           ▼
-                                                    IFU S3（128b → 4×fetch_entry_t）
-                                                           │
-                                                           │ fetch_entry_o / fetch_valid_o
-                                                           ▼
-                                             Fetch Buffer（独立紧凑环形 buffer）
-                                                           │
-                                                           │ deq ready/valid
-                                                           ▼
-                                                        后端方向
+frontend
+  FTQ ──ready/valid──> IFU S0 ──ready/valid──> IFU S1 ──ready/valid──> ICache s0
+                                                               │
+                                                               │ out_valid + out_data + out_error
+                                                               ▼
+                                                        IFU S2（双槽 FIFO）
+                                                               │
+                                                               │ s2_pop（data_valid && fetch_buffer enq_ready）
+                                                               ▼
+                                                        IFU S3（128b → 4×fetch_entry_t）
+                                                               │
+                                                               │ fetch_entry_o / fetch_valid_o[3:0]
+                                                               ▼
+                                                 Fetch Buffer（独立紧凑环形 buffer）
+                                                               │
+                                                               │ deq ready/valid
+                                                               ▼
+                                                        frontend output
 ```
 
 - S0 每拍输出一个 group（`group_pc` + `mask`）。
@@ -79,6 +87,7 @@ FTQ ──ready/valid──> IFU S0 ──ready/valid──> IFU S1 ──ready/
 - S2 等 icache 返回 128-bit 数据，匹配请求上下文。
 - S3 把 128-bit 拆成最多 4 条 `fetch_entry_t`，用 mask 标记 entry 内 valid。
 - Fetch Buffer 按顺序只收 valid 指令，并通过 `icache_req_allowed_o` 告诉 IFU 是否允许继续发 ICache 请求。
+- Frontend 顶层把 fetch buffer 出队 scalar valid 作为 `fetch_valid_o`，并把每个输出 entry 的 `valid` 收敛成 `fetch_valid_mask_o`。
 
 ## 受影响模块
 
@@ -100,7 +109,8 @@ FTQ ──ready/valid──> IFU S0 ──ready/valid──> IFU S1 ──ready/
 ### ICache（`rtl/frontend/icache.sv`）
 - 职责：指令缓存，提供 hit/miss 判断和 refill。
 - 当前实现：4-way set-associative，64B line，16B fetch window，带 refill FSM。
-- 与 IFU 接口：S0 请求（`s0_valid/s0_ready/s0_pc`），返回（`out_valid/out_data/out_pc/out_hit`）。
+- 与 IFU 接口：S0 请求（`s0_valid/s0_ready/s0_pc`），返回（`out_valid/out_data/out_error`）。
+- 与 Frontend 顶层接口：refill request/response 透出到顶层。
 
 ### O3 / Tile
 - 职责：核心顶层和系统封装。
@@ -117,7 +127,7 @@ FTQ ──ready/valid──> IFU S0 ──ready/valid──> IFU S1 ──ready/
 - `rtl/frontend/icache.sv`
   - ICache 模块，IFU S1 向其发请求，S2 接收其返回。
 - `rtl/frontend/frontend.sv`
-  - 旧的最小顺序取指骨架，后续会被 IFU 取代。
+  - 前端顶层，实例化并连接 FTQ、IFU、ICache 和 fetch buffer。
 - `rtl/O3.sv`
   - O3 核心顶层入口；真正集成前后端时需要一起修改。
 - `rtl/Tile.sv`

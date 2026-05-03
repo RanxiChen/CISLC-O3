@@ -18,6 +18,7 @@ package o3_pkg;
     parameter int ROB_IDX_WIDTH = $clog2(DEFAULT_NUM_ROB_ENTRIES);
     parameter int IMM_RAW_WIDTH = 12;
     parameter int FTQ_INDEX_WIDTH = 4;
+    parameter int ICACHE_LINE_BYTES = 64;
 
     // ========================================
     // Frontend -> Backend 接口
