@@ -40,14 +40,18 @@ make clean
 - 运行命令：`make test TEST=frontend_basic`
 - 当前行为：
   - 手动 reset 后释放前端。
+  - `reset_pc_i=0`，BPU 从 PC 0 开始顺序生成 32B fetch block。
   - 默认 `fetch_ready_i=1`，后端方向一直可以接收 fetch group。
   - 默认 `flush_i=0`。
   - 观察 `refill_req_valid_o/refill_req_pc_o`。
   - 用 C++ 内部 memory model 延迟固定 6 个周期返回 refill response。
   - 每周期打印 refill request、refill response 和 fetch buffer 出队的有效指令。
+  - 通过 `O3_FRONTEND_DEBUG` 暴露的 FTQ debug 口统计 FTQ 向 IFU 成功出队的 block 数。
 - 当前用途：
-  - 验证 `FTQ -> IFU -> ICache -> IFU -> fetch_buffer -> frontend output` 这条最小链路可以跑起来。
+  - 验证 `BPU -> FTQ -> IFU -> ICache -> IFU -> fetch_buffer -> frontend output` 这条最小链路可以跑起来。
+  - 检查已经从 frontend output 出队的有效指令是否保持 PC 和 instruction 顺序递增。
   - 作为后续前端测试的 Makefile 和 C++ testbench 模板。
+  - 作为当前前端固定 smoke/regression；检查已有前端测试是否正常运行时应至少跑这个测试。
 
 ## 当前 basic 测试语义
 
@@ -55,6 +59,7 @@ make clean
 
 - 手动 reset。
 - `step()` 是最小时间单位，每次包含完整上升沿和下降沿。
+- `reset_pc_i=0`。
 - 默认 `fetch_ready_i=1`，后端方向始终可以接收 fetch group。
 - 默认 `flush_i=0`。
 - 每个周期 `step()` 后观察 `refill_req_valid_o/refill_req_pc_o`。
@@ -63,5 +68,11 @@ make clean
 - C++ 内部用 `std::map<uint64_t, uint32_t>` 保存 32-bit 对齐地址到指令的映射。
 - 未定义地址默认返回 `0xffffffff`。
 - 每周期打印 frontend 出队的有效指令 lane。
+- 主循环运行到 FTQ 成功向 IFU 出队 4 个 block 后停止，带 `kMaxCycles` 防死循环。
+- 不要求每周期都有 frontend output，也不要求每个 valid 周期输出 4 条。
+- checker 只检查已经输出的有效 lane：
+  - `pc` 从 0 开始按 4 字节递增。
+  - `instruction` 从 1 开始按 1 递增。
+  - 不允许 `fetch_addr_misaligned` 或 `fetch_access_fault`。
 
-当前不做 backend 接入、不做随机 ready、不做 checker 判定。
+当前不做 backend 接入、不做随机 ready、不检查完整程序结束条件。

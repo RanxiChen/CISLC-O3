@@ -196,7 +196,10 @@ int main(int argc, char** argv) {
 
     dut.rst_i = 0;
 
-    for (int cycle = 0; cycle < kMaxCycles && !Verilated::gotFinish(); ++cycle) {
+    int ftq_ifu_fire_count = 0;
+    int cycle = 0;
+
+    while (ftq_ifu_fire_count < 4 && cycle < kMaxCycles && !Verilated::gotFinish()) {
         bool resp_this_cycle = false;
 
         clear_refill_resp(dut);
@@ -220,6 +223,16 @@ int main(int argc, char** argv) {
         print_refill_req(dut, cycle);
         check_fetch_output(dut, cycle, checker);
 
+        if (dut.dbg_ftq_ifu_fire_o) {
+            ++ftq_ifu_fire_count;
+            std::cout << "[cycle " << std::dec << cycle
+                      << "] ftq ifu fire count=" << ftq_ifu_fire_count
+                      << " alloc_tail=0x" << std::hex << static_cast<int>(dut.dbg_ftq_alloc_tail_o)
+                      << " ifu_head=0x" << static_cast<int>(dut.dbg_ftq_ifu_head_o)
+                      << " allocated_count=" << std::dec << static_cast<int>(dut.dbg_ftq_allocated_count_o)
+                      << "\n";
+        }
+
         if (dut.refill_req_valid_o) {
             pending_refills.push_back(PendingRefill{
                 .pc = dut.refill_req_pc_o,
@@ -230,9 +243,17 @@ int main(int argc, char** argv) {
         if (resp_this_cycle) {
             clear_refill_resp(dut);
         }
+
+        ++cycle;
     }
 
     dut.final();
+
+    if (ftq_ifu_fire_count < 4) {
+        std::cerr << "FAIL: ftq_ifu_fire_count=" << std::dec << ftq_ifu_fire_count
+                  << " < 4 after " << cycle << " cycles\n";
+        return 1;
+    }
 
     if (checker.received_count == 0) {
         std::cerr << "FAIL: zero instructions accepted\n";
@@ -243,7 +264,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::cout << "PASS: " << std::dec << checker.received_count
-              << " instructions verified\n";
+    std::cout << "PASS: ftq_ifu_fire_count=" << std::dec << ftq_ifu_fire_count
+              << " instructions_received=" << checker.received_count << "\n";
     return 0;
 }

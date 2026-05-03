@@ -35,7 +35,7 @@
 ## 构建与运行
 
 ```bash
-cd /home/chen/FUN/CISLC-O3/sim/backend_testharness
+cd /home/chen/work/CISLC-O3/sim/backend_testharness
 mkdir -p build
 cd build
 cmake ..

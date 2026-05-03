@@ -1,10 +1,10 @@
 # `sim/lfsr` 目录说明
 
-这个目录用于对 [`rtl/common/lfsr.sv`](/home/chen/FUN/CISLC-O3/rtl/common/lfsr.sv:1) 做一个最小化的 Verilator 仿真验证，并进一步观察 `lfsr_out[1:0]` 这 2 个低位在长期运行时的分布是否趋向均匀。
+这个目录用于对 [`rtl/common/lfsr.sv`](/home/chen/work/CISLC-O3/rtl/common/lfsr.sv:1) 做一个最小化的 Verilator 仿真验证，并进一步观察 `lfsr_out[1:0]` 这 2 个低位在长期运行时的分布是否趋向均匀。
 
 ## 1. 模块功能检验
 
-这里的 C++ testbench 在 [`main.cpp`](/home/chen/FUN/CISLC-O3/sim/lfsr/main.cpp:91) 中实现，验证流程分成两部分：
+这里的 C++ testbench 在 [`main.cpp`](/home/chen/work/CISLC-O3/sim/lfsr/main.cpp:91) 中实现，验证流程分成两部分：
 
 1. 先对 LFSR 做复位，并检查复位后输出是否为初始种子 `16'hACE1`。
 2. 在 `enable=0` 的情况下连续运行 10 个周期，检查输出是否始终保持不变。
@@ -45,7 +45,7 @@ variance_like * 10000
 
 ## 3. 绘图脚本
 
-[`plot_variance.py`](/home/chen/FUN/CISLC-O3/sim/lfsr/plot_variance.py:1) 用于批量运行仿真并生成曲线图。
+[`plot_variance.py`](/home/chen/work/CISLC-O3/sim/lfsr/plot_variance.py:1) 用于批量运行仿真并生成曲线图。
 
 它的流程是：
 
@@ -53,7 +53,7 @@ variance_like * 10000
 2. 从较小样本 `100` 开始，到 `65535` 结束。
 3. 在线性区间内取多个样本点。
 4. 对每个样本点运行一次仿真，提取 `variance_like`。
-5. 将 `variance_like * 10000` 作为纵轴，绘制图像 [`variance_curve.png`](/home/chen/FUN/CISLC-O3/sim/lfsr/variance_curve.png)。
+5. 将 `variance_like * 10000` 作为纵轴，绘制图像 [`variance_curve.png`](/home/chen/work/CISLC-O3/sim/lfsr/variance_curve.png)。
 
 这样就可以直观看到：随着更新次数增加，这个偏差量是否会逐步减小，也就是最低两位的分布是否会逐渐接近均匀。
 

@@ -3,13 +3,13 @@
 ## 目的
 - 本文件服务于后续 agent / 协作者进入仓库时的执行约束。
 - 本文件不承担“当前实现状态索引”的职责。
-- 后端模块现状、数据流、时序入口、受影响 RTL 路径，保留在 [`doc/CISLC_O3.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3.md)。
-- 前端模块现状、数据流、时序入口、受影响 RTL 路径，保留在 [`doc/CISLC_O3_frontend.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3_frontend.md)。
+- 后端模块现状、数据流、时序入口、受影响 RTL 路径，保留在 [`doc/CISLC_O3.md`](/home/chen/work/CISLC-O3/doc/CISLC_O3.md)。
+- 前端模块现状、数据流、时序入口、受影响 RTL 路径，保留在 [`doc/CISLC_O3_frontend.md`](/home/chen/work/CISLC-O3/doc/CISLC_O3_frontend.md)。
 
 ## 与 `doc/CISLC_O3.md` 的分工
 适合放在本文件中的内容：
 - 面向后续修改者的工作规则。
-- 当前阶段的范围边界，例如“不写测试代码”“不写仿真代码”“先搭功能链路”。
+- 当前阶段的范围边界，例如“先搭最小核心闭环”或“只做方案不改代码”。
 - RTL 注释规范。
 - 修改顺序建议、阅读顺序建议、提交前自检项。
 - 文档维护约定，例如改完 RTL 后必须同步更新主文档。
@@ -30,16 +30,16 @@
 
 ## 建议阅读顺序
 1. 先按任务方向选择实现状态文档：
-   - 后端任务先读 [`doc/CISLC_O3.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3.md)。
-   - 前端任务先读 [`doc/CISLC_O3_frontend.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3_frontend.md)。
+   - 后端任务先读 [`doc/CISLC_O3.md`](/home/chen/work/CISLC-O3/doc/CISLC_O3.md)。
+   - 前端任务先读 [`doc/CISLC_O3_frontend.md`](/home/chen/work/CISLC-O3/doc/CISLC_O3_frontend.md)。
 2. 再读与任务相关的 RTL。
 3. 最后按本文件的约束执行修改。
 
 ## 当前阶段工作边界
-- 当前阶段只搭 RTL 功能链路。
-- 当前阶段不写测试代码。
-- 当前阶段不写仿真代码。
-- 当前阶段不做完整验证闭环。
+- 当前阶段的主要工程目标是从分散的前端/后端子系统走向最小核心闭环。
+- 下一步集成目标是组装一个能让至少一条简单指令正常 fetch、decode、execute、writeback、retire 的核心顶层；不要求完整 ISA、完整分支预测或完整异常恢复。
+- 测试和仿真代码按任务需要逐步补齐；不要把早期“不写测试”的阶段性约束当成长期规则。
+- 当前已经存在前端基础回归，修改前端后应优先保持该回归可运行。
 - 保持现有设计风格，不主动引入另一套抽象层次或命名体系。
 - 前端和后端统一执行同一套约束：模块头注释、关键逻辑注释、逐周期时序说明都必须补齐。
 - 如果修改影响到模块接口、状态机、映射表、队列、握手或周期级行为，必须同步更新对应的实现状态文档。
@@ -88,14 +88,27 @@
 - 也不要只写文件头注释而不给代码关键块写注释。
 
 ## 文档维护规则
-- 若新增或修改的是后端 RTL，需同步更新 [`doc/CISLC_O3.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3.md)。
-- 若新增或修改的是前端 RTL，需同步更新 [`doc/CISLC_O3_frontend.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3_frontend.md)。
+- 若新增或修改的是后端 RTL，需同步更新 [`doc/CISLC_O3.md`](/home/chen/work/CISLC-O3/doc/CISLC_O3.md)。
+- 若新增或修改的是前端 RTL，需同步更新 [`doc/CISLC_O3_frontend.md`](/home/chen/work/CISLC-O3/doc/CISLC_O3_frontend.md)。
 - 若 RTL 改变数据流，需更新对应文档中的数据流章节。
 - 若 RTL 改变周期级行为，需更新对应文档中的关键时序行为章节。
 - 若本次仅修改协作规范、执行策略、文档分工，应优先更新本文件。
 
+## 固定回归要求
+- 当用户要求“检查已有测试是否还能正常运行”“跑一下现有测试”“确认前端没坏”等类似任务时，必须至少运行前端基础回归：
+
+```bash
+cd sim/frontend
+make clean-test TEST=frontend_basic
+make test TEST=frontend_basic
+```
+
+- `frontend_basic` 是当前前端功能的长期 smoke/regression 入口。后续即使新增更多前端测试，这个测试仍应作为默认必跑项之一。
+- 当前 `frontend_basic` 通过 `O3_FRONTEND_DEBUG` 观察 FTQ 向 IFU 成功出队 block，并检查已经从 frontend output 出队的有效指令流是否保持顺序。
+- 如果该测试失败，最终回复必须说明失败阶段属于编译/接口问题、FTQ debug 停止条件问题、refill/ICache 行为问题，还是 frontend output 顺序 checker mismatch。
+
 ## 建议保留在主文档中的代码索引
-以下信息建议长期保留在 [`doc/CISLC_O3.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3.md)，不要外移：
+以下信息建议长期保留在 [`doc/CISLC_O3.md`](/home/chen/work/CISLC-O3/doc/CISLC_O3.md)，不要外移：
 - `rtl/backend/backend.sv`：后端最小 rename 链路总装。
 - `rtl/backend/decoder.sv`：最小 RVI rename 语义解码。
 - `rtl/backend/free_list.sv`：空闲物理寄存器分配。
@@ -103,7 +116,7 @@
 - `rtl/backend/physical_regfile.sv`：物理寄存器文件实现与后续接入口。
 - `rtl/common/o3_pkg.sv`：跨模块数据结构定义。
 
-以下信息建议长期保留在 [`doc/CISLC_O3_frontend.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3_frontend.md)，不要外移：
+以下信息建议长期保留在 [`doc/CISLC_O3_frontend.md`](/home/chen/work/CISLC-O3/doc/CISLC_O3_frontend.md)，不要外移：
 - `rtl/frontend/frontend.sv`：前端当前实现入口。
 - `rtl/O3.sv`、`rtl/Tile.sv`：前端最终会经过的系统级连接入口。
 

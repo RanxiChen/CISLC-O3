@@ -1,5 +1,9 @@
 # RISC-V 执行模型使用说明
 
+> Legacy note: 本文属于逐步弃用的 `sim/frontend_testharness` 目录。
+> 当前前端主回归入口是 `sim/frontend/frontend_basic`，该测试不依赖本文描述的 DPI-C 分支执行模型。
+> 本文仅作为历史参考，后续如需复用 DPI-C 分支/跳转 helper，需要先按当前 frontend/BPU/FTQ 结构重新评估接口。
+
 ## 概述
 
 这是一个简化的 RISC-V 执行模型，专注于分支指令的解码和执行。支持 RV64I 指令集中的所有分支和跳转指令。
@@ -244,4 +248,3 @@ verilator --cc --exe \
 4. 完整的寄存器文件管理
 5. 内存模型
 6. 性能计数器
-

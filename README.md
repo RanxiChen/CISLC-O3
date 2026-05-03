@@ -2,9 +2,36 @@
 
 This repository hosts an out-of-order RV64G processor core written in SystemVerilog.
 
+## Current Integration Status
+
+The project currently has two partially working subsystems:
+
+- Frontend: `rtl/frontend/frontend.sv` now wires `BPU -> FTQ -> IFU -> ICache -> IFU -> fetch_buffer -> frontend output`.
+  The BPU is sequential-only and starts from `reset_pc_i`; FTQ has a three-pointer skeleton but no release/redirect path yet.
+- Backend: `rtl/backend/backend.sv` accepts `fetch_entry_t` groups, decodes a subset of RV64I integer R/I operations, renames, issues, executes, writes back, completes ROB entries, and retires in order.
+
+The system-level tops are not integrated yet:
+
+- `rtl/O3.sv` is still a placeholder LED module.
+- `rtl/Tile.sv` is still a placeholder wrapper around that LED module.
+
+Next milestone: replace the placeholder `O3` path with a minimal core top that connects the real frontend to the real backend and demonstrates that at least one simple instruction can be fetched, decoded, executed, written back, and retired. This does not require a complete ISA or full recovery machinery.
+
+## Baseline Tests
+
+The frontend smoke/regression test is:
+
+```bash
+cd sim/frontend
+make clean-test TEST=frontend_basic
+make test TEST=frontend_basic
+```
+
+This test is the required first check when validating that existing frontend functionality still runs.
+
 ## Current Backend Parameters
 
-The current backend is centered around [`backend.sv`](/home/chen/FUN/CISLC-O3/rtl/backend/backend.sv). These are the main backend-facing parameters already in use.
+The current backend is centered around [`backend.sv`](/home/chen/work/CISLC-O3/rtl/backend/backend.sv). These are the main backend-facing parameters already in use.
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
@@ -21,7 +48,7 @@ The current backend also instantiates a physical register file with these effect
 | Parameter | Current Value | Meaning |
 | --- | --- | --- |
 | `NUM_READ_PORTS` | `NUM_INT_ALUS * 2` | Two read ports per ALU, one for `src1`, one for `src2`. |
-| `NUM_WRITE_PORTS` | `1` | Placeholder write-port configuration for the current stage. Writeback is not connected yet. |
+| `NUM_WRITE_PORTS` | `NUM_INT_ALUS` | One integer writeback port per ALU pipeline in the current backend configuration. |
 | `NUM_ENTRIES` | `NUM_PHYS_REGS` | Physical register file depth. |
 | `DATA_WIDTH` | `64` | Integer datapath width. |
 
@@ -60,10 +87,9 @@ The current integer backend path is split into these stages:
 
 What is not implemented yet:
 
-- Physical register writeback
-- Real wakeup/broadcast network
-- Commit / retirement
+- Same-cycle writeback bypass/broadcast network
 - Flush / rollback / recovery
+- Store commit
 - Non-integer issue/dispatch paths
 
 ## Repository Layout
@@ -73,13 +99,14 @@ What is not implemented yet:
 - `rtl/common/`
   Shared type/package definitions such as `o3_pkg.sv`.
 - `rtl/frontend/`
-  Frontend-side RTL entry point.
+  Frontend-side RTL, including sequential BPU, FTQ, IFU, ICache, fetch buffer, and frontend top.
 - `tb/`
   Testharness top-level SystemVerilog wrappers.
+- `sim/frontend/`
+  Frontend Verilator smoke/regression testbench.
 - `sim/backend_testharness/`
   Backend-focused simulation support code and local notes.
 - `doc/`
   Internal working documentation and implementation notes. This is not the public-facing project summary.
 - `agent.md`
   Internal collaboration rules for agents and contributors.
-

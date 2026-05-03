@@ -59,6 +59,15 @@ module frontend
     output logic         fetch_valid_o,
     output logic [3:0]   fetch_valid_mask_o,
     input  logic         fetch_ready_i
+
+    `ifdef O3_FRONTEND_DEBUG
+    ,output logic       dbg_ftq_ifu_fire_o
+    ,output logic       dbg_ftq_bpu_fire_o
+    ,output ftq_idx_t   dbg_ftq_alloc_tail_o
+    ,output ftq_idx_t   dbg_ftq_ifu_head_o
+    ,output ftq_idx_t   dbg_ftq_release_head_o
+    ,output logic [$clog2(FTQ_DEPTH+1)-1:0] dbg_ftq_allocated_count_o
+    `endif
 );
 
     logic       bpu_ftq_valid;
@@ -106,6 +115,15 @@ module frontend
         .ifu_ready_i   (ftq_ifu_ready),
         .ifu_entry_o   (ftq_ifu_entry),
         .ifu_ftq_idx_o (ftq_ifu_idx)
+
+        `ifdef O3_FRONTEND_DEBUG
+        ,.dbg_ifu_fire_o        (dbg_ftq_ifu_fire_o)
+        ,.dbg_bpu_fire_o        (dbg_ftq_bpu_fire_o)
+        ,.dbg_alloc_tail_o      (dbg_ftq_alloc_tail_o)
+        ,.dbg_ifu_head_o        (dbg_ftq_ifu_head_o)
+        ,.dbg_release_head_o    (dbg_ftq_release_head_o)
+        ,.dbg_allocated_count_o (dbg_ftq_allocated_count_o)
+        `endif
     );
 
     ifu u_ifu (

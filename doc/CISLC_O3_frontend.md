@@ -2,14 +2,14 @@
 
 ## 文档定位
 - 本文件保留为"前端当前实现状态 + 代码索引 + 时序入口"文档。
-- 面向后续 agent / 协作者的执行规则、注释规范、阶段边界，统一遵循 [`agent.md`](/home/chen/FUN/CISLC-O3/agent.md)。
-- 与后端主文档 [`doc/CISLC_O3.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3.md) 的分工：
+- 面向后续 agent / 协作者的执行规则、注释规范、阶段边界，统一遵循 [`agent.md`](/home/chen/work/CISLC-O3/agent.md)。
+- 与后端主文档 [`doc/CISLC_O3.md`](/home/chen/work/CISLC-O3/doc/CISLC_O3.md) 的分工：
   - `doc/CISLC_O3.md` 记录后端现状和后端主链路。
   - 本文件记录前端现状和前端后续开发入口。
 - 使用顺序建议：
   1. 先读本文件，确认当前前端实现边界与受影响模块。
   2. 再读相关 frontend RTL 和顶层连接文件。
-  3. 最后按 [`agent.md`](/home/chen/FUN/CISLC-O3/agent.md) 中的规则落修改。
+  3. 最后按 [`agent.md`](/home/chen/work/CISLC-O3/agent.md) 中的规则落修改。
 
 ## 当前实现状态
 
@@ -66,6 +66,7 @@
 - `rtl/frontend/frontend.sv` 已实例化并连接 `bpu`、`ftq`、`ifu`、`ICache` 和 `fetch_buffer`。
 - 当前顶层数据流是 `BPU -> FTQ -> IFU -> ICache -> IFU -> fetch_buffer -> frontend output`。
 - 顶层新增 `reset_pc_i`，用于指定 BPU reset 后开始生成 fetch block 的起始 PC。
+- 在 `O3_FRONTEND_DEBUG` 宏下，frontend 会透出 FTQ debug 信号，用于前端仿真统计 FTQ 向 IFU 出队的 block 数。
 - fetch buffer 出队口暂时直接作为 frontend 顶层输出：`fetch_valid_o` 表示本拍有 fetch group，`fetch_valid_mask_o` 由每个 `fetch_entry_t.valid` 生成。
 - ICache refill request/response 当前从 frontend 顶层透出，后续可接 L2、总线或测试内存模型。
 - ICache line 大小当前由 `o3_pkg::ICACHE_LINE_BYTES` 统一定义，frontend 实例化点不单独覆盖。
@@ -77,7 +78,33 @@
 - FTQ 未实现 release/commit 回收；当前顺序前端最多分配 `FTQ_DEPTH` 个 fetch block 后会停止接收 BPU。
 - 未实现 redirect、异常恢复和跨模块精确清除。
 - `rtl/O3.sv` 和 `rtl/Tile.sv` 仍是占位顶层，未接入真实 IFU/FTQ/icache 链路。
-- 未写测试和仿真。
+
+### 当前测试
+- `sim/frontend/frontend_basic` 是当前前端固定 smoke/regression。
+- 运行命令：
+
+```bash
+cd sim/frontend
+make clean-test TEST=frontend_basic
+make test TEST=frontend_basic
+```
+
+- 该测试设置 `reset_pc_i=0`，通过 `O3_FRONTEND_DEBUG` 统计 FTQ 向 IFU 成功出队 4 个 block 后停止。
+- checker 不要求每拍输出 4 条，也不要求每拍都有输出；只检查已经从 frontend output 出队的有效 lane 是否保持 PC 和 instruction 顺序递增，且没有 fetch 异常。
+
+## 下一步集成目标
+- 下一阶段不是继续扩展真实分支预测，而是把 frontend 和 backend 组装成最小核心闭环。
+- 目标是从 `reset_pc_i=0` 取到至少一条简单 RV64I 整数指令，经 backend decode/rename/issue/regread/execute/writeback/retire 后，让 backend 的 `retired_inst_count_o` 增加。
+- 该阶段不要求：
+  - 完整指令集。
+  - 完整程序运行。
+  - 分支预测、redirect、异常恢复。
+  - FTQ 的真实 commit/release。
+- 需要重点处理：
+  - frontend 4-lane output 与 backend `MACHINE_WIDTH` 参数的宽度对齐。
+  - frontend `fetch_valid_o/fetch_ready_i` 与 backend `fetch_valid_i/fetch_ready_o` 的顶层握手。
+  - ICache refill response 的测试内存模型或最小集成环境。
+  - 最小 done 条件，例如 backend retired count 达到 1。
 
 ## 当前前端数据流
 
@@ -156,7 +183,7 @@ frontend
 - `rtl/frontend/icache.sv`
   - ICache 模块，IFU S1 向其发请求，S2 接收其返回。
 - `rtl/frontend/frontend.sv`
-  - 前端顶层，实例化并连接 FTQ、IFU、ICache 和 fetch buffer。
+  - 前端顶层，实例化并连接 BPU、FTQ、IFU、ICache 和 fetch buffer。
 - `rtl/O3.sv`
   - O3 核心顶层入口；真正集成前后端时需要一起修改。
 - `rtl/Tile.sv`
@@ -250,7 +277,7 @@ frontend
 - 后端方向看到更新后的队头 fetch group。
 
 ## 当前开发约束
-- 当前阶段只搭前端 RTL 功能骨架，不写测试代码，不写仿真代码。
+- 当前阶段已经有前端 smoke/regression；修改前端后应保持 `sim/frontend/frontend_basic` 可运行。
 - 前端代码约束与后端一致：模块头注释、关键逻辑注释、逐周期说明都必须补齐。
 - 如果后续修改影响前端接口、PC 选择、预测表、队列、握手或周期级行为，必须同步更新本文件。
-- 如果后续修改同时影响协作规则、文档分工或通用执行边界，再同步更新 [`agent.md`](/home/chen/FUN/CISLC-O3/agent.md)。
+- 如果后续修改同时影响协作规则、文档分工或通用执行边界，再同步更新 [`agent.md`](/home/chen/work/CISLC-O3/agent.md)。

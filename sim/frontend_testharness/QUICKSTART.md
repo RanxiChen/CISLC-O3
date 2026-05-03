@@ -1,5 +1,16 @@
 # 快速开始指南
 
+> Legacy note: `sim/frontend_testharness` 正在逐步弃用，不再作为当前前端主回归入口。
+> 当前前端 smoke/regression 请使用 `sim/frontend/frontend_basic`：
+>
+> ```bash
+> cd sim/frontend
+> make clean-test TEST=frontend_basic
+> make test TEST=frontend_basic
+> ```
+>
+> 本目录中的 DPI-C 分支执行模型文档仅保留作历史参考和后续可能复用的工具说明。
+
 ## 文件说明
 
 ### 新增的执行模型文件
@@ -17,7 +28,7 @@
 ### 方法 1: 使用现有的测试平台
 
 ```bash
-cd /home/chen/FUN/CISLC-O3/sim/frontend_testharness
+cd /home/chen/work/CISLC-O3/sim/frontend_testharness
 mkdir -p build
 cd build
 cmake ..
@@ -30,7 +41,7 @@ make
 如果你想单独测试 RISC-V 执行模型（不依赖 frontend），可以创建一个简单的测试：
 
 ```bash
-cd /home/chen/FUN/CISLC-O3/sim/frontend_testharness
+cd /home/chen/work/CISLC-O3/sim/frontend_testharness
 
 # 使用 Verilator 编译测试
 verilator --cc --exe \
@@ -203,4 +214,3 @@ A: 在 `dpi_log_frontend_transaction()` 函数中每次调用时递增。
 - **RISCV_EXEC_MODEL_README.md** - 详细的 API 文档
 - **RISC-V 指令集手册** - https://riscv.org/specifications/
 - **Verilator DPI-C 文档** - https://verilator.org/guide/latest/connecting.html
-

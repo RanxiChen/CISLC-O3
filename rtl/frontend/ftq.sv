@@ -102,6 +102,15 @@ module ftq
     input  logic       ifu_ready_i,
     output ftq_entry_t ifu_entry_o,
     output ftq_idx_t   ifu_ftq_idx_o
+
+    `ifdef O3_FRONTEND_DEBUG
+    ,output logic       dbg_ifu_fire_o
+    ,output logic       dbg_bpu_fire_o
+    ,output ftq_idx_t   dbg_alloc_tail_o
+    ,output ftq_idx_t   dbg_ifu_head_o
+    ,output ftq_idx_t   dbg_release_head_o
+    ,output logic [$clog2(FTQ_DEPTH+1)-1:0] dbg_allocated_count_o
+    `endif
 );
 
     // Storage
@@ -120,6 +129,11 @@ module ftq
     // Internal fire signals
     logic bpu_fire;
     logic ifu_fire;
+
+    `ifdef O3_FRONTEND_DEBUG
+    logic dbg_bpu_fire_q;
+    logic dbg_ifu_fire_q;
+    `endif
 
     function automatic ftq_idx_t next_ptr(input ftq_idx_t ptr);
         if (FTQ_DEPTH == 1) begin
@@ -152,7 +166,16 @@ module ftq
             ifu_head_q        <= '0;
             release_head_q    <= '0;
             allocated_count_q <= '0;
+            `ifdef O3_FRONTEND_DEBUG
+            dbg_bpu_fire_q    <= 1'b0;
+            dbg_ifu_fire_q    <= 1'b0;
+            `endif
         end else begin
+            `ifdef O3_FRONTEND_DEBUG
+            dbg_bpu_fire_q <= bpu_fire;
+            dbg_ifu_fire_q <= ifu_fire;
+            `endif
+
             // BPU enqueue
             if (bpu_fire) begin
                 entries_q[alloc_tail_q]   <= bpu_entry_i;
@@ -177,6 +200,15 @@ module ftq
             //   - allocated_count_q -= 1
         end
     end
+
+    `ifdef O3_FRONTEND_DEBUG
+    assign dbg_ifu_fire_o         = dbg_ifu_fire_q;
+    assign dbg_bpu_fire_o         = dbg_bpu_fire_q;
+    assign dbg_alloc_tail_o       = alloc_tail_q;
+    assign dbg_ifu_head_o         = ifu_head_q;
+    assign dbg_release_head_o     = release_head_q;
+    assign dbg_allocated_count_o  = allocated_count_q;
+    `endif
 
     initial begin
         if (FTQ_DEPTH <= 0) begin

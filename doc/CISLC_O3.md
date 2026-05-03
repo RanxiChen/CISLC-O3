@@ -2,12 +2,12 @@
 
 ## 文档定位
 - 本文件保留为“当前实现状态 + 代码索引 + 时序入口”文档。
-- 面向后续 agent / 协作者的执行规则、注释规范、阶段边界，已拆分到 [`agent.md`](/home/chen/FUN/CISLC-O3/agent.md)。
-- 前端当前实现状态、代码索引和时序入口，已拆分到 [`doc/CISLC_O3_frontend.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3_frontend.md)。
+- 面向后续 agent / 协作者的执行规则、注释规范、阶段边界，已拆分到 [`agent.md`](/home/chen/work/CISLC-O3/agent.md)。
+- 前端当前实现状态、代码索引和时序入口，已拆分到 [`doc/CISLC_O3_frontend.md`](/home/chen/work/CISLC-O3/doc/CISLC_O3_frontend.md)。
 - 使用顺序建议：
-  1. 先按任务方向选择主文档：后端任务读本文件，前端任务读 [`doc/CISLC_O3_frontend.md`](/home/chen/FUN/CISLC-O3/doc/CISLC_O3_frontend.md)。
+  1. 先按任务方向选择主文档：后端任务读本文件，前端任务读 [`doc/CISLC_O3_frontend.md`](/home/chen/work/CISLC-O3/doc/CISLC_O3_frontend.md)。
   2. 再读相关 RTL。
-  3. 最后按 [`agent.md`](/home/chen/FUN/CISLC-O3/agent.md) 中的规则落修改。
+  3. 最后按 [`agent.md`](/home/chen/work/CISLC-O3/agent.md) 中的规则落修改。
 
 ## 当前实现状态
 - `backend` 已经具备一个最小 fetch-entry buffer，可以承接 frontend 输入；公共 `fetch_entry_t` 现在包含 lane 级 `valid`、`pc`、`instruction`、`fetch_addr_misaligned` 和 `fetch_access_fault`。
@@ -48,13 +48,27 @@
 - `rob` 当前会从队头连续退休最多 3 条已经 complete 且无异常的指令，并把 `old_dst_preg` 返还给 free list。
 - 当前还没有异常恢复、store 提交和更复杂的 commit/flush 链路。
 
+## 下一步集成目标
+- 当前 backend 已经可以在专用 testharness 中处理 DPI-C 虚拟前端送来的简单整数指令流。
+- 当前 frontend 已经可以从 `reset_pc_i=0` 顺序取指，并通过 `frontend_basic` 检查输出指令流顺序。
+- 下一步目标是替换 `rtl/O3.sv` 中的 LED 占位逻辑，把真实 frontend 和真实 backend 接成最小核心顶层。
+- 最小验收目标：
+  - 从 reset PC 取到至少一条简单 RV64I 整数指令。
+  - 指令进入 backend，完成 decode/rename/issue/regread/execute/writeback。
+  - ROB 按序退休该指令，`retired_inst_count_o` 增加。
+- 该阶段暂不要求完整 ISA、完整异常恢复、真实分支预测、真实外部总线或完整程序结束条件。
+- 主要接口问题：
+  - frontend 当前输出 4-lane `fetch_entry_t`，backend 可通过 `MACHINE_WIDTH` 参数配置接收宽度；集成时优先让 backend 宽度与 frontend 输出宽度一致。
+  - frontend ICache refill 端口需要测试内存模型或更上层 wrapper 驱动。
+  - FTQ 当前没有 release/commit 回收，短程单指令 smoke test 可接受该限制，长期运行需要后续接 release。
+
 ## 模块说明
 ### backend
 - 职责：承接 frontend 指令组，驱动 decode queue 与基础 rename 流程。
 - 当前实现：fetch buffer + 解码 + decoded uop queue + 物理寄存器分配请求 + rename map 更新 + 最小 ROB 分配/存储/complete/retire + preg ready 跟踪 + rename 后整数 uop 入 issue queue + issue/select + regread + execute + result reg + writeback + free-list release。
 - 调试能力：当定义 `O3_SIM` 时，backend 固定按周期块输出 `DECODE/RENAME/WAKEUP/ISSUE/REGREAD/EXECUTE/WRITEBACK/RETIRE/RETIRE_COUNT`；其中 `RENAME` 行可通过 DPI-C 调用 RV64I 反汇编 helper 显示汇编字符串。
 - 宽度语义：使用 `MACHINE_WIDTH` 表示每周期并行进入 rename 数据流的 lane 数。
-- 当前未做：真实写回广播、写回 physical regfile、提交、异常恢复，以及非整数 issue/dispatch 数据流。
+- 当前未做：同拍写回旁路广播、异常/分支恢复、store 提交，以及非整数 issue/dispatch 数据流。
 
 ### backend_testharness
 - 职责：作为后端专用仿真顶层，实例化 `backend` 并用 DPI-C 虚拟前端驱动它。
@@ -182,9 +196,9 @@
 - `rtl/frontend/frontend.sv`
   - frontend 侧实现入口，和 backend 对接时需要一起看接口约束。
 - `rtl/O3.sv`
-  - O3 核心顶层连接入口。
+  - O3 核心顶层连接入口；当前仍是 LED 占位逻辑，下一步需要替换为 frontend + backend 最小集成顶层。
 - `rtl/Tile.sv`
-  - 更上层系统封装入口。
+  - 更上层系统封装入口；当前仍包住占位 `o3`，真实 core 集成后需要同步更新。
 - `tb/backend_testharness.sv`
   - 后端专用仿真顶层，实例化 `backend` 并通过 DPI-C 虚拟前端产生 6-lane fetch group；同时在最后一个 fetch group 被接收后再等待固定排空窗口。
 - `sim/backend_testharness/`
@@ -439,7 +453,7 @@
 - 除法器扩展：在保持当前固定拍数接口不变的前提下，将内部实现替换为迭代式除法器，并视需要扩展可取消与融合能力。
 
 ## 文档分工建议
-更适合放到 [`agent.md`](/home/chen/FUN/CISLC-O3/agent.md) 的内容：
+更适合放到 [`agent.md`](/home/chen/work/CISLC-O3/agent.md) 的内容：
 - 开发流程约定。
 - 当前阶段“不写测试/不写仿真/先搭功能”的工作边界。
 - 每次修改 RTL 时的注释规范。

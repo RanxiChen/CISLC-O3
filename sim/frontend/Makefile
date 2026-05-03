@@ -23,7 +23,8 @@ RTL_SRCS := \
 	$(REPO_ROOT)/rtl/frontend/frontend.sv
 
 VERILATOR_DEFINES := \
-	-DO3_SIM
+	-DO3_SIM \
+	-DO3_FRONTEND_DEBUG
 
 VERILATOR_FLAGS := \
 	--cc \
