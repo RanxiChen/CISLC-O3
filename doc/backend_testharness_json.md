@@ -3,7 +3,7 @@
 ## 目标
 
 新增一个基于 JSON 的后端仿真入口：指令流完全由 C++ testbench 从 JSON 文件读取，
-并通过 Makefile 宏切换日志格式（旧日志 / Kanata）。
+并通过 Makefile 宏切换日志格式（backend 普通文本日志 / Kanata）。
 
 ## JSON 格式
 
@@ -33,7 +33,7 @@ make run INPUT=program.json
 
 ### Kanata 日志
 
-默认输出旧日志；启用 Kanata：
+默认输出 backend 普通文本日志；启用 Kanata：
 
 ```bash
 make run KANATA=1 INPUT=program.json
@@ -62,7 +62,7 @@ make run MACHINE_WIDTH=6 INPUT=program.json
    - 新：从 JSON 文件读取指令流。
 
 2. **日志输出**  
-   - 旧：只输出原来的逐周期后端日志。  
+   - 旧：只输出 backend 普通逐周期文本日志。
    - 新：可通过 `KANATA=1` 输出 Kanata 格式日志（并落盘 `.log`）。
 
 3. **结束条件**  

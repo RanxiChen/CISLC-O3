@@ -13,9 +13,11 @@
 - `backend` 已经具备一个最小 fetch-entry buffer，可以承接 frontend 输入；公共 `fetch_entry_t` 现在包含 lane 级 `valid`、`pc`、`instruction`、`fetch_addr_misaligned` 和 `fetch_access_fault`。
 - `backend` 已经把整数最小主链路拆成 `fetch/decode -> decoded uop queue -> rename/ROB alloc -> issue queue wakeup/select -> issue reg -> regread -> execute -> execute result reg -> writeback/ROB complete -> 3-wide retire/free-list release`。
 - `backend` 在 `O3_SIM` 宏下已支持逐周期文本调试，按 cycle 把 `DECODE/RENAME/WAKEUP/ISSUE/REGREAD/EXECUTE/WRITEBACK/RETIRE` 各级组织成一个日志块输出。
+- `backend` 在 `O3_SIM_SINGLE_INST_TRACE` 宏下会关闭普通逐周期文本块，只追踪第一条进入 backend 的有效指令，从 `ACCEPT` 打到 `RETIRE`，并通过 `single_inst_retired_o` 给 core 单指令仿真提供结束条件。
 - `backend` 已新增 `retired_inst_count_q` 计数器，从 reset 开始按每拍真实退休条数累加，表示系统累计已退休的指令数。
-- `backend` 已新增内部 `instruction_id` 体系：每条被 backend 接收的指令都会分配一个 64 位调试编号，高位表示“第几批被接收的 fetch group”，低位表示“该批内的 lane 编号”；当 `MACHINE_WIDTH=6` 时，低 3 位表示 lane id。
+- `backend` 已新增内部 `instruction_id` 体系：每条被 backend 接收的指令都会分配一个 64 位调试编号，高位表示“第几批被接收的 fetch group”，低位表示“该批内的 lane 编号”；当前 core 集成默认 `MACHINE_WIDTH=4`，低 2 位表示 lane id。
 - 当前后端并行宽度命名统一使用 `machine width` / `MACHINE_WIDTH`，表示每周期并行处理的 lane 数。
+- 当前 core/backend 固定配置集中在 `rtl/common/o3_pkg.sv` 的 `CORE_FETCH_WIDTH` 与 `BACKEND_*` 参数中；当前版本 `CORE_FETCH_WIDTH=4`，`BACKEND_MACHINE_WIDTH=4`。
 - `decoder` 已经能提取 `rs1/rs2/rd`，并对 RV64I 的整数 R/I 算术指令给出 `rs1_read_en/rs2_read_en/rd_write_en/use_imm/imm_type/imm_raw/int_alu_op/is_int_uop`。
 - `o3_pkg` 已新增统一的 `int_alu_op_t` 与 `imm_type_t`，用于对齐 `decoder` 和 `int_execute_unit`。
 - `uop_queue` 已新增，作为 decode 后、rename 前的成组缓冲。
@@ -29,6 +31,8 @@
 - `mul_execute_unit` 已新增，提供独立的 RV64M 乘法单元，当前采用“预计算结果 + 固定拍数返回”的简化骨架。
 - `div_execute_unit` 已新增，提供独立的 RV64M 除法/取余单元，当前采用“预计算结果 + 固定拍数返回”的简化骨架。
 - `backend_testharness` 已更新为当前后端主链路对应的 Verilator 仿真入口；当前通过 DPI-C 伪造 6-lane 虚拟前端，从 `pc=0` 开始按组向 backend 提供固定的 RV64I 整形运算指令，并在最后一组 fetch 被接收后继续保留固定排空窗口，便于观察 `decode/rename/issue/regread/execute` 多拍日志。
+- `rtl/core/o3_core.sv` 已经把真实 frontend 和真实 backend 接通；frontend 内部已有 fetch buffer，core 层不再额外实例化 fetch buffer。
+- `sim/core_single_inst` 已新增 core 级单指令 smoke test：用真实 frontend 发起 ICache refill，用测试内存返回 `addi x1, x0, 1`，并在该指令退休后结束仿真。
 
 ## 当前后端数据流
 - 当前数据流是：`frontend -> fetch_entry buffer -> decoder -> decoded uop queue -> free_list + rename_map_table + rob -> integer issue queue -> ALU issue reg -> regread -> execute -> execute result reg -> physical regfile writeback + ROB complete -> ROB retire + free_list release`
@@ -48,27 +52,34 @@
 - `rob` 当前会从队头连续退休最多 3 条已经 complete 且无异常的指令，并把 `old_dst_preg` 返还给 free list。
 - 当前还没有异常恢复、store 提交和更复杂的 commit/flush 链路。
 
-## 下一步集成目标
-- 当前 backend 已经可以在专用 testharness 中处理 DPI-C 虚拟前端送来的简单整数指令流。
-- 当前 frontend 已经可以从 `reset_pc_i=0` 顺序取指，并通过 `frontend_basic` 检查输出指令流顺序。
-- 下一步目标是替换 `rtl/O3.sv` 中的 LED 占位逻辑，把真实 frontend 和真实 backend 接成最小核心顶层。
-- 最小验收目标：
-  - 从 reset PC 取到至少一条简单 RV64I 整数指令。
-  - 指令进入 backend，完成 decode/rename/issue/regread/execute/writeback。
-  - ROB 按序退休该指令，`retired_inst_count_o` 增加。
-- 该阶段暂不要求完整 ISA、完整异常恢复、真实分支预测、真实外部总线或完整程序结束条件。
-- 主要接口问题：
-  - frontend 当前输出 4-lane `fetch_entry_t`，backend 可通过 `MACHINE_WIDTH` 参数配置接收宽度；集成时优先让 backend 宽度与 frontend 输出宽度一致。
-  - frontend ICache refill 端口需要测试内存模型或更上层 wrapper 驱动。
-  - FTQ 当前没有 release/commit 回收，短程单指令 smoke test 可接受该限制，长期运行需要后续接 release。
+## 当前核心集成状态
+- `rtl/core/o3_core.sv` 是当前真实 frontend + backend 的 core 级连接入口。
+- core 顶层透出 `reset_pc_i`、ICache refill request/response、backend `done_o` 和 `retired_inst_count_o`。
+- frontend 输出 4-lane `fetch_entry_t` group；backend 当前通过 `BACKEND_MACHINE_WIDTH=4` 对齐该宽度。
+- frontend 端口是 unpacked array，backend 端口是 packed aggregate，core 内部用逐 lane bridge 做形状转换；该 bridge 不改变 lane 顺序、不压缩 bubble、不做协议转换。
+- `fetch_valid_o/fetch_ready_i` 与 `fetch_valid_i/fetch_ready_o` 是 group 级 ready/valid；后端不能单独 ready 某个 lane。
+- ICache refill 端口仍需要 testbench 或后续存储系统驱动；core 当前不生成 refill response。
+- FTQ 当前没有 release/commit 回收，短程单指令 smoke test 可接受该限制，长期运行需要后续接 release。
+- `rtl/O3.sv` 与 `rtl/Tile.sv` 仍是 LED 占位系统入口，尚未包住 `o3_core`。
 
 ## 模块说明
 ### backend
 - 职责：承接 frontend 指令组，驱动 decode queue 与基础 rename 流程。
 - 当前实现：fetch buffer + 解码 + decoded uop queue + 物理寄存器分配请求 + rename map 更新 + 最小 ROB 分配/存储/complete/retire + preg ready 跟踪 + rename 后整数 uop 入 issue queue + issue/select + regread + execute + result reg + writeback + free-list release。
-- 调试能力：当定义 `O3_SIM` 时，backend 固定按周期块输出 `DECODE/RENAME/WAKEUP/ISSUE/REGREAD/EXECUTE/WRITEBACK/RETIRE/RETIRE_COUNT`；其中 `RENAME` 行可通过 DPI-C 调用 RV64I 反汇编 helper 显示汇编字符串。
+- 调试能力：
+  - 当只定义 `O3_SIM` 时，backend 按周期块输出 `DECODE/RENAME/WAKEUP/ISSUE/REGREAD/EXECUTE/WRITEBACK/RETIRE/RETIRE_COUNT`；其中 `RENAME` 行可通过 DPI-C 调用 RV64I 反汇编 helper 显示汇编字符串。
+  - 当定义 `O3_SIM_KANATA` 时，backend 输出 Kanata 格式文件。
+  - 当定义 `O3_SIM_SINGLE_INST_TRACE` 时，backend 不输出普通整周期文本块，只追踪第一条进入 backend 的有效指令，并在目标指令退休后拉高 `single_inst_retired_o`。
 - 宽度语义：使用 `MACHINE_WIDTH` 表示每周期并行进入 rename 数据流的 lane 数。
 - 当前未做：同拍写回旁路广播、异常/分支恢复、store 提交，以及非整数 issue/dispatch 数据流。
+
+### o3_core
+- 职责：作为当前 core 级最小集成入口，实例化真实 frontend 和真实 backend。
+- 当前实现：
+  - 连接 frontend 已有 fetch buffer 出队口到 backend fetch 输入口。
+  - 透出 ICache refill request/response，供 testbench 或后续存储系统驱动。
+  - 在 `O3_SIM_SINGLE_INST_TRACE` 下透出 `single_inst_retired_o`。
+- 当前未做：不接 data cache/LSU/总线，不生成 refill response，不做 redirect/flush 精确恢复，不定义真实程序结束条件。
 
 ### backend_testharness
 - 职责：作为后端专用仿真顶层，实例化 `backend` 并用 DPI-C 虚拟前端驱动它。
@@ -192,17 +203,22 @@
   - 独立的除法执行单元，负责 RV64M 的除法/取余类指令。
 - `rtl/common/o3_pkg.sv`
   - 定义 `fetch_entry_t`、`decode_in_t`、`decode_out_t`、`int_alu_op_t`、`imm_type_t` 等跨模块接口类型，以及 `decoded_uop/renamed_uop` 使用的 `instruction_id` 字段。
+  - 当前也集中定义 `CORE_FETCH_WIDTH` 与 `BACKEND_*` 固定配置参数。
   - `fetch_entry_t` 是前后端共同认可的单 lane 指令包，包含 `valid/pc/instruction/fetch_addr_misaligned/fetch_access_fault`。
 - `rtl/frontend/frontend.sv`
   - frontend 侧实现入口，和 backend 对接时需要一起看接口约束。
+- `rtl/core/o3_core.sv`
+  - 当前真实 frontend + backend 的 core 级连接入口。
 - `rtl/O3.sv`
-  - O3 核心顶层连接入口；当前仍是 LED 占位逻辑，下一步需要替换为 frontend + backend 最小集成顶层。
+  - 旧系统级入口；当前仍是 LED 占位逻辑，尚未包住 `o3_core`。
 - `rtl/Tile.sv`
   - 更上层系统封装入口；当前仍包住占位 `o3`，真实 core 集成后需要同步更新。
 - `tb/backend_testharness.sv`
   - 后端专用仿真顶层，实例化 `backend` 并通过 DPI-C 虚拟前端产生 6-lane fetch group；同时在最后一个 fetch group 被接收后再等待固定排空窗口。
 - `sim/backend_testharness/`
   - 后端 Verilator 仿真目录，包含 `main.cpp`、固定指令流 DPI-C 实现、本地说明文档，以及当前 backend 主链路所需的 Verilator 构建入口。
+- `sim/core_single_inst/`
+  - core 级单指令仿真目录，用真实 frontend/backend 跑 `addi x1, x0, 1`，默认启用 `O3_SIM_SINGLE_INST_TRACE`。
 
 ## 关键时序行为
 ### backend 周期级行为
@@ -237,7 +253,7 @@
 - `backend` 会在本拍把真实退休条数累加到 `retired_inst_count_q`。
 - 如果 `fetch_fire=1`，则 frontend 新的一组指令写入 buffer，并按“group 序号 + lane id”生成新的 `instruction_id`。
 - 如果同拍既 `decode_fire=1` 又 `fetch_fire=1`，表示旧的 fetch 组被消费完成 decode，同时新的一组顶上来。
-- 当定义 `O3_SIM` 时，本拍会输出一个 lane0 日志块：
+- 当只定义 `O3_SIM`、未定义 `O3_SIM_KANATA` 和 `O3_SIM_SINGLE_INST_TRACE` 时，本拍会输出一个 lane0 日志块：
   - `DECODE` 行显示当前 fetch buffer 中 lane0 指令。
   - `RENAME` 行显示当前 rename 队头 lane0 指令及其重命名结果。
   - `WAKEUP` 行显示本拍因 `preg_ready` 变化而被唤醒的 queue 内指令 id。
@@ -254,7 +270,7 @@
 - 看到刚刚被写回的目标物理寄存器在 `preg_ready` 中变为 ready。
 - 看到刚刚退休并释放的旧物理寄存器重新回到 free list 可见范围。
 - 看到新 buffer 中的下一组指令，以及新的 rename 队头。
-- 当定义 `O3_SIM` 时，日志中可看到不同 `instruction_id` 在各级继续向后流动。
+- 当只定义普通 `O3_SIM` 文本日志时，日志中可看到不同 `instruction_id` 在各级继续向后流动；当定义 `O3_SIM_SINGLE_INST_TRACE` 时，只会打印第一条进入 backend 的有效指令。
 
 ### backend_testharness 周期级行为
 周期 N 组合阶段：

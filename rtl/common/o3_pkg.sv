@@ -21,6 +21,18 @@ package o3_pkg;
     parameter int ICACHE_LINE_BYTES = 64;
 
     // ========================================
+    // 当前 core/backend 固定配置
+    // ========================================
+    parameter int CORE_FETCH_WIDTH = 4;
+    parameter int BACKEND_MACHINE_WIDTH = CORE_FETCH_WIDTH;
+    parameter int BACKEND_NUM_PHYS_REGS = 64;
+    parameter int BACKEND_NUM_ARCH_REGS = 32;
+    parameter int BACKEND_NUM_ROB_ENTRIES = 64;
+    parameter int BACKEND_DECODE_QUEUE_DEPTH = 2;
+    parameter int BACKEND_INT_ISSUE_QUEUE_DEPTH = 16;
+    parameter int BACKEND_NUM_INT_ALUS = 3;
+
+    // ========================================
     // Frontend -> Backend 接口
     // ========================================
 

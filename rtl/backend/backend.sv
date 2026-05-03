@@ -72,13 +72,13 @@
 module backend
     import o3_pkg::*;
     #(
-        parameter int MACHINE_WIDTH = 1,
-        parameter int NUM_PHYS_REGS = 64,
-        parameter int NUM_ARCH_REGS = 32,
-        parameter int NUM_ROB_ENTRIES = 64,
-        parameter int DECODE_QUEUE_DEPTH = 2,
-        parameter int INT_ISSUE_QUEUE_DEPTH = 16,
-        parameter int NUM_INT_ALUS = 3
+        parameter int MACHINE_WIDTH = BACKEND_MACHINE_WIDTH,
+        parameter int NUM_PHYS_REGS = BACKEND_NUM_PHYS_REGS,
+        parameter int NUM_ARCH_REGS = BACKEND_NUM_ARCH_REGS,
+        parameter int NUM_ROB_ENTRIES = BACKEND_NUM_ROB_ENTRIES,
+        parameter int DECODE_QUEUE_DEPTH = BACKEND_DECODE_QUEUE_DEPTH,
+        parameter int INT_ISSUE_QUEUE_DEPTH = BACKEND_INT_ISSUE_QUEUE_DEPTH,
+        parameter int NUM_INT_ALUS = BACKEND_NUM_INT_ALUS
     )
 (
     input  logic clk,
@@ -88,6 +88,9 @@ module backend
     output logic                             fetch_ready_o,
     output logic                             done,
     output logic [63:0]                      retired_inst_count_o
+`ifdef O3_SIM_SINGLE_INST_TRACE
+    ,output logic                            single_inst_retired_o
+`endif
 );
 
     localparam int BACKEND_PREG_IDX_WIDTH = $clog2(NUM_PHYS_REGS);
@@ -175,6 +178,15 @@ module backend
     logic        kanata_header_printed_q;
     integer      kanata_fd;
     string       kanata_log_path;
+`ifdef O3_SIM_SINGLE_INST_TRACE
+    logic                              single_trace_active_q;
+    logic                              single_trace_done_q;
+    logic [INST_ID_WIDTH-1:0]          single_trace_id_q;
+    logic [BACKEND_ROB_IDX_WIDTH-1:0]  single_trace_rob_idx_q;
+    logic [PC_WIDTH-1:0]              single_trace_pc_q;
+    logic [ILEN-1:0]                  single_trace_inst_q;
+    int                                single_trace_lane_q;
+`endif
 `endif
     logic [63:0] retired_inst_count_q;
     logic [63:0] retired_inst_count_next;
@@ -341,6 +353,10 @@ module backend
     assign done            = 1'b0;
     assign issueq_issue_ready = '1;
     assign retired_inst_count_o = retired_inst_count_q;
+
+`ifdef O3_SIM_SINGLE_INST_TRACE
+    assign single_inst_retired_o = single_trace_done_q;
+`endif
 
     generate
         for (i = 0; i < NUM_INT_ALUS; i++) begin : prf_read_addr_assign
@@ -528,6 +544,15 @@ module backend
             kanata_header_printed_q <= 1'b0;
             kanata_fd               <= 0;
             kanata_log_path         <= "";
+`ifdef O3_SIM_SINGLE_INST_TRACE
+            single_trace_active_q   <= 1'b0;
+            single_trace_done_q     <= 1'b0;
+            single_trace_id_q       <= '0;
+            single_trace_rob_idx_q  <= '0;
+            single_trace_pc_q       <= '0;
+            single_trace_inst_q     <= '0;
+            single_trace_lane_q     <= 0;
+`endif
 `endif
         end else begin
 `ifdef O3_SIM
@@ -686,6 +711,132 @@ module backend
                                   retire_id,
                                   rob_retire_old_dst_preg[port]);
                         retire_id = retire_id + 1;
+                    end
+                end
+            end
+`elsif O3_SIM_SINGLE_INST_TRACE
+            if (!single_trace_active_q && !single_trace_done_q && fetch_fire) begin
+                bit trace_found;
+                int trace_lane;
+                trace_found = 0;
+                trace_lane  = 0;
+                for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
+                    if (fetch_entry_i[lane].valid && !trace_found) begin
+                        trace_found = 1;
+                        trace_lane  = lane;
+                    end
+                end
+                if (trace_found) begin
+                    single_trace_active_q  <= 1'b1;
+                    single_trace_id_q      <= fetch_instruction_id_d[trace_lane];
+                    single_trace_pc_q      <= fetch_entry_i[trace_lane].pc;
+                    single_trace_inst_q    <= fetch_entry_i[trace_lane].instruction;
+                    single_trace_lane_q    <= trace_lane;
+                    $display("[SINGLE][cycle=%0d] ACCEPT pc=0x%0h inst=0x%08h id=0x%0h",
+                             sim_cycle_q,
+                             fetch_entry_i[trace_lane].pc,
+                             fetch_entry_i[trace_lane].instruction,
+                             fetch_instruction_id_d[trace_lane]);
+                end
+            end
+
+            if (single_trace_active_q) begin
+                if (fetch_entry_valid_q
+                 && fetch_entry_q[single_trace_lane_q].valid
+                 && fetch_instruction_id_q[single_trace_lane_q] == single_trace_id_q) begin
+                    $display("[SINGLE][cycle=%0d] DECODE pc=0x%0h inst=0x%08h id=0x%0h",
+                             sim_cycle_q,
+                             single_trace_pc_q,
+                             single_trace_inst_q,
+                             single_trace_id_q);
+                end
+
+                if (rename_fire
+                 && rename_uop_head[single_trace_lane_q].valid
+                 && rename_uop_head[single_trace_lane_q].instruction_id == single_trace_id_q) begin
+                    single_trace_rob_idx_q <= rob_idx[single_trace_lane_q];
+                    $display("[SINGLE][cycle=%0d] RENAME id=0x%0h rd=x%0d old=p%0d new=p%0d rob=%0d",
+                             sim_cycle_q,
+                             single_trace_id_q,
+                             rename_uop_head[single_trace_lane_q].rd,
+                             dst_old_preg[single_trace_lane_q],
+                             dst_new_preg[single_trace_lane_q],
+                             rob_idx[single_trace_lane_q]);
+                end
+
+                for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
+                    if (issueq_issue_valid[alu]
+                     && issueq_issue_entry[alu].instruction_id == single_trace_id_q) begin
+                        string src2_str;
+                        if (issueq_issue_entry[alu].imm_valid) begin
+                            src2_str = $sformatf("imm(0x%0h)",
+                                                  expand_imm_value(issueq_issue_entry[alu].imm_type,
+                                                                   issueq_issue_entry[alu].imm_raw));
+                        end else begin
+                            src2_str = $sformatf("p%0d", issueq_issue_entry[alu].src2_preg);
+                        end
+                        $display("[SINGLE][cycle=%0d] ISSUE id=0x%0h alu=%0d src1=p%0d src2=%s dst=p%0d rob=%0d op=%s",
+                                 sim_cycle_q,
+                                 single_trace_id_q,
+                                 alu,
+                                 issueq_issue_entry[alu].src1_preg,
+                                 src2_str,
+                                 issueq_issue_entry[alu].dst_preg,
+                                 issueq_issue_entry[alu].rob_idx,
+                                 int_alu_op_name(issueq_issue_entry[alu].int_alu_op));
+                    end
+                end
+
+                for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
+                    if (alu_issue_q[alu].valid
+                     && alu_issue_q[alu].instruction_id == single_trace_id_q) begin
+                        $display("[SINGLE][cycle=%0d] REGREAD id=0x%0h alu=%0d src1=0x%0h src2=0x%0h",
+                                 sim_cycle_q,
+                                 single_trace_id_q,
+                                 alu,
+                                 prf_rd_data[(2*alu)+0],
+                                 alu_issue_q[alu].imm_valid
+                                    ? expand_imm_value(alu_issue_q[alu].imm_type, alu_issue_q[alu].imm_raw)
+                                    : (alu_issue_q[alu].src2_valid
+                                        ? prf_rd_data[(2*alu)+1]
+                                        : '0));
+                    end
+                end
+
+                for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
+                    if (alu_regread_q[alu].valid
+                     && alu_regread_q[alu].instruction_id == single_trace_id_q) begin
+                        $display("[SINGLE][cycle=%0d] EXECUTE id=0x%0h alu=%0d op=%s result=0x%0h",
+                                 sim_cycle_q,
+                                 single_trace_id_q,
+                                 alu,
+                                 int_alu_op_name(alu_regread_q[alu].int_alu_op),
+                                 exec_result[alu]);
+                    end
+                end
+
+                for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
+                    if (alu_result_q[alu].valid
+                     && alu_result_q[alu].instruction_id == single_trace_id_q) begin
+                        $display("[SINGLE][cycle=%0d] WRITEBACK id=0x%0h dst=p%0d data=0x%0h rob=%0d",
+                                 sim_cycle_q,
+                                 single_trace_id_q,
+                                 alu_result_q[alu].dst_preg,
+                                 alu_result_q[alu].result,
+                                 alu_result_q[alu].rob_idx);
+                    end
+                end
+
+                for (int port = 0; port < NUM_INT_ALUS; port++) begin
+                    if (rob_retire_valid[port]
+                     && rob_retire_instruction_id[port] == single_trace_id_q) begin
+                        single_trace_active_q <= 1'b0;
+                        single_trace_done_q   <= 1'b1;
+                        $display("[SINGLE][cycle=%0d] RETIRE id=0x%0h rob=%0d old=p%0d",
+                                 sim_cycle_q,
+                                 single_trace_id_q,
+                                 rob_retire_idx[port],
+                                 rob_retire_old_dst_preg[port]);
                     end
                 end
             end

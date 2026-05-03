@@ -106,6 +106,14 @@ make test TEST=frontend_basic
 - `frontend_basic` 是当前前端功能的长期 smoke/regression 入口。后续即使新增更多前端测试，这个测试仍应作为默认必跑项之一。
 - 当前 `frontend_basic` 通过 `O3_FRONTEND_DEBUG` 观察 FTQ 向 IFU 成功出队 block，并检查已经从 frontend output 出队的有效指令流是否保持顺序。
 - 如果该测试失败，最终回复必须说明失败阶段属于编译/接口问题、FTQ debug 停止条件问题、refill/ICache 行为问题，还是 frontend output 顺序 checker mismatch。
+- 当用户要求检查真实 frontend/backend 是否接通、core smoke、单指令 core 仿真等任务时，运行：
+
+```bash
+cd sim/core_single_inst
+make test
+```
+
+- `core_single_inst` 默认定义 `O3_SIM_SINGLE_INST_TRACE`，只打印第一条进入 backend 的有效指令从 `ACCEPT` 到 `RETIRE` 的单指令轨迹，并在该指令退休后结束。
 
 ## 建议保留在主文档中的代码索引
 以下信息建议长期保留在 [`doc/CISLC_O3.md`](/home/chen/work/CISLC-O3/doc/CISLC_O3.md)，不要外移：
@@ -115,6 +123,8 @@ make test TEST=frontend_basic
 - `rtl/backend/rename_map_table.sv`：架构寄存器到物理寄存器映射。
 - `rtl/backend/physical_regfile.sv`：物理寄存器文件实现与后续接入口。
 - `rtl/common/o3_pkg.sv`：跨模块数据结构定义。
+- `rtl/core/o3_core.sv`：当前真实 frontend + backend 的 core 级连接入口。
+- `sim/core_single_inst/`：当前 core 级单指令 smoke 入口。
 
 以下信息建议长期保留在 [`doc/CISLC_O3_frontend.md`](/home/chen/work/CISLC-O3/doc/CISLC_O3_frontend.md)，不要外移：
 - `rtl/frontend/frontend.sv`：前端当前实现入口。

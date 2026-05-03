@@ -72,8 +72,15 @@
 - ICache line 大小当前由 `o3_pkg::ICACHE_LINE_BYTES` 统一定义，frontend 实例化点不单独覆盖。
 - `flush_i` 当前只接到 ICache 和 fetch buffer；尚未驱动 BPU、FTQ 和 IFU 做 redirect/flush 精确清除。
 
+### Core Top Connection
+- `rtl/core/o3_core.sv` 已经实例化真实 frontend 和 backend。
+- core 层不再额外实例化 fetch buffer；frontend 内部已有 fetch buffer，core 直接把 frontend 出队口接到 backend。
+- frontend 的 4-lane fetch group 与 backend 当前 `BACKEND_MACHINE_WIDTH=4` 对齐。
+- frontend `fetch_valid_o/fetch_ready_i` 与 backend `fetch_valid_i/fetch_ready_o` 在 core 层形成 group 级 ready/valid 握手。
+- ICache refill request/response 仍从 core 顶层透出，由 `sim/core_single_inst` 或后续存储系统驱动。
+
 ### 尚未实现
-- 不接 backend；fetch buffer 出队口还没有连入后端 decode 入口。
+- frontend standalone 顶层仍只暴露 fetch buffer 出队口；真实 backend 连接位于 `rtl/core/o3_core.sv`。
 - BPU 只实现顺序 not-taken 生成，未实现真实分支预测、BTB、BHT、RAS。
 - FTQ 未实现 release/commit 回收；当前顺序前端最多分配 `FTQ_DEPTH` 个 fetch block 后会停止接收 BPU。
 - 未实现 redirect、异常恢复和跨模块精确清除。
@@ -81,6 +88,7 @@
 
 ### 当前测试
 - `sim/frontend/frontend_basic` 是当前前端固定 smoke/regression。
+- `sim/core_single_inst/single_addi` 是当前 core 级单指令 smoke，使用真实 frontend + backend，从 `reset_pc_i=0` 跑 `addi x1, x0, 1` 到 retire。
 - 运行命令：
 
 ```bash
@@ -92,19 +100,19 @@ make test TEST=frontend_basic
 - 该测试设置 `reset_pc_i=0`，通过 `O3_FRONTEND_DEBUG` 统计 FTQ 向 IFU 成功出队 4 个 block 后停止。
 - checker 不要求每拍输出 4 条，也不要求每拍都有输出；只检查已经从 frontend output 出队的有效 lane 是否保持 PC 和 instruction 顺序递增，且没有 fetch 异常。
 
-## 下一步集成目标
-- 下一阶段不是继续扩展真实分支预测，而是把 frontend 和 backend 组装成最小核心闭环。
-- 目标是从 `reset_pc_i=0` 取到至少一条简单 RV64I 整数指令，经 backend decode/rename/issue/regread/execute/writeback/retire 后，让 backend 的 `retired_inst_count_o` 增加。
-- 该阶段不要求：
+## 当前集成边界
+- frontend 和 backend 已经通过 `rtl/core/o3_core.sv` 组装成最小核心闭环。
+- 当前 core smoke 目标是从 `reset_pc_i=0` 取到 `addi x1, x0, 1`，经 backend decode/rename/issue/regread/execute/writeback/retire 后退出。
+- 该阶段仍不要求：
   - 完整指令集。
   - 完整程序运行。
   - 分支预测、redirect、异常恢复。
   - FTQ 的真实 commit/release。
-- 需要重点处理：
-  - frontend 4-lane output 与 backend `MACHINE_WIDTH` 参数的宽度对齐。
-  - frontend `fetch_valid_o/fetch_ready_i` 与 backend `fetch_valid_i/fetch_ready_o` 的顶层握手。
-  - ICache refill response 的测试内存模型或最小集成环境。
-  - 最小 done 条件，例如 backend retired count 达到 1。
+- 当前仍需要后续处理：
+  - `rtl/O3.sv` / `rtl/Tile.sv` 包住真实 `o3_core`。
+  - ICache refill response 接真实存储系统。
+  - FTQ release/commit 回收。
+  - redirect/flush 精确恢复。
 
 ## 当前前端数据流
 
