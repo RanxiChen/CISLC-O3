@@ -2,6 +2,7 @@
 #include "verilated.h"
 
 #include <array>
+#include <cassert>
 #include <cstdint>
 #include <deque>
 #include <iomanip>
@@ -186,6 +187,7 @@ int main(int argc, char** argv) {
     dut.rst_i = 1;
     dut.flush_i = 0;
     dut.fetch_ready_i = 1;
+    dut.reset_pc_i = 0;
     clear_refill_resp(dut);
 
     for (int i = 0; i < kResetCycles; ++i) {

@@ -2,7 +2,7 @@
 
 ## 文档定位
 - 本文记录 `rtl/frontend/ftq.sv` 中第一版 FTQ 类型定义。
-- 当前即将实现 `ftq` 模块主体的第一阶段：只实现 IFU 消费端。
+- 当前 `ftq` 模块已经实现 BPU 入队、IFU 消费和三指针骨架。
 - 当前 FTQ 面向按 block 进行分支预测的前端，用来保存每个 fetch block 的预测边界、控制流信息和后续恢复所需元信息。
 
 ## 基础常量
@@ -94,14 +94,17 @@ FTQ 后续不按普通 FIFO 实现。普通 FIFO 在消费后会释放队头 ent
   - 表示对应 entry 是否已经提供给 IFU 消费过。
   - IFU 消费只设置该位，不清 entry 内容，也不清 `entry.valid`。
 - `alloc_tail_q`
-  - BPU 后续写入新 block 的位置。
-  - 当前阶段暂不实现 BPU 写入端。
+  - BPU 写入新 block 的位置。
+  - 当前阶段已经由 BPU 入队端推进。
 - `ifu_head_q`
   - IFU 下一次消费 entry 的位置。
-  - 当前阶段先实现该指针。
+  - 当前阶段已经由 IFU 消费端推进。
 - `release_head_q`
   - 后续 commit、安全回收或其它释放机制真正释放 entry 的位置。
-  - 当前阶段暂不实现 release 端。
+  - 当前阶段只 reset，不推进。
+- `allocated_count_q`
+  - 当前已经分配但尚未 release 的 entry 数量。
+  - 用于判断 FTQ 是否已满，决定是否对 BPU 拉高 `bpu_ready_o`。
 - `entry.valid`
   - 表示该 block 是否仍属于当前有效路径。
   - 失效某个 block 时清 `entry.valid`，但不等价于释放该槽位。
@@ -117,28 +120,45 @@ FTQ 后续不按普通 FIFO 实现。普通 FIFO 在消费后会释放队头 ent
 6. flush 或 redirect 可以清掉错误路径上的 `entry.valid`，并修正相关指针。
 
 ## 当前阶段实现范围
-当前阶段只实现 IFU 消费端，不实现写入、释放、失效和 flush。
+当前阶段实现 BPU 入队端和 IFU 消费端，保留 release 指针但不实现 release/commit 回收，不实现失效和 flush。
 
-### Reset 预置 Entry
-由于 BPU 写入端暂时不存在，reset 时 FTQ 会预置 `FTQ_DEPTH` 个有效 entry，便于 IFU 消费端先形成可运行的时序骨架。
+### Reset 行为
+Reset 后 FTQ 为空，不再预置顺序 block：
 
-第 `i` 个预置 entry 的字段约定：
+- `entries_q = 0`
+- `allocated_q = 0`
+- `consumed_q = 0`
+- `alloc_tail_q = 0`
+- `ifu_head_q = 0`
+- `release_head_q = 0`
+- `allocated_count_q = 0`
 
-- `allocated_q[i] = 1`
-- `consumed_q[i] = 0`
-- `valid = 1`
-- `start_pc = i * FTQ_BLOCK_BYTES`
-- `end_pc = start_pc + FTQ_BLOCK_BYTES`
-- `has_branch = 0`
-- `branch_pc = 0`
-- `branch_slot = 0`
-- `branch_type = FTQ_BRANCH_NONE`
-- `pred_taken = 0`
-- `target_pc = 0`
-- `fallthrough_pc = end_pc`
-- `next_pc = end_pc`
-- `exception = 0`
-- `exception_cause = 0`
+reset 释放后，BPU 从 `frontend.reset_pc_i` 开始生成第一个 `ftq_entry_t`，FTQ 在未满时接收该 entry。
+
+### BPU 入队端握手
+FTQ 从 BPU 接收 block 级预测结果：
+
+- `bpu_valid_i`
+  - BPU 当前有一个 `ftq_entry_t` 可以写入 FTQ。
+- `bpu_ready_o`
+  - FTQ 未满时为 1。
+  - 当前定义为 `allocated_count_q < FTQ_DEPTH`。
+- `bpu_entry_i`
+  - BPU 生成的 fetch block。
+
+当 `bpu_valid_i && bpu_ready_o` 成立时：
+
+- `entries_q[alloc_tail_q] <= bpu_entry_i`。
+- `allocated_q[alloc_tail_q] <= 1`。
+- `consumed_q[alloc_tail_q] <= 0`。
+- `alloc_tail_q` 前进到下一个 entry。
+- `allocated_count_q` 加 1。
+
+如果 `allocated_count_q == FTQ_DEPTH`：
+
+- `bpu_ready_o = 0`。
+- 即使 IFU 同拍消费 entry，也不会释放容量。
+- 只有未来 release/commit 回收逻辑才能让 FTQ 再次接收 BPU entry。
 
 ### IFU 消费端握手
 FTQ 向 IFU 提供 ready/valid 风格接口：
@@ -159,10 +179,18 @@ FTQ 向 IFU 提供 ready/valid 风格接口：
 - 不清 `entries_q[ifu_head_q]`。
 - 不清 `entries_q[ifu_head_q].valid`。
 - 不清 `allocated_q[ifu_head_q]`。
+- 不减少 `allocated_count_q`。
+
+### 当前容量限制
+当前 FTQ 已经是三指针骨架，但 release 端尚未实现。因此：
+
+1. BPU 最多可以向 FTQ 分配 `FTQ_DEPTH` 个 entry。
+2. IFU 可以按顺序消费这些 entry。
+3. IFU 消费后 entry 仍然保留，容量不会释放。
+4. 当 `allocated_count_q == FTQ_DEPTH` 后，`bpu_ready_o=0`，BPU 停在当前 PC。
+5. IFU 消费完所有已分配 entry 后，`ifu_valid_o=0`，前端停止继续向后产生新 fetch block。
 
 ### 当前未实现
-- 尚未实现 BPU 写入端。
-- 尚未实现 `alloc_tail_q` 的真实推进。
 - 尚未实现 release 端。
 - 尚未实现按 `ftq_idx` 失效。
 - 尚未实现 flush 和 redirect。

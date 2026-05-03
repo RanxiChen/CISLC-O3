@@ -13,6 +13,18 @@
 
 ## 当前实现状态
 
+### BPU（Branch Prediction Unit）
+- `rtl/frontend/bpu.sv` 已实现 sequential-only 第一版 BPU。
+- BPU 从 `frontend.reset_pc_i` 指定的复位 PC 开始，按 32B fetch block 顺序生成 `ftq_entry_t`。
+- 当前 BPU 固定不跳转：
+  - `has_branch=0`
+  - `pred_taken=0`
+  - `fallthrough_pc=next_pc=start_pc+FTQ_BLOCK_BYTES`
+- BPU 通过 ready/valid 接口写入 FTQ：
+  - FTQ 未满时 `ftq_ready_i=1`，BPU 入队成功后内部 PC 前进 32B。
+  - FTQ 满时 BPU 保持当前 block，不跳过任何 PC。
+- 当前未实现 BTB/BHT/RAS/history、真实分支预测、redirect/flush 恢复和预测器训练。
+
 ### IFU（Instruction Fetch Unit）
 - `rtl/frontend/ifu.sv` 已实现取指流水线骨架，包含 S0/S1/S2/S3；Fetch Buffer 已拆成独立 `rtl/frontend/fetch_buffer.sv`。
 - **S0**：FTQ block 消费端。通过 ready/valid 从 FTQ 拉取 block，组合生成 16B 对齐的 `group_pc` 和 4-bit `mask`。
@@ -39,22 +51,30 @@
 - 额外输出 `icache_req_allowed_o`，当前表示至少保留 8 个空位，用来提前阻塞 IFU 继续向 ICache 发新请求。
 
 ### FTQ
-- `rtl/frontend/ftq.sv` 已实现 IFU 消费端。
-- Reset 时预置 16 个 32B 顺序 block，供 IFU 消费。
-- 消费后只标记 `consumed_q`，不清 entry。
-- 尚未实现 BPU 写入端、release 端、flush、redirect。
+- `rtl/frontend/ftq.sv` 已改成 BPU 入队、IFU 消费的三指针骨架。
+- Reset 后 FTQ 为空，不再预置顺序 block；运行时由 BPU 写入 `ftq_entry_t`。
+- 内部维护：
+  - `alloc_tail_q`：BPU 下一次写入位置。
+  - `ifu_head_q`：IFU 下一次消费位置。
+  - `release_head_q`：后续 release/commit 回收位置，当前只 reset，不推进。
+  - `allocated_count_q`：已分配但尚未 release 的 entry 数量。
+- IFU 消费只设置 `consumed_q[ifu_head_q]` 并推进 `ifu_head_q`，不清 entry、不释放容量。
+- 当前未实现 release/commit 回收，所以 FTQ 最多接收 `FTQ_DEPTH` 个 block；填满后 `bpu_ready_o=0`，BPU 停住。
+- 当前未实现 flush、redirect、invalidate 和后端/branch execute 回查端口。
 
 ### Frontend Top
-- `rtl/frontend/frontend.sv` 已实例化并连接 `ftq`、`ifu`、`ICache` 和 `fetch_buffer`。
-- 当前顶层数据流是 `FTQ -> IFU -> fetch_buffer -> frontend output`，其中 IFU 通过 ICache 完成取指数据访问。
+- `rtl/frontend/frontend.sv` 已实例化并连接 `bpu`、`ftq`、`ifu`、`ICache` 和 `fetch_buffer`。
+- 当前顶层数据流是 `BPU -> FTQ -> IFU -> ICache -> IFU -> fetch_buffer -> frontend output`。
+- 顶层新增 `reset_pc_i`，用于指定 BPU reset 后开始生成 fetch block 的起始 PC。
 - fetch buffer 出队口暂时直接作为 frontend 顶层输出：`fetch_valid_o` 表示本拍有 fetch group，`fetch_valid_mask_o` 由每个 `fetch_entry_t.valid` 生成。
 - ICache refill request/response 当前从 frontend 顶层透出，后续可接 L2、总线或测试内存模型。
 - ICache line 大小当前由 `o3_pkg::ICACHE_LINE_BYTES` 统一定义，frontend 实例化点不单独覆盖。
-- `flush_i` 当前接到 ICache 和 fetch buffer；尚未实现 FTQ/IFU 的 redirect 精确清除。
+- `flush_i` 当前只接到 ICache 和 fetch buffer；尚未驱动 BPU、FTQ 和 IFU 做 redirect/flush 精确清除。
 
 ### 尚未实现
 - 不接 backend；fetch buffer 出队口还没有连入后端 decode 入口。
-- 未实现分支预测、BPU、BTB、BHT、RAS。
+- BPU 只实现顺序 not-taken 生成，未实现真实分支预测、BTB、BHT、RAS。
+- FTQ 未实现 release/commit 回收；当前顺序前端最多分配 `FTQ_DEPTH` 个 fetch block 后会停止接收 BPU。
 - 未实现 redirect、异常恢复和跨模块精确清除。
 - `rtl/O3.sv` 和 `rtl/Tile.sv` 仍是占位顶层，未接入真实 IFU/FTQ/icache 链路。
 - 未写测试和仿真。
@@ -63,7 +83,7 @@
 
 ```
 frontend
-  FTQ ──ready/valid──> IFU S0 ──ready/valid──> IFU S1 ──ready/valid──> ICache s0
+  BPU ──ready/valid──> FTQ ──ready/valid──> IFU S0 ──ready/valid──> IFU S1 ──ready/valid──> ICache s0
                                                                │
                                                                │ out_valid + out_data + out_error
                                                                ▼
@@ -82,6 +102,8 @@ frontend
                                                         frontend output
 ```
 
+- BPU 从 `reset_pc_i` 开始顺序生成 32B block，并在 FTQ backpressure 时冻结当前 PC。
+- FTQ 保存 BPU 生成的 block；因为当前没有 release，FTQ 满后停止接收新 block。
 - S0 每拍输出一个 group（`group_pc` + `mask`）。
 - S1 将 group 发给 icache。
 - S2 等 icache 返回 128-bit 数据，匹配请求上下文。
@@ -103,8 +125,13 @@ frontend
 
 ### FTQ（`rtl/frontend/ftq.sv`）
 - 职责：保存 fetch block 的预测边界和元信息。
-- 当前实现：IFU 消费端 + reset 预置 entry。
-- 当前未做：BPU 写入端、release 端、回查端口。
+- 当前实现：BPU 入队端、IFU 消费端、三指针骨架和 allocated-count 满判断。
+- 当前未做：release/commit 回收、flush/redirect/invalidate、回查端口。
+
+### BPU（`rtl/frontend/bpu.sv`）
+- 职责：生成前端预测 fetch block。
+- 当前实现：sequential-only，按 32B 从 `reset_pc_i` 顺序生成 `ftq_entry_t`。
+- 当前未做：BTB/BHT/RAS、真实方向/目标预测、redirect 恢复和训练接口。
 
 ### ICache（`rtl/frontend/icache.sv`）
 - 职责：指令缓存，提供 hit/miss 判断和 refill。
@@ -122,8 +149,10 @@ frontend
   - IFU 主模块，包含 S0/S1/S2/S3，输出 `fetch_entry_t` 给独立 Fetch Buffer。
 - `rtl/frontend/fetch_buffer.sv`
   - 独立 Fetch Buffer，保存前后端共同认可的 `fetch_entry_t`。
+- `rtl/frontend/bpu.sv`
+  - 顺序 BPU，生成 32B `ftq_entry_t` 并写入 FTQ。
 - `rtl/frontend/ftq.sv`
-  - FTQ 模块，当前只实现 IFU 消费端。
+  - FTQ 模块，当前实现 BPU 入队、IFU 消费和三指针骨架。
 - `rtl/frontend/icache.sv`
   - ICache 模块，IFU S1 向其发请求，S2 接收其返回。
 - `rtl/frontend/frontend.sv`
@@ -134,6 +163,32 @@ frontend
   - 更上层系统封装入口。
 
 ## 关键时序行为
+
+### BPU 周期级行为
+
+周期 N 组合阶段：
+- `ftq_valid_o=1`。
+- `ftq_entry_o.start_pc = pred_pc_q`。
+- `ftq_entry_o.end_pc = pred_pc_q + FTQ_BLOCK_BYTES`。
+- `ftq_entry_o.has_branch=0`，`pred_taken=0`，`fallthrough_pc=next_pc=end_pc`。
+
+周期 N 上升沿：
+- reset 时 `pred_pc_q <= reset_pc_i`。
+- 若 `ftq_valid_o && ftq_ready_i`，BPU 当前 block 被 FTQ 接收，`pred_pc_q += FTQ_BLOCK_BYTES`。
+- 若 FTQ backpressure，`pred_pc_q` 保持不变。
+
+### FTQ 周期级行为
+
+周期 N 组合阶段：
+- `bpu_ready_o = (allocated_count_q < FTQ_DEPTH)`。
+- `ifu_valid_o = allocated_q[ifu_head_q] && entries_q[ifu_head_q].valid && !consumed_q[ifu_head_q]`。
+- `ifu_entry_o / ifu_ftq_idx_o` 反映 `ifu_head_q` 指向的 entry 和 index。
+
+周期 N 上升沿：
+- reset 时清空 FTQ，`alloc_tail_q/ifu_head_q/release_head_q/allocated_count_q` 全部归零。
+- 若 `bpu_valid_i && bpu_ready_o`，写 `entries_q[alloc_tail_q]`，置 `allocated_q=1`、`consumed_q=0`，推进 `alloc_tail_q`，`allocated_count_q += 1`。
+- 若 `ifu_valid_o && ifu_ready_i`，置 `consumed_q[ifu_head_q]=1`，推进 `ifu_head_q`。
+- IFU 消费不释放容量，不减少 `allocated_count_q`。
 
 ### IFU S0 周期级行为
 

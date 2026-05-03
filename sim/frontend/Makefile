@@ -14,6 +14,7 @@ RUN_BIN := $(BUILD_DIR)/V$(TOP)
 RTL_SRCS := \
 	$(REPO_ROOT)/rtl/common/o3_pkg.sv \
 	$(REPO_ROOT)/rtl/frontend/ftq.sv \
+	$(REPO_ROOT)/rtl/frontend/bpu.sv \
 	$(REPO_ROOT)/rtl/frontend/ifu.sv \
 	$(REPO_ROOT)/rtl/common/lfsr.sv \
 	$(REPO_ROOT)/rtl/common/o3_sram.sv \

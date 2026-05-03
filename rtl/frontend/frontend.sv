@@ -2,7 +2,8 @@
  * Frontend Top
  *
  * 当前已经实现：
- * - 实例化 FTQ、IFU、ICache 和独立 fetch_buffer。
+ * - 实例化 BPU、FTQ、IFU、ICache 和独立 fetch_buffer。
+ * - 连接 BPU -> FTQ 的 fetch block 生成链路。
  * - 连接 FTQ -> IFU 的 fetch block 消费链路。
  * - 连接 IFU -> ICache 的取指 request 和 ICache -> IFU 的返回链路。
  * - 连接 IFU -> fetch_buffer 的入队链路。
@@ -12,7 +13,7 @@
  * 当前没有实现：
  * - 不接 backend。
  * - 不实现 redirect/flush 精确清除；`flush_i` 当前只清 ICache 和 fetch_buffer。
- * - 不实现 branch predictor、BTB/BHT/RAS。
+ * - BPU 当前只实现顺序 not-taken block 生成，不实现 BTB/BHT/RAS。
  * - 不写测试代码和仿真代码。
  *
  * 后续扩展入口：
@@ -23,15 +24,17 @@
  *
  * 逐周期说明：
  * - 周期 N 组合阶段：
- *   1) FTQ 向 IFU 提供下一段 fetch block。
- *   2) IFU 在 ICache ready、S2 有空间且 fetch_buffer 暴露足够安全空位时，
+ *   1) BPU 在 FTQ 未满时向 FTQ 提供下一段顺序 fetch block。
+ *   2) FTQ 向 IFU 提供下一段已分配且尚未消费的 fetch block。
+ *   3) IFU 在 ICache ready、S2 有空间且 fetch_buffer 暴露足够安全空位时，
  *      向 ICache 发出新的 16B 对齐 request。
- *   3) ICache 返回数据后，IFU 拆成最多 4 条 `fetch_entry_t` 并送 fetch_buffer。
- *   4) fetch_buffer 若非空，顶层 `fetch_valid_o=1`，并输出最多 4 条 entry。
+ *   4) ICache 返回数据后，IFU 拆成最多 4 条 `fetch_entry_t` 并送 fetch_buffer。
+ *   5) fetch_buffer 若非空，顶层 `fetch_valid_o=1`，并输出最多 4 条 entry。
  * - 周期 N 上升沿：
- *   1) FTQ 消费成功则推进 IFU head。
- *   2) ICache 接收 request 或处理 refill FSM。
- *   3) fetch_buffer 接收入队 entry 或按 `fetch_ready_i` 出队。
+ *   1) BPU 入队成功则推进内部顺序 PC。
+ *   2) FTQ 入队成功则推进 alloc_tail；IFU 消费成功则推进 ifu_head。
+ *   3) ICache 接收 request 或处理 refill FSM。
+ *   4) fetch_buffer 接收入队 entry 或按 `fetch_ready_i` 出队。
  * - 周期 N+1：
  *   1) IFU 看到 fetch_buffer 更新后的 `icache_req_allowed_o`。
  *   2) 顶层输出更新后的 fetch group。
@@ -43,6 +46,7 @@ module frontend
     input  logic clk_i,
     input  logic rst_i,
     input  logic flush_i,
+    input  logic [PC_WIDTH-1:0] reset_pc_i,
 
     output logic [PC_WIDTH-1:0] refill_req_pc_o,
     output logic                refill_req_valid_o,
@@ -56,6 +60,10 @@ module frontend
     output logic [3:0]   fetch_valid_mask_o,
     input  logic         fetch_ready_i
 );
+
+    logic       bpu_ftq_valid;
+    logic       bpu_ftq_ready;
+    ftq_entry_t bpu_ftq_entry;
 
     logic       ftq_ifu_valid;
     logic       ftq_ifu_ready;
@@ -79,9 +87,21 @@ module frontend
     fetch_entry_t fb_deq_entry [4];
     logic         fb_deq_valid;
 
+    bpu u_bpu (
+        .clk_i       (clk_i),
+        .rst_i       (rst_i),
+        .reset_pc_i  (reset_pc_i),
+        .ftq_valid_o (bpu_ftq_valid),
+        .ftq_ready_i (bpu_ftq_ready),
+        .ftq_entry_o (bpu_ftq_entry)
+    );
+
     ftq u_ftq (
         .clk_i         (clk_i),
         .rst_i         (rst_i),
+        .bpu_valid_i   (bpu_ftq_valid),
+        .bpu_ready_o   (bpu_ftq_ready),
+        .bpu_entry_i   (bpu_ftq_entry),
         .ifu_valid_o   (ftq_ifu_valid),
         .ifu_ready_i   (ftq_ifu_ready),
         .ifu_entry_o   (ftq_ifu_entry),
