@@ -1,21 +1,48 @@
-
 /**
  * Instruction Fetch Unit (IFU)
  *
  * 当前实现内容：
- * - S0：FTQ block 拉取 + group_pc / mask 组合生成（零气泡）
- * - S1：向 icache 发请求（接收 S0、暂存、驱动 icache s0 接口）
- * - S2：双槽移位 FIFO，暂存请求上下文 + icache 返回数据
- * - S3：组合直通，16B → 4×32bit 指令拆分，mask 过滤 valid
- * - Fetch Buffer：统一环形 buffer（16 entry），4 写入按序写入，4 读出
+ * - S0：从 FTQ 消费 fetch block，生成 16B 对齐的 ICache request PC 和 lane mask。
+ * - S0 misaligned bypass：若当前真实 fetch PC 不满足 32-bit 指令对齐，
+ *   不访问 ICache，直接向外部 fetch buffer 产生一个取指地址未对齐 entry。
+ * - S1：暂存 S0 产生的 ICache request，并在外部 fetch buffer 允许继续发请求时
+ *   与 ICache s0 端口握手。
+ * - S2：双槽 FIFO，保存已发给 ICache 的 request 上下文，并等待 ICache 返回数据。
+ * - S3：组合直通，将 ICache 返回的 16B 数据拆成最多 4 条 `fetch_entry_t`。
  *
- * 当前未实现内容：
- * - flush / redirect / exception 处理
- * - 跨 16B 边界后续 group（当前 block 内已支持）
- * - 后端 decode 详细接口收敛
+ * 当前没有实现：
+ * - 不内置 Fetch Buffer；外部 `fetch_buffer` 负责前后端交界缓存。
+ * - 不处理 redirect/flush 精确恢复。
+ * - 不实现分支预测、BTB/BHT/RAS。
+ * - 不实现跨页、TLB、PMP 或更细的异常 cause 编码。
  *
- * 流水线结构：
- *   FTQ → S0 → S1 → icache s0 → icache s1/out → S2 → S3 → Fetch Buffer → 后端
+ * 后续扩展入口：
+ * - `icache_req_allowed_i` 可由外部 fetch buffer 的安全空位阈值驱动，
+ *   当前用于提前阻塞 S1 -> ICache request。
+ * - `icache_out_error_i` 已接入 `fetch_access_fault`，后续可扩展为更完整异常 cause。
+ * - 后续 redirect/flush 需要同时清 IFU 内部 S1/S2 状态和外部 fetch buffer。
+ *
+ * 当前阶段说明：
+ * - 当前阶段只搭 RTL 功能链路，不写测试代码，不写仿真代码。
+ *
+ * 逐周期说明：
+ * - 周期 N 组合阶段：
+ *   1) 若没有当前 block，且 FTQ 有新 entry，S0 组合观察 FTQ entry。
+ *   2) 若真实 fetch PC 未对齐，且 IFU 内没有更老待落地请求、fetch buffer ready，
+ *      IFU 直接输出一个异常 `fetch_entry_t`，不进入 S1/S2。
+ *   3) 正常路径下，S0 在 S1 ready 时把 group_pc/mask/ftq_idx 送入 S1。
+ *   4) S1 只有在 ICache ready、S2 有空间、且 `icache_req_allowed_i=1` 时才发请求。
+ *   5) S2 头部数据完整且外部 fetch buffer ready 时，S3 组合输出最多 4 条 entry。
+ * - 周期 N 上升沿：
+ *   1) misaligned bypass fire 时，FTQ entry 被消费，IFU 不保留该 block。
+ *   2) S0->S1 fire 时，S1 锁存 request 上下文；block 内 fetch_ptr 视 block 边界推进。
+ *   3) S1->ICache fire 时，请求上下文压入 S2。
+ *   4) ICache 返回时，数据和 error 位写入 S2 头部 entry。
+ *   5) S2->S3 fire 时，S2 头部弹出，必要时 slot1 前移。
+ * - 周期 N+1：
+ *   1) FTQ 看到 IFU 对上一 entry 的消费。
+ *   2) ICache 看到 S1 发出的新 request。
+ *   3) 外部 fetch buffer 看到 IFU 新输出的正常或异常 fetch entry。
  */
 
 module ifu
@@ -39,60 +66,53 @@ module ifu
     // ---- ICache 返回接口 ----
     input  logic       icache_out_valid_i,
     input  logic [FTQ_FETCH_WINDOW_BYTES*8-1:0] icache_out_data_i,
+    input  logic       icache_out_error_i,
 
-    // ---- Fetch Buffer 后端读出接口 ----
-    output logic [3:0]       fb_deq_valid_o,
-    output logic [ILEN-1:0]  fb_deq_inst_o [4],
-    output logic [PC_WIDTH-1:0] fb_deq_pc_o [4],
-    output ftq_idx_t         fb_deq_ftq_idx_o,
-    input  logic             fb_deq_ready_i
+    // ---- 外部 Fetch Buffer 入队接口 ----
+    output fetch_entry_t fetch_entry_o [4],
+    output logic [3:0]   fetch_valid_o,
+    input  logic         fetch_ready_i,
+
+    // ---- 外部 Fetch Buffer 空间余量接口 ----
+    input  logic         icache_req_allowed_i
 );
 
-    // ========================================================================
-    // 内部类型定义
-    // ========================================================================
-    localparam int ICACHE_DATA_WIDTH = FTQ_FETCH_WINDOW_BYTES * 8;  // 128 bit
+    localparam int ICACHE_DATA_WIDTH = FTQ_FETCH_WINDOW_BYTES * 8;
 
-    // S2 暂存槽位类型：请求上下文 + icache 返回数据
     typedef struct packed {
-        logic [PC_WIDTH-1:0]        group_pc;
-        logic [3:0]                 mask;
-        ftq_idx_t                   ftq_idx;
+        logic [PC_WIDTH-1:0]          group_pc;
+        logic [3:0]                  mask;
+        ftq_idx_t                    ftq_idx;
         logic [ICACHE_DATA_WIDTH-1:0] data;
-        logic                       data_valid;
+        logic                        data_valid;
+        logic                        fetch_access_fault;
     } s2_entry_t;
 
-    // Fetch Buffer 参数
-    localparam int FB_DEPTH = 16;
-    localparam int FB_PTR_WIDTH = $clog2(FB_DEPTH);
-    localparam int FB_PTR_MASK = FB_DEPTH - 1;
-
-    typedef struct packed {
-        logic                valid;
-        logic [ILEN-1:0]     inst;
-        logic [PC_WIDTH-1:0] pc;
-        ftq_idx_t            ftq_idx;
-    } fb_entry_t;
-
     // ========================================================================
-    // S0 阶段：FTQ block 拉取 + group_pc / mask 生成
+    // S0：FTQ block 拉取 + ICache group 生成 + misaligned bypass
     // ========================================================================
     ftq_entry_t          current_block_q;
     ftq_idx_t            current_ftq_idx_q;
     logic [PC_WIDTH-1:0] fetch_ptr_q;
     logic                block_valid_q;
 
-    logic ftq_fire;
-    ftq_entry_t active_block;
+    logic                ftq_fire;
+    ftq_entry_t          active_block;
+    ftq_idx_t            active_ftq_idx;
     logic [PC_WIDTH-1:0] active_ptr;
     logic [PC_WIDTH-1:0] group_pc;
-    logic [3:0] mask;
-    logic block_done;
+    logic [3:0]          mask;
+    logic                block_done;
+    logic                active_misaligned;
+    logic                older_empty;
+    logic                misalign_fire;
+    logic                s0_valid;
+    logic                s0_to_s1_valid;
 
-    assign ftq_fire    = ftq_valid_i && ftq_ready_o;
-    assign active_block = ftq_fire ? ftq_entry_i : current_block_q;
-    assign active_ptr   = ftq_fire ? ftq_entry_i.start_pc : fetch_ptr_q;
-    assign group_pc    = {active_ptr[PC_WIDTH-1:4], 4'b0};
+    assign active_block   = ftq_fire ? ftq_entry_i : current_block_q;
+    assign active_ftq_idx = ftq_fire ? ftq_idx_i   : current_ftq_idx_q;
+    assign active_ptr     = ftq_fire ? ftq_entry_i.start_pc : fetch_ptr_q;
+    assign group_pc       = {active_ptr[PC_WIDTH-1:4], 4'b0};
 
     assign mask[0] = (group_pc      >= active_block.start_pc) && (group_pc      < active_block.end_pc);
     assign mask[1] = (group_pc +  4 >= active_block.start_pc) && (group_pc +  4 < active_block.end_pc);
@@ -100,23 +120,60 @@ module ifu
     assign mask[3] = (group_pc + 12 >= active_block.start_pc) && (group_pc + 12 < active_block.end_pc);
 
     assign block_done = (group_pc + 16 >= active_block.end_pc);
-
-    logic s1_valid_o;
-    assign s1_valid_o  = block_valid_q || ftq_fire;
+    assign active_misaligned = active_ptr[1:0] != 2'b00;
 
     // ========================================================================
-    // S1 阶段：向 icache 发请求
+    // S1：向 ICache 发请求
     // ========================================================================
     logic                s1_valid_q;
     logic [PC_WIDTH-1:0] s1_group_pc_q;
     logic [3:0]          s1_mask_q;
     ftq_idx_t            s1_ftq_idx_q;
-    ftq_pc_t             s1_start_pc_q;
-    ftq_pc_t             s1_end_pc_q;
 
-    logic s1_ready_i;
-    logic s0_s1_fire;
-    logic s1_icache_fire;
+    logic                s1_ready_i;
+    logic                s0_s1_fire;
+    logic                s1_icache_fire;
+
+    // ========================================================================
+    // S2：双槽请求上下文 FIFO
+    // ========================================================================
+    s2_entry_t s2_slot0_q;
+    s2_entry_t s2_slot1_q;
+    logic      s2_valid0_q;
+    logic      s2_valid1_q;
+
+    logic      s2_push;
+    logic      s2_has_space;
+    logic      s3_ready;
+    logic      s2_pop;
+
+    assign older_empty = !s1_valid_q && !s2_valid0_q && !s2_valid1_q;
+
+    assign misalign_fire = ftq_valid_i
+                         && !block_valid_q
+                         && (ftq_entry_i.start_pc[1:0] != 2'b00)
+                         && older_empty
+                         && fetch_ready_i;
+
+    assign ftq_ready_o = !block_valid_q
+                       && (ftq_entry_i.start_pc[1:0] != 2'b00
+                           ? (older_empty && fetch_ready_i)
+                           : s1_ready_i);
+
+    assign ftq_fire = ftq_valid_i && ftq_ready_o;
+    assign s0_valid = block_valid_q || (ftq_fire && !active_misaligned);
+    assign s0_to_s1_valid = s0_valid && !active_misaligned;
+    assign s0_s1_fire = s0_to_s1_valid && s1_ready_i;
+
+    assign s2_has_space = !s2_valid1_q;
+    assign icache_valid_o = s1_valid_q && s2_has_space && icache_req_allowed_i;
+    assign icache_pc_o    = s1_group_pc_q;
+    assign s1_icache_fire = icache_valid_o && icache_ready_i;
+    assign s1_ready_i = !s1_valid_q || s1_icache_fire;
+
+    assign s2_push = s1_icache_fire;
+    assign s3_ready = fetch_ready_i;
+    assign s2_pop = s2_valid0_q && s2_slot0_q.data_valid && s3_ready;
 
     always_ff @(posedge clk_i) begin
         if (rst_i) begin
@@ -125,7 +182,12 @@ module ifu
             current_ftq_idx_q <= '0;
             fetch_ptr_q       <= '0;
         end else begin
-            if (ftq_fire) begin
+            if (misalign_fire) begin
+                current_block_q   <= '0;
+                current_ftq_idx_q <= '0;
+                fetch_ptr_q       <= '0;
+                block_valid_q     <= 1'b0;
+            end else if (ftq_fire && !active_misaligned) begin
                 current_block_q   <= ftq_entry_i;
                 current_ftq_idx_q <= ftq_idx_i;
                 fetch_ptr_q       <= group_pc + 16;
@@ -142,54 +204,45 @@ module ifu
 
     always_ff @(posedge clk_i) begin
         if (rst_i) begin
-            s1_valid_q <= 1'b0;
+            s1_valid_q    <= 1'b0;
+            s1_group_pc_q <= '0;
+            s1_mask_q     <= '0;
+            s1_ftq_idx_q  <= '0;
         end else begin
             s1_valid_q <= s0_s1_fire || (s1_valid_q && !s1_icache_fire);
 
             if (s0_s1_fire) begin
                 s1_group_pc_q <= group_pc;
                 s1_mask_q     <= mask;
-                s1_ftq_idx_q  <= ftq_fire ? ftq_idx_i : current_ftq_idx_q;
-                s1_start_pc_q <= active_block.start_pc;
-                s1_end_pc_q   <= active_block.end_pc;
+                s1_ftq_idx_q  <= active_ftq_idx;
             end
         end
     end
 
-    assign icache_valid_o = s1_valid_q;
-    assign icache_pc_o    = s1_group_pc_q;
-
     // ========================================================================
-    // S2 阶段：双槽移位 FIFO（暂存请求上下文 + 等 icache 数据）
+    // S2 FIFO 状态更新
     // ========================================================================
-    s2_entry_t s2_slot0_q;
-    s2_entry_t s2_slot1_q;
-    logic      s2_valid0_q;
-    logic      s2_valid1_q;
-
-    // S2 压入条件：S1 向 icache 发请求
-    logic s2_push;
-    assign s2_push = s1_icache_fire;
-
-    // S2 空间状态（用于 backpressure 到 S1）
-    logic s2_has_space;
-    assign s2_has_space = !s2_valid1_q;
-
-    // S1 ready 需要 S2 有空间才能压入
-    // 注意：s1_ready_i 在上面定义了，但需要加上 s2_has_space 条件
-    // 这里重新赋值
-    assign s1_ready_i = (!s1_valid_q || icache_ready_i) && s2_has_space;
-
-    // S2 弹出条件：头部有完整数据（上下文 + icache 数据）且下游 fetch buffer 有空间
-    logic s3_ready;
-    logic s2_pop;
-    assign s2_pop = s2_valid0_q && s2_slot0_q.data_valid && s3_ready;
-
-    // S2 下一状态（组合逻辑）
     s2_entry_t s2_slot0_d;
     s2_entry_t s2_slot1_d;
     logic      s2_valid0_d;
     logic      s2_valid1_d;
+
+    function automatic s2_entry_t make_s2_push_entry(
+        input logic [PC_WIDTH-1:0] group_pc_i,
+        input logic [3:0]          mask_i,
+        input ftq_idx_t            ftq_idx_i
+    );
+        begin
+            make_s2_push_entry = '{
+                group_pc: group_pc_i,
+                mask: mask_i,
+                ftq_idx: ftq_idx_i,
+                data: '0,
+                data_valid: 1'b0,
+                fetch_access_fault: 1'b0
+            };
+        end
+    endfunction
 
     always_comb begin
         s2_slot0_d  = s2_slot0_q;
@@ -197,57 +250,44 @@ module ifu
         s2_valid0_d = s2_valid0_q;
         s2_valid1_d = s2_valid1_q;
 
-        case ({s2_push, s2_pop})
-            2'b01: begin // 只弹出：slot1 → slot0
+        unique case ({s2_push, s2_pop})
+            2'b01: begin
                 s2_slot0_d  = s2_slot1_q;
                 s2_valid0_d = s2_valid1_q;
+                s2_slot1_d  = '0;
                 s2_valid1_d = 1'b0;
             end
-            2'b10: begin // 只压入
+            2'b10: begin
                 if (!s2_valid0_q) begin
-                    s2_slot0_d.group_pc  = s1_group_pc_q;
-                    s2_slot0_d.mask      = s1_mask_q;
-                    s2_slot0_d.ftq_idx   = s1_ftq_idx_q;
-                    s2_slot0_d.data      = '0;
-                    s2_slot0_d.data_valid = 1'b0;
+                    s2_slot0_d  = make_s2_push_entry(s1_group_pc_q, s1_mask_q, s1_ftq_idx_q);
                     s2_valid0_d = 1'b1;
                 end else begin
-                    s2_slot1_d.group_pc  = s1_group_pc_q;
-                    s2_slot1_d.mask      = s1_mask_q;
-                    s2_slot1_d.ftq_idx   = s1_ftq_idx_q;
-                    s2_slot1_d.data      = '0;
-                    s2_slot1_d.data_valid = 1'b0;
+                    s2_slot1_d  = make_s2_push_entry(s1_group_pc_q, s1_mask_q, s1_ftq_idx_q);
                     s2_valid1_d = 1'b1;
                 end
             end
-            2'b11: begin // 同拍收发
+            2'b11: begin
                 if (s2_valid1_q) begin
-                    // slot0 弹出给 S3，slot1 → slot0，新请求进 slot1
                     s2_slot0_d  = s2_slot1_q;
                     s2_valid0_d = 1'b1;
-                    s2_slot1_d.group_pc  = s1_group_pc_q;
-                    s2_slot1_d.mask      = s1_mask_q;
-                    s2_slot1_d.ftq_idx   = s1_ftq_idx_q;
-                    s2_slot1_d.data      = '0;
-                    s2_slot1_d.data_valid = 1'b0;
+                    s2_slot1_d  = make_s2_push_entry(s1_group_pc_q, s1_mask_q, s1_ftq_idx_q);
                     s2_valid1_d = 1'b1;
                 end else begin
-                    // 只有 slot0，弹出后进新数据
-                    s2_slot0_d.group_pc  = s1_group_pc_q;
-                    s2_slot0_d.mask      = s1_mask_q;
-                    s2_slot0_d.ftq_idx   = s1_ftq_idx_q;
-                    s2_slot0_d.data      = '0;
-                    s2_slot0_d.data_valid = 1'b0;
+                    s2_slot0_d  = make_s2_push_entry(s1_group_pc_q, s1_mask_q, s1_ftq_idx_q);
                     s2_valid0_d = 1'b1;
+                    s2_slot1_d  = '0;
                     s2_valid1_d = 1'b0;
                 end
             end
-            default: ; // 2'b00：无变化
+            default: begin
+            end
         endcase
     end
 
     always_ff @(posedge clk_i) begin
         if (rst_i) begin
+            s2_slot0_q  <= '0;
+            s2_slot1_q  <= '0;
             s2_valid0_q <= 1'b0;
             s2_valid1_q <= 1'b0;
         end else begin
@@ -256,23 +296,22 @@ module ifu
             s2_valid0_q <= s2_valid0_d;
             s2_valid1_q <= s2_valid1_d;
 
-            // icache 返回：给头部 slot0 写数据
-            if (icache_out_valid_i && s2_valid0_q) begin
-                s2_slot0_q.data       <= icache_out_data_i;
-                s2_slot0_q.data_valid <= 1'b1;
+            if (icache_out_valid_i && s2_valid0_d) begin
+                s2_slot0_q.data               <= icache_out_data_i;
+                s2_slot0_q.data_valid         <= 1'b1;
+                s2_slot0_q.fetch_access_fault <= icache_out_error_i;
             end
         end
     end
 
     // ========================================================================
-    // S3 阶段：组合直通，指令拆分 + mask 过滤
+    // S3 / misaligned bypass：输出给外部 fetch buffer
     // ========================================================================
-    logic [3:0]       s3_inst_valid;
-    logic [ILEN-1:0]  s3_inst [4];
+    logic [3:0]          s3_inst_valid;
+    logic [ILEN-1:0]     s3_inst [4];
     logic [PC_WIDTH-1:0] s3_pc [4];
-    ftq_idx_t         s3_ftq_idx;
+    ftq_idx_t            s3_ftq_idx;
 
-    // S3 纯组合：当 S2 弹出时输出有效数据，否则全 0
     assign s3_inst[0] = s2_pop ? s2_slot0_q.data[31:0]    : '0;
     assign s3_inst[1] = s2_pop ? s2_slot0_q.data[63:32]   : '0;
     assign s3_inst[2] = s2_pop ? s2_slot0_q.data[95:64]   : '0;
@@ -287,87 +326,34 @@ module ifu
     assign s3_inst_valid[1] = s2_pop ? s2_slot0_q.mask[1] : 1'b0;
     assign s3_inst_valid[2] = s2_pop ? s2_slot0_q.mask[2] : 1'b0;
     assign s3_inst_valid[3] = s2_pop ? s2_slot0_q.mask[3] : 1'b0;
-
     assign s3_ftq_idx = s2_pop ? s2_slot0_q.ftq_idx : '0;
 
-    // ========================================================================
-    // Fetch Buffer：统一环形 buffer（4 写入按序，4 读出）
-    // ========================================================================
-    fb_entry_t fb_entries [FB_DEPTH];
-    logic [FB_PTR_WIDTH-1:0] fb_head_q;
-    logic [FB_PTR_WIDTH-1:0] fb_tail_q;
-    logic [FB_PTR_WIDTH:0]   fb_count_q;  // 多 1 bit 区分空满
-
-    // 统计 S3 当前要写入的有效指令数
-    logic [2:0] s3_write_count;
-    assign s3_write_count = {2'b0, s3_inst_valid[0]} + {2'b0, s3_inst_valid[1]}
-                          + {2'b0, s3_inst_valid[2]} + {2'b0, s3_inst_valid[3]};
-
-    // fetch buffer 有空间：保守策略，至少能接收 4 条（因为不知道下一个 group 多少条）
-    // 后续可优化为精确判断（剩余 >= s3_write_count）
-    logic fb_has_space;
-    assign fb_has_space = (fb_count_q <= FB_DEPTH - 4);
-
-    // S3 ready = fetch buffer 有空间
-    assign s3_ready = fb_has_space;
-
-    // S0 ready 也需要 fetch buffer 有空间（backpressure 到 FTQ）
-    assign ftq_ready_o = !block_valid_q && fb_has_space;
-
-    // Fetch Buffer 读出数量
-    logic [2:0] deq_count;
-    assign deq_count = (fb_count_q >= 4) ? 3'd4 : 3'(fb_count_q);
-
-    // Fetch Buffer 统一更新：写入 + 读出
-    always_ff @(posedge clk_i) begin
-        if (rst_i) begin
-            fb_head_q  <= '0;
-            fb_tail_q  <= '0;
-            fb_count_q <= '0;
-        end else begin
-            if (s2_pop) begin
-                int write_idx;
-                write_idx = 0;
-                for (int i = 0; i < 4; i++) begin
-                    if (s3_inst_valid[i]) begin
-                        fb_entries[(fb_tail_q + FB_PTR_WIDTH'(write_idx)) & FB_PTR_WIDTH'(FB_PTR_MASK)] <= '{
-                            valid:   1'b1,
-                            inst:    s3_inst[i],
-                            pc:      s3_pc[i],
-                            ftq_idx: s3_ftq_idx
-                        };
-                        write_idx = write_idx + 1;
-                    end
-                end
-                fb_tail_q  <= fb_tail_q  + FB_PTR_WIDTH'(s3_write_count);
-            end
-
-            if (fb_deq_ready_i) begin
-                fb_head_q <= fb_head_q + FB_PTR_WIDTH'(deq_count);
-            end
-
-            // count 同时加减
-            fb_count_q <= fb_count_q
-                        + (s2_pop        ? FB_PTR_WIDTH'(s3_write_count) : '0)
-                        - (fb_deq_ready_i ? FB_PTR_WIDTH'(deq_count)      : '0);
-        end
-    end
-
-    // 组合输出：后端读出
     always_comb begin
-        fb_deq_valid_o = 4'b0;
-        for (int i = 0; i < 4; i++) begin
-            if (i < deq_count) begin
-                fb_deq_inst_o[i] = fb_entries[(fb_head_q + FB_PTR_WIDTH'(i)) & FB_PTR_WIDTH'(FB_PTR_MASK)].inst;
-                fb_deq_pc_o[i]   = fb_entries[(fb_head_q + FB_PTR_WIDTH'(i)) & FB_PTR_WIDTH'(FB_PTR_MASK)].pc;
-                fb_deq_valid_o[i] = 1'b1;
-            end else begin
-                fb_deq_inst_o[i] = '0;
-                fb_deq_pc_o[i]   = '0;
-                fb_deq_valid_o[i] = 1'b0;
+        fetch_valid_o = 4'b0;
+        for (int lane = 0; lane < 4; lane++) begin
+            fetch_entry_o[lane] = '0;
+        end
+
+        if (misalign_fire) begin
+            fetch_valid_o[0] = 1'b1;
+            fetch_entry_o[0].valid = 1'b1;
+            fetch_entry_o[0].pc = ftq_entry_i.start_pc;
+            fetch_entry_o[0].instruction = '0;
+            fetch_entry_o[0].fetch_addr_misaligned = 1'b1;
+            fetch_entry_o[0].fetch_access_fault = 1'b0;
+            fetch_entry_o[0].ftq_idx = ftq_idx_i;
+        end else begin
+            for (int lane = 0; lane < 4; lane++) begin
+                fetch_valid_o[lane] = s3_inst_valid[lane];
+                fetch_entry_o[lane].valid = s3_inst_valid[lane];
+                fetch_entry_o[lane].pc = s3_pc[lane];
+                fetch_entry_o[lane].instruction = s3_inst[lane];
+                fetch_entry_o[lane].fetch_addr_misaligned = 1'b0;
+                fetch_entry_o[lane].fetch_access_fault = s3_inst_valid[lane]
+                                                       && s2_slot0_q.fetch_access_fault;
+                fetch_entry_o[lane].ftq_idx = s3_ftq_idx;
             end
         end
-        fb_deq_ftq_idx_o = fb_entries[fb_head_q & FB_PTR_WIDTH'(FB_PTR_MASK)].ftq_idx;
     end
 
 endmodule

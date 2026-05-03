@@ -14,24 +14,29 @@
 ## 当前实现状态
 
 ### IFU（Instruction Fetch Unit）
-- `rtl/frontend/ifu.sv` 已实现完整的取指流水线骨架，包含 S0/S1/S2/S3 + Fetch Buffer。
+- `rtl/frontend/ifu.sv` 已实现取指流水线骨架，包含 S0/S1/S2/S3；Fetch Buffer 已拆成独立 `rtl/frontend/fetch_buffer.sv`。
 - **S0**：FTQ block 消费端。通过 ready/valid 从 FTQ 拉取 block，组合生成 16B 对齐的 `group_pc` 和 4-bit `mask`。
-  - 零气泡设计：`block_valid_q` 在 block 用完的上升沿清 0，同拍组合逻辑 `ftq_ready_o=1`，可立即 fire 下一个 block。
+  - 若真实 fetch PC 不满足 32-bit 指令对齐，S0 直接产生 `fetch_addr_misaligned=1` 的 `fetch_entry_t`，不向 ICache 发请求。
+  - misaligned bypass 只有在 IFU 内部没有更老待落地请求且外部 fetch buffer ready 时才会 fire，避免异常 entry 越过更老指令。
   - 块内指针 `fetch_ptr_q` 跟踪当前 block 内的下一个 group 地址，每次推进 +16B。
   - `mask` 基于 `[start_pc, end_pc)` 开区间计算，标记当前 16B window 内哪些指令属于当前 block。
 - **S1**：向 icache 发请求。接收 S0 输出，暂存 `group_pc`/`mask`/`ftq_idx`，驱动 icache s0 接口。
-  - 支持同拍收发：S0 进新数据的同时 S1 可将旧数据发给 icache。
+  - 只有 ICache ready、S2 有空间且外部 fetch buffer 的 `icache_req_allowed_i=1` 时才会发新 ICache request。
 - **S2**：双槽移位 FIFO，暂存已发 icache 但尚未返回的请求上下文。
-  - 槽位保存 `group_pc`、`mask`、`ftq_idx`，以及 icache 返回后回填的 128-bit `data`。
+  - 槽位保存 `group_pc`、`mask`、`ftq_idx`，以及 icache 返回后回填的 128-bit `data` 和 `fetch_access_fault`。
   - 最大深度 2，对应 icache 单流处理最多 1 个 s1 请求 + 1 个 replay 请求。
-  - 弹出条件：头部数据完整（`data_valid=1`）且下游 Fetch Buffer 有空间。
+  - 弹出条件：头部数据完整（`data_valid=1`）且外部 fetch buffer 入队 ready。
 - **S3**：组合直通，零状态。将 icache 返回的 128-bit 数据拆成 4×32-bit 指令。
   - 用 S2 头部槽位的 `mask` 标记每条指令的 `valid`。
   - 4 条指令的 PC 依次为 `group_pc + 0/4/8/12`。
-- **Fetch Buffer**：16-entry 统一环形 buffer。
-  - 只写入 `valid=1` 的指令（由 mask 决定），按顺序依次占用 slot。
-  - 后端每拍可读出最多 4 条指令。
-  - 提供 `fb_has_space` 信号用于 backpressure：当剩余空间 < 4 时，IFU S0 不向 FTQ ready，FTQ 被 stall。
+  - S3 直接输出公共 `fetch_entry_t` 给外部 fetch buffer，entry 内包含 `valid/pc/instruction/fetch_addr_misaligned/fetch_access_fault/ftq_idx`。
+
+### Fetch Buffer
+- `rtl/frontend/fetch_buffer.sv` 已实现独立前后端交界取指缓冲。
+- 内部用紧凑环形队列保存公共 `fetch_entry_t`，只写入有效 lane，不保留 bubble。
+- 入队端接 IFU 的 `fetch_entry_t[4]` 和 lane valid，出队端提供 ready/valid fetch group。
+- 出队支持 partial group：只要队列非空即可向后端方向拉高 valid，不足的 lane 输出 `valid=0`。
+- 额外输出 `icache_req_allowed_o`，当前表示至少保留 8 个空位，用来提前阻塞 IFU 继续向 ICache 发新请求。
 
 ### FTQ
 - `rtl/frontend/ftq.sv` 已实现 IFU 消费端。
@@ -52,35 +57,40 @@
 ```
 FTQ ──ready/valid──> IFU S0 ──ready/valid──> IFU S1 ──ready/valid──> ICache s0
                                                            │
-                                                           │ out_valid + out_data
+                                                           │ out_valid + out_data + out_error
                                                            ▼
                                                     IFU S2（双槽 FIFO）
                                                            │
-                                                           │ s2_pop（data_valid && fb_has_space）
+                                                           │ s2_pop（data_valid && fetch_ready_i）
                                                            ▼
-                                                    IFU S3（组合直通：128b → 4×32b）
+                                                    IFU S3（128b → 4×fetch_entry_t）
                                                            │
-                                                           │ 只写 valid=1 的指令
+                                                           │ fetch_entry_o / fetch_valid_o
                                                            ▼
-                                                    Fetch Buffer（16-entry 环形 buffer）
+                                             Fetch Buffer（独立紧凑环形 buffer）
                                                            │
-                                                           │ fb_deq_ready_i
+                                                           │ deq ready/valid
                                                            ▼
-                                                        后端 Decode
+                                                        后端方向
 ```
 
 - S0 每拍输出一个 group（`group_pc` + `mask`）。
 - S1 将 group 发给 icache。
 - S2 等 icache 返回 128-bit 数据，匹配请求上下文。
-- S3 把 128-bit 拆成 4 条指令，用 mask 标记 valid。
-- Fetch Buffer 按顺序只收 valid 指令，后端按顺序读出。
+- S3 把 128-bit 拆成最多 4 条 `fetch_entry_t`，用 mask 标记 entry 内 valid。
+- Fetch Buffer 按顺序只收 valid 指令，并通过 `icache_req_allowed_o` 告诉 IFU 是否允许继续发 ICache 请求。
 
 ## 受影响模块
 
 ### IFU（`rtl/frontend/ifu.sv`）
-- 职责：前端取指主流水线，管理 FTQ block 消费、icache 请求、数据拆分、Fetch Buffer 写入。
-- 当前实现：S0/S1/S2/S3 + Fetch Buffer 骨架完整。
-- 当前未做：flush/redirect 传播、异常处理、预解码、与 backend 的 decode 接口收敛。
+- 职责：前端取指主流水线，管理 FTQ block 消费、icache 请求、数据拆分，并向外部 Fetch Buffer 输出公共 `fetch_entry_t`。
+- 当前实现：S0/S1/S2/S3、misaligned bypass、ICache error 到 `fetch_access_fault` 的传播。
+- 当前未做：flush/redirect 传播、预解码、与 backend 的最终顶层连接。
+
+### Fetch Buffer（`rtl/frontend/fetch_buffer.sv`）
+- 职责：前后端交界取指缓冲，接收 IFU 输出的公共 `fetch_entry_t`，向后端方向提供 ready/valid fetch group。
+- 当前实现：紧凑环形队列、partial group 出队、`icache_req_allowed_o` 空间余量信号。
+- 当前未做：redirect 精确清除、按 FTQ index 选择性失效。
 
 ### FTQ（`rtl/frontend/ftq.sv`）
 - 职责：保存 fetch block 的预测边界和元信息。
@@ -99,7 +109,9 @@ FTQ ──ready/valid──> IFU S0 ──ready/valid──> IFU S1 ──ready/
 ## 代码索引
 
 - `rtl/frontend/ifu.sv`
-  - IFU 主模块，包含 S0/S1/S2/S3 + Fetch Buffer 的完整实现。
+  - IFU 主模块，包含 S0/S1/S2/S3，输出 `fetch_entry_t` 给独立 Fetch Buffer。
+- `rtl/frontend/fetch_buffer.sv`
+  - 独立 Fetch Buffer，保存前后端共同认可的 `fetch_entry_t`。
 - `rtl/frontend/ftq.sv`
   - FTQ 模块，当前只实现 IFU 消费端。
 - `rtl/frontend/icache.sv`
@@ -121,35 +133,56 @@ FTQ ──ready/valid──> IFU S0 ──ready/valid──> IFU S1 ──ready/
 - `group_pc = {active_ptr[38:4], 4'b0}`（16B 对齐）
 - `mask[3:0]` 基于 `[active_block.start_pc, active_block.end_pc)` 计算
 - `block_done = (group_pc + 16 >= active_block.end_pc)`
-- `ftq_ready_o = !block_valid_q`（零气泡：block 用完即 ready）
-- `s1_valid_o = block_valid_q || ftq_fire`
+- 若 FTQ 新 entry 的 `start_pc[1:0] != 0`，且 IFU 内没有更老 S1/S2 请求、外部 fetch buffer ready，则 `misalign_fire=1`。
+- `misalign_fire=1` 时，IFU 输出单 lane `fetch_addr_misaligned=1` 的 `fetch_entry_t`，不进入 S1/S2。
+- 正常路径下，`s0_s1_fire` 成立时 S0 输出进入 S1。
 
 周期 N 上升沿：
-- 若 `ftq_fire`：锁存新 block，`fetch_ptr_q = group_pc + 16`，`block_valid_q = !block_done`
+- 若 `misalign_fire`：该 FTQ entry 被消费，IFU 不保留该 block。
+- 若 `ftq_fire && !active_misaligned`：锁存新 block，`fetch_ptr_q = group_pc + 16`，`block_valid_q = !block_done`
 - 若 `s0_s1_fire && block_done`：`block_valid_q = 0`
 - 若 `s0_s1_fire && !block_done`：`fetch_ptr_q = group_pc + 16`
 
 周期 N+1：
-- 若上一拍 `block_valid_q` 清 0，本拍 `ftq_ready_o=1`。若 FTQ `valid=1`，同拍 fire，S0 用 FTQ 直通输出新 block 第一组。
+- IFU 继续观察当前 block 或下一条 FTQ entry；misaligned entry 已经作为异常 fetch entry 进入外部 fetch buffer。
 
 ### IFU S1 周期级行为
 
 周期 N：
 - S1 接收 S0 的 `group_pc` + `mask` + `ftq_idx`。
-- `icache_valid_o = s1_valid_q`，`icache_pc_o = s1_group_pc_q`。
-- `s1_ready_i = (!s1_valid_q || icache_ready_i) && s2_has_space`。
+- `icache_valid_o = s1_valid_q && s2_has_space && icache_req_allowed_i`。
+- `icache_pc_o = s1_group_pc_q`。
+- `s1_ready_i = !s1_valid_q || s1_icache_fire`。
 
 周期 N 上升沿：
 - 若 `s0_s1_fire`：锁存 S0 输出到 S1 寄存器。
-- 若 `s1_icache_fire`：S1 数据发给 icache，`s1_valid_q` 保持或更新。
+- 若 `s1_icache_fire`：S1 数据发给 icache，并把请求上下文压入 S2。
 
 ### IFU S2/S3 周期级行为
 
 - S1 `fire` 时，请求上下文压入 S2 FIFO。
-- `icache_out_valid` 来时，icache 数据回填 S2 头部槽位。
-- 当头部 `data_valid=1` 且 Fetch Buffer 有空间时，`s2_pop=1`。
-- S3 组合直通：同拍将 128-bit `data` 拆成 4×32-bit 指令，用 mask 标记 valid。
-- Fetch Buffer 写入：只写入 valid=1 的指令，tail 推进相应数量。
+- `icache_out_valid` 来时，icache 数据和 `icache_out_error` 回填 S2 头部槽位。
+- 当头部 `data_valid=1` 且外部 fetch buffer ready 时，`s2_pop=1`。
+- S3 组合直通：同拍将 128-bit `data` 拆成 4 条 `fetch_entry_t`，用 mask 标记 entry valid。
+- 若 S2 记录了 `fetch_access_fault`，S3 对本组有效 lane 设置 `fetch_access_fault=1`。
+
+### Fetch Buffer 周期级行为
+
+周期 N 组合阶段：
+- 根据 `count_q` 计算剩余空间。
+- `enq_ready_o` 表示至少可接收一个完整 IFU enqueue window。
+- `icache_req_allowed_o` 表示剩余空间达到当前 ICache request 安全阈值。
+- 只要队列非空，出队端 `deq_valid_o=1`，并从 head 开始输出最多 `DEQ_WIDTH` 条 entry；不足的 lane 输出 `valid=0`。
+
+周期 N 上升沿：
+- 若 `flush_i=1`，清空 head/tail/count。
+- 若入队 fire，按 lane 顺序只写入有效 entry，tail 前进有效条数。
+- 若出队 fire，head 前进实际出队条数。
+- count 同时加上入队条数并减去出队条数。
+
+周期 N+1：
+- IFU 看到更新后的 `enq_ready_o` 和 `icache_req_allowed_o`。
+- 后端方向看到更新后的队头 fetch group。
 
 ## 当前开发约束
 - 当前阶段只搭前端 RTL 功能骨架，不写测试代码，不写仿真代码。

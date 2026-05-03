@@ -41,7 +41,7 @@ package ftq_pkg;
     localparam int FTQ_BLOCK_BYTES           = 32;
     localparam int FTQ_FETCH_WINDOW_BYTES    = 16;
     localparam int FTQ_BRANCH_SLOT_WIDTH     = 3;
-    localparam int FTQ_INDEX_WIDTH           = (FTQ_DEPTH > 1) ? $clog2(FTQ_DEPTH) : 1;
+    localparam int FTQ_INDEX_WIDTH           = o3_pkg::FTQ_INDEX_WIDTH;
     localparam int FTQ_EXCEPTION_CAUSE_WIDTH = 8;
 
     typedef logic [PC_WIDTH-1:0]                  ftq_pc_t;

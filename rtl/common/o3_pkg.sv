@@ -17,6 +17,7 @@ package o3_pkg;
     parameter int PREG_IDX_WIDTH = $clog2(DEFAULT_NUM_PHYS_REGS);
     parameter int ROB_IDX_WIDTH = $clog2(DEFAULT_NUM_ROB_ENTRIES);
     parameter int IMM_RAW_WIDTH = 12;
+    parameter int FTQ_INDEX_WIDTH = 4;
 
     // ========================================
     // Frontend -> Backend 接口
@@ -31,6 +32,7 @@ package o3_pkg;
         logic [ILEN-1:0]     instruction;
         logic                fetch_addr_misaligned;
         logic                fetch_access_fault;
+        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
     } fetch_entry_t;
 
     // ========================================
