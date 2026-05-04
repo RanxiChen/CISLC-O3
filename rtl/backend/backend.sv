@@ -875,24 +875,42 @@ module backend
             $display("[O3_SIM][backend][cycle=%0d] ----------------", sim_cycle_q);
 
             if (fetch_entry_valid_q) begin
-                $display("[O3_SIM][backend][cycle=%0d] DECODE id=0x%0h pc=0x%0h inst=0x%08h",
-                         sim_cycle_q,
-                         fetch_instruction_id_q[0],
-                         fetch_entry_q[0].pc,
-                         fetch_entry_q[0].instruction);
+                for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
+                    if (fetch_entry_q[lane].valid) begin
+                        $display("[O3_SIM][backend][cycle=%0d] DECODE lane%0d id=0x%0h pc=0x%0h inst=0x%08h",
+                                 sim_cycle_q,
+                                 lane,
+                                 fetch_instruction_id_q[lane],
+                                 fetch_entry_q[lane].pc,
+                                 fetch_entry_q[lane].instruction);
+                    end else begin
+                        $display("[O3_SIM][backend][cycle=%0d] DECODE lane%0d empty",
+                                 sim_cycle_q,
+                                 lane);
+                    end
+                end
             end else begin
                 $display("[O3_SIM][backend][cycle=%0d] DECODE empty", sim_cycle_q);
             end
 
-            if (rename_valid && rename_uop_head[0].valid) begin
-                $display("[O3_SIM][backend][cycle=%0d] RENAME id=0x%0h asm=%s src1:x%0d->p%0d src2:x%0d->p%0d rd:x%0d old:p%0d new:p%0d rob:%0d",
-                         sim_cycle_q,
-                         rename_uop_head[0].instruction_id,
-                         dpi_backend_disasm_rv64i(rename_uop_head[0].instruction),
-                         rename_uop_head[0].rs1, src1_preg[0],
-                         rename_uop_head[0].rs2, src2_preg[0],
-                         rename_uop_head[0].rd, dst_old_preg[0], dst_new_preg[0],
-                         rob_idx[0]);
+            if (rename_valid) begin
+                for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
+                    if (rename_uop_head[lane].valid) begin
+                        $display("[O3_SIM][backend][cycle=%0d] RENAME lane%0d id=0x%0h asm=%s src1:x%0d->p%0d src2:x%0d->p%0d rd:x%0d old:p%0d new:p%0d rob:%0d",
+                                 sim_cycle_q,
+                                 lane,
+                                 rename_uop_head[lane].instruction_id,
+                                 dpi_backend_disasm_rv64i(rename_uop_head[lane].instruction),
+                                 rename_uop_head[lane].rs1, src1_preg[lane],
+                                 rename_uop_head[lane].rs2, src2_preg[lane],
+                                 rename_uop_head[lane].rd, dst_old_preg[lane], dst_new_preg[lane],
+                                 rob_idx[lane]);
+                    end else begin
+                        $display("[O3_SIM][backend][cycle=%0d] RENAME lane%0d empty",
+                                 sim_cycle_q,
+                                 lane);
+                    end
+                end
             end else begin
                 $display("[O3_SIM][backend][cycle=%0d] RENAME empty", sim_cycle_q);
             end
