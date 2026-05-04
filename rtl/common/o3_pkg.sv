@@ -16,7 +16,7 @@ package o3_pkg;
     parameter int DEFAULT_NUM_ROB_ENTRIES = 64;
     parameter int PREG_IDX_WIDTH = $clog2(DEFAULT_NUM_PHYS_REGS);
     parameter int ROB_IDX_WIDTH = $clog2(DEFAULT_NUM_ROB_ENTRIES);
-    parameter int IMM_RAW_WIDTH = 12;
+    parameter int IMM_RAW_WIDTH = 21;
     parameter int FTQ_INDEX_WIDTH = 4;
     parameter int ICACHE_LINE_BYTES = 64;
 
@@ -59,7 +59,8 @@ package o3_pkg;
 
     typedef enum logic [1:0] {
         IMM_TYPE_NONE = 2'b00,
-        IMM_TYPE_I    = 2'b01
+        IMM_TYPE_I    = 2'b01,
+        IMM_TYPE_B    = 2'b10
     } imm_type_t;
 
     typedef enum logic [3:0] {
@@ -74,6 +75,23 @@ package o3_pkg;
         INT_ALU_OP_OR   = 4'd8,
         INT_ALU_OP_AND  = 4'd9
     } int_alu_op_t;
+
+    typedef enum logic [2:0] {
+        BRANCH_OP_BEQ  = 3'd0,
+        BRANCH_OP_BNE  = 3'd1,
+        BRANCH_OP_BLT  = 3'd2,
+        BRANCH_OP_BGE  = 3'd3,
+        BRANCH_OP_BLTU = 3'd4,
+        BRANCH_OP_BGEU = 3'd5
+    } branch_op_t;
+
+`ifdef ENABLE_RETIRE_INFO
+    typedef enum logic [1:0] {
+        RETIRE_UOP_OTHER  = 2'd0,
+        RETIRE_UOP_INT    = 2'd1,
+        RETIRE_UOP_BRANCH = 2'd2
+    } retire_uop_type_t;
+`endif
 
     // 解码器输出：寄存器索引与整数 ALU 最小语义。
     // 当前阶段为 decode queue / rename 两拍拆分补齐这些信息：
@@ -95,7 +113,10 @@ package o3_pkg;
         imm_type_t                 imm_type;    // 立即数原始编码类型；全 0 表示无效
         logic [IMM_RAW_WIDTH-1:0]  imm_raw;     // 原始立即数字段；当前只承载 I-type[31:20]
         int_alu_op_t               int_alu_op;  // 整数 ALU 操作类型
+        branch_op_t                branch_op;   // 分支比较操作类型
         logic                      is_int_uop;  // 当前是否纳入统一整数执行流
+        logic                      is_branch_uop;
+        logic                      illegal_uop;
     } decode_out_t;
 
     // 解码完成但尚未重命名的 uop。
@@ -119,7 +140,10 @@ package o3_pkg;
         imm_type_t                 imm_type;
         logic [IMM_RAW_WIDTH-1:0]  imm_raw;
         int_alu_op_t               int_alu_op;
+        branch_op_t                branch_op;
         logic                      is_int_uop;
+        logic                      is_branch_uop;
+        logic                      illegal_uop;
     } decoded_uop_t;
 
     // 已完成重命名和 ROB 分配的 uop。
@@ -140,7 +164,10 @@ package o3_pkg;
         imm_type_t                 imm_type;
         logic [IMM_RAW_WIDTH-1:0]  imm_raw;
         int_alu_op_t               int_alu_op;
+        branch_op_t                branch_op;
         logic                      is_int_uop;
+        logic                      is_branch_uop;
+        logic                      illegal_uop;
         logic [PREG_IDX_WIDTH-1:0] src1_preg;
         logic [PREG_IDX_WIDTH-1:0] src2_preg;
         logic [PREG_IDX_WIDTH-1:0] dst_preg;
@@ -177,6 +204,23 @@ package o3_pkg;
         imm_type_t                 imm_type;
         int_alu_op_t               int_alu_op;
     } issue_queue_entry_t;
+
+    typedef struct packed {
+        logic                      valid;
+        logic [INST_ID_WIDTH-1:0]  instruction_id;
+`ifdef O3_SIM
+        logic [63:0]               kanata_id;
+`endif
+        logic [PC_WIDTH-1:0]       pc;
+        logic [PREG_IDX_WIDTH-1:0] src1_preg;
+        logic [PREG_IDX_WIDTH-1:0] src2_preg;
+        logic                      src1_ready;
+        logic                      src2_ready;
+        logic [ROB_IDX_WIDTH-1:0]  rob_idx;
+        logic [IMM_RAW_WIDTH-1:0]  imm_raw;
+        imm_type_t                 imm_type;
+        branch_op_t                branch_op;
+    } branch_issue_entry_t;
 
     // issue queue 选中后、进入具体 ALU 发射寄存器的 uop。
     // 这一拍仍然只保存物理寄存器编号，不保存真正的寄存器值。
@@ -230,6 +274,35 @@ package o3_pkg;
         logic [XLEN-1:0]           result;
     } int_execute_result_t;
 
+    typedef struct packed {
+        logic                      valid;
+        logic [INST_ID_WIDTH-1:0]  instruction_id;
+`ifdef O3_SIM
+        logic [63:0]               kanata_id;
+`endif
+        logic [PC_WIDTH-1:0]       pc;
+        logic [PREG_IDX_WIDTH-1:0] src1_preg;
+        logic [PREG_IDX_WIDTH-1:0] src2_preg;
+        logic [ROB_IDX_WIDTH-1:0]  rob_idx;
+        logic [IMM_RAW_WIDTH-1:0]  imm_raw;
+        imm_type_t                 imm_type;
+        branch_op_t                branch_op;
+    } branch_issue_pipe_uop_t;
+
+    typedef struct packed {
+        logic                      valid;
+        logic [INST_ID_WIDTH-1:0]  instruction_id;
+`ifdef O3_SIM
+        logic [63:0]               kanata_id;
+`endif
+        logic [PC_WIDTH-1:0]       pc;
+        logic [XLEN-1:0]           src1_value;
+        logic [XLEN-1:0]           src2_value;
+        logic [XLEN-1:0]           imm_value;
+        logic [ROB_IDX_WIDTH-1:0]  rob_idx;
+        branch_op_t                branch_op;
+    } branch_regread_pipe_uop_t;
+
 `ifdef ENABLE_RETIRE_INFO
     // Retire-time architectural observation record.
     // Valid entries describe instructions that committed from the ROB head.
@@ -239,9 +312,14 @@ package o3_pkg;
         logic [INST_ID_WIDTH-1:0]  instruction_id;
         logic [PC_WIDTH-1:0]       pc;
         logic [ILEN-1:0]           instruction;
+        retire_uop_type_t          uop_type;
         logic [REG_ADDR_WIDTH-1:0] rd;
         logic                      rd_write_en;
         logic [XLEN-1:0]           rd_wdata;
+        logic                      branch_taken;
+        logic                      branch_mispredict;
+        logic [PC_WIDTH-1:0]       branch_target_pc;
+        logic [PC_WIDTH-1:0]       branch_fallthrough_pc;
     } retire_info_t;
 `endif
 

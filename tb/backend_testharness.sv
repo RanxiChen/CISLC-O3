@@ -109,7 +109,10 @@ module backend_testharness
 
             fetch_entry[lane].pc          = fetch_pc_dpi[lane][PC_WIDTH-1:0];
             fetch_entry[lane].instruction = fetch_inst_dpi[lane];
-            fetch_entry[lane].exception   = fetch_exc_dpi[lane];
+            fetch_entry[lane].valid       = lane_valid_dpi[lane];
+            fetch_entry[lane].fetch_addr_misaligned = 1'b0;
+            fetch_entry[lane].fetch_access_fault    = fetch_exc_dpi[lane];
+            fetch_entry[lane].ftq_idx     = '0;
 
             if (!lane_valid_dpi[lane]) begin
                 all_lane_valid = 1'b0;

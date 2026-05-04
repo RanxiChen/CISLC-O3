@@ -99,7 +99,12 @@ module backend
     localparam int BACKEND_PREG_IDX_WIDTH = $clog2(NUM_PHYS_REGS);
     localparam int BACKEND_ROB_IDX_WIDTH  = $clog2(NUM_ROB_ENTRIES);
     localparam int INST_ID_LANE_BITS      = (MACHINE_WIDTH <= 1) ? 1 : $clog2(MACHINE_WIDTH);
-    localparam int PRF_READ_PORTS         = NUM_INT_ALUS * 2;
+    localparam int NUM_BRANCH_UNITS       = 1;
+    localparam int RETIRE_WIDTH           = NUM_INT_ALUS;
+    localparam int COMPLETE_WIDTH         = NUM_INT_ALUS + NUM_BRANCH_UNITS;
+    localparam int BRANCH_COMPLETE_PORT   = NUM_INT_ALUS;
+    localparam int BRANCH_PRF_RD_BASE     = NUM_INT_ALUS * 2;
+    localparam int PRF_READ_PORTS         = (NUM_INT_ALUS * 2) + 2;
     localparam int PRF_WRITE_PORTS        = NUM_INT_ALUS;
 
     fetch_entry_t [MACHINE_WIDTH-1:0] fetch_entry_q;
@@ -127,6 +132,8 @@ module backend
     logic uopq_deq_valid;
     logic issueq_enq_valid;
     logic issueq_enq_ready;
+    logic branch_issueq_enq_valid;
+    logic branch_issueq_enq_ready;
     logic fetch_fire;
     logic alloc_req [MACHINE_WIDTH-1:0];
     logic rob_req   [MACHINE_WIDTH-1:0];
@@ -141,9 +148,14 @@ module backend
 `ifdef ENABLE_RETIRE_INFO
     logic [PC_WIDTH-1:0]       rob_alloc_pc          [MACHINE_WIDTH-1:0];
     logic [ILEN-1:0]           rob_alloc_instruction [MACHINE_WIDTH-1:0];
+    retire_uop_type_t          rob_alloc_uop_type    [MACHINE_WIDTH-1:0];
     logic [REG_ADDR_WIDTH-1:0] rob_alloc_rd          [MACHINE_WIDTH-1:0];
     logic                      rob_alloc_rd_write_en [MACHINE_WIDTH-1:0];
-    logic [XLEN-1:0]           rob_complete_rd_wdata [NUM_INT_ALUS-1:0];
+    logic [XLEN-1:0]           rob_complete_rd_wdata [COMPLETE_WIDTH-1:0];
+    logic                      rob_complete_branch_taken [COMPLETE_WIDTH-1:0];
+    logic                      rob_complete_branch_mispredict [COMPLETE_WIDTH-1:0];
+    logic [PC_WIDTH-1:0]       rob_complete_branch_target_pc [COMPLETE_WIDTH-1:0];
+    logic [PC_WIDTH-1:0]       rob_complete_branch_fallthrough_pc [COMPLETE_WIDTH-1:0];
 `endif
 
     logic [BACKEND_PREG_IDX_WIDTH-1:0] dst_new_preg [MACHINE_WIDTH-1:0];
@@ -152,6 +164,7 @@ module backend
     logic [BACKEND_PREG_IDX_WIDTH-1:0] src2_preg    [MACHINE_WIDTH-1:0];
     logic [BACKEND_PREG_IDX_WIDTH-1:0] dst_old_preg [MACHINE_WIDTH-1:0];
     issue_queue_entry_t [MACHINE_WIDTH-1:0] issueq_enq_entry;
+    branch_issue_entry_t [MACHINE_WIDTH-1:0] branch_issueq_enq_entry;
 
     issue_queue_entry_t [NUM_INT_ALUS-1:0] issueq_issue_entry;
     logic               [NUM_INT_ALUS-1:0] issueq_issue_valid;
@@ -162,6 +175,11 @@ module backend
     int_issue_pipe_uop_t    alu_issue_q   [NUM_INT_ALUS-1:0];
     int_regread_pipe_uop_t  alu_regread_q [NUM_INT_ALUS-1:0];
     int_execute_result_t    alu_result_q  [NUM_INT_ALUS-1:0];
+    branch_issue_entry_t        branch_issueq_issue_entry;
+    logic                       branch_issueq_issue_valid;
+    logic                       branch_issueq_issue_ready;
+    branch_issue_pipe_uop_t     branch_issue_q;
+    branch_regread_pipe_uop_t   branch_regread_q;
 
     logic [BACKEND_PREG_IDX_WIDTH-1:0] prf_rd_addr [PRF_READ_PORTS-1:0];
     logic [XLEN-1:0]                   prf_rd_data [PRF_READ_PORTS-1:0];
@@ -172,13 +190,18 @@ module backend
     logic                              exec_valid   [NUM_INT_ALUS-1:0];
     logic [XLEN-1:0]                   exec_result  [NUM_INT_ALUS-1:0];
     logic                              exec_cmp_true[NUM_INT_ALUS-1:0];
+    logic                              branch_exec_valid;
+    logic                              branch_exec_taken;
+    logic                              branch_exec_mispredict;
+    logic [PC_WIDTH-1:0]               branch_exec_target_pc;
+    logic [PC_WIDTH-1:0]               branch_exec_fallthrough_pc;
     logic                              preg_ready_q [NUM_PHYS_REGS-1:0];
-    logic                              rob_complete_valid [NUM_INT_ALUS-1:0];
-    logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_complete_idx   [NUM_INT_ALUS-1:0];
-    logic                              rob_retire_valid   [NUM_INT_ALUS-1:0];
-    logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_retire_idx     [NUM_INT_ALUS-1:0];
-    logic [BACKEND_PREG_IDX_WIDTH-1:0] rob_retire_old_dst_preg [NUM_INT_ALUS-1:0];
-    logic [INST_ID_WIDTH-1:0]          rob_retire_instruction_id [NUM_INT_ALUS-1:0];
+    logic                              rob_complete_valid [COMPLETE_WIDTH-1:0];
+    logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_complete_idx   [COMPLETE_WIDTH-1:0];
+    logic                              rob_retire_valid   [RETIRE_WIDTH-1:0];
+    logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_retire_idx     [RETIRE_WIDTH-1:0];
+    logic [BACKEND_PREG_IDX_WIDTH-1:0] rob_retire_old_dst_preg [RETIRE_WIDTH-1:0];
+    logic [INST_ID_WIDTH-1:0]          rob_retire_instruction_id [RETIRE_WIDTH-1:0];
     logic                              rob_retire_any;
 
 `ifdef O3_SIM
@@ -222,10 +245,32 @@ module backend
         begin
             imm_sext = '0;
             unique case (imm_type)
-                IMM_TYPE_I: imm_sext = XLEN'($signed({{(XLEN-IMM_RAW_WIDTH){imm_raw[IMM_RAW_WIDTH-1]}}, imm_raw}));
+                IMM_TYPE_I: imm_sext = XLEN'($signed({{(XLEN-12){imm_raw[11]}}, imm_raw[11:0]}));
+                IMM_TYPE_B: imm_sext = XLEN'($signed({{(XLEN-13){imm_raw[12]}}, imm_raw[12:0]}));
                 default:    imm_sext = '0;
             endcase
             expand_imm_value = imm_sext;
+        end
+    endfunction
+
+    function automatic logic src_depends_on_older_lane(
+        input int unsigned              lane_idx,
+        input logic [REG_ADDR_WIDTH-1:0] src_arch,
+        input logic                      src_read_en
+    );
+        begin
+            src_depends_on_older_lane = 1'b0;
+            if (src_read_en) begin
+                for (int older = 0; older < MACHINE_WIDTH; older++) begin
+                    if (older < int'(lane_idx)
+                     && rename_uop_head[older].valid
+                     && rename_uop_head[older].rd_write_en
+                     && (rename_uop_head[older].rd != REG_ADDR_WIDTH'(0))
+                     && (rename_uop_head[older].rd == src_arch)) begin
+                        src_depends_on_older_lane = 1'b1;
+                    end
+                end
+            end
         end
     endfunction
 
@@ -253,7 +298,22 @@ module backend
             unique case (imm_type)
                 IMM_TYPE_NONE: imm_type_name = "NONE";
                 IMM_TYPE_I:    imm_type_name = "I";
+                IMM_TYPE_B:    imm_type_name = "B";
                 default:       imm_type_name = "UNK";
+            endcase
+        end
+    endfunction
+
+    function automatic string branch_op_name(input branch_op_t op);
+        begin
+            unique case (op)
+                BRANCH_OP_BEQ:  branch_op_name = "BEQ";
+                BRANCH_OP_BNE:  branch_op_name = "BNE";
+                BRANCH_OP_BLT:  branch_op_name = "BLT";
+                BRANCH_OP_BGE:  branch_op_name = "BGE";
+                BRANCH_OP_BLTU: branch_op_name = "BLTU";
+                BRANCH_OP_BGEU: branch_op_name = "BGEU";
+                default:        branch_op_name = "BR_UNK";
             endcase
         end
     endfunction
@@ -298,7 +358,10 @@ module backend
             assign decoded_uop[i].imm_type       = decode_out[i].imm_type;
             assign decoded_uop[i].imm_raw        = decode_out[i].imm_raw;
             assign decoded_uop[i].int_alu_op     = decode_out[i].int_alu_op;
+            assign decoded_uop[i].branch_op      = decode_out[i].branch_op;
             assign decoded_uop[i].is_int_uop     = decode_out[i].is_int_uop;
+            assign decoded_uop[i].is_branch_uop  = decode_out[i].is_branch_uop;
+            assign decoded_uop[i].illegal_uop    = decode_out[i].illegal_uop;
         end
     endgenerate
 
@@ -321,12 +384,17 @@ module backend
             assign alloc_req[i] = dst_write_real;
 
             assign rob_req[i]       = rename_uop_head[i].valid;
-            assign rob_exception[i] = rename_uop_head[i].exception;
+            assign rob_exception[i] = rename_uop_head[i].exception || rename_uop_head[i].illegal_uop;
             assign rob_alloc_instruction_id[i] = rename_uop_head[i].instruction_id;
 `ifdef ENABLE_RETIRE_INFO
             assign rob_alloc_pc[i]          = rename_uop_head[i].pc;
             assign rob_alloc_instruction[i] = rename_uop_head[i].instruction;
-            assign rob_alloc_rd[i]          = rename_uop_head[i].rd;
+            assign rob_alloc_uop_type[i]    = rename_uop_head[i].is_int_uop
+                                            ? RETIRE_UOP_INT
+                                            : (rename_uop_head[i].is_branch_uop
+                                                ? RETIRE_UOP_BRANCH
+                                                : RETIRE_UOP_OTHER);
+            assign rob_alloc_rd[i]          = dst_write_real ? rename_uop_head[i].rd : REG_ADDR_WIDTH'(0);
             assign rob_alloc_rd_write_en[i] = dst_write_real;
 `endif
 
@@ -342,10 +410,12 @@ module backend
             // x0 固定映射到 p0，而 p0 的 ready 恒为 1。
             // 因此源操作数的 ready 初值只取决于“是否真的读取”以及当前 preg_ready 状态。
             assign issueq_enq_entry[i].src1_ready   = !rename_uop_head[i].rs1_read_en
-                                                   || preg_ready_q[src1_preg[i]];
+                                                   || (preg_ready_q[src1_preg[i]]
+                                                    && !src_depends_on_older_lane(i, rename_uop_head[i].rs1, rename_uop_head[i].rs1_read_en));
             assign issueq_enq_entry[i].src2_ready   = (!rename_uop_head[i].rs2_read_en)
                                                    || rename_uop_head[i].use_imm
-                                                   || preg_ready_q[src2_preg[i]];
+                                                   || (preg_ready_q[src2_preg[i]]
+                                                    && !src_depends_on_older_lane(i, rename_uop_head[i].rs2, rename_uop_head[i].rs2_read_en));
             assign issueq_enq_entry[i].rob_idx      = rob_idx[i];
             assign issueq_enq_entry[i].dst_preg     = dst_write_real ? dst_new_preg[i] : BACKEND_PREG_IDX_WIDTH'(0);
             assign issueq_enq_entry[i].dst_write_en = dst_write_real;
@@ -353,6 +423,24 @@ module backend
             assign issueq_enq_entry[i].imm_valid    = rename_uop_head[i].use_imm;
             assign issueq_enq_entry[i].imm_type     = rename_uop_head[i].imm_type;
             assign issueq_enq_entry[i].int_alu_op   = rename_uop_head[i].int_alu_op;
+
+            assign branch_issueq_enq_entry[i].valid = rename_uop_head[i].valid
+                                                    && rename_uop_head[i].is_branch_uop;
+            assign branch_issueq_enq_entry[i].instruction_id = rename_uop_head[i].instruction_id;
+`ifdef O3_SIM
+            assign branch_issueq_enq_entry[i].kanata_id = rename_uop_head[i].kanata_id;
+`endif
+            assign branch_issueq_enq_entry[i].pc         = rename_uop_head[i].pc;
+            assign branch_issueq_enq_entry[i].src1_preg  = src1_preg[i];
+            assign branch_issueq_enq_entry[i].src2_preg  = src2_preg[i];
+            assign branch_issueq_enq_entry[i].src1_ready = preg_ready_q[src1_preg[i]]
+                                                        && !src_depends_on_older_lane(i, rename_uop_head[i].rs1, rename_uop_head[i].rs1_read_en);
+            assign branch_issueq_enq_entry[i].src2_ready = preg_ready_q[src2_preg[i]]
+                                                        && !src_depends_on_older_lane(i, rename_uop_head[i].rs2, rename_uop_head[i].rs2_read_en);
+            assign branch_issueq_enq_entry[i].rob_idx    = rob_idx[i];
+            assign branch_issueq_enq_entry[i].imm_raw    = rename_uop_head[i].imm_raw;
+            assign branch_issueq_enq_entry[i].imm_type   = rename_uop_head[i].imm_type;
+            assign branch_issueq_enq_entry[i].branch_op  = rename_uop_head[i].branch_op;
         end
     endgenerate
 
@@ -361,13 +449,15 @@ module backend
     assign fetch_ready_o   = (!fetch_entry_valid_q) || decode_ready;
     assign fetch_fire      = fetch_valid_i && fetch_ready_o;
     assign rename_valid    = uopq_deq_valid;
-    assign issueq_enq_valid = rename_valid && alloc_valid && rob_valid;
-    assign rename_ready    = alloc_valid && rob_valid && issueq_enq_ready;
+    assign issueq_enq_valid = rename_valid && alloc_valid && rob_valid && branch_issueq_enq_ready;
+    assign branch_issueq_enq_valid = rename_valid && alloc_valid && rob_valid && issueq_enq_ready;
+    assign rename_ready    = alloc_valid && rob_valid && issueq_enq_ready && branch_issueq_enq_ready;
     assign rename_fire     = rename_valid && rename_ready;
-    assign alloc_ready     = rename_valid && rob_valid && issueq_enq_ready;
-    assign rob_ready       = rename_valid && alloc_valid && issueq_enq_ready;
+    assign alloc_ready     = rename_valid && rob_valid && issueq_enq_ready && branch_issueq_enq_ready;
+    assign rob_ready       = rename_valid && alloc_valid && issueq_enq_ready && branch_issueq_enq_ready;
     assign done            = 1'b0;
     assign issueq_issue_ready = '1;
+    assign branch_issueq_issue_ready = 1'b1;
     assign retired_inst_count_o = retired_inst_count_q;
 
 `ifdef O3_SIM_SINGLE_INST_TRACE
@@ -380,6 +470,9 @@ module backend
             assign prf_rd_addr[(2*i)+1] = alu_issue_q[i].src2_preg;
         end
     endgenerate
+
+    assign prf_rd_addr[BRANCH_PRF_RD_BASE + 0] = branch_issue_q.src1_preg;
+    assign prf_rd_addr[BRANCH_PRF_RD_BASE + 1] = branch_issue_q.src2_preg;
 
     generate
         for (i = 0; i < NUM_INT_ALUS; i++) begin : prf_writeback_assign
@@ -395,20 +488,34 @@ module backend
             assign rob_complete_idx[i]   = alu_result_q[i].rob_idx;
 `ifdef ENABLE_RETIRE_INFO
             assign rob_complete_rd_wdata[i] = alu_result_q[i].result;
+            assign rob_complete_branch_taken[i] = 1'b0;
+            assign rob_complete_branch_mispredict[i] = 1'b0;
+            assign rob_complete_branch_target_pc[i] = '0;
+            assign rob_complete_branch_fallthrough_pc[i] = '0;
 `endif
         end
     endgenerate
 
+    assign rob_complete_valid[BRANCH_COMPLETE_PORT] = branch_exec_valid;
+    assign rob_complete_idx[BRANCH_COMPLETE_PORT]   = branch_regread_q.rob_idx;
+`ifdef ENABLE_RETIRE_INFO
+    assign rob_complete_rd_wdata[BRANCH_COMPLETE_PORT] = '0;
+    assign rob_complete_branch_taken[BRANCH_COMPLETE_PORT] = branch_exec_taken;
+    assign rob_complete_branch_mispredict[BRANCH_COMPLETE_PORT] = branch_exec_mispredict;
+    assign rob_complete_branch_target_pc[BRANCH_COMPLETE_PORT] = branch_exec_target_pc;
+    assign rob_complete_branch_fallthrough_pc[BRANCH_COMPLETE_PORT] = branch_exec_fallthrough_pc;
+`endif
+
     always_comb begin
         rob_retire_any = 1'b0;
-        for (int port = 0; port < NUM_INT_ALUS; port++) begin
+        for (int port = 0; port < RETIRE_WIDTH; port++) begin
             rob_retire_any |= rob_retire_valid[port];
         end
     end
 
     always_comb begin
         retire_count_this_cycle = '0;
-        for (int port = 0; port < NUM_INT_ALUS; port++) begin
+        for (int port = 0; port < RETIRE_WIDTH; port++) begin
             if (rob_retire_valid[port]) begin
                 retire_count_this_cycle = retire_count_this_cycle + 2'd1;
             end
@@ -435,7 +542,7 @@ module backend
         .MACHINE_WIDTH(MACHINE_WIDTH),
         .NUM_PHYS_REGS(NUM_PHYS_REGS),
         .NUM_ARCH_REGS(NUM_ARCH_REGS),
-        .RELEASE_WIDTH(NUM_INT_ALUS)
+        .RELEASE_WIDTH(RETIRE_WIDTH)
     ) u_free_list (
         .clk(clk),
         .rst(rst),
@@ -451,7 +558,8 @@ module backend
         .MACHINE_WIDTH(MACHINE_WIDTH),
         .NUM_ROB_ENTRIES(NUM_ROB_ENTRIES),
         .NUM_PHYS_REGS(NUM_PHYS_REGS),
-        .COMPLETE_WIDTH(NUM_INT_ALUS)
+        .COMPLETE_WIDTH(COMPLETE_WIDTH),
+        .RETIRE_WIDTH(RETIRE_WIDTH)
     ) u_rob (
         .clk(clk),
         .rst(rst),
@@ -462,6 +570,7 @@ module backend
 `ifdef ENABLE_RETIRE_INFO
         .alloc_pc_i(rob_alloc_pc),
         .alloc_instruction_i(rob_alloc_instruction),
+        .alloc_uop_type_i(rob_alloc_uop_type),
         .alloc_rd_i(rob_alloc_rd),
         .alloc_rd_write_en_i(rob_alloc_rd_write_en),
 `endif
@@ -470,6 +579,10 @@ module backend
         .complete_idx_i(rob_complete_idx),
 `ifdef ENABLE_RETIRE_INFO
         .complete_rd_wdata_i(rob_complete_rd_wdata),
+        .complete_branch_taken_i(rob_complete_branch_taken),
+        .complete_branch_mispredict_i(rob_complete_branch_mispredict),
+        .complete_branch_target_pc_i(rob_complete_branch_target_pc),
+        .complete_branch_fallthrough_pc_i(rob_complete_branch_fallthrough_pc),
 `endif
         .alloc_valid_o(rob_valid),
         .alloc_idx_o(rob_idx),
@@ -493,6 +606,7 @@ module backend
         .rs1_addr_i(rename_rs1_addr),
         .rs2_addr_i(rename_rs2_addr),
         .rd_addr_i(rename_rd_addr),
+        .lane_valid_i(rob_req),
         .rs1_read_en_i(rename_rs1_read_en),
         .rs2_read_en_i(rename_rs2_read_en),
         .rd_write_en_i(rename_rd_write_en),
@@ -519,6 +633,22 @@ module backend
         .issue_ready_i(issueq_issue_ready),
         .wakeup_entry_o(issueq_wakeup_entry),
         .wakeup_valid_o(issueq_wakeup_valid)
+    );
+
+    branch_issue_queue #(
+        .MACHINE_WIDTH(MACHINE_WIDTH),
+        .DEPTH(4),
+        .NUM_PHYS_REGS(NUM_PHYS_REGS)
+    ) u_branch_issue_queue (
+        .clk(clk),
+        .rst(rst),
+        .enq_entry_i(branch_issueq_enq_entry),
+        .enq_valid_i(branch_issueq_enq_valid),
+        .enq_ready_o(branch_issueq_enq_ready),
+        .preg_ready_i(preg_ready_q),
+        .issue_entry_o(branch_issueq_issue_entry),
+        .issue_valid_o(branch_issueq_issue_valid),
+        .issue_ready_i(branch_issueq_issue_ready)
     );
 
     physical_regfile #(
@@ -555,6 +685,20 @@ module backend
         end
     endgenerate
 
+    branch_execute_unit u_branch_execute_unit (
+        .valid_i(branch_regread_q.valid),
+        .branch_op_i(branch_regread_q.branch_op),
+        .pc_i(branch_regread_q.pc),
+        .src1_value_i(branch_regread_q.src1_value),
+        .src2_value_i(branch_regread_q.src2_value),
+        .imm_value_i(branch_regread_q.imm_value),
+        .valid_o(branch_exec_valid),
+        .taken_o(branch_exec_taken),
+        .mispredict_o(branch_exec_mispredict),
+        .target_pc_o(branch_exec_target_pc),
+        .fallthrough_pc_o(branch_exec_fallthrough_pc)
+    );
+
     always_ff @(posedge clk) begin
         if (rst) begin
             fetch_entry_q          <= '0;
@@ -564,6 +708,8 @@ module backend
             alu_issue_q            <= '{default: '0};
             alu_regread_q          <= '{default: '0};
             alu_result_q           <= '{default: '0};
+            branch_issue_q         <= '0;
+            branch_regread_q       <= '0;
             retired_inst_count_q   <= 64'd0;
             for (int preg = 0; preg < NUM_PHYS_REGS; preg++) begin
                 preg_ready_q[preg] <= (preg < NUM_ARCH_REGS);
@@ -732,7 +878,7 @@ module backend
             if (kanata_fd != 0) begin
                 longint retire_id;
                 retire_id = longint'(retired_inst_count_q);
-                for (int port = 0; port < NUM_INT_ALUS; port++) begin
+                for (int port = 0; port < RETIRE_WIDTH; port++) begin
                     if (rob_retire_valid[port]) begin
                         $fdisplay(kanata_fd, "R\t%0d\t%0d\t0",
                                   rob_kanata_id_q[rob_retire_idx[port]],
@@ -858,7 +1004,7 @@ module backend
                     end
                 end
 
-                for (int port = 0; port < NUM_INT_ALUS; port++) begin
+                for (int port = 0; port < RETIRE_WIDTH; port++) begin
                     if (rob_retire_valid[port]
                      && rob_retire_instruction_id[port] == single_trace_id_q) begin
                         single_trace_active_q <= 1'b0;
@@ -943,6 +1089,19 @@ module backend
                 end
             end
 
+            if (branch_issueq_issue_valid) begin
+                $display("[O3_SIM][backend][cycle=%0d] BR_ISSUE id=0x%0h src1:p%0d src2:p%0d rob:%0d op=%s pc=0x%0h",
+                         sim_cycle_q,
+                         branch_issueq_issue_entry.instruction_id,
+                         branch_issueq_issue_entry.src1_preg,
+                         branch_issueq_issue_entry.src2_preg,
+                         branch_issueq_issue_entry.rob_idx,
+                         branch_op_name(branch_issueq_issue_entry.branch_op),
+                         branch_issueq_issue_entry.pc);
+            end else begin
+                $display("[O3_SIM][backend][cycle=%0d] BR_ISSUE empty", sim_cycle_q);
+            end
+
             for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
                 if (alu_issue_q[alu].valid) begin
                     $display("[O3_SIM][backend][cycle=%0d] REGREAD alu%0d id=0x%0h src1:p%0d->0x%0h src2:%s rob:%0d",
@@ -965,6 +1124,22 @@ module backend
                 end
             end
 
+            if (branch_issue_q.valid) begin
+                $display("[O3_SIM][backend][cycle=%0d] BR_REGREAD id=0x%0h src1:p%0d->0x%0h src2:p%0d->0x%0h imm[%s]=0x%0h->0x%0h rob:%0d",
+                         sim_cycle_q,
+                         branch_issue_q.instruction_id,
+                         branch_issue_q.src1_preg,
+                         prf_rd_data[BRANCH_PRF_RD_BASE + 0],
+                         branch_issue_q.src2_preg,
+                         prf_rd_data[BRANCH_PRF_RD_BASE + 1],
+                         imm_type_name(branch_issue_q.imm_type),
+                         branch_issue_q.imm_raw,
+                         expand_imm_value(branch_issue_q.imm_type, branch_issue_q.imm_raw),
+                         branch_issue_q.rob_idx);
+            end else begin
+                $display("[O3_SIM][backend][cycle=%0d] BR_REGREAD empty", sim_cycle_q);
+            end
+
             for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
                 if (alu_regread_q[alu].valid) begin
                     $display("[O3_SIM][backend][cycle=%0d] EXECUTE alu%0d id=0x%0h op=%s src1=0x%0h src2=0x%0h result=0x%0h",
@@ -978,6 +1153,23 @@ module backend
                 end else begin
                     $display("[O3_SIM][backend][cycle=%0d] EXECUTE alu%0d empty", sim_cycle_q, alu);
                 end
+            end
+
+            if (branch_regread_q.valid) begin
+                $display("[O3_SIM][backend][cycle=%0d] BR_EXECUTE id=0x%0h op=%s src1=0x%0h src2=0x%0h imm=0x%0h taken=%0d mispredict=%0d target=0x%0h fallthrough=0x%0h rob:%0d",
+                         sim_cycle_q,
+                         branch_regread_q.instruction_id,
+                         branch_op_name(branch_regread_q.branch_op),
+                         branch_regread_q.src1_value,
+                         branch_regread_q.src2_value,
+                         branch_regread_q.imm_value,
+                         branch_exec_taken,
+                         branch_exec_mispredict,
+                         branch_exec_target_pc,
+                         branch_exec_fallthrough_pc,
+                         branch_regread_q.rob_idx);
+            end else begin
+                $display("[O3_SIM][backend][cycle=%0d] BR_EXECUTE empty", sim_cycle_q);
             end
 
             for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
@@ -997,7 +1189,7 @@ module backend
 
             if (rob_retire_any) begin
                 $write("[O3_SIM][backend][cycle=%0d] RETIRE", sim_cycle_q);
-                for (int port = 0; port < NUM_INT_ALUS; port++) begin
+                for (int port = 0; port < RETIRE_WIDTH; port++) begin
                     if (rob_retire_valid[port]) begin
                         $write(" id=0x%0h rob:%0d old:p%0d",
                                rob_retire_instruction_id[port],
@@ -1103,6 +1295,31 @@ module backend
                 alu_issue_q[alu].imm_type     <= issueq_issue_entry[alu].imm_type;
                 alu_issue_q[alu].int_alu_op   <= issueq_issue_entry[alu].int_alu_op;
             end
+
+            branch_regread_q.valid          <= branch_issue_q.valid;
+            branch_regread_q.instruction_id <= branch_issue_q.instruction_id;
+`ifdef O3_SIM
+            branch_regread_q.kanata_id      <= branch_issue_q.kanata_id;
+`endif
+            branch_regread_q.pc             <= branch_issue_q.pc;
+            branch_regread_q.src1_value     <= prf_rd_data[BRANCH_PRF_RD_BASE + 0];
+            branch_regread_q.src2_value     <= prf_rd_data[BRANCH_PRF_RD_BASE + 1];
+            branch_regread_q.imm_value      <= expand_imm_value(branch_issue_q.imm_type, branch_issue_q.imm_raw);
+            branch_regread_q.rob_idx        <= branch_issue_q.rob_idx;
+            branch_regread_q.branch_op      <= branch_issue_q.branch_op;
+
+            branch_issue_q.valid            <= branch_issueq_issue_valid;
+            branch_issue_q.instruction_id   <= branch_issueq_issue_entry.instruction_id;
+`ifdef O3_SIM
+            branch_issue_q.kanata_id        <= branch_issueq_issue_entry.kanata_id;
+`endif
+            branch_issue_q.pc               <= branch_issueq_issue_entry.pc;
+            branch_issue_q.src1_preg        <= branch_issueq_issue_entry.src1_preg;
+            branch_issue_q.src2_preg        <= branch_issueq_issue_entry.src2_preg;
+            branch_issue_q.rob_idx          <= branch_issueq_issue_entry.rob_idx;
+            branch_issue_q.imm_raw          <= branch_issueq_issue_entry.imm_raw;
+            branch_issue_q.imm_type         <= branch_issueq_issue_entry.imm_type;
+            branch_issue_q.branch_op        <= branch_issueq_issue_entry.branch_op;
 
             if (fetch_fire) begin
                 fetch_entry_q          <= fetch_entry_i;

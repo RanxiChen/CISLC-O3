@@ -77,14 +77,14 @@ uint64_t read_wide_bits(const WData* words, int lsb, int width) {
 RetireInfo read_retire_info(const Vo3_core& dut, int port) {
     const WData* raw = dut.retire_info_o[port];
     return RetireInfo{
-        .valid = read_wide_bits(raw, 211, 1) != 0,
-        .rob_idx = read_wide_bits(raw, 205, 6),
-        .instruction_id = read_wide_bits(raw, 141, 64),
-        .pc = read_wide_bits(raw, 102, 39),
-        .instruction = static_cast<uint32_t>(read_wide_bits(raw, 70, 32)),
-        .rd = static_cast<uint32_t>(read_wide_bits(raw, 65, 5)),
-        .rd_write_en = read_wide_bits(raw, 64, 1) != 0,
-        .rd_wdata = read_wide_bits(raw, 0, 64),
+        .valid = read_wide_bits(raw, 293, 1) != 0,
+        .rob_idx = read_wide_bits(raw, 287, 6),
+        .instruction_id = read_wide_bits(raw, 223, 64),
+        .pc = read_wide_bits(raw, 184, 39),
+        .instruction = static_cast<uint32_t>(read_wide_bits(raw, 152, 32)),
+        .rd = static_cast<uint32_t>(read_wide_bits(raw, 145, 5)),
+        .rd_write_en = read_wide_bits(raw, 144, 1) != 0,
+        .rd_wdata = read_wide_bits(raw, 80, 64),
     };
 }
 

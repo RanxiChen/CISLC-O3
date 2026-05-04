@@ -68,6 +68,7 @@ module decoder
 
     localparam logic [6:0] OPCODE_OP_IMM   = 7'b0010011;
     localparam logic [6:0] OPCODE_OP       = 7'b0110011;
+    localparam logic [6:0] OPCODE_BRANCH   = 7'b1100011;
 
     logic [6:0] opcode;
     logic [2:0] funct3;
@@ -90,7 +91,10 @@ module decoder
         decode_o.imm_type    = IMM_TYPE_NONE;
         decode_o.imm_raw     = '0;
         decode_o.int_alu_op  = INT_ALU_OP_ADD;
+        decode_o.branch_op   = BRANCH_OP_BEQ;
         decode_o.is_int_uop  = 1'b0;
+        decode_o.is_branch_uop = 1'b0;
+        decode_o.illegal_uop = 1'b1;
 
         unique case (opcode)
             OPCODE_OP_IMM: begin
@@ -124,8 +128,9 @@ module decoder
                     decode_o.rd_write_en = 1'b1;
                     decode_o.use_imm     = 1'b1;
                     decode_o.imm_type    = IMM_TYPE_I;
-                    decode_o.imm_raw     = decode_i.instruction[31:20];
+                    decode_o.imm_raw     = IMM_RAW_WIDTH'(decode_i.instruction[31:20]);
                     decode_o.is_int_uop  = 1'b1;
+                    decode_o.illegal_uop = 1'b0;
                 end
             end
 
@@ -188,7 +193,58 @@ module decoder
                     decode_o.rs2_read_en = 1'b1;
                     decode_o.rd_write_en = 1'b1;
                     decode_o.is_int_uop  = 1'b1;
+                    decode_o.illegal_uop = 1'b0;
                 end
+            end
+
+            OPCODE_BRANCH: begin
+                decode_o.rs1_read_en   = 1'b1;
+                decode_o.rs2_read_en   = 1'b1;
+                decode_o.rd_write_en   = 1'b0;
+                decode_o.use_imm       = 1'b1;
+                decode_o.imm_type      = IMM_TYPE_B;
+                decode_o.imm_raw       = IMM_RAW_WIDTH'({
+                    decode_i.instruction[31],
+                    decode_i.instruction[7],
+                    decode_i.instruction[30:25],
+                    decode_i.instruction[11:8],
+                    1'b0
+                });
+
+                unique case (funct3)
+                    3'b000: begin
+                        decode_o.branch_op     = BRANCH_OP_BEQ;
+                        decode_o.is_branch_uop = 1'b1;
+                        decode_o.illegal_uop   = 1'b0;
+                    end
+                    3'b001: begin
+                        decode_o.branch_op     = BRANCH_OP_BNE;
+                        decode_o.is_branch_uop = 1'b1;
+                        decode_o.illegal_uop   = 1'b0;
+                    end
+                    3'b100: begin
+                        decode_o.branch_op     = BRANCH_OP_BLT;
+                        decode_o.is_branch_uop = 1'b1;
+                        decode_o.illegal_uop   = 1'b0;
+                    end
+                    3'b101: begin
+                        decode_o.branch_op     = BRANCH_OP_BGE;
+                        decode_o.is_branch_uop = 1'b1;
+                        decode_o.illegal_uop   = 1'b0;
+                    end
+                    3'b110: begin
+                        decode_o.branch_op     = BRANCH_OP_BLTU;
+                        decode_o.is_branch_uop = 1'b1;
+                        decode_o.illegal_uop   = 1'b0;
+                    end
+                    3'b111: begin
+                        decode_o.branch_op     = BRANCH_OP_BGEU;
+                        decode_o.is_branch_uop = 1'b1;
+                        decode_o.illegal_uop   = 1'b0;
+                    end
+                    default: begin
+                    end
+                endcase
             end
 
             default: begin

@@ -24,9 +24,25 @@ uint32_t get_rs1(uint32_t inst) {
     return (inst >> 15) & 0x1fu;
 }
 
+uint32_t get_rs2(uint32_t inst) {
+    return (inst >> 20) & 0x1fu;
+}
+
+uint32_t get_funct7(uint32_t inst) {
+    return (inst >> 25) & 0x7fu;
+}
+
 int32_t imm_i(uint32_t inst) {
     const uint32_t imm = inst >> 20;
     return static_cast<int32_t>((imm ^ 0x800u) - 0x800u);
+}
+
+int32_t imm_b(uint32_t inst) {
+    const uint32_t imm = ((inst >> 31) & 0x1u) << 12
+                       | ((inst >> 7) & 0x1u) << 11
+                       | ((inst >> 25) & 0x3fu) << 5
+                       | ((inst >> 8) & 0xfu) << 1;
+    return static_cast<int32_t>((imm ^ 0x1000u) - 0x1000u);
 }
 
 std::string hex_inst(uint32_t inst) {
@@ -36,32 +52,42 @@ std::string hex_inst(uint32_t inst) {
 }
 
 std::string disasm_rv64i(uint32_t inst) {
-    if (get_opcode(inst) != 0x13u) {
-        return "unknown(" + hex_inst(inst) + ")";
+    if (get_opcode(inst) == 0x13u) {
+        const char* mnemonic = nullptr;
+        switch (get_funct3(inst)) {
+            case 0x0u:
+                mnemonic = "addi";
+                break;
+            case 0x4u:
+                mnemonic = "xori";
+                break;
+            case 0x6u:
+                mnemonic = "ori";
+                break;
+            default:
+                break;
+        }
+
+        if (mnemonic != nullptr) {
+            return std::string(mnemonic) + " x" + std::to_string(get_rd(inst))
+                 + ",x" + std::to_string(get_rs1(inst))
+                 + "," + std::to_string(imm_i(inst));
+        }
     }
 
-    const char* mnemonic = nullptr;
-    switch (get_funct3(inst)) {
-        case 0x0u:
-            mnemonic = "addi";
-            break;
-        case 0x4u:
-            mnemonic = "xori";
-            break;
-        case 0x6u:
-            mnemonic = "ori";
-            break;
-        default:
-            break;
+    if (get_opcode(inst) == 0x33u && get_funct3(inst) == 0x0u && get_funct7(inst) == 0x00u) {
+        return "add x" + std::to_string(get_rd(inst))
+             + ",x" + std::to_string(get_rs1(inst))
+             + ",x" + std::to_string(get_rs2(inst));
     }
 
-    if (mnemonic == nullptr) {
-        return "unknown(" + hex_inst(inst) + ")";
+    if (get_opcode(inst) == 0x63u && get_funct3(inst) == 0x1u) {
+        return "bne x" + std::to_string(get_rs1(inst))
+             + ",x" + std::to_string(get_rs2(inst))
+             + "," + std::to_string(imm_b(inst));
     }
 
-    return std::string(mnemonic) + " x" + std::to_string(get_rd(inst))
-         + ",x" + std::to_string(get_rs1(inst))
-         + "," + std::to_string(imm_i(inst));
+    return "unknown(" + hex_inst(inst) + ")";
 }
 
 }  // namespace

@@ -28,8 +28,10 @@ RTL_SRCS := \
 	$(REPO_ROOT)/rtl/backend/uop_queue.sv \
 	$(REPO_ROOT)/rtl/backend/rob.sv \
 	$(REPO_ROOT)/rtl/backend/issue_queue.sv \
+	$(REPO_ROOT)/rtl/backend/branch_issue_queue.sv \
 	$(REPO_ROOT)/rtl/backend/physical_regfile.sv \
 	$(REPO_ROOT)/rtl/backend/int_execute_unit.sv \
+	$(REPO_ROOT)/rtl/backend/branch_execute_unit.sv \
 	$(REPO_ROOT)/rtl/backend/backend.sv \
 	$(REPO_ROOT)/rtl/core/o3_core.sv
 

@@ -11,10 +11,9 @@
  * - 支持按 MACHINE_WIDTH 并行读取 rs1 / rs2 / rd 的当前映射
  * - 支持在 rename_fire 时，用 free list 分配的新物理寄存器更新 rd 的当前映射
  * - 额外输出 old_dst_preg，作为后续接入 commit / 释放旧物理寄存器时的扩展预留
+ * - 按 lane 顺序处理同组依赖与覆盖：更年轻 lane 能看到更年老 lane 的新映射
  *
  * 当前没有实现的功能：
- * - 不处理同拍 lane 之间的组内依赖
- * - 不处理同拍 lane 之间对同一个 rd 的覆盖优先级
  * - 不维护 commit map / speculative map 的双份结构
  * - 不支持 checkpoint / rollback / flush
  * - 当前阶段不附带测试代码和仿真代码，只先搭功能与注释
@@ -45,6 +44,7 @@ module rename_map_table #(
     input  logic [$clog2(NUM_ARCH_REGS)-1:0] rs1_addr_i     [MACHINE_WIDTH-1:0],
     input  logic [$clog2(NUM_ARCH_REGS)-1:0] rs2_addr_i     [MACHINE_WIDTH-1:0],
     input  logic [$clog2(NUM_ARCH_REGS)-1:0] rd_addr_i      [MACHINE_WIDTH-1:0],
+    input  logic                             lane_valid_i   [MACHINE_WIDTH-1:0],
     input  logic                             rs1_read_en_i  [MACHINE_WIDTH-1:0],
     input  logic                             rs2_read_en_i  [MACHINE_WIDTH-1:0],
     input  logic                             rd_write_en_i  [MACHINE_WIDTH-1:0],
@@ -59,31 +59,35 @@ module rename_map_table #(
     localparam int PREG_IDX_WIDTH = $clog2(NUM_PHYS_REGS);
 
     logic [PREG_IDX_WIDTH-1:0] map_table_q [NUM_ARCH_REGS-1:0];
+    logic [PREG_IDX_WIDTH-1:0] map_table_next [NUM_ARCH_REGS-1:0];
 
     always_comb begin
+        map_table_next = map_table_q;
+
         for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
             src1_preg_o[lane]    = '0;
             src2_preg_o[lane]    = '0;
             old_dst_preg_o[lane] = '0;
 
-            if (rs1_read_en_i[lane]) begin
+            if (lane_valid_i[lane] && rs1_read_en_i[lane]) begin
                 if (rs1_addr_i[lane] == ARCH_IDX_WIDTH'(0)) begin
                     src1_preg_o[lane] = '0;
                 end else begin
-                    src1_preg_o[lane] = map_table_q[rs1_addr_i[lane]];
+                    src1_preg_o[lane] = map_table_next[rs1_addr_i[lane]];
                 end
             end
 
-            if (rs2_read_en_i[lane]) begin
+            if (lane_valid_i[lane] && rs2_read_en_i[lane]) begin
                 if (rs2_addr_i[lane] == ARCH_IDX_WIDTH'(0)) begin
                     src2_preg_o[lane] = '0;
                 end else begin
-                    src2_preg_o[lane] = map_table_q[rs2_addr_i[lane]];
+                    src2_preg_o[lane] = map_table_next[rs2_addr_i[lane]];
                 end
             end
 
-            if (rd_write_en_i[lane] && (rd_addr_i[lane] != ARCH_IDX_WIDTH'(0))) begin
-                old_dst_preg_o[lane] = map_table_q[rd_addr_i[lane]];
+            if (lane_valid_i[lane] && rd_write_en_i[lane] && (rd_addr_i[lane] != ARCH_IDX_WIDTH'(0))) begin
+                old_dst_preg_o[lane] = map_table_next[rd_addr_i[lane]];
+                map_table_next[rd_addr_i[lane]] = new_dst_preg_i[lane];
             end
         end
     end
@@ -96,14 +100,10 @@ module rename_map_table #(
                 map_table_q[arch] <= PREG_IDX_WIDTH'(arch);
             end
         end else if (rename_fire_i) begin
-            // 当前版本按 lane 顺序独立写表，但不处理组内覆盖。
-            // 如果同拍多个 lane 写同一个 rd，最终结果取决于 for 循环最后一次赋值。
-            // 这正是当前阶段“组内关系暂不处理”的明确限制之一。
-            for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
-                if (rd_write_en_i[lane] && (rd_addr_i[lane] != ARCH_IDX_WIDTH'(0))) begin
-                    map_table_q[rd_addr_i[lane]] <= new_dst_preg_i[lane];
-                end
+            for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
+                map_table_q[arch] <= map_table_next[arch];
             end
+            map_table_q[0] <= '0;
         end
     end
 

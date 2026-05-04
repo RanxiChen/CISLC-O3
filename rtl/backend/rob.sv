@@ -48,6 +48,7 @@ module rob #(
 `ifdef ENABLE_RETIRE_INFO
     input  logic [o3_pkg::PC_WIDTH-1:0]         alloc_pc_i        [MACHINE_WIDTH-1:0],
     input  logic [o3_pkg::ILEN-1:0]             alloc_instruction_i [MACHINE_WIDTH-1:0],
+    input  o3_pkg::retire_uop_type_t            alloc_uop_type_i  [MACHINE_WIDTH-1:0],
     input  logic [o3_pkg::REG_ADDR_WIDTH-1:0]   alloc_rd_i        [MACHINE_WIDTH-1:0],
     input  logic                               alloc_rd_write_en_i [MACHINE_WIDTH-1:0],
 `endif
@@ -56,6 +57,10 @@ module rob #(
     input  logic [$clog2(NUM_ROB_ENTRIES)-1:0] complete_idx_i    [COMPLETE_WIDTH-1:0],
 `ifdef ENABLE_RETIRE_INFO
     input  logic [o3_pkg::XLEN-1:0]             complete_rd_wdata_i [COMPLETE_WIDTH-1:0],
+    input  logic                                complete_branch_taken_i [COMPLETE_WIDTH-1:0],
+    input  logic                                complete_branch_mispredict_i [COMPLETE_WIDTH-1:0],
+    input  logic [o3_pkg::PC_WIDTH-1:0]         complete_branch_target_pc_i [COMPLETE_WIDTH-1:0],
+    input  logic [o3_pkg::PC_WIDTH-1:0]         complete_branch_fallthrough_pc_i [COMPLETE_WIDTH-1:0],
 `endif
     output logic                               alloc_valid_o,
     output logic [$clog2(NUM_ROB_ENTRIES)-1:0] alloc_idx_o       [MACHINE_WIDTH-1:0],
@@ -90,9 +95,14 @@ module rob #(
 `ifdef ENABLE_RETIRE_INFO
     logic [o3_pkg::PC_WIDTH-1:0]         entry_pc_q          [NUM_ROB_ENTRIES-1:0];
     logic [o3_pkg::ILEN-1:0]             entry_instruction_q [NUM_ROB_ENTRIES-1:0];
+    o3_pkg::retire_uop_type_t            entry_uop_type_q    [NUM_ROB_ENTRIES-1:0];
     logic [o3_pkg::REG_ADDR_WIDTH-1:0]   entry_rd_q          [NUM_ROB_ENTRIES-1:0];
     logic                                entry_rd_write_en_q [NUM_ROB_ENTRIES-1:0];
     logic [o3_pkg::XLEN-1:0]             entry_rd_wdata_q    [NUM_ROB_ENTRIES-1:0];
+    logic                                entry_branch_taken_q [NUM_ROB_ENTRIES-1:0];
+    logic                                entry_branch_mispredict_q [NUM_ROB_ENTRIES-1:0];
+    logic [o3_pkg::PC_WIDTH-1:0]         entry_branch_target_pc_q [NUM_ROB_ENTRIES-1:0];
+    logic [o3_pkg::PC_WIDTH-1:0]         entry_branch_fallthrough_pc_q [NUM_ROB_ENTRIES-1:0];
 `endif
 
     function automatic logic [ROB_IDX_WIDTH-1:0] wrap_idx(
@@ -158,9 +168,14 @@ module rob #(
                 retire_info_o[ridx].instruction_id = entry_instruction_id_q[retire_idx];
                 retire_info_o[ridx].pc             = entry_pc_q[retire_idx];
                 retire_info_o[ridx].instruction    = entry_instruction_q[retire_idx];
+                retire_info_o[ridx].uop_type       = entry_uop_type_q[retire_idx];
                 retire_info_o[ridx].rd             = entry_rd_q[retire_idx];
                 retire_info_o[ridx].rd_write_en    = entry_rd_write_en_q[retire_idx];
                 retire_info_o[ridx].rd_wdata       = entry_rd_wdata_q[retire_idx];
+                retire_info_o[ridx].branch_taken   = entry_branch_taken_q[retire_idx];
+                retire_info_o[ridx].branch_mispredict = entry_branch_mispredict_q[retire_idx];
+                retire_info_o[ridx].branch_target_pc = entry_branch_target_pc_q[retire_idx];
+                retire_info_o[ridx].branch_fallthrough_pc = entry_branch_fallthrough_pc_q[retire_idx];
             end
 `endif
 
@@ -206,9 +221,14 @@ module rob #(
 `ifdef ENABLE_RETIRE_INFO
                 entry_pc_q[entry]          <= '0;
                 entry_instruction_q[entry] <= '0;
+                entry_uop_type_q[entry]    <= o3_pkg::RETIRE_UOP_OTHER;
                 entry_rd_q[entry]          <= '0;
                 entry_rd_write_en_q[entry] <= 1'b0;
                 entry_rd_wdata_q[entry]    <= '0;
+                entry_branch_taken_q[entry] <= 1'b0;
+                entry_branch_mispredict_q[entry] <= 1'b0;
+                entry_branch_target_pc_q[entry] <= '0;
+                entry_branch_fallthrough_pc_q[entry] <= '0;
 `endif
             end
         end else begin
@@ -228,9 +248,14 @@ module rob #(
 `ifdef ENABLE_RETIRE_INFO
                     entry_pc_q[alloc_idx_o[lane]]          <= alloc_pc_i[lane];
                     entry_instruction_q[alloc_idx_o[lane]] <= alloc_instruction_i[lane];
+                    entry_uop_type_q[alloc_idx_o[lane]]    <= alloc_uop_type_i[lane];
                     entry_rd_q[alloc_idx_o[lane]]          <= alloc_rd_i[lane];
                     entry_rd_write_en_q[alloc_idx_o[lane]] <= alloc_rd_write_en_i[lane];
                     entry_rd_wdata_q[alloc_idx_o[lane]]    <= '0;
+                    entry_branch_taken_q[alloc_idx_o[lane]] <= 1'b0;
+                    entry_branch_mispredict_q[alloc_idx_o[lane]] <= 1'b0;
+                    entry_branch_target_pc_q[alloc_idx_o[lane]] <= '0;
+                    entry_branch_fallthrough_pc_q[alloc_idx_o[lane]] <= '0;
 `endif
                 end
             end
@@ -241,6 +266,10 @@ module rob #(
                     entry_complete_q[complete_idx_i[c]] <= 1'b1;
 `ifdef ENABLE_RETIRE_INFO
                     entry_rd_wdata_q[complete_idx_i[c]] <= complete_rd_wdata_i[c];
+                    entry_branch_taken_q[complete_idx_i[c]] <= complete_branch_taken_i[c];
+                    entry_branch_mispredict_q[complete_idx_i[c]] <= complete_branch_mispredict_i[c];
+                    entry_branch_target_pc_q[complete_idx_i[c]] <= complete_branch_target_pc_i[c];
+                    entry_branch_fallthrough_pc_q[complete_idx_i[c]] <= complete_branch_fallthrough_pc_i[c];
 `endif
                 end
             end

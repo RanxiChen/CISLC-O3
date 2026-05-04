@@ -20,11 +20,12 @@ constexpr int kLineBytes = 64;
 constexpr int kInstBytes = 4;
 constexpr int kInstsPerLine = kLineBytes / kInstBytes;
 constexpr uint32_t kAddiX1X0One = 0x00100093u;
-constexpr uint32_t kOriX2X0Five = 0x00506113u;
-constexpr uint32_t kXoriX3X0Seven = 0x00704193u;
+constexpr uint32_t kAddiX2X0One = 0x00100113u;
+constexpr uint32_t kAddX3X1X2 = 0x002081b3u;
+constexpr uint32_t kBneX3X2Plus8 = 0x00219463u;
 constexpr uint32_t kInvalidInst = 0xffffffffu;
 constexpr int kRetirePorts = 3;
-constexpr int kExpectedRetires = 3;
+constexpr int kExpectedRetires = 4;
 
 struct PendingRefill {
     uint64_t pc;
@@ -37,22 +38,81 @@ struct RetireInfo {
     uint64_t instruction_id;
     uint64_t pc;
     uint32_t instruction;
+    uint32_t uop_type;
     uint32_t rd;
     bool rd_write_en;
     uint64_t rd_wdata;
+    bool branch_taken;
+    bool branch_mispredict;
+    uint64_t branch_target_pc;
+    uint64_t branch_fallthrough_pc;
 };
 
 struct ExpectedRetire {
     uint64_t pc;
     uint32_t instruction;
+    uint32_t uop_type;
     uint32_t rd;
+    bool rd_write_en;
     uint64_t rd_wdata;
+    bool branch_taken;
+    bool branch_mispredict;
+    uint64_t branch_target_pc;
+    uint64_t branch_fallthrough_pc;
 };
 
+constexpr uint32_t kRetireUopInt = 1;
+constexpr uint32_t kRetireUopBranch = 2;
+
 constexpr std::array<ExpectedRetire, kExpectedRetires> kExpected = {{
-    {.pc = 0, .instruction = kAddiX1X0One, .rd = 1, .rd_wdata = 1},
-    {.pc = 4, .instruction = kOriX2X0Five, .rd = 2, .rd_wdata = 5},
-    {.pc = 8, .instruction = kXoriX3X0Seven, .rd = 3, .rd_wdata = 7},
+    {
+        .pc = 0,
+        .instruction = kAddiX1X0One,
+        .uop_type = kRetireUopInt,
+        .rd = 1,
+        .rd_write_en = true,
+        .rd_wdata = 1,
+        .branch_taken = false,
+        .branch_mispredict = false,
+        .branch_target_pc = 0,
+        .branch_fallthrough_pc = 0,
+    },
+    {
+        .pc = 4,
+        .instruction = kAddiX2X0One,
+        .uop_type = kRetireUopInt,
+        .rd = 2,
+        .rd_write_en = true,
+        .rd_wdata = 1,
+        .branch_taken = false,
+        .branch_mispredict = false,
+        .branch_target_pc = 0,
+        .branch_fallthrough_pc = 0,
+    },
+    {
+        .pc = 8,
+        .instruction = kAddX3X1X2,
+        .uop_type = kRetireUopInt,
+        .rd = 3,
+        .rd_write_en = true,
+        .rd_wdata = 2,
+        .branch_taken = false,
+        .branch_mispredict = false,
+        .branch_target_pc = 0,
+        .branch_fallthrough_pc = 0,
+    },
+    {
+        .pc = 12,
+        .instruction = kBneX3X2Plus8,
+        .uop_type = kRetireUopBranch,
+        .rd = 0,
+        .rd_write_en = false,
+        .rd_wdata = 0,
+        .branch_taken = true,
+        .branch_mispredict = true,
+        .branch_target_pc = 20,
+        .branch_fallthrough_pc = 16,
+    },
 }};
 
 void eval_half_cycle(Vo3_core& dut, uint8_t clk_value) {
@@ -79,9 +139,11 @@ uint32_t read_inst(uint64_t pc) {
         case 0:
             return kAddiX1X0One;
         case 4:
-            return kOriX2X0Five;
+            return kAddiX2X0One;
         case 8:
-            return kXoriX3X0Seven;
+            return kAddX3X1X2;
+        case 12:
+            return kBneX3X2Plus8;
         default:
             return kInvalidInst;
     }
@@ -105,15 +167,20 @@ RetireInfo read_retire_info(const Vo3_core& dut, int port) {
         .instruction_id = read_wide_bits(raw, 223, 64),
         .pc = read_wide_bits(raw, 184, 39),
         .instruction = static_cast<uint32_t>(read_wide_bits(raw, 152, 32)),
+        .uop_type = static_cast<uint32_t>(read_wide_bits(raw, 150, 2)),
         .rd = static_cast<uint32_t>(read_wide_bits(raw, 145, 5)),
         .rd_write_en = read_wide_bits(raw, 144, 1) != 0,
         .rd_wdata = read_wide_bits(raw, 80, 64),
+        .branch_taken = read_wide_bits(raw, 79, 1) != 0,
+        .branch_mispredict = read_wide_bits(raw, 78, 1) != 0,
+        .branch_target_pc = read_wide_bits(raw, 39, 39),
+        .branch_fallthrough_pc = read_wide_bits(raw, 0, 39),
     };
 }
 
 void require_field(bool condition, std::string_view message) {
     if (!condition) {
-        std::cerr << "[core_three_alu][assert] " << message << "\n";
+        std::cerr << "[core_three_alu_branch][assert] " << message << "\n";
         std::exit(1);
     }
 }
@@ -124,55 +191,63 @@ std::string hex_u64(uint64_t value) {
     return oss.str();
 }
 
-void check_one_retire(const RetireInfo& info, int port) {
-    const ExpectedRetire& expected = kExpected.at(port);
+void check_one_retire(const RetireInfo& info, int retire_index) {
+    const ExpectedRetire& expected = kExpected.at(retire_index);
 
-    require_field(info.rob_idx == static_cast<uint64_t>(port),
-                  "retire ROB index mismatch on port " + std::to_string(port));
-    require_field(info.instruction_id == static_cast<uint64_t>(port),
-                  "instruction_id mismatch on port " + std::to_string(port));
+    require_field(info.rob_idx == static_cast<uint64_t>(retire_index),
+                  "ROB index mismatch for retire " + std::to_string(retire_index));
+    require_field(info.instruction_id == static_cast<uint64_t>(retire_index),
+                  "instruction_id mismatch for retire " + std::to_string(retire_index));
     require_field(info.pc == expected.pc,
-                  "retire pc mismatch on port " + std::to_string(port) + ": got " + hex_u64(info.pc));
+                  "pc mismatch for retire " + std::to_string(retire_index) + ": got " + hex_u64(info.pc));
     require_field(info.instruction == expected.instruction,
-                  "instruction mismatch on port " + std::to_string(port) + ": got " + hex_u64(info.instruction));
+                  "instruction mismatch for retire " + std::to_string(retire_index) + ": got " + hex_u64(info.instruction));
+    require_field(info.uop_type == expected.uop_type,
+                  "uop_type mismatch for retire " + std::to_string(retire_index));
     require_field(info.rd == expected.rd,
-                  "rd mismatch on port " + std::to_string(port));
-    require_field(info.rd_write_en,
-                  "rd_write_en should be asserted on port " + std::to_string(port));
+                  "rd mismatch for retire " + std::to_string(retire_index));
+    require_field(info.rd_write_en == expected.rd_write_en,
+                  "rd_write_en mismatch for retire " + std::to_string(retire_index));
     require_field(info.rd_wdata == expected.rd_wdata,
-                  "rd_wdata mismatch on port " + std::to_string(port) + ": got " + hex_u64(info.rd_wdata));
+                  "rd_wdata mismatch for retire " + std::to_string(retire_index) + ": got " + hex_u64(info.rd_wdata));
+    require_field(info.branch_taken == expected.branch_taken,
+                  "branch_taken mismatch for retire " + std::to_string(retire_index));
+    require_field(info.branch_mispredict == expected.branch_mispredict,
+                  "branch_mispredict mismatch for retire " + std::to_string(retire_index));
+    require_field(info.branch_target_pc == expected.branch_target_pc,
+                  "branch_target_pc mismatch for retire " + std::to_string(retire_index) + ": got " + hex_u64(info.branch_target_pc));
+    require_field(info.branch_fallthrough_pc == expected.branch_fallthrough_pc,
+                  "branch_fallthrough_pc mismatch for retire " + std::to_string(retire_index) + ": got " + hex_u64(info.branch_fallthrough_pc));
 }
 
-void check_retire_info(const Vo3_core& dut, int cycle, bool& saw_three_retire) {
-    int valid_count = 0;
-
+void check_retire_info(const Vo3_core& dut, int cycle, int& observed_retires) {
     for (int port = 0; port < kRetirePorts; ++port) {
         const RetireInfo info = read_retire_info(dut, port);
         if (!info.valid) {
             continue;
         }
 
-        ++valid_count;
-        std::cout << "[core_three_alu][cycle=" << std::dec << cycle
+        require_field(observed_retires < kExpectedRetires, "unexpected extra retire");
+
+        std::cout << "[core_three_alu_branch][cycle=" << std::dec << cycle
                   << "] retire_info port=" << port
                   << " pc=0x" << std::hex << info.pc
                   << " inst=0x" << std::setw(8) << std::setfill('0') << info.instruction
                   << std::setfill(' ')
-                  << " rd=x" << std::dec << info.rd
+                  << " type=" << std::dec << info.uop_type
+                  << " rd=x" << info.rd
                   << " rd_wen=" << info.rd_write_en
                   << " rd_wdata=0x" << std::hex << info.rd_wdata
+                  << " taken=" << info.branch_taken
+                  << " mispredict=" << info.branch_mispredict
+                  << " target=0x" << info.branch_target_pc
+                  << " fallthrough=0x" << info.branch_fallthrough_pc
                   << " rob=" << std::dec << info.rob_idx
                   << " id=0x" << std::hex << info.instruction_id
                   << std::dec << "\n";
 
-        require_field(!saw_three_retire, "unexpected extra retire after three-ALU retire was observed");
-        check_one_retire(info, port);
-    }
-
-    if (valid_count != 0) {
-        require_field(valid_count == kExpectedRetires,
-                      "expected all three ALU instructions to retire in the same cycle");
-        saw_three_retire = true;
+        check_one_retire(info, observed_retires);
+        ++observed_retires;
     }
 }
 
@@ -189,7 +264,7 @@ void drive_refill_resp(Vo3_core& dut, uint64_t line_pc) {
 
 void print_refill_req(const Vo3_core& dut, int cycle) {
     if (dut.refill_req_valid_o) {
-        std::cout << "[core_three_alu][cycle=" << std::dec << cycle
+        std::cout << "[core_three_alu_branch][cycle=" << std::dec << cycle
                   << "] refill req pc=0x" << std::hex << dut.refill_req_pc_o
                   << std::dec << "\n";
     }
@@ -202,7 +277,7 @@ int main(int argc, char** argv) {
 
     Vo3_core dut;
     std::deque<PendingRefill> pending_refills;
-    bool saw_three_retire = false;
+    int observed_retires = 0;
 
     dut.clk_i = 0;
     dut.rst_i = 1;
@@ -228,13 +303,13 @@ int main(int argc, char** argv) {
             const uint64_t resp_pc = pending_refills.front().pc;
             pending_refills.pop_front();
             drive_refill_resp(dut, resp_pc);
-            std::cout << "[core_three_alu][cycle=" << std::dec << cycle
+            std::cout << "[core_three_alu_branch][cycle=" << std::dec << cycle
                       << "] refill resp pc=0x" << std::hex << resp_pc
                       << std::dec << "\n";
         }
 
         eval_half_cycle(dut, 0);
-        check_retire_info(dut, cycle, saw_three_retire);
+        check_retire_info(dut, cycle, observed_retires);
 
         step(dut);
 
@@ -249,22 +324,23 @@ int main(int argc, char** argv) {
 
         ++cycle;
 
-        if (saw_three_retire) {
+        if (observed_retires == kExpectedRetires) {
             break;
         }
     }
 
     dut.final();
 
-    if (saw_three_retire) {
+    if (observed_retires == kExpectedRetires) {
         require_field(dut.retired_inst_count_o == kExpectedRetires,
-                      "retired_inst_count should be 3 at test exit");
-        std::cout << "[core_three_alu] three ALU instructions retired together"
+                      "retired_inst_count should be 4 at test exit");
+        std::cout << "[core_three_alu_branch] dependent branch retired"
                   << " retired_inst_count=" << std::dec << dut.retired_inst_count_o
                   << " cycles=" << (cycle - 1)
                   << "\n";
     } else {
-        std::cout << "[core_three_alu] timeout at cycle " << std::dec << cycle
+        std::cout << "[core_three_alu_branch] timeout at cycle " << std::dec << cycle
+                  << " observed_retires=" << observed_retires
                   << " retired_inst_count=" << dut.retired_inst_count_o
                   << "\n";
         return 1;
