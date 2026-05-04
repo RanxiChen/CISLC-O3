@@ -50,6 +50,9 @@ module o3_core
 
     output logic done_o,
     output logic [63:0] retired_inst_count_o
+`ifdef ENABLE_RETIRE_INFO
+    ,output retire_info_t retire_info_o [BACKEND_NUM_INT_ALUS-1:0]
+`endif
 `ifdef O3_SIM_SINGLE_INST_TRACE
     ,output logic single_inst_retired_o
 `endif
@@ -94,6 +97,9 @@ module o3_core
         .fetch_ready_o       (core_fetch_ready),
         .done                (done_o),
         .retired_inst_count_o(retired_inst_count_o)
+`ifdef ENABLE_RETIRE_INFO
+        ,.retire_info_o      (retire_info_o)
+`endif
 `ifdef O3_SIM_SINGLE_INST_TRACE
         ,.single_inst_retired_o(single_inst_retired_o)
 `endif

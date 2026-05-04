@@ -14,6 +14,7 @@
 - `backend` 已经把整数最小主链路拆成 `fetch/decode -> decoded uop queue -> rename/ROB alloc -> issue queue wakeup/select -> issue reg -> regread -> execute -> execute result reg -> writeback/ROB complete -> 3-wide retire/free-list release`。
 - `backend` 在 `O3_SIM` 宏下已支持逐周期文本调试，按 cycle 把 `DECODE/RENAME/WAKEUP/ISSUE/REGREAD/EXECUTE/WRITEBACK/RETIRE` 各级组织成一个日志块输出。
 - `backend` 在 `O3_SIM_SINGLE_INST_TRACE` 宏下会关闭普通逐周期文本块，只追踪第一条进入 backend 的有效指令，从 `ACCEPT` 打到 `RETIRE`，并通过 `single_inst_retired_o` 给 core 单指令仿真提供结束条件。
+- `backend` / `o3_core` 在 `ENABLE_RETIRE_INFO` 宏下透出 `retire_info_o[BACKEND_NUM_INT_ALUS]`，每个 valid entry 描述一条已经从 ROB head 提交的指令；当前字段覆盖 `rob_idx/instruction_id/pc/instruction/rd/rd_write_en/rd_wdata`，用于仿真 monitor 和 C++ 断言。
 - `backend` 已新增 `retired_inst_count_q` 计数器，从 reset 开始按每拍真实退休条数累加，表示系统累计已退休的指令数。
 - `backend` 已新增内部 `instruction_id` 体系：每条被 backend 接收的指令都会分配一个 64 位调试编号，高位表示“第几批被接收的 fetch group”，低位表示“该批内的 lane 编号”；当前 core 集成默认 `MACHINE_WIDTH=4`，低 2 位表示 lane id。
 - 当前后端并行宽度命名统一使用 `machine width` / `MACHINE_WIDTH`，表示每周期并行处理的 lane 数。
@@ -24,7 +25,7 @@
 - `free_list` 已经支持“按本拍真实请求数”分配空闲物理寄存器。
 - `rename_map_table` 已新增，负责维护架构寄存器到当前物理寄存器的映射。
 - `backend` 已新增最小 `preg_ready` 表，用于跟踪每个物理寄存器是否已经持有可读值；当前写回结果在下一拍才对 issue queue 的 wakeup 可见。
-- `rob` 已新增，负责在 rename 阶段按真实有效 uop 数量分配最小 ROB entry 编号，存储 `instruction_id/exception/old_dst_preg/complete` 元信息，并支持从队头连续退休最多 3 条。
+- `rob` 已新增，负责在 rename 阶段按真实有效 uop 数量分配最小 ROB entry 编号，存储 `instruction_id/exception/old_dst_preg/complete` 元信息，并支持从队头连续退休最多 3 条；在 `ENABLE_RETIRE_INFO` 下额外保存 ALU retire 观测所需的 `pc/instruction/rd/rd_write_en/rd_wdata`。
 - `issue_queue` 已新增，负责把 rename 完成后的整数 uop 按 lane 顺序压入单一整数 issue 队列，并基于 `preg_ready` 做真实 ready/wakeup、按年龄选择和压缩补位。
 - `physical_regfile` 已接入 backend 主链路，当前支持整数 regread 和多路整数写回；其中 `p0` 固定为零物理寄存器，读恒为 0、写忽略。
 - `int_execute_unit` 已接入 backend 主链路，当前用于整数 R/I 算术指令执行。
@@ -32,7 +33,7 @@
 - `div_execute_unit` 已新增，提供独立的 RV64M 除法/取余单元，当前采用“预计算结果 + 固定拍数返回”的简化骨架。
 - `backend_testharness` 已更新为当前后端主链路对应的 Verilator 仿真入口；当前通过 DPI-C 伪造 6-lane 虚拟前端，从 `pc=0` 开始按组向 backend 提供固定的 RV64I 整形运算指令，并在最后一组 fetch 被接收后继续保留固定排空窗口，便于观察 `decode/rename/issue/regread/execute` 多拍日志。
 - `rtl/core/o3_core.sv` 已经把真实 frontend 和真实 backend 接通；frontend 内部已有 fetch buffer，core 层不再额外实例化 fetch buffer。
-- `sim/core_single_inst` 已新增 core 级单指令 smoke test：用真实 frontend 发起 ICache refill，用测试内存返回 `addi x1, x0, 1`，并在该指令退休后结束仿真。
+- `sim/core_single_inst` 是 core 级单指令 smoke test：用真实 frontend 发起 ICache refill，用测试内存返回 `addi x1, x0, 1`，默认打开 `ENABLE_RETIRE_INFO`，在 C++ 中采样 `retire_info_o` 并断言该指令提交时写 `x1=1`。
 
 ## 当前后端数据流
 - 当前数据流是：`frontend -> fetch_entry buffer -> decoder -> decoded uop queue -> free_list + rename_map_table + rob -> integer issue queue -> ALU issue reg -> regread -> execute -> execute result reg -> physical regfile writeback + ROB complete -> ROB retire + free_list release`
@@ -45,6 +46,7 @@
 - `free_list` 按 lane 顺序给真正需要写回的指令分配新物理寄存器。
 - `rename_map_table` 组合读出 `src1_preg/src2_preg/old_dst_preg`，并在 `rename_fire` 时更新 `rd` 的映射。
 - `rob` 按 lane 顺序给真正有效的 uop 分配 ROB entry 编号，并在分配成功的同拍写入 `exception/old_dst_preg`，在写回时更新 `complete` 位。
+- 在 `ENABLE_RETIRE_INFO` 下，ROB allocate 同拍还会记录 `pc/instruction/rd/rd_write_en`；ALU writeback complete 同拍按 `rob_idx` 记录 `rd_wdata`；retire 组合口从 ROB head 输出对应 `retire_info_o`。
 - rename 完成后的整数 uop 当前会直接进入一个单一 `issue_queue`。
 - `issue_queue` 当前根据 `preg_ready` 判断源操作数是否真的 ready；本拍写回结果要到下一拍才会体现在 wakeup 上。
 - 被选中的整数 uop 会进入 3 路 ALU 流水寄存器，随后完成 regread、立即数扩展和 execute。
@@ -54,7 +56,7 @@
 
 ## 当前核心集成状态
 - `rtl/core/o3_core.sv` 是当前真实 frontend + backend 的 core 级连接入口。
-- core 顶层透出 `reset_pc_i`、ICache refill request/response、backend `done_o` 和 `retired_inst_count_o`。
+- core 顶层透出 `reset_pc_i`、ICache refill request/response、backend `done_o` 和 `retired_inst_count_o`；在 `ENABLE_RETIRE_INFO` 下额外透出 `retire_info_o`。
 - frontend 输出 4-lane `fetch_entry_t` group；backend 当前通过 `BACKEND_MACHINE_WIDTH=4` 对齐该宽度。
 - frontend 端口是 unpacked array，backend 端口是 packed aggregate，core 内部用逐 lane bridge 做形状转换；该 bridge 不改变 lane 顺序、不压缩 bubble、不做协议转换。
 - `fetch_valid_o/fetch_ready_i` 与 `fetch_valid_i/fetch_ready_o` 是 group 级 ready/valid；后端不能单独 ready 某个 lane。
@@ -70,6 +72,7 @@
   - 当只定义 `O3_SIM` 时，backend 按周期块输出 `DECODE/RENAME/WAKEUP/ISSUE/REGREAD/EXECUTE/WRITEBACK/RETIRE/RETIRE_COUNT`；其中 `RENAME` 行可通过 DPI-C 调用 RV64I 反汇编 helper 显示汇编字符串。
   - 当定义 `O3_SIM_KANATA` 时，backend 输出 Kanata 格式文件。
   - 当定义 `O3_SIM_SINGLE_INST_TRACE` 时，backend 不输出普通整周期文本块，只追踪第一条进入 backend 的有效指令，并在目标指令退休后拉高 `single_inst_retired_o`。
+  - 当定义 `ENABLE_RETIRE_INFO` 时，backend 输出 retire-time observation record，供外部 testbench/scoreboard 判断 commit 指令的架构效果。
 - 宽度语义：使用 `MACHINE_WIDTH` 表示每周期并行进入 rename 数据流的 lane 数。
 - 当前未做：同拍写回旁路广播、异常/分支恢复、store 提交，以及非整数 issue/dispatch 数据流。
 
@@ -78,6 +81,7 @@
 - 当前实现：
   - 连接 frontend 已有 fetch buffer 出队口到 backend fetch 输入口。
   - 透出 ICache refill request/response，供 testbench 或后续存储系统驱动。
+  - 在 `ENABLE_RETIRE_INFO` 下透出 `retire_info_o`。
   - 在 `O3_SIM_SINGLE_INST_TRACE` 下透出 `single_inst_retired_o`。
 - 当前未做：不接 data cache/LSU/总线，不生成 refill response，不做 redirect/flush 精确恢复，不定义真实程序结束条件。
 
@@ -129,7 +133,8 @@
 ### rob
 - 职责：在 rename 阶段为真实有效的 uop 分配 ROB entry 编号，并存储最小提交前元信息。
 - 当前实现：按 lane 顺序给出连续编号；当前 ROB 表项写入 `instruction_id`、`exception`、`old_dst_preg`，并在整数写回时按 `rob_idx` 标记 `complete`；同时从队头连续退休最多 3 条已经 complete 且无异常的指令。
-- 当前未做：store/branch/异常恢复约束下的完整 commit、flush/rollback，以及 `pc/结果值/提交状态` 等更完整的 ROB 元信息。
+- `ENABLE_RETIRE_INFO` 调试路径：allocate 时额外保存 `pc/instruction/rd/rd_write_en`，ALU complete 时保存 `rd_wdata`，retire 时输出 `retire_info_o`。
+- 当前未做：store/branch/异常恢复约束下的完整 commit、flush/rollback，以及 CSR、内存访问、异常 cause 等更完整的 ROB 元信息。
 
 ### issue_queue
 - 职责：作为 rename 后、整数执行前的单一 issue 队列骨架。

@@ -88,6 +88,9 @@ module backend
     output logic                             fetch_ready_o,
     output logic                             done,
     output logic [63:0]                      retired_inst_count_o
+`ifdef ENABLE_RETIRE_INFO
+    ,output retire_info_t                    retire_info_o [NUM_INT_ALUS-1:0]
+`endif
 `ifdef O3_SIM_SINGLE_INST_TRACE
     ,output logic                            single_inst_retired_o
 `endif
@@ -135,6 +138,13 @@ module backend
     logic                      rename_rs2_read_en [MACHINE_WIDTH-1:0];
     logic                      rename_rd_write_en [MACHINE_WIDTH-1:0];
     logic [INST_ID_WIDTH-1:0]  rob_alloc_instruction_id [MACHINE_WIDTH-1:0];
+`ifdef ENABLE_RETIRE_INFO
+    logic [PC_WIDTH-1:0]       rob_alloc_pc          [MACHINE_WIDTH-1:0];
+    logic [ILEN-1:0]           rob_alloc_instruction [MACHINE_WIDTH-1:0];
+    logic [REG_ADDR_WIDTH-1:0] rob_alloc_rd          [MACHINE_WIDTH-1:0];
+    logic                      rob_alloc_rd_write_en [MACHINE_WIDTH-1:0];
+    logic [XLEN-1:0]           rob_complete_rd_wdata [NUM_INT_ALUS-1:0];
+`endif
 
     logic [BACKEND_PREG_IDX_WIDTH-1:0] dst_new_preg [MACHINE_WIDTH-1:0];
     logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_idx      [MACHINE_WIDTH-1:0];
@@ -313,6 +323,12 @@ module backend
             assign rob_req[i]       = rename_uop_head[i].valid;
             assign rob_exception[i] = rename_uop_head[i].exception;
             assign rob_alloc_instruction_id[i] = rename_uop_head[i].instruction_id;
+`ifdef ENABLE_RETIRE_INFO
+            assign rob_alloc_pc[i]          = rename_uop_head[i].pc;
+            assign rob_alloc_instruction[i] = rename_uop_head[i].instruction;
+            assign rob_alloc_rd[i]          = rename_uop_head[i].rd;
+            assign rob_alloc_rd_write_en[i] = dst_write_real;
+`endif
 
             assign issueq_enq_entry[i].valid        = rename_uop_head[i].valid && rename_uop_head[i].is_int_uop;
             assign issueq_enq_entry[i].instruction_id = rename_uop_head[i].instruction_id;
@@ -377,6 +393,9 @@ module backend
             // 即使 rd=x0，没有目的寄存器写回，这条整数指令执行完成后也应标记 complete。
             assign rob_complete_valid[i] = alu_result_q[i].valid;
             assign rob_complete_idx[i]   = alu_result_q[i].rob_idx;
+`ifdef ENABLE_RETIRE_INFO
+            assign rob_complete_rd_wdata[i] = alu_result_q[i].result;
+`endif
         end
     endgenerate
 
@@ -440,15 +459,27 @@ module backend
         .alloc_exception_i(rob_exception),
         .alloc_old_dst_preg_i(dst_old_preg),
         .alloc_instruction_id_i(rob_alloc_instruction_id),
+`ifdef ENABLE_RETIRE_INFO
+        .alloc_pc_i(rob_alloc_pc),
+        .alloc_instruction_i(rob_alloc_instruction),
+        .alloc_rd_i(rob_alloc_rd),
+        .alloc_rd_write_en_i(rob_alloc_rd_write_en),
+`endif
         .alloc_ready_i(rob_ready),
         .complete_valid_i(rob_complete_valid),
         .complete_idx_i(rob_complete_idx),
+`ifdef ENABLE_RETIRE_INFO
+        .complete_rd_wdata_i(rob_complete_rd_wdata),
+`endif
         .alloc_valid_o(rob_valid),
         .alloc_idx_o(rob_idx),
         .retire_valid_o(rob_retire_valid),
         .retire_idx_o(rob_retire_idx),
         .retire_old_dst_preg_o(rob_retire_old_dst_preg),
         .retire_instruction_id_o(rob_retire_instruction_id)
+`ifdef ENABLE_RETIRE_INFO
+        ,.retire_info_o(retire_info_o)
+`endif
     );
 
     rename_map_table #(

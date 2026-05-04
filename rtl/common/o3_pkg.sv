@@ -230,4 +230,19 @@ package o3_pkg;
         logic [XLEN-1:0]           result;
     } int_execute_result_t;
 
+`ifdef ENABLE_RETIRE_INFO
+    // Retire-time architectural observation record.
+    // Valid entries describe instructions that committed from the ROB head.
+    typedef struct packed {
+        logic                      valid;
+        logic [ROB_IDX_WIDTH-1:0]  rob_idx;
+        logic [INST_ID_WIDTH-1:0]  instruction_id;
+        logic [PC_WIDTH-1:0]       pc;
+        logic [ILEN-1:0]           instruction;
+        logic [REG_ADDR_WIDTH-1:0] rd;
+        logic                      rd_write_en;
+        logic [XLEN-1:0]           rd_wdata;
+    } retire_info_t;
+`endif
+
 endpackage

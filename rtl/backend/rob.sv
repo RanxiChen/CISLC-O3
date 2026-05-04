@@ -8,11 +8,12 @@
  * - 支持执行写回后按 rob_idx 把对应 entry 标记为 complete
  * - 支持从 ROB 队头开始按程序顺序退休最多 3 条指令，并输出对应 old_dst_preg 供 free list 回收
  * - 对外继续提供与 MACHINE_WIDTH 一样多的 ROB entry id
+ * - 在 `ENABLE_RETIRE_INFO` 下保存 ALU retire 观测所需的 pc/inst/rd/rd_wdata，并在退休口输出
  *
  * 当前没有实现的功能：
  * - 不实现 flush、rollback、checkpoint 恢复
  * - 当前退休条件只看 valid/complete/exception=0，不处理 store、分支恢复等更复杂的提交约束
- * - 当前只存 instruction_id、exception、old_dst_preg、complete，不存 pc、结果值等其他 ROB 元信息
+ * - 未定义 `ENABLE_RETIRE_INFO` 时，当前只存 instruction_id、exception、old_dst_preg、complete
  * - 当前阶段不附带测试代码和仿真代码，只先搭功能与注释
  *
  * 时序行为：
@@ -44,15 +45,27 @@ module rob #(
     input  logic                               alloc_exception_i [MACHINE_WIDTH-1:0],
     input  logic [$clog2(NUM_PHYS_REGS)-1:0]   alloc_old_dst_preg_i [MACHINE_WIDTH-1:0],
     input  logic [o3_pkg::INST_ID_WIDTH-1:0]   alloc_instruction_id_i [MACHINE_WIDTH-1:0],
+`ifdef ENABLE_RETIRE_INFO
+    input  logic [o3_pkg::PC_WIDTH-1:0]         alloc_pc_i        [MACHINE_WIDTH-1:0],
+    input  logic [o3_pkg::ILEN-1:0]             alloc_instruction_i [MACHINE_WIDTH-1:0],
+    input  logic [o3_pkg::REG_ADDR_WIDTH-1:0]   alloc_rd_i        [MACHINE_WIDTH-1:0],
+    input  logic                               alloc_rd_write_en_i [MACHINE_WIDTH-1:0],
+`endif
     input  logic                               alloc_ready_i,
     input  logic                               complete_valid_i  [COMPLETE_WIDTH-1:0],
     input  logic [$clog2(NUM_ROB_ENTRIES)-1:0] complete_idx_i    [COMPLETE_WIDTH-1:0],
+`ifdef ENABLE_RETIRE_INFO
+    input  logic [o3_pkg::XLEN-1:0]             complete_rd_wdata_i [COMPLETE_WIDTH-1:0],
+`endif
     output logic                               alloc_valid_o,
     output logic [$clog2(NUM_ROB_ENTRIES)-1:0] alloc_idx_o       [MACHINE_WIDTH-1:0],
     output logic                               retire_valid_o    [RETIRE_WIDTH-1:0],
     output logic [$clog2(NUM_ROB_ENTRIES)-1:0] retire_idx_o      [RETIRE_WIDTH-1:0],
     output logic [$clog2(NUM_PHYS_REGS)-1:0]   retire_old_dst_preg_o [RETIRE_WIDTH-1:0],
     output logic [o3_pkg::INST_ID_WIDTH-1:0]   retire_instruction_id_o [RETIRE_WIDTH-1:0]
+`ifdef ENABLE_RETIRE_INFO
+    ,output o3_pkg::retire_info_t              retire_info_o     [RETIRE_WIDTH-1:0]
+`endif
 );
 
     localparam int ROB_IDX_WIDTH = $clog2(NUM_ROB_ENTRIES);
@@ -74,6 +87,13 @@ module rob #(
     logic [PREG_IDX_WIDTH-1:0] entry_old_dst_preg_q [NUM_ROB_ENTRIES-1:0];
     logic                      entry_complete_q  [NUM_ROB_ENTRIES-1:0];
     logic [INST_ID_WIDTH_LOCAL-1:0]  entry_instruction_id_q [NUM_ROB_ENTRIES-1:0];
+`ifdef ENABLE_RETIRE_INFO
+    logic [o3_pkg::PC_WIDTH-1:0]         entry_pc_q          [NUM_ROB_ENTRIES-1:0];
+    logic [o3_pkg::ILEN-1:0]             entry_instruction_q [NUM_ROB_ENTRIES-1:0];
+    logic [o3_pkg::REG_ADDR_WIDTH-1:0]   entry_rd_q          [NUM_ROB_ENTRIES-1:0];
+    logic                                entry_rd_write_en_q [NUM_ROB_ENTRIES-1:0];
+    logic [o3_pkg::XLEN-1:0]             entry_rd_wdata_q    [NUM_ROB_ENTRIES-1:0];
+`endif
 
     function automatic logic [ROB_IDX_WIDTH-1:0] wrap_idx(
         input logic [ROB_IDX_WIDTH-1:0] base,
@@ -130,6 +150,19 @@ module rob #(
             assign retire_idx_o[ridx] = retire_idx;
             assign retire_old_dst_preg_o[ridx] = entry_old_dst_preg_q[retire_idx];
             assign retire_instruction_id_o[ridx] = entry_instruction_id_q[retire_idx];
+`ifdef ENABLE_RETIRE_INFO
+            always_comb begin
+                retire_info_o[ridx] = '0;
+                retire_info_o[ridx].valid          = retire_valid_o[ridx];
+                retire_info_o[ridx].rob_idx        = o3_pkg::ROB_IDX_WIDTH'(retire_idx);
+                retire_info_o[ridx].instruction_id = entry_instruction_id_q[retire_idx];
+                retire_info_o[ridx].pc             = entry_pc_q[retire_idx];
+                retire_info_o[ridx].instruction    = entry_instruction_q[retire_idx];
+                retire_info_o[ridx].rd             = entry_rd_q[retire_idx];
+                retire_info_o[ridx].rd_write_en    = entry_rd_write_en_q[retire_idx];
+                retire_info_o[ridx].rd_wdata       = entry_rd_wdata_q[retire_idx];
+            end
+`endif
 
             always_comb begin
                 retire_prefix_valid = 1'b1;
@@ -170,6 +203,13 @@ module rob #(
                 entry_old_dst_preg_q[entry] <= '0;
                 entry_complete_q[entry]  <= 1'b0;
                 entry_instruction_id_q[entry] <= '0;
+`ifdef ENABLE_RETIRE_INFO
+                entry_pc_q[entry]          <= '0;
+                entry_instruction_q[entry] <= '0;
+                entry_rd_q[entry]          <= '0;
+                entry_rd_write_en_q[entry] <= 1'b0;
+                entry_rd_wdata_q[entry]    <= '0;
+`endif
             end
         end else begin
             for (int port = 0; port < RETIRE_WIDTH; port++) begin
@@ -185,6 +225,13 @@ module rob #(
                     entry_old_dst_preg_q[alloc_idx_o[lane]] <= alloc_old_dst_preg_i[lane];
                     entry_complete_q[alloc_idx_o[lane]]  <= 1'b0;
                     entry_instruction_id_q[alloc_idx_o[lane]] <= alloc_instruction_id_i[lane];
+`ifdef ENABLE_RETIRE_INFO
+                    entry_pc_q[alloc_idx_o[lane]]          <= alloc_pc_i[lane];
+                    entry_instruction_q[alloc_idx_o[lane]] <= alloc_instruction_i[lane];
+                    entry_rd_q[alloc_idx_o[lane]]          <= alloc_rd_i[lane];
+                    entry_rd_write_en_q[alloc_idx_o[lane]] <= alloc_rd_write_en_i[lane];
+                    entry_rd_wdata_q[alloc_idx_o[lane]]    <= '0;
+`endif
                 end
             end
 
@@ -192,6 +239,9 @@ module rob #(
             for (int c = 0; c < COMPLETE_WIDTH; c++) begin
                 if (complete_valid_i[c]) begin
                     entry_complete_q[complete_idx_i[c]] <= 1'b1;
+`ifdef ENABLE_RETIRE_INFO
+                    entry_rd_wdata_q[complete_idx_i[c]] <= complete_rd_wdata_i[c];
+`endif
                 end
             end
 
