@@ -167,24 +167,33 @@ module ftq
         end
     endfunction
 
-    // Ring-buffer age predicate: is idx in the open interval (branch_idx, tail)?
-    // Used to identify younger entries within the allocated window.
-    // The allocated window is [head, tail), and younger means strictly after branch_idx.
+    // Ring-buffer age predicate: is idx in the allocated window and younger than branch?
+    // "Younger" means idx is in the open interval (branch_idx, alloc_tail) on the ring.
+    // We use allocated_q[idx] to determine if idx is in the window, which correctly
+    // handles both the empty-window and full-window cases where head == tail.
     function automatic logic is_younger(
         input ftq_idx_t idx,
         input ftq_idx_t branch_idx,
-        input ftq_idx_t tail
+        input ftq_idx_t tail,
+        input logic     is_allocated
     );
-        // Is idx in the open interval (branch_idx, tail) on the ring?
-        if (branch_idx < tail) begin
-            // No wrap: idx is younger if branch_idx < idx < tail
-            is_younger = (idx > branch_idx) && (idx < tail);
-        end else if (branch_idx > tail) begin
-            // Wrap around: idx is younger if idx > branch_idx OR idx < tail
-            is_younger = (idx > branch_idx) || (idx < tail);
-        end else begin
-            // branch_idx == tail: empty interval, no younger entries
+        // Quick reject: not allocated => not younger
+        // idx == branch_idx is the branch itself, not younger
+        if (!is_allocated || (idx == branch_idx)) begin
             is_younger = 1'b0;
+        end
+        // When branch_idx == tail, the interval wraps the entire ring except branch_idx,
+        // so every other allocated entry is younger.
+        else if (branch_idx == tail) begin
+            is_younger = 1'b1;
+        end
+        // No wrap: idx is younger if branch_idx < idx < tail
+        else if (branch_idx < tail) begin
+            is_younger = (idx > branch_idx) && (idx < tail);
+        end
+        // Wrap around: idx is younger if idx > branch_idx OR idx < tail
+        else begin
+            is_younger = (idx > branch_idx) || (idx < tail);
         end
     endfunction
 
@@ -265,7 +274,7 @@ module ftq
                 // Iterate over all FTQ slots; those that are allocated, in the
                 // younger window (redirect_ftq_idx_i, alloc_tail_q), get invalidated.
                 for (int i = 0; i < FTQ_DEPTH; i++) begin
-                    if (allocated_q[i] && is_younger(ftq_idx_t'(i), redirect_ftq_idx_i, alloc_tail_q)) begin
+                    if (is_younger(ftq_idx_t'(i), redirect_ftq_idx_i, alloc_tail_q, allocated_q[i])) begin
                         entries_q[i].valid <= 1'b0;
                         // Note: allocated_q and consumed_q are NOT cleared here.
                         // They remain set until Task 3C rewinds the pointers.
