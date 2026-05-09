@@ -63,17 +63,18 @@ module o3_core
     logic         core_fetch_valid;
     logic [CORE_FETCH_WIDTH-1:0] core_fetch_valid_mask;
     logic         core_fetch_ready;
+    branch_redirect_t backend_redirect;
 
     frontend u_frontend (
         .clk_i               (clk_i),
         .rst_i               (rst_i),
         .flush_i             (flush_i),
         .reset_pc_i          (reset_pc_i),
-        .redirect_valid_i    (1'b0),
-        .redirect_ftq_idx_i  ('0),
-        .redirect_branch_pc_i('0),
-        .redirect_redirect_pc_i('0),
-        .redirect_actual_taken_i(1'b0),
+        .redirect_valid_i    (backend_redirect.valid),
+        .redirect_ftq_idx_i  (backend_redirect.ftq_idx),
+        .redirect_branch_pc_i(backend_redirect.branch_pc),
+        .redirect_redirect_pc_i(backend_redirect.redirect_pc),
+        .redirect_actual_taken_i(backend_redirect.actual_taken),
         .refill_req_pc_o     (refill_req_pc_o),
         .refill_req_valid_o  (refill_req_valid_o),
         .refill_resp_valid_i (refill_resp_valid_i),
@@ -100,6 +101,7 @@ module o3_core
         .fetch_entry_i       (backend_fetch_entry),
         .fetch_valid_i       (core_fetch_valid),
         .fetch_ready_o       (core_fetch_ready),
+        .branch_redirect_o   (backend_redirect),
         .done                (done_o),
         .retired_inst_count_o(retired_inst_count_o)
 `ifdef ENABLE_RETIRE_INFO

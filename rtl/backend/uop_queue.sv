@@ -33,6 +33,7 @@ module uop_queue
 ) (
     input  logic                            clk,
     input  logic                            rst,
+    input  logic                            flush_i,
     input  decoded_uop_t [MACHINE_WIDTH-1:0] enq_uop_i,
     input  logic                            enq_valid_i,
     output logic                            enq_ready_o,
@@ -69,6 +70,11 @@ module uop_queue
 
     always_ff @(posedge clk) begin
         if (rst) begin
+            head_q  <= '0;
+            tail_q  <= '0;
+            count_q <= '0;
+            queue_mem <= '{default: '0};
+        end else if (flush_i) begin
             head_q  <= '0;
             tail_q  <= '0;
             count_q <= '0;

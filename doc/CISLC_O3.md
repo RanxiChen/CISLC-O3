@@ -14,7 +14,7 @@
 - `backend` 已经把整数最小主链路拆成 `fetch/decode -> decoded uop queue -> rename/ROB alloc -> issue queue wakeup/select -> issue reg -> regread -> execute -> execute result reg -> writeback/ROB complete -> 3-wide retire/free-list release`。
 - `backend` 在 `O3_SIM` 宏下已支持逐周期文本调试，按 cycle 把 `DECODE/RENAME/WAKEUP/ISSUE/REGREAD/EXECUTE/WRITEBACK/RETIRE` 各级组织成一个日志块输出。
 - `backend` 在 `O3_SIM_SINGLE_INST_TRACE` 宏下会关闭普通逐周期文本块，只追踪第一条进入 backend 的有效指令，从 `ACCEPT` 打到 `RETIRE`，并通过 `single_inst_retired_o` 给 core 单指令仿真提供结束条件。
-- `backend` / `o3_core` 在 `ENABLE_RETIRE_INFO` 宏下透出 `retire_info_o[BACKEND_NUM_INT_ALUS]`，每个 valid entry 描述一条已经从 ROB head 提交的指令；当前字段覆盖 `rob_idx/instruction_id/pc/instruction/rd/rd_write_en/rd_wdata`，用于仿真 monitor 和 C++ 断言。
+- `backend` / `o3_core` 在 `ENABLE_RETIRE_INFO` 宏下透出 `retire_info_o[BACKEND_NUM_INT_ALUS]`，每个 valid entry 描述一条已经从 ROB head 提交的指令；当前字段覆盖 `rob_idx/instruction_id/pc/instruction/rd/rd_write_en/rd_wdata`，并补齐 `branch_taken/branch_mispredict/branch_target_pc/branch_fallthrough_pc`，用于仿真 monitor 和 C++ 断言。
 - `backend` 已新增 `retired_inst_count_q` 计数器，从 reset 开始按每拍真实退休条数累加，表示系统累计已退休的指令数。
 - `backend` 已新增内部 `instruction_id` 体系：每条被 backend 接收的指令都会分配一个 64 位调试编号，高位表示“第几批被接收的 fetch group”，低位表示“该批内的 lane 编号”；当前 core 集成默认 `MACHINE_WIDTH=4`，低 2 位表示 lane id。
 - 当前后端并行宽度命名统一使用 `machine width` / `MACHINE_WIDTH`，表示每周期并行处理的 lane 数。
@@ -27,6 +27,11 @@
 - `backend` 已新增最小 `preg_ready` 表，用于跟踪每个物理寄存器是否已经持有可读值；当前写回结果在下一拍才对 issue queue 的 wakeup 可见。
 - `rob` 已新增，负责在 rename 阶段按真实有效 uop 数量分配最小 ROB entry 编号，存储 `instruction_id/exception/old_dst_preg/complete` 元信息，并支持从队头连续退休最多 3 条；在 `ENABLE_RETIRE_INFO` 下额外保存 ALU retire 观测所需的 `pc/instruction/rd/rd_write_en/rd_wdata`。
 - `issue_queue` 已新增，负责把 rename 完成后的整数 uop 按 lane 顺序压入单一整数 issue 队列，并基于 `preg_ready` 做真实 ready/wakeup、按年龄选择和压缩补位。
+- 当前已接通第一版 branch mispredict recovery：
+  - branch rename 成功拍会在 `backend.sv` 顶层分配固定 4 项 checkpoint table 的一个槽位；
+  - checkpoint 保存 branch `rob_idx`、`branch_pc`、rename map 整表快照、free list `head/tail/count`；
+  - branch resolve 且 `pred not-taken / actual taken` 时，backend 当拍恢复 rename map、free list，ROB 仅做 younger squash；
+  - 同拍生成统一 `branch_redirect_t`，经 `o3_core` 送到 frontend。
 - `physical_regfile` 已接入 backend 主链路，当前支持整数 regread 和多路整数写回；其中 `p0` 固定为零物理寄存器，读恒为 0、写忽略。
 - `int_execute_unit` 已接入 backend 主链路，当前用于整数 R/I 算术指令执行。
 - `mul_execute_unit` 已新增，提供独立的 RV64M 乘法单元，当前采用“预计算结果 + 固定拍数返回”的简化骨架。
@@ -74,7 +79,7 @@
   - 当定义 `O3_SIM_SINGLE_INST_TRACE` 时，backend 不输出普通整周期文本块，只追踪第一条进入 backend 的有效指令，并在目标指令退休后拉高 `single_inst_retired_o`。
   - 当定义 `ENABLE_RETIRE_INFO` 时，backend 输出 retire-time observation record，供外部 testbench/scoreboard 判断 commit 指令的架构效果。
 - 宽度语义：使用 `MACHINE_WIDTH` 表示每周期并行进入 rename 数据流的 lane 数。
-- 当前未做：同拍写回旁路广播、异常/分支恢复、store 提交，以及非整数 issue/dispatch 数据流。
+- 当前未做：同拍写回旁路广播、通用异常恢复、多原因 rollback/store 提交，以及非整数 issue/dispatch 数据流。
 
 ### o3_core
 - 职责：作为当前 core 级最小集成入口，实例化真实 frontend 和真实 backend。
@@ -83,7 +88,7 @@
   - 透出 ICache refill request/response，供 testbench 或后续存储系统驱动。
   - 在 `ENABLE_RETIRE_INFO` 下透出 `retire_info_o`。
   - 在 `O3_SIM_SINGLE_INST_TRACE` 下透出 `single_inst_retired_o`。
-- 当前未做：不接 data cache/LSU/总线，不生成 refill response，不做 redirect/flush 精确恢复，不定义真实程序结束条件。
+- 当前未做：不接 data cache/LSU/总线，不生成 refill response，不定义真实程序结束条件；但已接通 backend -> core -> frontend 的最小 branch redirect transport。
 
 ### backend_testharness
 - 职责：作为后端专用仿真顶层，实例化 `backend` 并用 DPI-C 虚拟前端驱动它。
@@ -120,7 +125,8 @@
   - `p0` 固定作为零物理寄存器，不从 free list 重新分配
   - 空闲池从 `p32` 开始
 - 当前实现补充：支持在 retire 阶段把最多 3 个 `old_dst_preg` 追加回 free list 队尾；这些释放结果从下一拍起参与分配。
-- 当前未做：checkpoint、rollback、flush 恢复。
+- 当前实现补充：已改成显式 `head_q/tail_q/count_q`，并支持 backend 顶层在 branch mispredict 当拍直接恢复 checkpointed free-list 状态，再追加筛选后的 older retire releases。
+- 当前未做：通用 rollback / 多原因恢复框架。
 
 ### rename_map_table
 - 职责：维护架构寄存器到当前物理寄存器的映射。
@@ -128,13 +134,15 @@
 - reset 约定：
   - `x0~x31 -> p0~p31`
   - 其中 `x0` 固定视为 `p0`
-- 当前未做：commit map、checkpoint map、lane 间依赖和覆盖处理。
+- 当前实现补充：支持 backend 顶层在 branch mispredict 当拍 direct recover 整张 rename map。
+- 当前未做：commit map、独立 speculative/architectural 双份 map。
 
 ### rob
 - 职责：在 rename 阶段为真实有效的 uop 分配 ROB entry 编号，并存储最小提交前元信息。
 - 当前实现：按 lane 顺序给出连续编号；当前 ROB 表项写入 `instruction_id`、`exception`、`old_dst_preg`，并在整数写回时按 `rob_idx` 标记 `complete`；同时从队头连续退休最多 3 条已经 complete 且无异常的指令。
 - `ENABLE_RETIRE_INFO` 调试路径：allocate 时额外保存 `pc/instruction/rd/rd_write_en`，ALU complete 时保存 `rd_wdata`，retire 时输出 `retire_info_o`。
-- 当前未做：store/branch/异常恢复约束下的完整 commit、flush/rollback，以及 CSR、内存访问、异常 cause 等更完整的 ROB 元信息。
+- 当前实现补充：支持以 branch `rob_idx` 为基准的 younger squash，保留 older + branch 自己；ROB 不负责 checkpoint restore。
+- 当前未做：store/branch/异常恢复约束下的完整 commit、通用 flush/rollback，以及 CSR、内存访问、异常 cause 等更完整的 ROB 元信息。
 
 ### issue_queue
 - 职责：作为 rename 后、整数执行前的单一 issue 队列骨架。

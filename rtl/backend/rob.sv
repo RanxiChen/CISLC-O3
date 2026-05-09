@@ -53,6 +53,8 @@ module rob #(
     input  logic                               alloc_rd_write_en_i [MACHINE_WIDTH-1:0],
 `endif
     input  logic                               alloc_ready_i,
+    input  logic                               squash_valid_i,
+    input  logic [$clog2(NUM_ROB_ENTRIES)-1:0] squash_branch_idx_i,
     input  logic                               complete_valid_i  [COMPLETE_WIDTH-1:0],
     input  logic [$clog2(NUM_ROB_ENTRIES)-1:0] complete_idx_i    [COMPLETE_WIDTH-1:0],
 `ifdef ENABLE_RETIRE_INFO
@@ -67,7 +69,8 @@ module rob #(
     output logic                               retire_valid_o    [RETIRE_WIDTH-1:0],
     output logic [$clog2(NUM_ROB_ENTRIES)-1:0] retire_idx_o      [RETIRE_WIDTH-1:0],
     output logic [$clog2(NUM_PHYS_REGS)-1:0]   retire_old_dst_preg_o [RETIRE_WIDTH-1:0],
-    output logic [o3_pkg::INST_ID_WIDTH-1:0]   retire_instruction_id_o [RETIRE_WIDTH-1:0]
+    output logic [o3_pkg::INST_ID_WIDTH-1:0]   retire_instruction_id_o [RETIRE_WIDTH-1:0],
+    output logic [$clog2(NUM_ROB_ENTRIES)-1:0] head_o
 `ifdef ENABLE_RETIRE_INFO
     ,output o3_pkg::retire_info_t              retire_info_o     [RETIRE_WIDTH-1:0]
 `endif
@@ -116,6 +119,31 @@ module rob #(
         end
     endfunction
 
+    function automatic logic is_older_or_same(
+        input logic [ROB_IDX_WIDTH-1:0] candidate,
+        input logic [ROB_IDX_WIDTH-1:0] branch_idx,
+        input logic [ROB_IDX_WIDTH-1:0] head_idx
+    );
+        int unsigned cand_age;
+        int unsigned branch_age;
+        begin
+            cand_age      = (int'(candidate) + NUM_ROB_ENTRIES - int'(head_idx)) % NUM_ROB_ENTRIES;
+            branch_age    = (int'(branch_idx) + NUM_ROB_ENTRIES - int'(head_idx)) % NUM_ROB_ENTRIES;
+            is_older_or_same = (cand_age <= branch_age);
+        end
+    endfunction
+
+    function automatic logic [COUNT_WIDTH-1:0] retained_count_after_squash(
+        input logic [ROB_IDX_WIDTH-1:0] branch_idx,
+        input logic [ROB_IDX_WIDTH-1:0] head_idx
+    );
+        int unsigned branch_age;
+        begin
+            branch_age = (int'(branch_idx) + NUM_ROB_ENTRIES - int'(head_idx)) % NUM_ROB_ENTRIES;
+            retained_count_after_squash = COUNT_WIDTH'(branch_age + 1);
+        end
+    endfunction
+
     always_comb begin
         alloc_req_count = '0;
         for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
@@ -127,6 +155,7 @@ module rob #(
 
     assign alloc_valid_o = (free_count_q >= alloc_req_count);
     assign alloc_fire    = alloc_valid_o && alloc_ready_i;
+    assign head_o        = head_q;
 
     generate
         genvar idx;
@@ -232,6 +261,24 @@ module rob #(
 `endif
             end
         end else begin
+            if (squash_valid_i) begin
+                for (int entry = 0; entry < NUM_ROB_ENTRIES; entry++) begin
+                    if (entry_valid_q[entry] && !is_older_or_same(ROB_IDX_WIDTH'(entry), squash_branch_idx_i, head_q)) begin
+                        entry_valid_q[entry] <= 1'b0;
+                        entry_complete_q[entry] <= 1'b0;
+`ifdef ENABLE_RETIRE_INFO
+                        entry_rd_wdata_q[entry] <= '0;
+                        entry_branch_taken_q[entry] <= 1'b0;
+                        entry_branch_mispredict_q[entry] <= 1'b0;
+                        entry_branch_target_pc_q[entry] <= '0;
+                        entry_branch_fallthrough_pc_q[entry] <= '0;
+`endif
+                    end
+                end
+                tail_q <= wrap_idx(squash_branch_idx_i, 1);
+                free_count_q <= COUNT_WIDTH'(NUM_ROB_ENTRIES) - retained_count_after_squash(squash_branch_idx_i, head_q);
+            end
+
             for (int port = 0; port < RETIRE_WIDTH; port++) begin
                 if (retire_valid_o[port]) begin
                     entry_valid_q[retire_idx_o[port]] <= 1'b0;
@@ -262,7 +309,8 @@ module rob #(
 
             // 写回阶段返回的执行结果在这里把 ROB 项标记为 complete。
             for (int c = 0; c < COMPLETE_WIDTH; c++) begin
-                if (complete_valid_i[c]) begin
+                if (complete_valid_i[c]
+                 && (!squash_valid_i || is_older_or_same(complete_idx_i[c], squash_branch_idx_i, head_q))) begin
                     entry_complete_q[complete_idx_i[c]] <= 1'b1;
 `ifdef ENABLE_RETIRE_INFO
                     entry_rd_wdata_q[complete_idx_i[c]] <= complete_rd_wdata_i[c];
@@ -278,11 +326,13 @@ module rob #(
                 head_q <= wrap_idx(head_q, int'(retire_count));
             end
 
-            if (alloc_fire) begin
+            if (alloc_fire && !squash_valid_i) begin
                 tail_q <= wrap_idx(tail_q, int'(alloc_req_count));
             end
 
-            free_count_q <= free_count_q + retire_count - (alloc_fire ? alloc_req_count : COUNT_WIDTH'(0));
+            if (!squash_valid_i) begin
+                free_count_q <= free_count_q + retire_count - (alloc_fire ? alloc_req_count : COUNT_WIDTH'(0));
+            end
         end
     end
 

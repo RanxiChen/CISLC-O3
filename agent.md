@@ -158,6 +158,11 @@ make test
   - `rob.sv` 不做 checkpoint restore，只做 younger squash。
   - backend 其余队列和流水寄存器优先在 `backend.sv` 顶层 kill valid / suppress side effects，而不是大面积扩散子模块接口。
   - checkpoint table 固定 4 项，分配策略为“第一个空闲槽”，每个 rename group 最多一条新 branch checkpoint。
+- 当前执行顺序约束：
+  - 在这份短期计划整体完成之前，不要中途主动跑测试。
+  - 当前阶段先严格按照 `docs/superpowers/plans/2026-05-09-branch-mispredict-flush.md` 和 `docs/superpowers/plans/2026-05-09-agent-prompts.md` 的任务顺序推进实现。
+  - 不要因为想先固定验收目标，就提前插入计划外的测试编写或测试执行。
+  - 统一在计划末尾的验证阶段再运行固定回归和 redirect 定向测试，除非用户明确要求提前跑测试。
 - 当前固定验证要求：
   - `sim/frontend/tests/frontend_basic.cpp`
   - `sim/core_single_inst`

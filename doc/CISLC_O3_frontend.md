@@ -75,7 +75,8 @@
   - `allocated_count_q` 收缩到保留窗口大小。
 - 当前未实现 release/commit 回收，所以 FTQ 最多接收 `FTQ_DEPTH` 个 block；但 redirect rewind 会把 wrong-path slot 重新变成可覆盖空间，避免 stale full-state。
 - frontend 顶层现在已经把 redirect 真正接到 FTQ，并同步驱动 IFU、ICache 控制态和 fetch_buffer 清除。
-- 不应把当前状态理解成“frontend 已支持完整 redirect 恢复”：当前只实现 frontend 本地闭环；backend same-cycle recovery、跨模块统一 transport 和定向验证仍在后续 Task。
+- `o3_core.sv` 现在已把 backend 生成的 `branch_redirect_t` 真实接到 frontend 顶层 redirect 输入，因此 frontend local redirect 闭环已经升级为 backend -> core -> frontend 的最小 transport 闭环。
+- 不应把当前状态理解成“已支持完整通用恢复”：当前只支持 conditional branch 的 `pred not-taken / actual taken` redirect，且 backend 恢复只覆盖最小 same-cycle checkpoint restore + younger squash。
 
 ### Frontend Top
 - `rtl/frontend/frontend.sv` 已实例化并连接 `bpu`、`ftq`、`ifu`、`ICache` 和 `fetch_buffer`。
@@ -104,7 +105,7 @@
 - frontend standalone 顶层仍只暴露 fetch buffer 出队口；真实 backend 连接位于 `rtl/core/o3_core.sv`。
 - BPU 只实现顺序 not-taken 生成和 redirect reseed，未实现真实分支预测、BTB、BHT、RAS。
 - FTQ 未实现 release/commit 回收；当前顺序前端若没有 redirect rewind 干预，最多分配 `FTQ_DEPTH` 个 fetch block 后会停止接收 BPU。
-- 未实现 backend 驱动的完整 redirect transport、异常恢复和 same-cycle recovery；当前只实现 frontend 本地 redirect 闭环、FTQ repair/rewind 和 BPU redirect reseed。
+- 未实现通用异常恢复、multi-cause rollback、FTQ release/commit 回收；当前已实现 backend 驱动的最小 branch redirect transport、frontend 本地 flush/rewind，以及 backend same-cycle branch checkpoint recovery。
 - `rtl/O3.sv` 和 `rtl/Tile.sv` 仍是占位顶层，未接入真实 IFU/FTQ/icache 链路。
 
 ### 当前测试
@@ -128,13 +129,13 @@ make test TEST=frontend_basic
 - 该阶段仍不要求：
   - 完整指令集。
   - 完整程序运行。
-  - 分支预测、redirect、异常恢复。
+  - 完整分支预测和通用异常恢复。
   - FTQ 的真实 commit/release。
 - 当前仍需要后续处理：
   - `rtl/O3.sv` / `rtl/Tile.sv` 包住真实 `o3_core`。
   - ICache refill response 接真实存储系统。
   - FTQ release/commit 回收。
-  - redirect/flush 精确恢复。
+  - 通用 redirect/flush 精确恢复框架。
 
 ## 当前前端数据流
 

@@ -69,7 +69,16 @@ module free_list #(
     // commit/retire 阶段返还回来的旧物理寄存器。
     // 当前约定 release 的结果在下一拍才会重新参与 alloc。
     input  logic                             release_valid_i [RELEASE_WIDTH-1:0],
-    input  logic [$clog2(NUM_PHYS_REGS)-1:0] release_preg_i [RELEASE_WIDTH-1:0]
+    input  logic [$clog2(NUM_PHYS_REGS)-1:0] release_preg_i [RELEASE_WIDTH-1:0],
+
+    input  logic                             recover_valid_i,
+    input  logic [$clog2(NUM_PHYS_REGS - NUM_ARCH_REGS)-1:0] recover_head_i,
+    input  logic [$clog2(NUM_PHYS_REGS - NUM_ARCH_REGS)-1:0] recover_tail_i,
+    input  logic [$clog2(NUM_PHYS_REGS - NUM_ARCH_REGS + 1)-1:0] recover_count_i,
+
+    output logic [$clog2(NUM_PHYS_REGS - NUM_ARCH_REGS)-1:0] head_o,
+    output logic [$clog2(NUM_PHYS_REGS - NUM_ARCH_REGS)-1:0] tail_o,
+    output logic [$clog2(NUM_PHYS_REGS - NUM_ARCH_REGS + 1)-1:0] count_o
 );
 
     localparam int PREG_IDX_WIDTH       = $clog2(NUM_PHYS_REGS);
@@ -84,6 +93,7 @@ module free_list #(
     // head_q 指向当前队头，也就是下一次分配的起始位置。
     // count_q 记录当前剩余空闲物理寄存器数量。
     logic [PTR_WIDTH-1:0]   head_q;
+    logic [PTR_WIDTH-1:0]   tail_q;
     logic [COUNT_WIDTH-1:0] count_q;
 
     // 内部握手成功条件。
@@ -124,6 +134,9 @@ module free_list #(
 
     // ready/valid 同时为 1，表示本周期 rename 阶段接受了这一组空闲寄存器。
     assign alloc_fire = alloc_valid_o && alloc_ready_i;
+    assign head_o = head_q;
+    assign tail_o = tail_q;
+    assign count_o = count_q;
 
     generate
         genvar alloc_idx;
@@ -155,28 +168,32 @@ module free_list #(
             end
 
             head_q  <= '0;
+            tail_q  <= '0;
             count_q <= COUNT_WIDTH'(FREE_DEPTH);
         end else begin
-            int unsigned tail_idx;
+            int unsigned release_tail_idx;
             int unsigned release_offset;
 
-            // 队尾由“当前 head + 当前 count”唯一确定。
-            // 释放回来的 old preg 会顺序追加到这个逻辑队尾。
-            tail_idx       = wrap_idx(int'(head_q), int'(count_q));
+            release_tail_idx = int'(recover_valid_i ? recover_tail_i : tail_q);
             release_offset = 0;
 
             for (int port = 0; port < RELEASE_WIDTH; port++) begin
                 if (release_valid_i[port]) begin
-                    queue_mem[wrap_idx(tail_idx, release_offset)] <= release_preg_i[port];
+                    queue_mem[wrap_idx(release_tail_idx, release_offset)] <= release_preg_i[port];
                     release_offset++;
                 end
             end
 
-            // 如果上游接受了本拍分配结果，则只消耗本拍真正请求的寄存器个数。
-            if (alloc_fire) begin
+            if (recover_valid_i) begin
+                head_q  <= recover_head_i;
+                tail_q  <= PTR_WIDTH'(wrap_idx(int'(recover_tail_i), int'(release_count)));
+                count_q <= recover_count_i + release_count;
+            end else if (alloc_fire) begin
                 head_q  <= PTR_WIDTH'(wrap_idx(int'(head_q), int'(alloc_req_count)));
+                tail_q  <= PTR_WIDTH'(wrap_idx(int'(tail_q), int'(release_count)));
                 count_q <= count_q + release_count - alloc_req_count;
             end else begin
+                tail_q  <= PTR_WIDTH'(wrap_idx(int'(tail_q), int'(release_count)));
                 count_q <= count_q + release_count;
             end
         end

@@ -144,6 +144,7 @@ package o3_pkg;
         logic [63:0]               kanata_id;
 `endif
         logic [PC_WIDTH-1:0]       pc;
+        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
         logic [ILEN-1:0]           instruction;
         logic                      exception;
         logic [REG_ADDR_WIDTH-1:0] rs1;
@@ -168,6 +169,7 @@ package o3_pkg;
         logic                      valid;
         logic [INST_ID_WIDTH-1:0]  instruction_id;
         logic [PC_WIDTH-1:0]       pc;
+        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
         logic [ILEN-1:0]           instruction;
         logic                      exception;
         logic [REG_ADDR_WIDTH-1:0] rs1;
@@ -228,6 +230,7 @@ package o3_pkg;
         logic [63:0]               kanata_id;
 `endif
         logic [PC_WIDTH-1:0]       pc;
+        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
         logic [PREG_IDX_WIDTH-1:0] src1_preg;
         logic [PREG_IDX_WIDTH-1:0] src2_preg;
         logic                      src1_ready;
@@ -297,6 +300,7 @@ package o3_pkg;
         logic [63:0]               kanata_id;
 `endif
         logic [PC_WIDTH-1:0]       pc;
+        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
         logic [PREG_IDX_WIDTH-1:0] src1_preg;
         logic [PREG_IDX_WIDTH-1:0] src2_preg;
         logic [ROB_IDX_WIDTH-1:0]  rob_idx;
@@ -312,6 +316,7 @@ package o3_pkg;
         logic [63:0]               kanata_id;
 `endif
         logic [PC_WIDTH-1:0]       pc;
+        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
         logic [XLEN-1:0]           src1_value;
         logic [XLEN-1:0]           src2_value;
         logic [XLEN-1:0]           imm_value;

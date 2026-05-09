@@ -49,10 +49,13 @@ module rename_map_table #(
     input  logic                             rs2_read_en_i  [MACHINE_WIDTH-1:0],
     input  logic                             rd_write_en_i  [MACHINE_WIDTH-1:0],
     input  logic [$clog2(NUM_PHYS_REGS)-1:0] new_dst_preg_i [MACHINE_WIDTH-1:0],
+    input  logic                             recover_valid_i,
+    input  logic [$clog2(NUM_PHYS_REGS)-1:0] recover_map_i  [NUM_ARCH_REGS-1:0],
 
     output logic [$clog2(NUM_PHYS_REGS)-1:0] src1_preg_o    [MACHINE_WIDTH-1:0],
     output logic [$clog2(NUM_PHYS_REGS)-1:0] src2_preg_o    [MACHINE_WIDTH-1:0],
-    output logic [$clog2(NUM_PHYS_REGS)-1:0] old_dst_preg_o [MACHINE_WIDTH-1:0]
+    output logic [$clog2(NUM_PHYS_REGS)-1:0] old_dst_preg_o [MACHINE_WIDTH-1:0],
+    output logic [$clog2(NUM_PHYS_REGS)-1:0] current_map_o  [NUM_ARCH_REGS-1:0]
 );
 
     localparam int ARCH_IDX_WIDTH = $clog2(NUM_ARCH_REGS);
@@ -92,6 +95,11 @@ module rename_map_table #(
         end
     end
 
+    always_comb begin
+        current_map_o = map_table_q;
+        current_map_o[0] = '0;
+    end
+
     always_ff @(posedge clk) begin
         if (rst) begin
             // reset 时固定建立 xN -> pN 的一一对应关系。
@@ -99,6 +107,11 @@ module rename_map_table #(
             for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
                 map_table_q[arch] <= PREG_IDX_WIDTH'(arch);
             end
+        end else if (recover_valid_i) begin
+            for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
+                map_table_q[arch] <= recover_map_i[arch];
+            end
+            map_table_q[0] <= '0;
         end else if (rename_fire_i) begin
             for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
                 map_table_q[arch] <= map_table_next[arch];

@@ -86,6 +86,7 @@ module backend
     input  fetch_entry_t [MACHINE_WIDTH-1:0] fetch_entry_i,
     input  logic                             fetch_valid_i,
     output logic                             fetch_ready_o,
+    output branch_redirect_t                 branch_redirect_o,
     output logic                             done,
     output logic [63:0]                      retired_inst_count_o
 `ifdef ENABLE_RETIRE_INFO
@@ -106,6 +107,11 @@ module backend
     localparam int BRANCH_PRF_RD_BASE     = NUM_INT_ALUS * 2;
     localparam int PRF_READ_PORTS         = (NUM_INT_ALUS * 2) + 2;
     localparam int PRF_WRITE_PORTS        = NUM_INT_ALUS;
+    localparam int CHECKPOINT_COUNT       = 4;
+    localparam int CHECKPOINT_ID_WIDTH    = (CHECKPOINT_COUNT > 1) ? $clog2(CHECKPOINT_COUNT) : 1;
+    localparam int FREE_DEPTH             = NUM_PHYS_REGS - NUM_ARCH_REGS;
+    localparam int FREE_PTR_WIDTH         = (FREE_DEPTH > 1) ? $clog2(FREE_DEPTH) : 1;
+    localparam int FREE_COUNT_WIDTH       = $clog2(FREE_DEPTH + 1);
 
     fetch_entry_t [MACHINE_WIDTH-1:0] fetch_entry_q;
     logic                             fetch_entry_valid_q;
@@ -203,6 +209,45 @@ module backend
     logic [BACKEND_PREG_IDX_WIDTH-1:0] rob_retire_old_dst_preg [RETIRE_WIDTH-1:0];
     logic [INST_ID_WIDTH-1:0]          rob_retire_instruction_id [RETIRE_WIDTH-1:0];
     logic                              rob_retire_any;
+    logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_head;
+    logic                              branch_squash_valid;
+    logic [BACKEND_ROB_IDX_WIDTH-1:0]  branch_squash_rob_idx;
+    logic [FTQ_INDEX_WIDTH-1:0]        branch_squash_ftq_idx;
+    logic [PC_WIDTH-1:0]               branch_squash_pc;
+    logic [PC_WIDTH-1:0]               branch_squash_target_pc;
+    logic [PC_WIDTH-1:0]               branch_squash_fallthrough_pc;
+    logic                              decode_queue_flush;
+    logic                              int_issue_queue_flush;
+    logic                              branch_issue_queue_flush;
+    logic                              rename_recover_valid;
+    logic [BACKEND_PREG_IDX_WIDTH-1:0] rename_recover_map [NUM_ARCH_REGS-1:0];
+    logic                              free_list_recover_valid;
+    logic [FREE_PTR_WIDTH-1:0]         free_list_recover_head;
+    logic [FREE_PTR_WIDTH-1:0]         free_list_recover_tail;
+    logic [FREE_COUNT_WIDTH-1:0]       free_list_recover_count;
+    logic [FREE_PTR_WIDTH-1:0]         free_list_head;
+    logic [FREE_PTR_WIDTH-1:0]         free_list_tail;
+    logic [FREE_COUNT_WIDTH-1:0]       free_list_count;
+    logic [BACKEND_PREG_IDX_WIDTH-1:0] rename_map_current [NUM_ARCH_REGS-1:0];
+    logic                              filtered_retire_valid [RETIRE_WIDTH-1:0];
+    logic [BACKEND_PREG_IDX_WIDTH-1:0] filtered_retire_preg [RETIRE_WIDTH-1:0];
+    logic                              checkpoint_valid_q [CHECKPOINT_COUNT-1:0];
+    logic [BACKEND_ROB_IDX_WIDTH-1:0]  checkpoint_branch_rob_idx_q [CHECKPOINT_COUNT-1:0];
+    logic [PC_WIDTH-1:0]               checkpoint_branch_pc_q [CHECKPOINT_COUNT-1:0];
+    logic [FREE_PTR_WIDTH-1:0]         checkpoint_free_head_q [CHECKPOINT_COUNT-1:0];
+    logic [FREE_PTR_WIDTH-1:0]         checkpoint_free_tail_q [CHECKPOINT_COUNT-1:0];
+    logic [FREE_COUNT_WIDTH-1:0]       checkpoint_free_count_q [CHECKPOINT_COUNT-1:0];
+    logic [BACKEND_PREG_IDX_WIDTH-1:0] checkpoint_rename_map_q [CHECKPOINT_COUNT-1:0][NUM_ARCH_REGS-1:0];
+    logic                              rob_has_checkpoint_q [NUM_ROB_ENTRIES-1:0];
+    logic [CHECKPOINT_ID_WIDTH-1:0]    rob_checkpoint_id_q [NUM_ROB_ENTRIES-1:0];
+    logic                              checkpoint_alloc_en;
+    logic [CHECKPOINT_ID_WIDTH-1:0]    checkpoint_alloc_id;
+    logic                              checkpoint_alloc_found;
+    logic [MACHINE_WIDTH-1:0]          rename_branch_req;
+    logic [$clog2(MACHINE_WIDTH+1)-1:0] rename_branch_count;
+    logic                              rename_checkpoint_hazard;
+    logic                              mispredict_has_checkpoint;
+    logic [CHECKPOINT_ID_WIDTH-1:0]    mispredict_checkpoint_id;
 
 `ifdef O3_SIM
     logic [63:0] sim_cycle_q;
@@ -271,6 +316,20 @@ module backend
                     end
                 end
             end
+        end
+    endfunction
+
+    function automatic logic rob_is_older_or_same(
+        input logic [BACKEND_ROB_IDX_WIDTH-1:0] candidate,
+        input logic [BACKEND_ROB_IDX_WIDTH-1:0] branch_idx,
+        input logic [BACKEND_ROB_IDX_WIDTH-1:0] head_idx
+    );
+        int unsigned cand_age;
+        int unsigned branch_age;
+        begin
+            cand_age = (int'(candidate) + NUM_ROB_ENTRIES - int'(head_idx)) % NUM_ROB_ENTRIES;
+            branch_age = (int'(branch_idx) + NUM_ROB_ENTRIES - int'(head_idx)) % NUM_ROB_ENTRIES;
+            rob_is_older_or_same = (cand_age <= branch_age);
         end
     endfunction
 
@@ -345,6 +404,7 @@ module backend
             assign decoded_uop[i].kanata_id      = kanata_id_counter_q + 64'(i);
 `endif
             assign decoded_uop[i].pc             = fetch_entry_q[i].pc;
+            assign decoded_uop[i].ftq_idx        = fetch_entry_q[i].ftq_idx;
             assign decoded_uop[i].instruction    = fetch_entry_q[i].instruction;
             assign decoded_uop[i].exception      = fetch_entry_q[i].fetch_addr_misaligned
                                                  || fetch_entry_q[i].fetch_access_fault;
@@ -431,6 +491,7 @@ module backend
             assign branch_issueq_enq_entry[i].kanata_id = rename_uop_head[i].kanata_id;
 `endif
             assign branch_issueq_enq_entry[i].pc         = rename_uop_head[i].pc;
+            assign branch_issueq_enq_entry[i].ftq_idx    = rename_uop_head[i].ftq_idx;
             assign branch_issueq_enq_entry[i].src1_preg  = src1_preg[i];
             assign branch_issueq_enq_entry[i].src2_preg  = src2_preg[i];
             assign branch_issueq_enq_entry[i].src1_ready = preg_ready_q[src1_preg[i]]
@@ -441,20 +502,33 @@ module backend
             assign branch_issueq_enq_entry[i].imm_raw    = rename_uop_head[i].imm_raw;
             assign branch_issueq_enq_entry[i].imm_type   = rename_uop_head[i].imm_type;
             assign branch_issueq_enq_entry[i].branch_op  = rename_uop_head[i].branch_op;
+            assign rename_branch_req[i]                  = rename_uop_head[i].valid
+                                                        && rename_uop_head[i].is_branch_uop;
         end
     endgenerate
 
-    assign decode_ready    = uopq_enq_ready;
+    always_comb begin
+        rename_branch_count = '0;
+        for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
+            if (rename_branch_req[lane]) begin
+                rename_branch_count = rename_branch_count + $clog2(MACHINE_WIDTH+1)'(1);
+            end
+        end
+    end
+
+    assign decode_ready    = uopq_enq_ready && !branch_squash_valid;
     assign decode_fire     = decode_valid && decode_ready;
-    assign fetch_ready_o   = (!fetch_entry_valid_q) || decode_ready;
+    assign fetch_ready_o   = (((!fetch_entry_valid_q) || decode_ready) && !branch_squash_valid);
     assign fetch_fire      = fetch_valid_i && fetch_ready_o;
     assign rename_valid    = uopq_deq_valid;
-    assign issueq_enq_valid = rename_valid && alloc_valid && rob_valid && branch_issueq_enq_ready;
-    assign branch_issueq_enq_valid = rename_valid && alloc_valid && rob_valid && issueq_enq_ready;
-    assign rename_ready    = alloc_valid && rob_valid && issueq_enq_ready && branch_issueq_enq_ready;
+    assign rename_checkpoint_hazard = (rename_branch_count > $clog2(MACHINE_WIDTH+1)'(1))
+                                   || ((rename_branch_count != '0) && !checkpoint_alloc_found);
+    assign issueq_enq_valid = rename_valid && alloc_valid && rob_valid && branch_issueq_enq_ready && !rename_checkpoint_hazard && !branch_squash_valid;
+    assign branch_issueq_enq_valid = rename_valid && alloc_valid && rob_valid && issueq_enq_ready && !rename_checkpoint_hazard && !branch_squash_valid;
+    assign rename_ready    = alloc_valid && rob_valid && issueq_enq_ready && branch_issueq_enq_ready && !rename_checkpoint_hazard && !branch_squash_valid;
     assign rename_fire     = rename_valid && rename_ready;
-    assign alloc_ready     = rename_valid && rob_valid && issueq_enq_ready && branch_issueq_enq_ready;
-    assign rob_ready       = rename_valid && alloc_valid && issueq_enq_ready && branch_issueq_enq_ready;
+    assign alloc_ready     = rename_valid && rob_valid && issueq_enq_ready && branch_issueq_enq_ready && !rename_checkpoint_hazard && !branch_squash_valid;
+    assign rob_ready       = rename_valid && alloc_valid && issueq_enq_ready && branch_issueq_enq_ready && !rename_checkpoint_hazard && !branch_squash_valid;
     assign done            = 1'b0;
     assign issueq_issue_ready = '1;
     assign branch_issueq_issue_ready = 1'b1;
@@ -476,15 +550,18 @@ module backend
 
     generate
         for (i = 0; i < NUM_INT_ALUS; i++) begin : prf_writeback_assign
+            logic wb_survives;
+            assign wb_survives = !branch_squash_valid
+                              || rob_is_older_or_same(alu_result_q[i].rob_idx, branch_squash_rob_idx, rob_head);
             // `alu_result_q` 是 execute 后、writeback 前的过渡寄存器。
             // 只有真正带目的寄存器的新版本才会写回 PRF；rd=x0 的指令虽然会 complete，但不会写回。
-            assign prf_wr_en[i]   = alu_result_q[i].valid && alu_result_q[i].dst_write_en;
+            assign prf_wr_en[i]   = alu_result_q[i].valid && alu_result_q[i].dst_write_en && wb_survives;
             assign prf_wr_addr[i] = alu_result_q[i].dst_preg;
             assign prf_wr_data[i] = alu_result_q[i].result;
 
             // ROB complete 跟“是否真正写回 PRF”不是一回事。
             // 即使 rd=x0，没有目的寄存器写回，这条整数指令执行完成后也应标记 complete。
-            assign rob_complete_valid[i] = alu_result_q[i].valid;
+            assign rob_complete_valid[i] = alu_result_q[i].valid && wb_survives;
             assign rob_complete_idx[i]   = alu_result_q[i].rob_idx;
 `ifdef ENABLE_RETIRE_INFO
             assign rob_complete_rd_wdata[i] = alu_result_q[i].result;
@@ -524,12 +601,78 @@ module backend
         retired_inst_count_next = retired_inst_count_q + 64'(retire_count_this_cycle);
     end
 
+    always_comb begin
+        checkpoint_alloc_found = 1'b0;
+        checkpoint_alloc_id = '0;
+        for (int ckpt = 0; ckpt < CHECKPOINT_COUNT; ckpt++) begin
+            if (!checkpoint_valid_q[ckpt] && !checkpoint_alloc_found) begin
+                checkpoint_alloc_found = 1'b1;
+                checkpoint_alloc_id = CHECKPOINT_ID_WIDTH'(ckpt);
+            end
+        end
+    end
+
+    assign checkpoint_alloc_en = rename_fire && (rename_branch_count == $clog2(MACHINE_WIDTH+1)'(1));
+
+    assign branch_squash_valid = branch_exec_valid && branch_exec_mispredict;
+    assign branch_squash_rob_idx = branch_regread_q.rob_idx;
+    assign branch_squash_ftq_idx = branch_regread_q.ftq_idx;
+    assign branch_squash_pc = branch_regread_q.pc;
+    assign branch_squash_target_pc = branch_exec_target_pc;
+    assign branch_squash_fallthrough_pc = branch_exec_fallthrough_pc;
+    assign mispredict_has_checkpoint = rob_has_checkpoint_q[branch_squash_rob_idx];
+    assign mispredict_checkpoint_id = rob_checkpoint_id_q[branch_squash_rob_idx];
+
+    always_comb begin
+        for (int port = 0; port < RETIRE_WIDTH; port++) begin
+            filtered_retire_valid[port] = rob_retire_valid[port]
+                                       && (!branch_squash_valid
+                                        || rob_is_older_or_same(rob_retire_idx[port], branch_squash_rob_idx, rob_head));
+            filtered_retire_preg[port]  = rob_retire_old_dst_preg[port];
+        end
+    end
+
+    assign decode_queue_flush = branch_squash_valid;
+    assign int_issue_queue_flush = 1'b0;
+    assign branch_issue_queue_flush = 1'b0;
+    assign rename_recover_valid = branch_squash_valid && mispredict_has_checkpoint;
+    assign free_list_recover_valid = branch_squash_valid && mispredict_has_checkpoint;
+
+    always_comb begin
+        for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
+            rename_recover_map[arch] = '0;
+            if (mispredict_has_checkpoint) begin
+                rename_recover_map[arch] = checkpoint_rename_map_q[mispredict_checkpoint_id][arch];
+            end
+        end
+
+        free_list_recover_head = '0;
+        free_list_recover_tail = '0;
+        free_list_recover_count = '0;
+        if (mispredict_has_checkpoint) begin
+            free_list_recover_head = checkpoint_free_head_q[mispredict_checkpoint_id];
+            free_list_recover_tail = checkpoint_free_tail_q[mispredict_checkpoint_id];
+            free_list_recover_count = checkpoint_free_count_q[mispredict_checkpoint_id];
+        end
+    end
+
+    always_comb begin
+        branch_redirect_o = '0;
+        branch_redirect_o.valid = branch_squash_valid;
+        branch_redirect_o.ftq_idx = branch_squash_ftq_idx;
+        branch_redirect_o.branch_pc = branch_squash_pc;
+        branch_redirect_o.redirect_pc = branch_squash_target_pc;
+        branch_redirect_o.actual_taken = branch_squash_valid;
+        branch_redirect_o.fallthrough_pc = branch_squash_fallthrough_pc;
+    end
+
     uop_queue #(
         .MACHINE_WIDTH(MACHINE_WIDTH),
         .DEPTH(DECODE_QUEUE_DEPTH)
     ) u_decode_queue (
         .clk(clk),
         .rst(rst),
+        .flush_i(decode_queue_flush),
         .enq_uop_i(decoded_uop),
         .enq_valid_i(decode_valid),
         .enq_ready_o(uopq_enq_ready),
@@ -550,8 +693,15 @@ module backend
         .alloc_ready_i(alloc_ready),
         .alloc_valid_o(alloc_valid),
         .alloc_preg_o(dst_new_preg),
-        .release_valid_i(rob_retire_valid),
-        .release_preg_i(rob_retire_old_dst_preg)
+        .release_valid_i(filtered_retire_valid),
+        .release_preg_i(filtered_retire_preg),
+        .recover_valid_i(free_list_recover_valid),
+        .recover_head_i(free_list_recover_head),
+        .recover_tail_i(free_list_recover_tail),
+        .recover_count_i(free_list_recover_count),
+        .head_o(free_list_head),
+        .tail_o(free_list_tail),
+        .count_o(free_list_count)
     );
 
     rob #(
@@ -575,6 +725,8 @@ module backend
         .alloc_rd_write_en_i(rob_alloc_rd_write_en),
 `endif
         .alloc_ready_i(rob_ready),
+        .squash_valid_i(branch_squash_valid),
+        .squash_branch_idx_i(branch_squash_rob_idx),
         .complete_valid_i(rob_complete_valid),
         .complete_idx_i(rob_complete_idx),
 `ifdef ENABLE_RETIRE_INFO
@@ -589,7 +741,8 @@ module backend
         .retire_valid_o(rob_retire_valid),
         .retire_idx_o(rob_retire_idx),
         .retire_old_dst_preg_o(rob_retire_old_dst_preg),
-        .retire_instruction_id_o(rob_retire_instruction_id)
+        .retire_instruction_id_o(rob_retire_instruction_id),
+        .head_o(rob_head)
 `ifdef ENABLE_RETIRE_INFO
         ,.retire_info_o(retire_info_o)
 `endif
@@ -611,9 +764,12 @@ module backend
         .rs2_read_en_i(rename_rs2_read_en),
         .rd_write_en_i(rename_rd_write_en),
         .new_dst_preg_i(dst_new_preg),
+        .recover_valid_i(rename_recover_valid),
+        .recover_map_i(rename_recover_map),
         .src1_preg_o(src1_preg),
         .src2_preg_o(src2_preg),
-        .old_dst_preg_o(dst_old_preg)
+        .old_dst_preg_o(dst_old_preg),
+        .current_map_o(rename_map_current)
     );
 
     issue_queue #(
@@ -624,6 +780,10 @@ module backend
     ) u_int_issue_queue (
         .clk(clk),
         .rst(rst),
+        .flush_i(int_issue_queue_flush),
+        .squash_valid_i(branch_squash_valid),
+        .squash_branch_idx_i(branch_squash_rob_idx),
+        .rob_head_i(rob_head),
         .enq_entry_i(issueq_enq_entry),
         .enq_valid_i(issueq_enq_valid),
         .enq_ready_o(issueq_enq_ready),
@@ -642,6 +802,10 @@ module backend
     ) u_branch_issue_queue (
         .clk(clk),
         .rst(rst),
+        .flush_i(branch_issue_queue_flush),
+        .squash_valid_i(branch_squash_valid),
+        .squash_branch_idx_i(branch_squash_rob_idx),
+        .rob_head_i(rob_head),
         .enq_entry_i(branch_issueq_enq_entry),
         .enq_valid_i(branch_issueq_enq_valid),
         .enq_ready_o(branch_issueq_enq_ready),
@@ -714,6 +878,21 @@ module backend
             for (int preg = 0; preg < NUM_PHYS_REGS; preg++) begin
                 preg_ready_q[preg] <= (preg < NUM_ARCH_REGS);
             end
+            for (int ckpt = 0; ckpt < CHECKPOINT_COUNT; ckpt++) begin
+                checkpoint_valid_q[ckpt] <= 1'b0;
+                checkpoint_branch_rob_idx_q[ckpt] <= '0;
+                checkpoint_branch_pc_q[ckpt] <= '0;
+                checkpoint_free_head_q[ckpt] <= '0;
+                checkpoint_free_tail_q[ckpt] <= '0;
+                checkpoint_free_count_q[ckpt] <= '0;
+                for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
+                    checkpoint_rename_map_q[ckpt][arch] <= BACKEND_PREG_IDX_WIDTH'(arch);
+                end
+            end
+            for (int entry = 0; entry < NUM_ROB_ENTRIES; entry++) begin
+                rob_has_checkpoint_q[entry] <= 1'b0;
+                rob_checkpoint_id_q[entry] <= '0;
+            end
 `ifdef O3_SIM
             sim_cycle_q             <= 64'd0;
             kanata_id_counter_q     <= 64'd0;
@@ -732,6 +911,40 @@ module backend
 `endif
 `endif
         end else begin
+            if (rename_valid && (rename_branch_count > $clog2(MACHINE_WIDTH+1)'(1))) begin
+                $error("backend only supports at most one branch checkpoint allocation per rename group");
+            end
+
+            if (branch_squash_valid && mispredict_has_checkpoint) begin
+                checkpoint_valid_q[mispredict_checkpoint_id] <= 1'b0;
+                rob_has_checkpoint_q[branch_squash_rob_idx] <= 1'b0;
+            end
+
+            for (int port = 0; port < RETIRE_WIDTH; port++) begin
+                if (rob_retire_valid[port] && rob_has_checkpoint_q[rob_retire_idx[port]]) begin
+                    checkpoint_valid_q[rob_checkpoint_id_q[rob_retire_idx[port]]] <= 1'b0;
+                    rob_has_checkpoint_q[rob_retire_idx[port]] <= 1'b0;
+                end
+            end
+
+            if (checkpoint_alloc_en) begin
+                checkpoint_valid_q[checkpoint_alloc_id] <= 1'b1;
+                for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
+                    if (rename_branch_req[lane]) begin
+                        checkpoint_branch_rob_idx_q[checkpoint_alloc_id] <= rob_idx[lane];
+                        checkpoint_branch_pc_q[checkpoint_alloc_id] <= rename_uop_head[lane].pc;
+                        checkpoint_free_head_q[checkpoint_alloc_id] <= free_list_head;
+                        checkpoint_free_tail_q[checkpoint_alloc_id] <= free_list_tail;
+                        checkpoint_free_count_q[checkpoint_alloc_id] <= free_list_count;
+                        rob_has_checkpoint_q[rob_idx[lane]] <= 1'b1;
+                        rob_checkpoint_id_q[rob_idx[lane]] <= checkpoint_alloc_id;
+                    end
+                end
+                for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
+                    checkpoint_rename_map_q[checkpoint_alloc_id][arch] <= rename_map_current[arch];
+                end
+            end
+
 `ifdef O3_SIM
 `ifdef O3_SIM_KANATA
             if (!kanata_header_printed_q) begin
@@ -1217,7 +1430,8 @@ module backend
                 if (rename_fire
                  && rename_uop_head[lane].valid
                  && rename_uop_head[lane].rd_write_en
-                 && (rename_uop_head[lane].rd != REG_ADDR_WIDTH'(0))) begin
+                 && (rename_uop_head[lane].rd != REG_ADDR_WIDTH'(0))
+                 && !branch_squash_valid) begin
                     preg_ready_q[dst_new_preg[lane]] <= 1'b0;
                 end
             end
@@ -1225,7 +1439,10 @@ module backend
             // 当前整数写回统一从 alu_result_q 发起。
             // 本拍写回的 ready 变化只会在下一拍对 issue queue 可见，不做同拍旁路。
             for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
-                if (alu_result_q[alu].valid && alu_result_q[alu].dst_write_en) begin
+                if (alu_result_q[alu].valid
+                 && alu_result_q[alu].dst_write_en
+                 && (!branch_squash_valid
+                  || rob_is_older_or_same(alu_result_q[alu].rob_idx, branch_squash_rob_idx, rob_head))) begin
                     preg_ready_q[alu_result_q[alu].dst_preg] <= 1'b1;
                 end
             end
@@ -1246,7 +1463,9 @@ module backend
 `endif
 
             for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
-                alu_result_q[alu].valid        <= exec_valid[alu];
+                alu_result_q[alu].valid        <= exec_valid[alu]
+                                              && (!branch_squash_valid
+                                               || rob_is_older_or_same(alu_regread_q[alu].rob_idx, branch_squash_rob_idx, rob_head));
                 alu_result_q[alu].instruction_id <= alu_regread_q[alu].instruction_id;
 `ifdef O3_SIM
                 alu_result_q[alu].kanata_id    <= alu_regread_q[alu].kanata_id;
@@ -1256,7 +1475,9 @@ module backend
                 alu_result_q[alu].dst_write_en <= alu_regread_q[alu].dst_write_en;
                 alu_result_q[alu].result       <= exec_result[alu];
 
-                alu_regread_q[alu].valid        <= alu_issue_q[alu].valid;
+                alu_regread_q[alu].valid        <= alu_issue_q[alu].valid
+                                               && (!branch_squash_valid
+                                                || rob_is_older_or_same(alu_issue_q[alu].rob_idx, branch_squash_rob_idx, rob_head));
                 alu_regread_q[alu].instruction_id <= alu_issue_q[alu].instruction_id;
 `ifdef O3_SIM
                 alu_regread_q[alu].kanata_id   <= alu_issue_q[alu].kanata_id;
@@ -1278,7 +1499,9 @@ module backend
                     alu_regread_q[alu].src2_value <= '0;
                 end
 
-                alu_issue_q[alu].valid        <= issueq_issue_valid[alu];
+                alu_issue_q[alu].valid        <= issueq_issue_valid[alu]
+                                             && (!branch_squash_valid
+                                              || rob_is_older_or_same(issueq_issue_entry[alu].rob_idx, branch_squash_rob_idx, rob_head));
                 alu_issue_q[alu].instruction_id <= issueq_issue_entry[alu].instruction_id;
 `ifdef O3_SIM
                 alu_issue_q[alu].kanata_id    <= issueq_issue_entry[alu].kanata_id;
@@ -1296,24 +1519,30 @@ module backend
                 alu_issue_q[alu].int_alu_op   <= issueq_issue_entry[alu].int_alu_op;
             end
 
-            branch_regread_q.valid          <= branch_issue_q.valid;
+            branch_regread_q.valid          <= branch_issue_q.valid
+                                            && (!branch_squash_valid
+                                             || rob_is_older_or_same(branch_issue_q.rob_idx, branch_squash_rob_idx, rob_head));
             branch_regread_q.instruction_id <= branch_issue_q.instruction_id;
 `ifdef O3_SIM
             branch_regread_q.kanata_id      <= branch_issue_q.kanata_id;
 `endif
             branch_regread_q.pc             <= branch_issue_q.pc;
+            branch_regread_q.ftq_idx        <= branch_issue_q.ftq_idx;
             branch_regread_q.src1_value     <= prf_rd_data[BRANCH_PRF_RD_BASE + 0];
             branch_regread_q.src2_value     <= prf_rd_data[BRANCH_PRF_RD_BASE + 1];
             branch_regread_q.imm_value      <= expand_imm_value(branch_issue_q.imm_type, branch_issue_q.imm_raw);
             branch_regread_q.rob_idx        <= branch_issue_q.rob_idx;
             branch_regread_q.branch_op      <= branch_issue_q.branch_op;
 
-            branch_issue_q.valid            <= branch_issueq_issue_valid;
+            branch_issue_q.valid            <= branch_issueq_issue_valid
+                                            && (!branch_squash_valid
+                                             || rob_is_older_or_same(branch_issueq_issue_entry.rob_idx, branch_squash_rob_idx, rob_head));
             branch_issue_q.instruction_id   <= branch_issueq_issue_entry.instruction_id;
 `ifdef O3_SIM
             branch_issue_q.kanata_id        <= branch_issueq_issue_entry.kanata_id;
 `endif
             branch_issue_q.pc               <= branch_issueq_issue_entry.pc;
+            branch_issue_q.ftq_idx          <= branch_issueq_issue_entry.ftq_idx;
             branch_issue_q.src1_preg        <= branch_issueq_issue_entry.src1_preg;
             branch_issue_q.src2_preg        <= branch_issueq_issue_entry.src2_preg;
             branch_issue_q.rob_idx          <= branch_issueq_issue_entry.rob_idx;
@@ -1321,7 +1550,10 @@ module backend
             branch_issue_q.imm_type         <= branch_issueq_issue_entry.imm_type;
             branch_issue_q.branch_op        <= branch_issueq_issue_entry.branch_op;
 
-            if (fetch_fire) begin
+            if (branch_squash_valid) begin
+                fetch_entry_q       <= '0;
+                fetch_entry_valid_q <= 1'b0;
+            end else if (fetch_fire) begin
                 fetch_entry_q          <= fetch_entry_i;
                 fetch_entry_valid_q    <= 1'b1;
                 fetch_instruction_id_q <= fetch_instruction_id_d;

@@ -17,6 +17,10 @@ module branch_issue_queue
 ) (
     input  logic                                 clk,
     input  logic                                 rst,
+    input  logic                                 flush_i,
+    input  logic                                 squash_valid_i,
+    input  logic [o3_pkg::ROB_IDX_WIDTH-1:0]     squash_branch_idx_i,
+    input  logic [o3_pkg::ROB_IDX_WIDTH-1:0]     rob_head_i,
     input  branch_issue_entry_t [MACHINE_WIDTH-1:0] enq_entry_i,
     input  logic                                 enq_valid_i,
     output logic                                 enq_ready_o,
@@ -27,6 +31,7 @@ module branch_issue_queue
 );
 
     localparam int COUNT_WIDTH = $clog2(DEPTH + 1);
+    localparam int ROB_IDX_WIDTH = o3_pkg::ROB_IDX_WIDTH;
 
     branch_issue_entry_t queue_q [DEPTH-1:0];
     branch_issue_entry_t queue_wakeup [DEPTH-1:0];
@@ -36,6 +41,20 @@ module branch_issue_queue
     logic [COUNT_WIDTH-1:0] count_after_issue;
     logic                   enq_fire;
     logic [DEPTH-1:0]       remove_mask;
+
+    function automatic logic is_older_or_same(
+        input logic [ROB_IDX_WIDTH-1:0] candidate,
+        input logic [ROB_IDX_WIDTH-1:0] branch_idx,
+        input logic [ROB_IDX_WIDTH-1:0] head_idx
+    );
+        int unsigned cand_age;
+        int unsigned branch_age;
+        begin
+            cand_age      = (int'(candidate) + BACKEND_NUM_ROB_ENTRIES - int'(head_idx)) % BACKEND_NUM_ROB_ENTRIES;
+            branch_age    = (int'(branch_idx) + BACKEND_NUM_ROB_ENTRIES - int'(head_idx)) % BACKEND_NUM_ROB_ENTRIES;
+            is_older_or_same = (cand_age <= branch_age);
+        end
+    endfunction
 
     always_comb begin
         enq_count = '0;
@@ -51,6 +70,9 @@ module branch_issue_queue
             queue_wakeup[idx] = queue_q[idx];
 
             if (queue_q[idx].valid) begin
+                if (squash_valid_i && !is_older_or_same(queue_q[idx].rob_idx, squash_branch_idx_i, rob_head_i)) begin
+                    queue_wakeup[idx].valid = 1'b0;
+                end
                 if (!queue_q[idx].src1_ready && preg_ready_i[queue_q[idx].src1_preg]) begin
                     queue_wakeup[idx].src1_ready = 1'b1;
                 end
@@ -118,6 +140,8 @@ module branch_issue_queue
 
     always_ff @(posedge clk) begin
         if (rst) begin
+            queue_q <= '{default: '0};
+        end else if (flush_i) begin
             queue_q <= '{default: '0};
         end else begin
             queue_q <= queue_next;
