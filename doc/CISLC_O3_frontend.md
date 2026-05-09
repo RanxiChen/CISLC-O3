@@ -23,7 +23,10 @@
 - BPU 通过 ready/valid 接口写入 FTQ：
   - FTQ 未满时 `ftq_ready_i=1`，BPU 入队成功后内部 PC 前进 32B。
   - FTQ 满时 BPU 保持当前 block，不跳过任何 PC。
-- 当前未实现 BTB/BHT/RAS/history、真实分支预测、redirect/flush 恢复和预测器训练。
+- BPU 只消费 redirect 来重置 `pred_pc_q`，不负责修复历史 FTQ entry。
+  - 收到 `redirect_valid_i=1` 时，内部 `pred_pc_q` 立即被重置为 `redirect_pc_i`，优先级高于正常顺序推进。
+  - 下一拍 `ftq_entry_o` 从新的 `redirect_pc_i` 开始顺序生成。
+- 当前未实现 BTB/BHT/RAS/history、真实分支预测和预测器训练。
 
 ### IFU（Instruction Fetch Unit）
 - `rtl/frontend/ifu.sv` 已实现取指流水线骨架，包含 S0/S1/S2/S3；Fetch Buffer 已拆成独立 `rtl/frontend/fetch_buffer.sv`。
@@ -81,7 +84,7 @@
 
 ### 尚未实现
 - frontend standalone 顶层仍只暴露 fetch buffer 出队口；真实 backend 连接位于 `rtl/core/o3_core.sv`。
-- BPU 只实现顺序 not-taken 生成，未实现真实分支预测、BTB、BHT、RAS。
+- BPU 只实现顺序 not-taken 生成和 redirect reseed，未实现真实分支预测、BTB、BHT、RAS。
 - FTQ 未实现 release/commit 回收；当前顺序前端最多分配 `FTQ_DEPTH` 个 fetch block 后会停止接收 BPU。
 - 未实现 redirect、异常恢复和跨模块精确清除。
 - `rtl/O3.sv` 和 `rtl/Tile.sv` 仍是占位顶层，未接入真实 IFU/FTQ/icache 链路。
@@ -166,7 +169,8 @@ frontend
 ### BPU（`rtl/frontend/bpu.sv`）
 - 职责：生成前端预测 fetch block。
 - 当前实现：sequential-only，按 32B 从 `reset_pc_i` 顺序生成 `ftq_entry_t`。
-- 当前未做：BTB/BHT/RAS、真实方向/目标预测、redirect 恢复和训练接口。
+- 已支持 redirect reseed：收到 redirect 后立即重置 `pred_pc_q`，从 `redirect_pc_i` 开始重新生成。
+- 当前未做：BTB/BHT/RAS、真实方向/目标预测、flush 恢复和训练接口。
 
 ### ICache（`rtl/frontend/icache.sv`）
 - 职责：指令缓存，提供 hit/miss 判断和 refill。
@@ -209,8 +213,13 @@ frontend
 
 周期 N 上升沿：
 - reset 时 `pred_pc_q <= reset_pc_i`。
-- 若 `ftq_valid_o && ftq_ready_i`，BPU 当前 block 被 FTQ 接收，`pred_pc_q += FTQ_BLOCK_BYTES`。
-- 若 FTQ backpressure，`pred_pc_q` 保持不变。
+- 否则若 `redirect_valid_i=1`，`pred_pc_q <= redirect_pc_i`，优先级最高。
+- 否则若 `ftq_valid_o && ftq_ready_i`，BPU 当前 block 被 FTQ 接收，`pred_pc_q += FTQ_BLOCK_BYTES`。
+- 否则 `pred_pc_q` 保持不变。
+
+周期 N+1：
+- `ftq_entry_o` 组合反映更新后的 `pred_pc_q`。
+- 若上一拍发生了 redirect，本拍从 `redirect_pc_i` 开始生成新 block。
 
 ### FTQ 周期级行为
 
@@ -307,7 +316,7 @@ frontend 从 core 层接收 backend 生成的 `branch_redirect_t`，字段与 `r
 - **o3_core**：负责把 backend 生成的 redirect 从后端传送到前端，不做任何解释或修改，只充当 transport。
 - **frontend（顶层）**：负责消费 redirect，将其分发给内部 BPU、FTQ、IFU、Fetch Buffer 等子模块。
 - **FTQ**：收到 redirect 后，用 `ftq_idx` 定位该 branch 所在的 FTQ entry，将该 entry 及所有 younger entry（更高 `ftq_idx`，按 FTQ 循环语义）标记为无效，并视需要修复该 entry 的 `end_pc` / `fallthrough_pc`。
-- **BPU**：收到 redirect 后，用 `redirect_pc` 重新播种内部 `pred_pc_q`，从目标地址开始重新生成预测流。
+- **BPU**：收到 redirect 后，用 `redirect_pc` 重新播种内部 `pred_pc_q`，从目标地址开始重新生成预测流。BPU 不负责修复或清除历史 FTQ entry，仅重置自身 `pred_pc_q`。
 - **IFU**：收到 redirect 后精确清除所有在飞请求（S1/S2/S3），并从 `redirect_pc` 重新开始取指。
 - **Fetch Buffer**：收到 redirect 后精确清除已缓冲但尚未被 backend 消费的 fetch entry。
 
