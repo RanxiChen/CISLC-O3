@@ -205,6 +205,8 @@ FTQ 向 IFU 提供 ready/valid 风格接口：
 
 ## Redirect Repair / Rewind 语义
 
+本节是当前短期 FTQ redirect 语义的单点说明。后续 agent 若要继续 Task 4/5/6，应优先以本节为准，而不是反向从 RTL 推导行为。
+
 ### 输入字段
 - `redirect_valid_i`
   - redirect repair 有效，优先级高于普通 enqueue / consume。
@@ -229,6 +231,13 @@ FTQ 向 IFU 提供 ready/valid 风格接口：
 - older entries：
   - 完全保持不变。
   - 既不改 entry 内容，也不改 allocated 状态。
+
+### 当前明确不做的事
+- 不做 commit-time release。
+- 不做 generalized recovery 或多异常源统一回滚。
+- 不做 backend 驱动的 FTQ walkback / release-head 推进。
+- 不做 IFU / fetch_buffer / ICache 的跨模块 flush；这些属于后续 Task 4。
+- 不做 frontend top 到 backend 的完整 redirect 闭环；这些属于后续 Task 5/6。
 
 ### Pointer / Count Policy
 - `alloc_tail_q`

@@ -56,6 +56,7 @@
 ### FTQ
 - `rtl/frontend/ftq.sv` 已改成 BPU 入队、IFU 消费的三指针骨架。
 - Reset 后 FTQ 为空，不再预置顺序 block；运行时由 BPU 写入 `ftq_entry_t`。
+- FTQ redirect 语义的单点细节说明统一收口在 [doc/ftq.md](/home/chen/FUN/CISLC-O3/doc/ftq.md) 的“Redirect Repair / Rewind 语义”一节；本文件只保留摘要和前端级范围边界。
 - 内部维护：
   - `alloc_tail_q`：BPU 下一次写入位置。
   - `ifu_head_q`：IFU 下一次消费位置。
@@ -69,6 +70,7 @@
   - `allocated_count_q` 收缩到保留窗口大小。
 - 当前未实现 release/commit 回收，所以 FTQ 最多接收 `FTQ_DEPTH` 个 block；但 redirect rewind 会把 wrong-path slot 重新变成可覆盖空间，避免 stale full-state。
 - 当前还未把 redirect 从 backend/frontend top 真正接到 FTQ，也未实现 IFU / fetch_buffer 级 flush；因此现在只有 FTQ 本地 repair 语义落地，完整 frontend redirect 闭环仍在后续 Task。
+- 不应把当前状态理解成“frontend 已支持完整 redirect 恢复”：现在仅有 BPU redirect reseed 和 FTQ 本地 repair/rewind，IFU/fetch_buffer/ICache 的精确清除仍未接通。
 
 ### Frontend Top
 - `rtl/frontend/frontend.sv` 已实例化并连接 `bpu`、`ftq`、`ifu`、`ICache` 和 `fetch_buffer`。
