@@ -10,9 +10,15 @@
  *
  * 当前没有实现的内容：
  * - 不实现 release / commit 回收（release_head_q 只保留状态，不推进）
- * - 不实现 flush / redirect / invalidate
+ * - 不实现完整的 flush / redirect repair（只实现接口和优先级框架）
  * - 不实现后端或 branch execute 的 FTQ 回查端口
  * - 不实现 BPU-to-IFU bypass（BPU 入队的 entry 下一拍才可见于 IFU）
+ *
+ * Redirect Repair 接口说明（Task 3A）：
+ * - 已增加 redirect repair 输入端口，用于接收 backend 的 branch mispredict 信号
+ * - redirect repair 是 correctness event，优先级高于普通 enqueue / consume
+ * - 当 redirect_valid_i=1 时，FTQ 应优先处理 redirect，暂停或覆盖正常更新
+ * - 当前只实现接口框架，完整的 entry repair 和 pointer rewind 由后续 Task 3B/3C 完成
  *
  * 后续扩展入口：
  * - release 逻辑会清 allocated_q / consumed_q / entry，推进 release_head_q，
@@ -101,7 +107,14 @@ module ftq
     output logic       ifu_valid_o,
     input  logic       ifu_ready_i,
     output ftq_entry_t ifu_entry_o,
-    output ftq_idx_t   ifu_ftq_idx_o
+    output ftq_idx_t   ifu_ftq_idx_o,
+
+    // Redirect repair port (correctness event, highest local priority)
+    input  logic       redirect_valid_i,
+    input  ftq_idx_t   redirect_ftq_idx_i,
+    input  ftq_pc_t    redirect_branch_pc_i,
+    input  ftq_pc_t    redirect_redirect_pc_i,
+    input  logic       redirect_actual_taken_i
 
     `ifdef O3_FRONTEND_DEBUG
     ,output logic       dbg_ifu_fire_o
@@ -176,8 +189,27 @@ module ftq
             dbg_ifu_fire_q <= ifu_fire;
             `endif
 
-            // BPU enqueue
-            if (bpu_fire) begin
+            // ============================================================
+            // Redirect repair — correctness event, highest local priority
+            // ============================================================
+            // When redirect_valid_i=1, FTQ must prioritize redirect repair
+            // over normal enqueue/consume updates for affected slots.
+            //
+            // Task 3A: Only framework — actual entry repair and pointer
+            // rewind will be implemented in Task 3B/3C.
+            //
+            // Priority order (highest to lowest):
+            //   1. redirect_valid_i (correctness repair)
+            //   2. bpu_fire (normal enqueue)
+            //   3. ifu_fire (normal consume)
+            //
+            // Current implementation: redirect takes priority by suppressing
+            // bpu_fire and ifu_fire when redirect is active. The actual
+            // entry modification logic will be added in Task 3B.
+            // ============================================================
+
+            // BPU enqueue — suppressed during redirect
+            if (bpu_fire && !redirect_valid_i) begin
                 entries_q[alloc_tail_q]   <= bpu_entry_i;
                 allocated_q[alloc_tail_q] <= 1'b1;
                 consumed_q[alloc_tail_q]  <= 1'b0;
@@ -185,10 +217,23 @@ module ftq
                 allocated_count_q         <= allocated_count_q + 1'b1;
             end
 
-            // IFU consume — does not release capacity
-            if (ifu_fire) begin
+            // IFU consume — suppressed during redirect
+            if (ifu_fire && !redirect_valid_i) begin
                 consumed_q[ifu_head_q] <= 1'b1;
                 ifu_head_q             <= next_ptr(ifu_head_q);
+            end
+
+            // Redirect repair — placeholder for Task 3B/3C
+            // When redirect_valid_i=1:
+            //   - Task 3B will implement younger-entry invalidation
+            //   - Task 3B will repair branch entry (end_pc, next_pc)
+            //   - Task 3C will implement pointer rewind (alloc_tail_q, ifu_head_q, allocated_count_q)
+            if (redirect_valid_i) begin
+                // TODO: Task 3B - invalidate younger entries
+                // TODO: Task 3B - repair branch entry at redirect_ftq_idx_i
+                // TODO: Task 3C - rewind alloc_tail_q to next_ptr(redirect_ftq_idx_i)
+                // TODO: Task 3C - adjust ifu_head_q if needed
+                // TODO: Task 3C - recompute allocated_count_q
             end
 
             // Release logic: not yet implemented.
