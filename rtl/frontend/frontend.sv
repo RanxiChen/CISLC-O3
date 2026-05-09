@@ -12,14 +12,15 @@
  *
  * 当前没有实现：
  * - 不接 backend。
- * - 不实现 redirect/flush 精确清除；`flush_i` 当前只清 ICache 和 fetch_buffer。
+ * - 不实现 backend 驱动的最终 redirect transport；当前只提供 frontend 侧 redirect 接口与本地清除。
  * - BPU 当前只实现顺序 not-taken block 生成，不实现 BTB/BHT/RAS。
  * - 不写测试代码和仿真代码。
  *
  * 后续扩展入口：
  * - 后续 backend 接入时，可直接消费 `fetch_valid_o/fetch_ready_i`
  *   和 `fetch_entry_o` 组成的 fetch group。
- * - 后续 redirect 需要同时驱动 FTQ、IFU、ICache 和 fetch_buffer 的精确恢复。
+ * - 当前 redirect 已同时驱动 BPU/FTQ/IFU，并复用 ICache/fetch_buffer 的 flush 控制态清除路径。
+ * - 后续 backend 接入时，可把统一 `branch_redirect_t` transport 到本模块这些输入端口。
  * - 后续 refill 端口可接 L2/总线/测试内存模型。
  *
  * 逐周期说明：
@@ -47,6 +48,11 @@ module frontend
     input  logic rst_i,
     input  logic flush_i,
     input  logic [PC_WIDTH-1:0] reset_pc_i,
+    input  logic                  redirect_valid_i,
+    input  logic [FTQ_INDEX_WIDTH-1:0] redirect_ftq_idx_i,
+    input  logic [PC_WIDTH-1:0]   redirect_branch_pc_i,
+    input  logic [PC_WIDTH-1:0]   redirect_redirect_pc_i,
+    input  logic                  redirect_actual_taken_i,
 
     output logic [PC_WIDTH-1:0] refill_req_pc_o,
     output logic                refill_req_valid_o,
@@ -95,14 +101,19 @@ module frontend
 
     fetch_entry_t fb_deq_entry [4];
     logic         fb_deq_valid;
+    logic         frontend_flush;
+
+    assign frontend_flush = flush_i || redirect_valid_i;
 
     bpu u_bpu (
-        .clk_i       (clk_i),
-        .rst_i       (rst_i),
-        .reset_pc_i  (reset_pc_i),
-        .ftq_valid_o (bpu_ftq_valid),
-        .ftq_ready_i (bpu_ftq_ready),
-        .ftq_entry_o (bpu_ftq_entry)
+        .clk_i            (clk_i),
+        .rst_i            (rst_i),
+        .reset_pc_i       (reset_pc_i),
+        .redirect_valid_i (redirect_valid_i),
+        .redirect_pc_i    (redirect_redirect_pc_i),
+        .ftq_valid_o      (bpu_ftq_valid),
+        .ftq_ready_i      (bpu_ftq_ready),
+        .ftq_entry_o      (bpu_ftq_entry)
     );
 
     ftq u_ftq (
@@ -116,12 +127,11 @@ module frontend
         .ifu_entry_o   (ftq_ifu_entry),
         .ifu_ftq_idx_o (ftq_ifu_idx),
 
-        // Redirect repair port — temporarily tied to 0 until backend connects
-        .redirect_valid_i       (1'b0),
-        .redirect_ftq_idx_i     ('0),
-        .redirect_branch_pc_i   ('0),
-        .redirect_redirect_pc_i ('0),
-        .redirect_actual_taken_i(1'b0)
+        .redirect_valid_i       (redirect_valid_i),
+        .redirect_ftq_idx_i     (redirect_ftq_idx_i),
+        .redirect_branch_pc_i   (redirect_branch_pc_i),
+        .redirect_redirect_pc_i (redirect_redirect_pc_i),
+        .redirect_actual_taken_i(redirect_actual_taken_i)
 
         `ifdef O3_FRONTEND_DEBUG
         ,.dbg_ifu_fire_o        (dbg_ftq_ifu_fire_o)
@@ -140,6 +150,7 @@ module frontend
         .ftq_ready_o          (ftq_ifu_ready),
         .ftq_entry_i          (ftq_ifu_entry),
         .ftq_idx_i            (ftq_ifu_idx),
+        .redirect_valid_i     (redirect_valid_i),
         .icache_valid_o       (ifu_icache_valid),
         .icache_ready_i       (ifu_icache_ready),
         .icache_pc_o          (ifu_icache_pc),
@@ -159,7 +170,7 @@ module frontend
     ) u_icache (
         .clk                 (clk_i),
         .rst                 (rst_i),
-        .flush               (flush_i),
+        .flush               (frontend_flush),
         .s0_valid            (ifu_icache_valid),
         .s0_ready            (ifu_icache_ready),
         .s0_pc               (ifu_icache_pc),
@@ -179,7 +190,7 @@ module frontend
     fetch_buffer u_fetch_buffer (
         .clk_i                (clk_i),
         .rst_i                (rst_i),
-        .flush_i              (flush_i),
+        .flush_i              (frontend_flush),
         .enq_entry_i          (ifu_fetch_entry),
         .enq_valid_i          (ifu_fetch_valid),
         .enq_ready_o          (ifu_fetch_ready),

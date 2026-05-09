@@ -188,6 +188,11 @@ int main(int argc, char** argv) {
     dut.flush_i = 0;
     dut.fetch_ready_i = 1;
     dut.reset_pc_i = 0;
+    dut.redirect_valid_i = 0;
+    dut.redirect_ftq_idx_i = 0;
+    dut.redirect_branch_pc_i = 0;
+    dut.redirect_redirect_pc_i = 0;
+    dut.redirect_actual_taken_i = 0;
     clear_refill_resp(dut);
 
     for (int i = 0; i < kResetCycles; ++i) {

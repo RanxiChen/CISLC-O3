@@ -12,7 +12,7 @@
  *
  * 当前没有实现：
  * - 不内置 Fetch Buffer；外部 `fetch_buffer` 负责前后端交界缓存。
- * - 不处理 redirect/flush 精确恢复。
+ * - 不实现按 branch age 保留部分在飞请求；redirect 先采用“清空全部 transient IFU 状态”的最小策略。
  * - 不实现分支预测、BTB/BHT/RAS。
  * - 不实现跨页、TLB、PMP 或更细的异常 cause 编码。
  *
@@ -20,7 +20,8 @@
  * - `icache_req_allowed_i` 可由外部 fetch buffer 的安全空位阈值驱动，
  *   当前用于提前阻塞 S1 -> ICache request。
  * - `icache_out_error_i` 已接入 `fetch_access_fault`，后续可扩展为更完整异常 cause。
- * - 后续 redirect/flush 需要同时清 IFU 内部 S1/S2 状态和外部 fetch buffer。
+ * - 当前已支持 redirect 驱动的 IFU 精确清除：redirect 当拍 suppress 输出，并在上升沿清空当前 block/S1/S2。
+ * - 后续若要保留 older-than-branch 的在飞请求，需要引入更细的 age/filter 机制。
  *
  * 当前阶段说明：
  * - 当前阶段只搭 RTL 功能链路，不写测试代码，不写仿真代码。
@@ -57,6 +58,7 @@ module ifu
     output logic       ftq_ready_o,
     input  ftq_entry_t ftq_entry_i,
     input  ftq_idx_t   ftq_idx_i,
+    input  logic       redirect_valid_i,
 
     // ---- ICache S0 请求接口 ----
     output logic       icache_valid_o,
@@ -149,31 +151,33 @@ module ifu
 
     assign older_empty = !s1_valid_q && !s2_valid0_q && !s2_valid1_q;
 
-    assign misalign_fire = ftq_valid_i
+    assign misalign_fire = !redirect_valid_i
+                         && ftq_valid_i
                          && !block_valid_q
                          && (ftq_entry_i.start_pc[1:0] != 2'b00)
                          && older_empty
                          && fetch_ready_i;
 
-    assign ftq_ready_o = !block_valid_q
+    assign ftq_ready_o = !redirect_valid_i
+                       && !block_valid_q
                        && (ftq_entry_i.start_pc[1:0] != 2'b00
                            ? (older_empty && fetch_ready_i)
                            : s1_ready_i);
 
     assign ftq_fire = ftq_valid_i && ftq_ready_o;
-    assign s0_valid = block_valid_q || (ftq_fire && !active_misaligned);
+    assign s0_valid = !redirect_valid_i && (block_valid_q || (ftq_fire && !active_misaligned));
     assign s0_to_s1_valid = s0_valid && !active_misaligned;
     assign s0_s1_fire = s0_to_s1_valid && s1_ready_i;
 
     assign s2_has_space = !s2_valid1_q;
-    assign icache_valid_o = s1_valid_q && s2_has_space && icache_req_allowed_i;
+    assign icache_valid_o = !redirect_valid_i && s1_valid_q && s2_has_space && icache_req_allowed_i;
     assign icache_pc_o    = s1_group_pc_q;
     assign s1_icache_fire = icache_valid_o && icache_ready_i;
     assign s1_ready_i = !s1_valid_q || s1_icache_fire;
 
     assign s2_push = s1_icache_fire;
     assign s3_ready = fetch_ready_i;
-    assign s2_pop = s2_valid0_q && s2_slot0_q.data_valid && s3_ready;
+    assign s2_pop = !redirect_valid_i && s2_valid0_q && s2_slot0_q.data_valid && s3_ready;
 
     always_ff @(posedge clk_i) begin
         if (rst_i) begin
@@ -181,6 +185,11 @@ module ifu
             current_block_q   <= '0;
             current_ftq_idx_q <= '0;
             fetch_ptr_q       <= '0;
+        end else if (redirect_valid_i) begin
+            current_block_q   <= '0;
+            current_ftq_idx_q <= '0;
+            fetch_ptr_q       <= '0;
+            block_valid_q     <= 1'b0;
         end else begin
             if (misalign_fire) begin
                 current_block_q   <= '0;
@@ -204,6 +213,11 @@ module ifu
 
     always_ff @(posedge clk_i) begin
         if (rst_i) begin
+            s1_valid_q    <= 1'b0;
+            s1_group_pc_q <= '0;
+            s1_mask_q     <= '0;
+            s1_ftq_idx_q  <= '0;
+        end else if (redirect_valid_i) begin
             s1_valid_q    <= 1'b0;
             s1_group_pc_q <= '0;
             s1_mask_q     <= '0;
@@ -290,6 +304,11 @@ module ifu
             s2_slot1_q  <= '0;
             s2_valid0_q <= 1'b0;
             s2_valid1_q <= 1'b0;
+        end else if (redirect_valid_i) begin
+            s2_slot0_q  <= '0;
+            s2_slot1_q  <= '0;
+            s2_valid0_q <= 1'b0;
+            s2_valid1_q <= 1'b0;
         end else begin
             s2_slot0_q  <= s2_slot0_d;
             s2_slot1_q  <= s2_slot1_d;
@@ -334,7 +353,10 @@ module ifu
             fetch_entry_o[lane] = '0;
         end
 
-        if (misalign_fire) begin
+        if (redirect_valid_i) begin
+            // Redirect is a correctness event: do not emit any stale IFU output
+            // in the same cycle we are clearing internal transient state.
+        end else if (misalign_fire) begin
             fetch_valid_o[0] = 1'b1;
             fetch_entry_o[0].valid = 1'b1;
             fetch_entry_o[0].pc = ftq_entry_i.start_pc;

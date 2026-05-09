@@ -41,6 +41,10 @@
   - 槽位保存 `group_pc`、`mask`、`ftq_idx`，以及 icache 返回后回填的 128-bit `data` 和 `fetch_access_fault`。
   - 最大深度 2，对应 icache 单流处理最多 1 个 s1 请求 + 1 个 replay 请求。
   - 弹出条件：头部数据完整（`data_valid=1`）且外部 fetch buffer 入队 ready。
+- IFU 现在已支持 redirect 驱动的最小精确清除：
+  - `redirect_valid_i=1` 当拍 suppress `ftq_ready_o` / `icache_valid_o` / `fetch_valid_o`；
+  - 上升沿清空 `current_block_q`、`block_valid_q`、S1 和 S2；
+  - 简化策略是不保留任何在飞 IFU 请求上下文，因此 redirect 前尚未落地的旧 request/response 都会被丢弃。
 - **S3**：组合直通，零状态。将 icache 返回的 128-bit 数据拆成 4×32-bit 指令。
   - 用 S2 头部槽位的 `mask` 标记每条指令的 `valid`。
   - 4 条指令的 PC 依次为 `group_pc + 0/4/8/12`。
@@ -52,6 +56,7 @@
 - 入队端接 IFU 的 `fetch_entry_t[4]` 和 lane valid，出队端提供 ready/valid fetch group。
 - 出队支持 partial group：只要队列非空即可向后端方向拉高 valid，不足的 lane 输出 `valid=0`。
 - 额外输出 `icache_req_allowed_o`，当前表示至少保留 8 个空位，用来提前阻塞 IFU 继续向 ICache 发新请求。
+- frontend 顶层现在把 `redirect_valid_i` 复用到 `flush_i` 路径，因此 redirect 当拍会清空 fetch buffer 中尚未被后端消费的 wrong-path entry。
 
 ### FTQ
 - `rtl/frontend/ftq.sv` 已改成 BPU 入队、IFU 消费的三指针骨架。
@@ -69,8 +74,8 @@
   - `alloc_tail_q` / `ifu_head_q` 回到 branch entry 的下一槽位；
   - `allocated_count_q` 收缩到保留窗口大小。
 - 当前未实现 release/commit 回收，所以 FTQ 最多接收 `FTQ_DEPTH` 个 block；但 redirect rewind 会把 wrong-path slot 重新变成可覆盖空间，避免 stale full-state。
-- 当前还未把 redirect 从 backend/frontend top 真正接到 FTQ，也未实现 IFU / fetch_buffer 级 flush；因此现在只有 FTQ 本地 repair 语义落地，完整 frontend redirect 闭环仍在后续 Task。
-- 不应把当前状态理解成“frontend 已支持完整 redirect 恢复”：现在仅有 BPU redirect reseed 和 FTQ 本地 repair/rewind，IFU/fetch_buffer/ICache 的精确清除仍未接通。
+- frontend 顶层现在已经把 redirect 真正接到 FTQ，并同步驱动 IFU、ICache 控制态和 fetch_buffer 清除。
+- 不应把当前状态理解成“frontend 已支持完整 redirect 恢复”：当前只实现 frontend 本地闭环；backend same-cycle recovery、跨模块统一 transport 和定向验证仍在后续 Task。
 
 ### Frontend Top
 - `rtl/frontend/frontend.sv` 已实例化并连接 `bpu`、`ftq`、`ifu`、`ICache` 和 `fetch_buffer`。
@@ -80,7 +85,13 @@
 - fetch buffer 出队口暂时直接作为 frontend 顶层输出：`fetch_valid_o` 表示本拍有 fetch group，`fetch_valid_mask_o` 由每个 `fetch_entry_t.valid` 生成。
 - ICache refill request/response 当前从 frontend 顶层透出，后续可接 L2、总线或测试内存模型。
 - ICache line 大小当前由 `o3_pkg::ICACHE_LINE_BYTES` 统一定义，frontend 实例化点不单独覆盖。
-- `flush_i` 当前只接到 ICache 和 fetch buffer；尚未驱动 BPU、FTQ 和 IFU 做 redirect/flush 精确清除。
+- frontend 顶层已新增 redirect 输入：`redirect_valid_i / redirect_ftq_idx_i / redirect_branch_pc_i / redirect_redirect_pc_i / redirect_actual_taken_i`。
+- redirect 会在顶层同时分发给：
+  - BPU：用 `redirect_redirect_pc_i` reseed `pred_pc_q`
+  - FTQ：做 block repair / younger invalidate / rewind
+  - IFU：清空 `current_block_q` / S1 / S2，丢弃旧在飞上下文
+  - ICache / fetch_buffer：复用 `flush_i || redirect_valid_i` 的控制态清除路径
+- 这里的 ICache flush 只清控制状态，不清 tag/data array 内容；redirect 不会主动丢 cache line 内容。
 
 ### Core Top Connection
 - `rtl/core/o3_core.sv` 已经实例化真实 frontend 和 backend。
@@ -93,11 +104,12 @@
 - frontend standalone 顶层仍只暴露 fetch buffer 出队口；真实 backend 连接位于 `rtl/core/o3_core.sv`。
 - BPU 只实现顺序 not-taken 生成和 redirect reseed，未实现真实分支预测、BTB、BHT、RAS。
 - FTQ 未实现 release/commit 回收；当前顺序前端若没有 redirect rewind 干预，最多分配 `FTQ_DEPTH` 个 fetch block 后会停止接收 BPU。
-- 未实现完整 redirect、异常恢复和跨模块精确清除；当前只实现了 FTQ 本地 redirect repair / rewind 语义和 BPU redirect reseed 能力。
+- 未实现 backend 驱动的完整 redirect transport、异常恢复和 same-cycle recovery；当前只实现 frontend 本地 redirect 闭环、FTQ repair/rewind 和 BPU redirect reseed。
 - `rtl/O3.sv` 和 `rtl/Tile.sv` 仍是占位顶层，未接入真实 IFU/FTQ/icache 链路。
 
 ### 当前测试
 - `sim/frontend/frontend_basic` 是当前前端固定 smoke/regression。
+- `sim/frontend/frontend_redirect_flush` 是 Task 4 的 redirect 定向回归，检查 redirect 后旧 IFU/fetch-buffer 状态不会再流到 frontend output，且 fetch 会从 `redirect_pc` 重新开始。
 - `sim/core_single_inst/single_addi` 是当前 core 级单指令 smoke，使用真实 frontend + backend，从 `reset_pc_i=0` 跑 `addi x1, x0, 1` 到 retire。
 - 运行命令：
 
