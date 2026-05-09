@@ -114,7 +114,14 @@ module frontend
         .ifu_valid_o   (ftq_ifu_valid),
         .ifu_ready_i   (ftq_ifu_ready),
         .ifu_entry_o   (ftq_ifu_entry),
-        .ifu_ftq_idx_o (ftq_ifu_idx)
+        .ifu_ftq_idx_o (ftq_ifu_idx),
+
+        // Redirect repair port — temporarily tied to 0 until backend connects
+        .redirect_valid_i       (1'b0),
+        .redirect_ftq_idx_i     ('0),
+        .redirect_branch_pc_i   ('0),
+        .redirect_redirect_pc_i ('0),
+        .redirect_actual_taken_i(1'b0)
 
         `ifdef O3_FRONTEND_DEBUG
         ,.dbg_ifu_fire_o        (dbg_ftq_ifu_fire_o)

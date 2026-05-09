@@ -158,14 +158,15 @@ module ftq
         end
     endfunction
 
-    // BPU enqueue
-    assign bpu_ready_o = (allocated_count_q < FTQ_DEPTH);
+    // BPU enqueue — suppressed during redirect
+    assign bpu_ready_o = (allocated_count_q < FTQ_DEPTH) && !redirect_valid_i;
     assign bpu_fire    = bpu_valid_i && bpu_ready_o;
 
-    // IFU consume
-    assign ifu_valid_o   = allocated_q[ifu_head_q]
+    // IFU consume — suppressed during redirect
+    assign ifu_valid_o = allocated_q[ifu_head_q]
                          && entries_q[ifu_head_q].valid
-                         && !consumed_q[ifu_head_q];
+                         && !consumed_q[ifu_head_q]
+                         && !redirect_valid_i;
     assign ifu_entry_o   = entries_q[ifu_head_q];
     assign ifu_ftq_idx_o = ifu_head_q;
     assign ifu_fire      = ifu_valid_o && ifu_ready_i;
