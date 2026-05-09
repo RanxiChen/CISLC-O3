@@ -117,10 +117,10 @@ FTQ 后续不按普通 FIFO 实现。普通 FIFO 在消费后会释放队头 ent
 3. IFU 消费后只标记 `consumed_q`，entry 继续保留。
 4. 后端分支执行、redirect 或调试逻辑仍可通过 `ftq_idx` 回查这个 entry。
 5. 当 commit 或其它安全回收机制确认该 entry 不再需要时，才由 `release_head_q` 真正释放槽位。
-6. flush 或 redirect 可以清掉错误路径上的 `entry.valid`，并修正相关指针。
+6. flush 或 redirect 可以清掉错误路径上的 entry，并修正相关指针。
 
 ## 当前阶段实现范围
-当前阶段实现 BPU 入队端和 IFU 消费端，保留 release 指针但不实现 release/commit 回收，不实现失效和 flush。
+当前阶段实现 BPU 入队端、IFU 消费端和 FTQ 本地 redirect repair/rewind；保留 release 指针但不实现 release/commit 回收。
 
 ### Reset 行为
 Reset 后 FTQ 为空，不再预置顺序 block：
@@ -192,6 +192,54 @@ FTQ 向 IFU 提供 ready/valid 风格接口：
 
 ### 当前未实现
 - 尚未实现 release 端。
-- 尚未实现按 `ftq_idx` 失效。
-- 尚未实现 flush 和 redirect。
+- 已实现 FTQ 本地 redirect repair：
+  - younger wrong-path entries 被清空并从当前窗口移除；
+  - branch entry 会被截断到 `branch_pc + 4`，并改写 `next_pc=redirect_pc`；
+  - `alloc_tail_q` / `ifu_head_q` 会回到 branch entry 的下一槽位；
+  - `allocated_count_q` 会收缩到保留窗口大小。
+- redirect rewind 只作用于 FTQ 当前窗口，不代表 commit-time release：
+  - `release_head_q` 不前进；
+  - older-than-branch 的已分配 entry 仍保留，供后续后端回查或未来 commit/release 使用。
+- 尚未实现 frontend 顶层的 redirect 接线、IFU flush 和 fetch buffer flush。
 - 尚未实现后端或 branch execute 的 FTQ 回查端口。
+
+## Redirect Repair / Rewind 语义
+
+### 输入字段
+- `redirect_valid_i`
+  - redirect repair 有效，优先级高于普通 enqueue / consume。
+- `redirect_ftq_idx_i`
+  - backend 指向 branch 所在的 FTQ entry。
+- `redirect_branch_pc_i`
+  - branch 指令的真实 PC。
+- `redirect_redirect_pc_i`
+  - branch 实际 taken 后应跳转到的 redirect 目标。
+- `redirect_actual_taken_i`
+  - 当前短期实现里只期待 taken mispredict 路径，但字段保留为显式方向信息。
+
+### Branch / Younger / Older 的处理规则
+- branch entry：
+  - 保留该 entry。
+  - `end_pc` 改成 `branch_pc + 4`。
+  - `next_pc` 改成 `redirect_pc`。
+  - `pred_taken/target_pc/fallthrough_pc` 同步改写到实际结果。
+- younger entries：
+  - 指 `redirect_ftq_idx_i` 之后、旧 `alloc_tail_q` 之前仍属于当前 allocated window 的槽位。
+  - 这些槽位会被清空 `entry/allocated/consumed`，立即从当前 FTQ window 中移除。
+- older entries：
+  - 完全保持不变。
+  - 既不改 entry 内容，也不改 allocated 状态。
+
+### Pointer / Count Policy
+- `alloc_tail_q`
+  - redirect 后回到 `next_ptr(redirect_ftq_idx_i)`。
+  - 这样后续 BPU block 会从 branch 后第一槽位重新覆盖旧 wrong-path window。
+- `ifu_head_q`
+  - redirect 后也回到 `next_ptr(redirect_ftq_idx_i)`。
+  - 目的不是重放 branch，而是保证 IFU 不会跳过 redirect 后重新分配到 branch 后槽位的新 block。
+- `allocated_count_q`
+  - 收缩为 `[release_head_q, next_ptr(redirect_ftq_idx_i))` 这段保留窗口的大小。
+  - 这样 FTQ 不会继续把已失效的 wrong-path slot 计入“已分配未 release”容量。
+- `release_head_q`
+  - redirect 时保持不变。
+  - commit-time release 仍是后续独立机制，不与 wrong-path rewind 混用。

@@ -62,8 +62,13 @@
   - `release_head_q`：后续 release/commit 回收位置，当前只 reset，不推进。
   - `allocated_count_q`：已分配但尚未 release 的 entry 数量。
 - IFU 消费只设置 `consumed_q[ifu_head_q]` 并推进 `ifu_head_q`，不清 entry、不释放容量。
-- 当前未实现 release/commit 回收，所以 FTQ 最多接收 `FTQ_DEPTH` 个 block；填满后 `bpu_ready_o=0`，BPU 停住。
-- 当前未实现 flush、redirect、invalidate 和后端/branch execute 回查端口。
+- FTQ 模块内部已经实现 redirect repair / rewind 语义：
+  - younger wrong-path entries 会被清空并从当前 window 移除；
+  - branch entry 会被截断到 `branch_pc + 4`，`next_pc` 改写成 `redirect_pc`；
+  - `alloc_tail_q` / `ifu_head_q` 回到 branch entry 的下一槽位；
+  - `allocated_count_q` 收缩到保留窗口大小。
+- 当前未实现 release/commit 回收，所以 FTQ 最多接收 `FTQ_DEPTH` 个 block；但 redirect rewind 会把 wrong-path slot 重新变成可覆盖空间，避免 stale full-state。
+- 当前还未把 redirect 从 backend/frontend top 真正接到 FTQ，也未实现 IFU / fetch_buffer 级 flush；因此现在只有 FTQ 本地 repair 语义落地，完整 frontend redirect 闭环仍在后续 Task。
 
 ### Frontend Top
 - `rtl/frontend/frontend.sv` 已实例化并连接 `bpu`、`ftq`、`ifu`、`ICache` 和 `fetch_buffer`。
@@ -85,8 +90,8 @@
 ### 尚未实现
 - frontend standalone 顶层仍只暴露 fetch buffer 出队口；真实 backend 连接位于 `rtl/core/o3_core.sv`。
 - BPU 只实现顺序 not-taken 生成和 redirect reseed，未实现真实分支预测、BTB、BHT、RAS。
-- FTQ 未实现 release/commit 回收；当前顺序前端最多分配 `FTQ_DEPTH` 个 fetch block 后会停止接收 BPU。
-- 未实现 redirect、异常恢复和跨模块精确清除。
+- FTQ 未实现 release/commit 回收；当前顺序前端若没有 redirect rewind 干预，最多分配 `FTQ_DEPTH` 个 fetch block 后会停止接收 BPU。
+- 未实现完整 redirect、异常恢复和跨模块精确清除；当前只实现了 FTQ 本地 redirect repair / rewind 语义和 BPU redirect reseed 能力。
 - `rtl/O3.sv` 和 `rtl/Tile.sv` 仍是占位顶层，未接入真实 IFU/FTQ/icache 链路。
 
 ### 当前测试
@@ -141,7 +146,8 @@ frontend
 ```
 
 - BPU 从 `reset_pc_i` 开始顺序生成 32B block，并在 FTQ backpressure 时冻结当前 PC。
-- FTQ 保存 BPU 生成的 block；因为当前没有 release，FTQ 满后停止接收新 block。
+- FTQ 保存 BPU 生成的 block；因为当前没有 release，正常顺序流在填满 `FTQ_DEPTH` 后会停止接收新 block。
+- 若未来接入 redirect，FTQ 本地 rewind 会把 branch 后的 wrong-path slots 重新变成可覆盖空间，但 older 保留 entry 仍留在窗口中等待后续 release 机制。
 - S0 每拍输出一个 group（`group_pc` + `mask`）。
 - S1 将 group 发给 icache。
 - S2 等 icache 返回 128-bit 数据，匹配请求上下文。
@@ -163,8 +169,8 @@ frontend
 
 ### FTQ（`rtl/frontend/ftq.sv`）
 - 职责：保存 fetch block 的预测边界和元信息。
-- 当前实现：BPU 入队端、IFU 消费端、三指针骨架和 allocated-count 满判断。
-- 当前未做：release/commit 回收、flush/redirect/invalidate、回查端口。
+- 当前实现：BPU 入队端、IFU 消费端、三指针骨架、allocated-count 满判断，以及 FTQ 本地 redirect repair / rewind。
+- 当前未做：release/commit 回收、frontend 顶层 redirect 接线、IFU/fetch_buffer flush、回查端口。
 
 ### BPU（`rtl/frontend/bpu.sv`）
 - 职责：生成前端预测 fetch block。
@@ -232,6 +238,12 @@ frontend
 - reset 时清空 FTQ，`alloc_tail_q/ifu_head_q/release_head_q/allocated_count_q` 全部归零。
 - 若 `bpu_valid_i && bpu_ready_o`，写 `entries_q[alloc_tail_q]`，置 `allocated_q=1`、`consumed_q=0`，推进 `alloc_tail_q`，`allocated_count_q += 1`。
 - 若 `ifu_valid_o && ifu_ready_i`，置 `consumed_q[ifu_head_q]=1`，推进 `ifu_head_q`。
+- 若 `redirect_valid_i=1`，优先于普通 enqueue/consume：
+  - 清空 branch 之后、旧 `alloc_tail_q` 之前的 younger wrong-path slots；
+  - 修复 branch entry 的 `end_pc/next_pc/pred_taken/target_pc/fallthrough_pc`；
+  - 将 `alloc_tail_q` / `ifu_head_q` 回到 branch entry 的下一槽位；
+  - 将 `allocated_count_q` 收缩为 redirect 后保留窗口大小；
+  - `release_head_q` 不变。
 - IFU 消费不释放容量，不减少 `allocated_count_q`。
 
 ### IFU S0 周期级行为

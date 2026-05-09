@@ -7,15 +7,14 @@
  * - 三指针骨架：alloc_tail_q / ifu_head_q / release_head_q
  * - allocated_count_q：已分配但尚未 release 的 entry 计数
  * - reset 后 FTQ 为空，运行时由 BPU 写入、IFU 消费
- * - Redirect repair 接口与 entry 级修复（Task 3A + 3B）
+ * - Redirect repair 接口、entry 级修复与 window rewind（Task 3A + 3B + 3C）
  *
  * 当前没有实现的内容：
  * - 不实现 release / commit 回收（release_head_q 只保留状态，不推进）
- * - 不实现 redirect 后的 pointer rewind（alloc_tail_q / ifu_head_q / allocated_count_q 调整）
  * - 不实现后端或 branch execute 的 FTQ 回查端口
  * - 不实现 BPU-to-IFU bypass（BPU 入队的 entry 下一拍才可见于 IFU）
  *
- * Redirect Repair 说明（Task 3A + 3B）：
+ * Redirect Repair 说明（Task 3A + 3B + 3C）：
  * - redirect repair 输入端口接收 backend 的 branch mispredict 信号
  * - redirect repair 是 correctness event，优先级高于普通 enqueue / consume
  * - 当 redirect_valid_i=1 时，FTQ 优先处理 redirect，暂停正常更新
@@ -23,7 +22,11 @@
  *   - younger entries（redirect_ftq_idx_i 之后、alloc_tail_q 之前的 allocated entries）被 invalidated
  *   - branch entry 被修复：end_pc = branch_pc + 4，next_pc = redirect_pc
  *   - older entries 保持不变
- * - Task 3C 将实现 pointer rewind（alloc_tail_q / ifu_head_q / allocated_count_q）
+ * - Task 3C 实现 window rewind：
+ *   - alloc_tail_q 回到 branch entry 的下一槽位，使未来 BPU block 覆盖旧 wrong-path window
+ *   - ifu_head_q 同步回到 branch entry 的下一槽位，避免跳过 redirect 后的新 block
+ *   - allocated_count_q 收缩到保留窗口大小
+ *   - younger wrong-path slots 清空 allocated/consumed 状态，但 release_head_q 不前进
  *
  * 后续扩展入口：
  * - release 逻辑会清 allocated_q / consumed_q / entry，推进 release_head_q，
@@ -50,6 +53,7 @@
  *   5) 若 redirect_valid_i=1：
  *      - invalidated younger entries（redirect_ftq_idx_i 之后的 allocated entries）
  *      - 修复 branch entry（end_pc, next_pc）
+ *      - rewind alloc_tail_q / ifu_head_q / allocated_count_q
  *      - bpu_fire 和 ifu_fire 被抑制
  * - 周期 N+1：
  *   看到更新后的指针；BPU 入队的 entry 此拍才可被 IFU 看到
@@ -151,6 +155,8 @@ module ftq
     // Internal fire signals
     logic bpu_fire;
     logic ifu_fire;
+    ftq_idx_t redirect_restart_idx;
+    logic [$clog2(FTQ_DEPTH+1)-1:0] redirect_retained_count;
 
     `ifdef O3_FRONTEND_DEBUG
     logic dbg_bpu_fire_q;
@@ -197,6 +203,22 @@ module ftq
         end
     endfunction
 
+    function automatic logic [$clog2(FTQ_DEPTH+1)-1:0] ptr_distance(
+        input ftq_idx_t older_idx,
+        input ftq_idx_t younger_exclusive_idx
+    );
+        begin
+        if (younger_exclusive_idx >= older_idx) begin
+            ptr_distance = $clog2(FTQ_DEPTH+1)'(younger_exclusive_idx - older_idx);
+        end else begin
+            ptr_distance = $clog2(FTQ_DEPTH+1)'(FTQ_DEPTH + younger_exclusive_idx - older_idx);
+        end
+        end
+    endfunction
+
+    assign redirect_restart_idx  = next_ptr(redirect_ftq_idx_i);
+    assign redirect_retained_count = ptr_distance(release_head_q, redirect_restart_idx);
+
     // BPU enqueue — suppressed during redirect
     assign bpu_ready_o = (allocated_count_q < FTQ_DEPTH) && !redirect_valid_i;
     assign bpu_fire    = bpu_valid_i && bpu_ready_o;
@@ -240,11 +262,11 @@ module ftq
             //   2. bpu_fire (normal enqueue)
             //   3. ifu_fire (normal consume)
             //
-            // Task 3B: redirect takes priority by suppressing bpu_fire and
+            // Task 3B/3C: redirect takes priority by suppressing bpu_fire and
             // ifu_fire when redirect is active, and performs entry-level repair:
             //   - invalidated younger entries (valid=0)
             //   - repairs branch entry (end_pc, next_pc)
-            // Task 3C will add pointer rewind (alloc_tail_q, ifu_head_q, allocated_count_q).
+            //   - rewinds alloc_tail_q / ifu_head_q / allocated_count_q
             // ============================================================
 
             // BPU enqueue — suppressed during redirect
@@ -268,33 +290,37 @@ module ftq
             //   2. Repair the branch entry itself (end_pc, next_pc)
             //   3. Older entries remain unchanged
             //
-            // Task 3C will handle pointer rewind (alloc_tail_q, ifu_head_q, allocated_count_q).
             if (redirect_valid_i) begin
                 // Step 1: Invalidate younger entries
                 // Iterate over all FTQ slots; those that are allocated, in the
                 // younger window (redirect_ftq_idx_i, alloc_tail_q), get invalidated.
                 for (int i = 0; i < FTQ_DEPTH; i++) begin
                     if (is_younger(ftq_idx_t'(i), redirect_ftq_idx_i, alloc_tail_q, allocated_q[i])) begin
-                        entries_q[i].valid <= 1'b0;
-                        // Note: allocated_q and consumed_q are NOT cleared here.
-                        // They remain set until Task 3C rewinds the pointers.
-                        // This is correctness repair, not capacity release.
+                        entries_q[i]      <= '0;
+                        allocated_q[i]    <= 1'b0;
+                        consumed_q[i]     <= 1'b0;
+                        // Wrong-path slots become immediately reusable by future BPU writes.
+                        // This is local window rewind, not commit-time release.
                     end
                 end
 
                 // Step 2: Repair the branch entry
                 // Truncate the block to end at branch_pc + 4,
                 // and redirect next_pc to the actual target.
-                entries_q[redirect_ftq_idx_i].end_pc   <= redirect_branch_pc_i + ftq_pc_t'(4);
-                entries_q[redirect_ftq_idx_i].next_pc   <= redirect_redirect_pc_i;
+                entries_q[redirect_ftq_idx_i].end_pc         <= redirect_branch_pc_i + ftq_pc_t'(4);
+                entries_q[redirect_ftq_idx_i].next_pc         <= redirect_redirect_pc_i;
                 // Update pred_taken to reflect actual outcome
-                entries_q[redirect_ftq_idx_i].pred_taken <= redirect_actual_taken_i;
+                entries_q[redirect_ftq_idx_i].pred_taken       <= redirect_actual_taken_i;
                 // Update target_pc for consistency
-                entries_q[redirect_ftq_idx_i].target_pc  <= redirect_redirect_pc_i;
+                entries_q[redirect_ftq_idx_i].target_pc        <= redirect_redirect_pc_i;
+                // Update fallthrough_pc: when taken, fallthrough is branch_pc + 4
+                entries_q[redirect_ftq_idx_i].fallthrough_pc   <= redirect_branch_pc_i + ftq_pc_t'(4);
 
-                // Task 3C TODO: rewind alloc_tail_q to next_ptr(redirect_ftq_idx_i)
-                // Task 3C TODO: adjust ifu_head_q if it points into invalidated region
-                // Task 3C TODO: recompute allocated_count_q
+                // Step 3: rewind the active FTQ window to the slot after the branch.
+                // Future BPU blocks overwrite the old wrong-path region from this slot.
+                alloc_tail_q      <= redirect_restart_idx;
+                ifu_head_q        <= redirect_restart_idx;
+                allocated_count_q <= redirect_retained_count;
             end
 
             // Release logic: not yet implemented.
