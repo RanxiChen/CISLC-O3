@@ -464,6 +464,38 @@
 - 当前虽然已经有专用仿真入口，但仍未建立完整验证闭环；现有 `backend_testharness` 只用于驱动后端最小 rename 数据流。
 - 当前不做完整代码检测闭环，统一留到后续数据流更完整后再补。
 
+## Branch Redirect Contract（第一版）
+
+本章节冻结第一版 branch mispredict redirect 的 packet 定义、职责边界与已知限制，供后续 Task 2+ 的 flush/recovery 实现使用。
+
+### Redirect Packet 字段定义
+backend 检测到 branch mispredict 后，通过 core 层向前端发送统一的 `branch_redirect_t`。字段与 `rtl/common/o3_pkg.sv` 保持一致：
+
+| 字段 | 宽度 | 语义 |
+|------|------|------|
+| `valid` | 1 | 本拍 redirect 是否有效 |
+| `ftq_idx` | `FTQ_INDEX_WIDTH` | 触发 redirect 的分支所在 FTQ entry 编号 |
+| `branch_pc` | `PC_WIDTH` | 该分支指令自身的 PC |
+| `redirect_pc` | `PC_WIDTH` | 分支实际目标地址（actual taken 时的跳转目标） |
+| `actual_taken` | 1 | 分支实际方向为 taken（当前版本固定为 1） |
+| `fallthrough_pc` | `PC_WIDTH` | 分支不跳转时的顺序下一条 PC |
+
+`fallthrough_pc` 当前未参与核心恢复逻辑，但保留在 packet 中供 FTQ 修复 younger window 时参考，也为后续支持 pred-taken / actual not-taken 场景预留字段。
+
+### 职责边界
+- **backend / branch execute unit**：负责检测 conditional branch 的方向 mispredict。当发现 pred=not-taken、actual=taken 时，在 branch 执行完成拍生成 valid redirect packet。
+- **o3_core**：负责把 backend 生成的 redirect 从后端传送到前端，不做任何解释或修改，只充当 transport。
+- **frontend**：负责消费 redirect，将其分发给内部 BPU、FTQ、IFU、Fetch Buffer 等子模块。
+- **FTQ**：收到 redirect 后，用 `ftq_idx` 定位该 branch 所在的 FTQ entry，将该 entry 及所有 younger entry（更高 `ftq_idx`，按 FTQ 循环语义）标记为无效，并视需要修复该 entry 的 `end_pc` / `fallthrough_pc`。
+- **BPU**：收到 redirect 后，用 `redirect_pc` 重新播种内部 `pred_pc_q`，从目标地址开始重新生成预测流。
+- **IFU / Fetch Buffer**：收到 redirect 后精确清除所有在飞请求和已缓冲 but not-yet-consumed 的 fetch entry，确保 redirect 之后的 fetch 从 `redirect_pc` 开始。
+
+### 当前限制（第一版）
+- **只支持 conditional branch**：当前 redirect 仅由 conditional branch（BEQ/BNE/BLT/BGE/BLTU/BGEU）触发。JAL/JALR/RET 等 unconditional control transfer 不在第一版范围内。
+- **只支持 pred not-taken / actual taken**：BPU 当前固定 `pred_taken=0`，因此唯一可能的 mispredict 场景是"预测不跳转、实际跳转"。pred taken / actual not-taken 的 redirect 路径不在第一版范围内。
+- **不处理 generalized exception / multi-cause rollback**：第一版 redirect 仅服务于 branch mispredict，不扩展为通用 exception / interrupt / trap 的 flush 与精确恢复机制。后续 Task 2+ 再在此基础上扩展。
+- **不做 backend 侧 checkpoint / map / ROB rollback**：第一版只要求 frontend 重新取指，不要求 backend 的 rename map、free list、ROB 做精确 rollback。backend 侧 flush 逻辑留到后续 Task。
+
 ## 后续扩展入口
 - 组内依赖处理：优先在 `backend` 的 lane 间旁路逻辑或 `rename_map_table` 前级仲裁逻辑中接入。
 - 提交与旧物理寄存器释放：在 `rename_map_table` 已输出的 `old_dst_preg` 基础上向 ROB / commit 级联。

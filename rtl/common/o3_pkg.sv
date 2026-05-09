@@ -85,6 +85,22 @@ package o3_pkg;
         BRANCH_OP_BGEU = 3'd5
     } branch_op_t;
 
+    // ========================================
+    // Branch Redirect Packet（第一版短期 contract）
+    // ========================================
+    // 由 backend branch execute unit 在检测到 mispredict 时生成，
+    // 经 o3_core transport 到 frontend，供 BPU/FTQ/IFU 做 redirect 恢复。
+    // 当前版本限制：仅 conditional branch，仅 pred not-taken + actual taken。
+    // 不扩展为 generalized exception / multi-cause rollback 的通用 flush 信号。
+    typedef struct packed {
+        logic                       valid;
+        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
+        logic [PC_WIDTH-1:0]        branch_pc;
+        logic [PC_WIDTH-1:0]        redirect_pc;
+        logic                       actual_taken;
+        logic [PC_WIDTH-1:0]        fallthrough_pc;
+    } branch_redirect_t;
+
 `ifdef ENABLE_RETIRE_INFO
     typedef enum logic [1:0] {
         RETIRE_UOP_OTHER  = 2'd0,
