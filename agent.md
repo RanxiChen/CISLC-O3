@@ -135,6 +135,40 @@ make test
 - 需要改的是 `agent.md`，还是 `doc/CISLC_O3.md`，还是两者都要改？
 - 是否已经读过相关 RTL，而不是只看文档就下结论？
 
+## 当前近期计划入口
+- 当前默认近期计划文件：
+  - `docs/superpowers/plans/2026-05-09-branch-mispredict-flush.md`
+- 当前配套分任务提示词文件：
+  - `docs/superpowers/plans/2026-05-09-agent-prompts.md`
+- 当用户只说“完成近期计划”时，默认指向上面这份计划。
+- 若后续出现新的近期计划，更新本节，把默认入口切换到新的计划文件。
+- 恢复上下文时建议顺序：
+  1. 读 `agent.md`
+  2. 打开本节指向的近期计划文件
+  3. 打开配套分任务提示词文件
+  4. 在计划文件中找到第一个未完成的步骤继续执行
+
+## 当前近期计划恢复摘要
+- 当前短期目标：实现 branch mispredict redirect/flush 的最小闭环，范围覆盖 frontend wrong-path flush、FTQ repair、BPU reseed，以及 backend same-cycle younger squash + checkpoint restore。
+- 当前关键实现约束：
+  - 只支持 `pred not-taken / actual taken` 的条件分支恢复路径。
+  - backend 恢复要求 **same-cycle**：branch resolve 当拍就要杀掉 younger side effects，并恢复 rename/free-list checkpoint。
+  - `rename_map_table.sv` 走整表 recover。
+  - `free_list.sv` 改成显式 `head/tail/count`，并提供 direct recover 端口。
+  - `rob.sv` 不做 checkpoint restore，只做 younger squash。
+  - backend 其余队列和流水寄存器优先在 `backend.sv` 顶层 kill valid / suppress side effects，而不是大面积扩散子模块接口。
+  - checkpoint table 固定 4 项，分配策略为“第一个空闲槽”，每个 rename group 最多一条新 branch checkpoint。
+- 当前固定验证要求：
+  - `sim/frontend/tests/frontend_basic.cpp`
+  - `sim/core_single_inst`
+  - `sim/core_three_alu/tests/three_alu_branch.cpp`
+  - redirect 定向测试
+- 若上下文丢失：
+  1. 先读 `agent.md`
+  2. 再读 `docs/superpowers/plans/2026-05-09-branch-mispredict-flush.md`
+  3. 再读 `docs/superpowers/plans/2026-05-09-agent-prompts.md`
+  4. 找到第一个未完成的 Task，并以提示词文档中的“可直接使用的最终提示词”为执行入口
+
 ## 修改后自检
 - 主文档是否仍然能作为代码索引使用？
 - agent 文档是否只保留规则，不重复堆叠实现细节？
