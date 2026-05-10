@@ -106,12 +106,26 @@
 - BPU 只实现顺序 not-taken 生成和 redirect reseed，未实现真实分支预测、BTB、BHT、RAS。
 - FTQ 未实现 release/commit 回收；当前顺序前端若没有 redirect rewind 干预，最多分配 `FTQ_DEPTH` 个 fetch block 后会停止接收 BPU。
 - 未实现通用异常恢复、multi-cause rollback、FTQ release/commit 回收；当前已实现 backend 驱动的最小 branch redirect transport、frontend 本地 flush/rewind，以及 backend same-cycle branch checkpoint recovery。
+- backend checkpoint 当前在分支被 rename 的当拍捕获 *周期开始前* 的 rename map 与 free list 状态，不包含同 rename group 内更老 lane 的同拍更新；当分支不在 lane 0 时，older same-cycle 写入的架构寄存器在 recovery 后会指向已经被 retire 释放的旧物理寄存器。`sim/core_three_alu/tests/three_alu_redirect.cpp` 的 retire 5 失配能稳定复现，跟进项见 `docs/superpowers/plans/2026-05-09-branch-mispredict-flush.md` 的 Findings From Task 6 Verification 一节。
 - `rtl/O3.sv` 和 `rtl/Tile.sv` 仍是占位顶层，未接入真实 IFU/FTQ/icache 链路。
 
 ### 当前测试
 - `sim/frontend/frontend_basic` 是当前前端固定 smoke/regression。
 - `sim/frontend/frontend_redirect_flush` 是 Task 4 的 redirect 定向回归，检查 redirect 后旧 IFU/fetch-buffer 状态不会再流到 frontend output，且 fetch 会从 `redirect_pc` 重新开始。
 - `sim/core_single_inst/single_addi` 是当前 core 级单指令 smoke，使用真实 frontend + backend，从 `reset_pc_i=0` 跑 `addi x1, x0, 1` 到 retire。
+- `sim/core_three_alu/tests/three_alu_redirect.cpp` 是 Task 6 的 core 级 redirect 定向回归。它用固定指令布局：
+  ```
+  0x00: addi x1, x0, 1
+  0x04: addi x2, x0, 1
+  0x08: add  x3, x1, x2
+  0x0c: bne  x3, x2, +16
+  0x10: ori  x4, x0, 9     # wrong path
+  0x14: xori x5, x0, 6     # wrong path
+  0x18: addi x6, x0, 7     # wrong path
+  0x1c: addi x7, x0, 11    # redirect target
+  0x20: add  x8, x7, x1    # redirect target
+  ```
+  逐拍观察 `retire_info_o`，要求顺序 retire `0x00/0x04/0x08/0x0c/0x1c/0x20`，且 `0x10/0x14/0x18` 永远不进入 retire。该测试稳定复现了 frontend 在 redirect 后从 `redirect_pc=0x1c` 重新取指的行为。
 - 运行命令：
 
 ```bash

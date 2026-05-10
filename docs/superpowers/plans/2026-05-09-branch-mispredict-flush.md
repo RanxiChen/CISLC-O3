@@ -483,7 +483,7 @@ git commit -m "feat: add backend branch recovery path"
 - Modify: `doc/CISLC_O3.md`
 - Optional: relevant testbench or sim files if redirect-focused checks are added
 
-- [ ] **Step 1: Re-run existing frontend regression**
+- [x] **Step 1: Re-run existing frontend regression**
 
 Run:
 
@@ -497,7 +497,9 @@ Expected:
 - existing fetch path still works
 - no regression in FTQ->IFU->ICache->fetch-buffer flow
 
-- [ ] **Step 2: Re-run core smoke**
+Result (2026-05-10): PASS — `frontend_basic` reports `ftq_ifu_fire_count=4 instructions_received=16` after the redirect plumbing.
+
+- [x] **Step 2: Re-run core smoke**
 
 Run:
 
@@ -510,13 +512,20 @@ Expected:
 - current single-instruction path still retires
 - no compile/interface break after redirect plumbing
 
-- [ ] **Step 3: Add at least one redirect-oriented check**
+Result (2026-05-10): PASS — `core_single_inst` retires `addi x1, x0, 1` at cycle 20 with `retired_inst_count=1`.
+
+- [x] **Step 3: Add at least one redirect-oriented check**
 
 Minimum acceptable first version:
 - a directed test or temporary checker that confirms a taken branch causes frontend restart from redirect PC and wrong-path fetch entries do not reach backend
 - re-run the existing `sim/core_three_alu/tests/three_alu_branch.cpp`-style branch retire metadata regression so the new recovery path does not silently break current branch retire observability
 
-- [ ] **Step 3a: Add the first directed redirect program image**
+Result (2026-05-10):
+- New directed redirect test added at `sim/core_three_alu/tests/three_alu_redirect.cpp`. It is independent from `three_alu_branch.cpp`, which keeps its existing 4-retire branch metadata regression role.
+- `three_alu_branch` regression: PASS (`retired_inst_count=4 cycles=27`).
+- `three_alu_redirect` regression: FAIL on the redirect-target retire (see Findings below).
+
+- [x] **Step 3a: Add the first directed redirect program image**
 
 Use this exact first-version instruction layout:
 
@@ -538,7 +547,7 @@ This branch must resolve as taken because:
 - `x3 = x1 + x2 = 2`
 - `bne x3, x2` therefore evaluates true
 
-- [ ] **Step 3b: Define the required retire stream**
+- [x] **Step 3b: Define the required retire stream**
 
 The checker must observe exactly this architecturally visible retirement sequence:
 
@@ -554,7 +563,23 @@ The checker must observe exactly this architecturally visible retirement sequenc
   - `0x14`
   - `0x18`
 
-- [ ] **Step 3c: Implement the simulation body using current `sim/core_three_alu` style**
+Result (2026-05-10): observed retire stream from `three_alu_redirect.cpp`:
+
+```
+[cycle=20] retire pc=0x0  rd=x1 rd_wdata=0x1 rob=0
+[cycle=20] retire pc=0x4  rd=x2 rd_wdata=0x1 rob=1
+[cycle=24] retire pc=0x8  rd=x3 rd_wdata=0x2 rob=2
+[cycle=27] retire pc=0xc  branch taken=1 mispredict=1 target=0x1c fallthrough=0x10 rob=3
+[cycle=47] retire pc=0x1c rd=x7 rd_wdata=0xb rob=4
+[cycle=51] retire pc=0x20 rd=x8 rd_wdata=0x0 rob=5  <-- expected 0xc, observed 0x0
+```
+
+- Wrong-path PCs (`0x10/0x14/0x18`) never appear in `retire_info_o`. ✓
+- Branch retire metadata matches plan. ✓
+- Redirect-target retires happen in order at `0x1c` and `0x20`. ✓
+- The `0x20` retire's architectural value is wrong (`x8=0` instead of `x8=12`); see Findings below.
+
+- [x] **Step 3c: Implement the simulation body using current `sim/core_three_alu` style**
 
 The first testbench implementation should:
 
@@ -583,7 +608,9 @@ The test body should be structured as:
 8. End the test successfully only after all required retires have been observed.
 9. Fail on timeout if the expected retire stream does not complete.
 
-- [ ] **Step 4: Update docs with exact current behavior**
+Result (2026-05-10): implemented in `sim/core_three_alu/tests/three_alu_redirect.cpp`. The test reuses the existing `Vo3_core` + refill-driver loop from `three_alu_branch.cpp`, accumulates retires across cycles (rather than expecting a single-cycle wide retire), and asserts the full ordered expected list including PC, instruction, uop_type, rd/rd_write_en, rd_wdata, and branch metadata. `instruction_id` is asserted equal to lane index for the four lane-0 group retires (rob 0..3) and only required to lie in a post-redirect fetch group (`> 5`) for retires 4 and 5, since the actual fetch_group_seq value depends on how many wrong-path groups passed through `fetch_fire` before the squash.
+
+- [x] **Step 4: Update docs with exact current behavior**
 
 After RTL lands, update:
 - redirect packet shape
@@ -592,7 +619,9 @@ After RTL lands, update:
 - IFU/fetch-buffer flush behavior
 - still-missing items
 
-- [ ] **Step 5: Mark progress in this plan file**
+Result (2026-05-10): updated `doc/CISLC_O3.md` and `doc/CISLC_O3_frontend.md` to reflect the actual implementation status, with explicit notes on the same-cycle backend recovery boundary and the still-missing items (in particular the in-group RAW dependency limitation that the redirect test exposes).
+
+- [x] **Step 5: Mark progress in this plan file**
 
 When resuming after context loss:
 - open `agent.md`
@@ -600,12 +629,38 @@ When resuming after context loss:
 - check which task and checkbox was last completed
 - continue from the next unchecked step
 
-- [ ] **Step 6: Commit**
+Result (2026-05-10): this section now records pass/fail, observed retire stream, and a Findings sub-section so a later agent can resume from the in-group dependency follow-up without re-running the test.
+
+- [x] **Step 6: Commit**
 
 ```bash
 git add doc/CISLC_O3_frontend.md doc/CISLC_O3.md docs/superpowers/plans/2026-05-09-branch-mispredict-flush.md
 git commit -m "docs: record branch redirect verification status"
 ```
+
+## Findings From Task 6 Verification (2026-05-10)
+
+The directed redirect test surfaced a same-cycle checkpoint correctness limitation in the Task 5 backend recovery path. This is **not** a flaw in redirect transport, FTQ repair, BPU reseed, or IFU/fetch-buffer flush — the test confirms those work end-to-end:
+
+- frontend re-fetches starting from `redirect_pc=0x1c` after the branch resolves taken
+- wrong-path PCs `0x10/0x14/0x18` never reach retire
+- the branch retire carries `taken=1 mispredict=1 target=0x1c fallthrough=0x10`
+
+The failure is a **redirect-target value bug** at retire 5 (`pc=0x20`, `add x8, x7, x1`). Backend trace shows the renamer producing `src1:p0 src2:p1` for `add x8, x7, x1` after recovery, even though the architecturally correct mapping is `x1 -> p32` (the preg holding the just-retired `addi x1, x0, 1` result) and `x7 -> <new preg>` (the preg holding the just-retired `addi x7, x0, 11` result).
+
+Two interacting issues:
+
+1. **Pre-rename checkpoint snapshot.** `backend.sv` captures `rename_map_current` (= `rename_map_table.current_map_o` = `map_table_q`) and `free_list_head/tail/count` at the cycle the branch is renamed. These values reflect *start of cycle*, not the post-rename state after older same-group lanes have updated the map and consumed pregs. When the branch sits in a non-zero rename lane (lane 3 in this test), older same-group `addi` instructions update `x1/x2/x3` in the same cycle. The checkpoint therefore stores the pre-update mapping (`x1 -> p1`), and on recovery `x1` is restored to `p1` — but `p1` was already released by the surviving older retire and a different preg (`p32`) holds the architectural value of `x1`.
+
+2. **Branch retire releases p0 to free list.** Branches set `rd_write_en=0`, so `old_dst_preg` for a branch ROB entry is `p0`. The retire path passes that through `filtered_retire_preg[port]` into `free_list.release_preg_i`, and `free_list.sv` writes `p0` into `queue_mem` at the post-recovery tail. A later allocation can hand `p0` to a real `rd`, which then silently drops its writeback because `physical_regfile` ignores writes to `p0`. In the test trace this is what gives `addi x7, x0, 11` `new:p0`.
+
+These are both Task 5 (backend recovery) issues, not Task 6 issues, so this plan does not modify RTL to repair them. Suggested follow-up scope:
+
+- Capture the checkpoint snapshot using the post-rename map (`map_table_next`-equivalent) and the post-allocation free-list `head/count`, restricted to lanes older-or-equal to the branch lane.
+- Filter `release_valid_i` in the retire path so a release with `release_preg_i == 0` (or with `rd_write_en=0` at allocate time) does not corrupt `queue_mem`.
+- Re-run `sim/core_three_alu/tests/three_alu_redirect.cpp` after the fix; the strict ordered retire-stream check is the regression criterion.
+
+The redirect test as committed is intentionally strict so the follow-up will be obvious to the next agent; the test's `[core_three_alu_redirect][assert] rd_wdata mismatch for retire 5` line names exactly which retire slot deviates and which field to look at.
 
 ## Recommended Execution Order
 
@@ -637,12 +692,13 @@ If a later agent loses context, resume with exactly this sequence:
 
 This short-term plan is complete when:
 
-- a taken conditional branch resolved in backend can redirect frontend
-- backend performs same-cycle younger squash and checkpoint restore for that branch
-- wrong-path frontend state is flushed
-- wrong-path backend state is flushed
-- BPU restarts from redirect PC
-- FTQ retains older history, truncates the branch block, and invalidates younger blocks
-- the directed branch test retires `0x00/0x04/0x08/0x0c/0x1c/0x20` and never retires `0x10/0x14/0x18`
-- existing smoke tests still pass
-- docs and this plan accurately show what is done and what remains future work
+- a taken conditional branch resolved in backend can redirect frontend ✓ (Task 5)
+- backend performs same-cycle younger squash and checkpoint restore for that branch ⚠ (works for the architectural state of the branch and its older instructions; same-cycle in-group RAW dependencies between older and the branch are not yet preserved across recovery — see Task 6 Findings)
+- wrong-path frontend state is flushed ✓ (Task 4)
+- wrong-path backend state is flushed ✓ (Task 5; verified by `three_alu_redirect.cpp` showing `0x10/0x14/0x18` never reach retire)
+- BPU restarts from redirect PC ✓ (Task 2)
+- FTQ retains older history, truncates the branch block, and invalidates younger blocks ✓ (Task 3B/3C)
+- the directed branch test retires `0x00/0x04/0x08/0x0c/0x1c/0x20` and never retires `0x10/0x14/0x18` ⚠ (correct PCs and order; `0x20` retires with wrong `rd_wdata` because of the same in-group RAW dependency limitation noted above)
+- existing smoke tests still pass ✓ (`frontend_basic`, `core_single_inst`, `three_alu_branch` all pass after Task 5)
+- docs and this plan accurately show what is done and what remains future work ✓ (Task 6 Findings + main docs updated 2026-05-10)
+
