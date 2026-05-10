@@ -32,6 +32,8 @@
   - checkpoint 保存 branch `rob_idx`、`branch_pc`、rename map 整表快照、free list `head/tail/count`；
   - branch resolve 且 `pred not-taken / actual taken` 时，backend 当拍恢复 rename map、free list，ROB 仅做 younger squash；
   - 同拍生成统一 `branch_redirect_t`，经 `o3_core` 送到 frontend。
+  - 当前已知限制：checkpoint 在分支被 rename 的当拍捕获 `rename_map_table.current_map_o` 与 `free_list.head_o/tail_o/count_o`，这些值反映**周期开始前**的状态，不包含同一个 rename group 内更老 lane 在本拍对 rename map 与 free list 的更新。当分支不在 rename group 的 lane 0 时，older 同拍 lane 写入的目的寄存器 mapping 在 recovery 后会被回退到周期开始前的旧 preg，而旧 preg 已经被 retire 释放回 free list。`sim/core_three_alu/tests/three_alu_redirect.cpp` 的 retire 5（`add x8, x7, x1`）用 `rd_wdata=0x0` 暴露了这个限制。详细复盘见 `docs/superpowers/plans/2026-05-09-branch-mispredict-flush.md` 的 Findings From Task 6 Verification 一节。
+  - 另一项已知问题：分支在 ROB 中 `old_dst_preg=p0`（`rd_write_en=0`），当前 retire 路径未对 `release_preg=p0` 做过滤，会把 `p0` 写回 `free_list.queue_mem`，后续分配可能把 `p0` 当作真实新目的寄存器。该问题在 `three_alu_branch.cpp` 中不会触发（分支退休后测试结束），但在 redirect 之后继续取指的场景下会出现。
 - `physical_regfile` 已接入 backend 主链路，当前支持整数 regread 和多路整数写回；其中 `p0` 固定为零物理寄存器，读恒为 0、写忽略。
 - `int_execute_unit` 已接入 backend 主链路，当前用于整数 R/I 算术指令执行。
 - `mul_execute_unit` 已新增，提供独立的 RV64M 乘法单元，当前采用“预计算结果 + 固定拍数返回”的简化骨架。
@@ -232,6 +234,16 @@
   - 后端 Verilator 仿真目录，包含 `main.cpp`、固定指令流 DPI-C 实现、本地说明文档，以及当前 backend 主链路所需的 Verilator 构建入口。
 - `sim/core_single_inst/`
   - core 级单指令仿真目录，用真实 frontend/backend 跑 `addi x1, x0, 1`，默认启用 `O3_SIM_SINGLE_INST_TRACE`。
+- `sim/core_three_alu/tests/three_alu.cpp`
+  - core 级 3-ALU 同拍退休回归，验证三条独立 RV64I 整形指令在同一拍 retire。
+- `sim/core_three_alu/tests/three_alu_branch.cpp`
+  - core 级 branch retire metadata 回归，验证分支 retire 时的 `branch_taken/branch_mispredict/branch_target_pc/branch_fallthrough_pc` 字段。
+- `sim/core_three_alu/tests/three_alu_redirect.cpp`
+  - core 级 redirect 定向回归，使用 `bne x3, x2, +16` taken-mispredict 触发 redirect，验证：
+    - wrong-path PCs `0x10/0x14/0x18` 永远不会出现在 `retire_info_o`
+    - 分支 retire 元数据与 plan 完全一致（taken=1, mispredict=1, target=0x1c, fallthrough=0x10）
+    - redirect-target PCs `0x1c/0x20` 顺序 retire 在 ROB 4/5
+  - 当前因 backend checkpoint 同拍捕获限制（见“当前已知限制”），retire 5 的 `rd_wdata` 会失配，作为 Task 5 in-group RAW 跟进项。
 
 ## 关键时序行为
 ### backend 周期级行为
@@ -471,6 +483,8 @@
 - 当前不要求任何测试代码。
 - 当前虽然已经有专用仿真入口，但仍未建立完整验证闭环；现有 `backend_testharness` 只用于驱动后端最小 rename 数据流。
 - 当前不做完整代码检测闭环，统一留到后续数据流更完整后再补。
+- 当前 branch checkpoint 在分支被 rename 的当拍捕获**周期开始前**的 rename map 与 free list 状态，不包含同 rename group 内更老 lane 的同拍更新；当分支不在 lane 0 时，recovery 后被 older same-group 指令改写的架构寄存器会指向已经被 retire 释放的旧物理寄存器。`sim/core_three_alu/tests/three_alu_redirect.cpp` 的 retire 5 失配能稳定复现这个问题，跟进项写在 `docs/superpowers/plans/2026-05-09-branch-mispredict-flush.md` 的 Findings From Task 6 Verification 一节。
+- 当前 retire 路径不会过滤 `release_preg == p0`：分支等 `rd_write_en=0` 的 ROB entry 在退休时会把 `p0` 写进 `free_list.queue_mem`，后续分配可能把 `p0` 当作真实新目的寄存器。`three_alu_branch.cpp` 在分支退休后即结束所以观察不到该现象；redirect 后继续取指的 `three_alu_redirect.cpp` 会触发。
 
 ## Branch Redirect Contract（第一版）
 
