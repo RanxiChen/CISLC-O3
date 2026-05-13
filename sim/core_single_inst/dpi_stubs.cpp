@@ -38,6 +38,9 @@ std::string disasm_rv64i(uint32_t inst) {
 }
 
 }  // namespace
+double sc_time_stamp() {
+    return 0.0;
+}
 
 extern "C" {
 

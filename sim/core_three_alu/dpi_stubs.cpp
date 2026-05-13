@@ -92,6 +92,10 @@ std::string disasm_rv64i(uint32_t inst) {
 
 }  // namespace
 
+double sc_time_stamp() {
+    return 0.0;
+}
+
 extern "C" {
 
 void dpi_log_frontend_transaction(uint64_t, uint32_t, uint8_t, uint8_t) {
