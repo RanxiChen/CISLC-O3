@@ -626,6 +626,7 @@ module backend
     always_comb begin
         for (int port = 0; port < RETIRE_WIDTH; port++) begin
             filtered_retire_valid[port] = rob_retire_valid[port]
+                                       && (rob_retire_old_dst_preg[port] != '0)
                                        && (!branch_squash_valid
                                         || rob_is_older_or_same(rob_retire_idx[port], branch_squash_rob_idx, rob_head));
             filtered_retire_preg[port]  = rob_retire_old_dst_preg[port];
@@ -863,6 +864,36 @@ module backend
         .fallthrough_pc_o(branch_exec_fallthrough_pc)
     );
 
+// ============================================================
+// Intermediate rename map state before each lane's rename.
+// Captures the map_table_next state after lanes 0..lane-1 apply
+// their updates, used by checkpoint allocation when a branch
+// is not at lane 0.  Without this, a checkpoint on lane 3 would
+// capture pre-rename mappings (map_table_q = rename_map_current)
+// and miss lanes 0-2's rename, corrupting recovery.
+// ============================================================
+logic [BACKEND_PREG_IDX_WIDTH-1:0] rename_map_before_lane [MACHINE_WIDTH][NUM_ARCH_REGS-1:0];
+logic [FREE_COUNT_WIDTH-1:0] alloc_req_count_before_lane [MACHINE_WIDTH];
+
+always_comb begin
+    for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
+        rename_map_before_lane[0][arch] = rename_map_current[arch];
+    end
+    alloc_req_count_before_lane[0] = '0;
+
+    for (int lane = 1; lane < MACHINE_WIDTH; lane++) begin
+        for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
+            rename_map_before_lane[lane][arch] = rename_map_before_lane[lane-1][arch];
+        end
+        alloc_req_count_before_lane[lane] = alloc_req_count_before_lane[lane-1];
+
+        if (alloc_req[lane-1]) begin
+            rename_map_before_lane[lane][rename_uop_head[lane-1].rd] = dst_new_preg[lane-1];
+            alloc_req_count_before_lane[lane] = alloc_req_count_before_lane[lane] + FREE_COUNT_WIDTH'(1);
+        end
+    end
+end
+
     always_ff @(posedge clk) begin
         if (rst) begin
             fetch_entry_q          <= '0;
@@ -933,15 +964,20 @@ module backend
                     if (rename_branch_req[lane]) begin
                         checkpoint_branch_rob_idx_q[checkpoint_alloc_id] <= rob_idx[lane];
                         checkpoint_branch_pc_q[checkpoint_alloc_id] <= rename_uop_head[lane].pc;
-                        checkpoint_free_head_q[checkpoint_alloc_id] <= free_list_head;
+                        // Save intermediate free list state reflecting alloc_req
+                        // consumption from lanes before this branch lane.
+                        checkpoint_free_head_q[checkpoint_alloc_id] <= FREE_PTR_WIDTH'((free_list_head + alloc_req_count_before_lane[lane]) % FREE_DEPTH);
                         checkpoint_free_tail_q[checkpoint_alloc_id] <= free_list_tail;
-                        checkpoint_free_count_q[checkpoint_alloc_id] <= free_list_count;
+                        checkpoint_free_count_q[checkpoint_alloc_id] <= free_list_count - alloc_req_count_before_lane[lane];
+                        // Save intermediate rename map state after older
+                        // lanes have applied their updates but before this
+                        // branch lane.
+                        for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
+                            checkpoint_rename_map_q[checkpoint_alloc_id][arch] <= rename_map_before_lane[lane][arch];
+                        end
                         rob_has_checkpoint_q[rob_idx[lane]] <= 1'b1;
                         rob_checkpoint_id_q[rob_idx[lane]] <= checkpoint_alloc_id;
                     end
-                end
-                for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
-                    checkpoint_rename_map_q[checkpoint_alloc_id][arch] <= rename_map_current[arch];
                 end
             end
 
