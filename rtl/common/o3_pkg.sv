@@ -61,7 +61,8 @@ package o3_pkg;
         IMM_TYPE_NONE = 3'b000,
         IMM_TYPE_I    = 3'b001,
         IMM_TYPE_B    = 3'b010,
-        IMM_TYPE_U    = 3'b011
+        IMM_TYPE_U    = 3'b011,
+        IMM_TYPE_J    = 3'b100
     } imm_type_t;
 
     typedef enum logic [1:0] {
@@ -89,7 +90,9 @@ package o3_pkg;
         BRANCH_OP_BLT  = 3'd2,
         BRANCH_OP_BGE  = 3'd3,
         BRANCH_OP_BLTU = 3'd4,
-        BRANCH_OP_BGEU = 3'd5
+        BRANCH_OP_BGEU = 3'd5,
+        BRANCH_OP_JAL  = 3'd6,
+        BRANCH_OP_JALR = 3'd7
     } branch_op_t;
 
     // ========================================
@@ -250,6 +253,8 @@ package o3_pkg;
         logic [IMM_RAW_WIDTH-1:0]  imm_raw;
         imm_type_t                 imm_type;
         branch_op_t                branch_op;
+        logic [PREG_IDX_WIDTH-1:0] dst_preg;
+        logic                      dst_write_en;
     } branch_issue_entry_t;
 
     // issue queue 选中后、进入具体 ALU 发射寄存器的 uop。
@@ -314,6 +319,24 @@ package o3_pkg;
 `ifdef O3_SIM
         logic [63:0]               kanata_id;
 `endif
+        logic [ROB_IDX_WIDTH-1:0]  rob_idx;
+        logic [PC_WIDTH-1:0]       pc;
+        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
+        logic [PC_WIDTH-1:0]       target_pc;
+        logic [PC_WIDTH-1:0]       fallthrough_pc;
+        logic                      taken;
+        logic                      mispredict;
+        logic [PREG_IDX_WIDTH-1:0] dst_preg;
+        logic                      dst_write_en;
+        logic [XLEN-1:0]           rd_wdata;
+    } branch_execute_result_t;
+
+    typedef struct packed {
+        logic                      valid;
+        logic [INST_ID_WIDTH-1:0]  instruction_id;
+`ifdef O3_SIM
+        logic [63:0]               kanata_id;
+`endif
         logic [PC_WIDTH-1:0]       pc;
         logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
         logic [PREG_IDX_WIDTH-1:0] src1_preg;
@@ -322,6 +345,8 @@ package o3_pkg;
         logic [IMM_RAW_WIDTH-1:0]  imm_raw;
         imm_type_t                 imm_type;
         branch_op_t                branch_op;
+        logic [PREG_IDX_WIDTH-1:0] dst_preg;
+        logic                      dst_write_en;
     } branch_issue_pipe_uop_t;
 
     typedef struct packed {
@@ -337,6 +362,8 @@ package o3_pkg;
         logic [XLEN-1:0]           imm_value;
         logic [ROB_IDX_WIDTH-1:0]  rob_idx;
         branch_op_t                branch_op;
+        logic [PREG_IDX_WIDTH-1:0] dst_preg;
+        logic                      dst_write_en;
     } branch_regread_pipe_uop_t;
 
 `ifdef ENABLE_RETIRE_INFO

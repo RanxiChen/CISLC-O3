@@ -13,12 +13,17 @@ module branch_execute_unit
     input  logic [XLEN-1:0]      src1_value_i,
     input  logic [XLEN-1:0]      src2_value_i,
     input  logic [XLEN-1:0]      imm_value_i,
+    input  logic [PREG_IDX_WIDTH-1:0] dst_preg_i,
+    input  logic                      dst_write_en_i,
 
     output logic                 valid_o,
     output logic                 taken_o,
     output logic                 mispredict_o,
     output logic [PC_WIDTH-1:0]  target_pc_o,
-    output logic [PC_WIDTH-1:0]  fallthrough_pc_o
+    output logic [PC_WIDTH-1:0]  fallthrough_pc_o,
+    output logic [PREG_IDX_WIDTH-1:0] dst_preg_o,
+    output logic                      dst_write_en_o,
+    output logic [XLEN-1:0]           rd_wdata_o
 );
 
     logic signed [XLEN-1:0] src1_signed;
@@ -29,7 +34,13 @@ module branch_execute_unit
     assign src1_signed = $signed(src1_value_i);
     assign src2_signed = $signed(src2_value_i);
     assign pc_xlen     = $signed(XLEN'(pc_i));
-    assign target_xlen = pc_xlen + $signed(imm_value_i);
+    always_comb begin
+        unique case (branch_op_i)
+            BRANCH_OP_JAL:  target_xlen = pc_xlen + $signed(imm_value_i);
+            BRANCH_OP_JALR: target_xlen = ($signed(src1_value_i) + $signed(imm_value_i)) & ~64'd1;
+            default:        target_xlen = pc_xlen + $signed(imm_value_i);
+        endcase
+    end
 
     always_comb begin
         taken_o = 1'b0;
@@ -41,6 +52,8 @@ module branch_execute_unit
             BRANCH_OP_BGE:  taken_o = (src1_signed >= src2_signed);
             BRANCH_OP_BLTU: taken_o = (src1_value_i < src2_value_i);
             BRANCH_OP_BGEU: taken_o = (src1_value_i >= src2_value_i);
+            BRANCH_OP_JAL:  taken_o = 1'b1;
+            BRANCH_OP_JALR: taken_o = 1'b1;
             default:        taken_o = 1'b0;
         endcase
     end
@@ -49,5 +62,9 @@ module branch_execute_unit
     assign mispredict_o     = valid_i && taken_o;
     assign target_pc_o      = PC_WIDTH'(target_xlen);
     assign fallthrough_pc_o = pc_i + PC_WIDTH'(4);
+
+    assign dst_preg_o      = dst_preg_i;
+    assign dst_write_en_o  = dst_write_en_i && (branch_op_i == BRANCH_OP_JAL || branch_op_i == BRANCH_OP_JALR);
+    assign rd_wdata_o      = pc_i + PC_WIDTH'(4);
 
 endmodule
