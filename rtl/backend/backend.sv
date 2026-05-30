@@ -292,6 +292,7 @@ module backend
             unique case (imm_type)
                 IMM_TYPE_I: imm_sext = XLEN'($signed({{(XLEN-12){imm_raw[11]}}, imm_raw[11:0]}));
                 IMM_TYPE_B: imm_sext = XLEN'($signed({{(XLEN-13){imm_raw[12]}}, imm_raw[12:0]}));
+                IMM_TYPE_U: imm_sext = XLEN'($signed({{(XLEN-32){imm_raw[19]}}, imm_raw[19:0], 12'b0}));
                 default:    imm_sext = '0;
             endcase
             expand_imm_value = imm_sext;
@@ -358,6 +359,7 @@ module backend
                 IMM_TYPE_NONE: imm_type_name = "NONE";
                 IMM_TYPE_I:    imm_type_name = "I";
                 IMM_TYPE_B:    imm_type_name = "B";
+                IMM_TYPE_U:    imm_type_name = "U";
                 default:       imm_type_name = "UNK";
             endcase
         end
@@ -422,6 +424,7 @@ module backend
             assign decoded_uop[i].is_int_uop     = decode_out[i].is_int_uop;
             assign decoded_uop[i].is_branch_uop  = decode_out[i].is_branch_uop;
             assign decoded_uop[i].illegal_uop    = decode_out[i].illegal_uop;
+            assign decoded_uop[i].src1_sel       = decode_out[i].src1_sel;
         end
     endgenerate
 
@@ -483,6 +486,8 @@ module backend
             assign issueq_enq_entry[i].imm_valid    = rename_uop_head[i].use_imm;
             assign issueq_enq_entry[i].imm_type     = rename_uop_head[i].imm_type;
             assign issueq_enq_entry[i].int_alu_op   = rename_uop_head[i].int_alu_op;
+            assign issueq_enq_entry[i].pc            = rename_uop_head[i].pc;
+            assign issueq_enq_entry[i].src1_sel      = rename_uop_head[i].src1_sel;
 
             assign branch_issueq_enq_entry[i].valid = rename_uop_head[i].valid
                                                     && rename_uop_head[i].is_branch_uop;
@@ -1521,12 +1526,18 @@ end
                 alu_regread_q[alu].rob_idx      <= alu_issue_q[alu].rob_idx;
                 alu_regread_q[alu].dst_preg     <= alu_issue_q[alu].dst_preg;
                 alu_regread_q[alu].dst_write_en <= alu_issue_q[alu].dst_write_en;
-                alu_regread_q[alu].src1_value   <= alu_issue_q[alu].src1_valid ? prf_rd_data[(2*alu)+0] : '0;
+                case (alu_issue_q[alu].src1_sel)
+                    SRC1_ZERO: alu_regread_q[alu].src1_value <= '0;
+                    SRC1_PC:   alu_regread_q[alu].src1_value <= XLEN'(alu_issue_q[alu].pc);
+                    default:   alu_regread_q[alu].src1_value <= alu_issue_q[alu].src1_valid ? prf_rd_data[(2*alu)+0] : '0;
+                endcase
                 alu_regread_q[alu].imm_value    <= alu_issue_q[alu].imm_valid
                                                  ? expand_imm_value(alu_issue_q[alu].imm_type, alu_issue_q[alu].imm_raw)
                                                  : '0;
                 alu_regread_q[alu].imm_valid    <= alu_issue_q[alu].imm_valid;
                 alu_regread_q[alu].int_alu_op   <= alu_issue_q[alu].int_alu_op;
+                alu_regread_q[alu].pc           <= alu_issue_q[alu].pc;
+                alu_regread_q[alu].src1_sel     <= alu_issue_q[alu].src1_sel;
                 if (alu_issue_q[alu].imm_valid) begin
                     alu_regread_q[alu].src2_value <= expand_imm_value(alu_issue_q[alu].imm_type, alu_issue_q[alu].imm_raw);
                 end else if (alu_issue_q[alu].src2_valid) begin
@@ -1553,6 +1564,8 @@ end
                 alu_issue_q[alu].imm_valid    <= issueq_issue_entry[alu].imm_valid;
                 alu_issue_q[alu].imm_type     <= issueq_issue_entry[alu].imm_type;
                 alu_issue_q[alu].int_alu_op   <= issueq_issue_entry[alu].int_alu_op;
+                alu_issue_q[alu].pc           <= issueq_issue_entry[alu].pc;
+                alu_issue_q[alu].src1_sel     <= issueq_issue_entry[alu].src1_sel;
             end
 
             branch_regread_q.valid          <= branch_issue_q.valid
