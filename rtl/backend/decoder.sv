@@ -71,6 +71,8 @@ module decoder
     localparam logic [6:0] OPCODE_BRANCH   = 7'b1100011;
     localparam logic [6:0] OPCODE_LUI      = 7'b0110111;
     localparam logic [6:0] OPCODE_AUIPC    = 7'b0010111;
+    localparam logic [6:0] OPCODE_JAL      = 7'b1101111;
+    localparam logic [6:0] OPCODE_JALR     = 7'b1100111;
 
     logic [6:0] opcode;
     logic [2:0] funct3;
@@ -224,6 +226,36 @@ module decoder
                 decode_o.src1_sel    = SRC1_PC;
                 decode_o.is_int_uop  = 1'b1;
                 decode_o.illegal_uop = 1'b0;
+            end
+
+            OPCODE_JAL: begin
+                decode_o.rs1_read_en   = 1'b0;
+                decode_o.rs2_read_en   = 1'b0;
+                decode_o.rd_write_en   = 1'b1;
+                decode_o.use_imm       = 1'b1;
+                decode_o.imm_type      = IMM_TYPE_J;
+                decode_o.imm_raw       = IMM_RAW_WIDTH'({
+                    decode_i.instruction[31],
+                    decode_i.instruction[19:12],
+                    decode_i.instruction[20],
+                    decode_i.instruction[30:21],
+                    1'b0
+                });
+                decode_o.branch_op     = BRANCH_OP_JAL;
+                decode_o.is_branch_uop = 1'b1;
+                decode_o.illegal_uop   = 1'b0;
+            end
+
+            OPCODE_JALR: begin
+                decode_o.rs1_read_en   = 1'b1;
+                decode_o.rs2_read_en   = 1'b0;
+                decode_o.rd_write_en   = 1'b1;
+                decode_o.use_imm       = 1'b1;
+                decode_o.imm_type      = IMM_TYPE_I;
+                decode_o.imm_raw       = IMM_RAW_WIDTH'(decode_i.instruction[31:20]);
+                decode_o.branch_op     = BRANCH_OP_JALR;
+                decode_o.is_branch_uop = 1'b1;
+                decode_o.illegal_uop   = 1'b0;
             end
 
             OPCODE_BRANCH: begin
