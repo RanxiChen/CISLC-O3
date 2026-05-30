@@ -57,11 +57,18 @@ package o3_pkg;
         logic [ILEN-1:0] instruction;  // 32位指令
     } decode_in_t;
 
-    typedef enum logic [1:0] {
-        IMM_TYPE_NONE = 2'b00,
-        IMM_TYPE_I    = 2'b01,
-        IMM_TYPE_B    = 2'b10
+    typedef enum logic [2:0] {
+        IMM_TYPE_NONE = 3'b000,
+        IMM_TYPE_I    = 3'b001,
+        IMM_TYPE_B    = 3'b010,
+        IMM_TYPE_U    = 3'b011
     } imm_type_t;
+
+    typedef enum logic [1:0] {
+        SRC1_REG  = 2'b00,   // 从 PRF 读数
+        SRC1_ZERO = 2'b01,   // 常数 0
+        SRC1_PC   = 2'b10    // PC（AUIPC）
+    } src1_sel_t;
 
     typedef enum logic [3:0] {
         INT_ALU_OP_ADD  = 4'd0,
@@ -133,6 +140,7 @@ package o3_pkg;
         logic                      is_int_uop;  // 当前是否纳入统一整数执行流
         logic                      is_branch_uop;
         logic                      illegal_uop;
+        src1_sel_t                 src1_sel;
     } decode_out_t;
 
     // 解码完成但尚未重命名的 uop。
@@ -161,6 +169,7 @@ package o3_pkg;
         logic                      is_int_uop;
         logic                      is_branch_uop;
         logic                      illegal_uop;
+        src1_sel_t                 src1_sel;
     } decoded_uop_t;
 
     // 已完成重命名和 ROB 分配的 uop。
@@ -221,6 +230,8 @@ package o3_pkg;
         logic                      imm_valid;
         imm_type_t                 imm_type;
         int_alu_op_t               int_alu_op;
+        logic [PC_WIDTH-1:0]       pc;
+        src1_sel_t                 src1_sel;
     } issue_queue_entry_t;
 
     typedef struct packed {
@@ -260,6 +271,8 @@ package o3_pkg;
         logic                      imm_valid;
         imm_type_t                 imm_type;
         int_alu_op_t               int_alu_op;
+        logic [PC_WIDTH-1:0]       pc;
+        src1_sel_t                 src1_sel;
     } int_issue_pipe_uop_t;
 
     // 完成物理寄存器读取和立即数扩展后、进入执行单元前的 uop。
@@ -278,6 +291,8 @@ package o3_pkg;
         logic [XLEN-1:0]           imm_value;
         logic                      imm_valid;
         int_alu_op_t               int_alu_op;
+        logic [PC_WIDTH-1:0]       pc;
+        src1_sel_t                 src1_sel;
     } int_regread_pipe_uop_t;
 
     // 整数执行单元输出后、等待后续接 wakeup / writeback / commit 的结果寄存器。
