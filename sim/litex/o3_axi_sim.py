@@ -36,8 +36,12 @@ with open(PLATFORM_CONFIG_PATH, encoding="utf-8") as platform_config_file:
 MAIN_RAM_REGION = next(
     region for region in PLATFORM_CONFIG["regions"] if region["name"] == "main_ram"
 )
+LITEX_MMIO_REGION = next(
+    region for region in PLATFORM_CONFIG["regions"] if region["name"] == "litex_mmio"
+)
 MAIN_RAM_ORIGIN = platform_int(MAIN_RAM_REGION["origin"])
 MAIN_RAM_SIZE = platform_int(MAIN_RAM_REGION["size"])
+LITEX_MMIO_ORIGIN = platform_int(LITEX_MMIO_REGION["origin"])
 ADDRESS_WIDTH = platform_int(PLATFORM_CONFIG["addressWidth"])
 
 
@@ -122,6 +126,8 @@ class SmokeCompletionMonitor(Module):
 
 
 class O3AXISimSoC(SoCMini):
+    mem_map = {"csr": LITEX_MMIO_ORIGIN}
+
     def __init__(self, ram_init, expected_initial_value, debug_axi=False,
                  axi_log_limit=64, timeout_cycles=1000):
         platform = Platform()
@@ -136,7 +142,9 @@ class O3AXISimSoC(SoCMini):
             bus_address_width=ADDRESS_WIDTH,
             bus_bursting=False,
             bus_interconnect="shared",
-            with_ctrl=False,
+            # Keep one small CSR slave so LiteX does not construct an empty CSR
+            # interconnect. The bridge is placed in the approved MMIO window.
+            with_ctrl=True,
         )
 
         memory_axi = axi.AXIInterface(
