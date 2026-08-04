@@ -183,6 +183,25 @@
 - 当前未做：不做商余融合、不做多请求并发、不做工业级迭代除法器结构。
 
 ## 代码索引
+
+### 独立访存框架（尚未接入 core）
+
+- `rtl/memory/axi_master.sv`
+  - 将简单的单请求/单响应接口转换为 AXI4 五通道。
+  - 当前只允许一个 outstanding、单 beat 访问；不实现 burst、乱序返回或原子操作。
+- `rtl/memory/axi_memory_smoke_top.sv`
+  - 仅用于 LiteX 仿真，依次验证初始化读取、写入和读回。
+  - 不属于 `o3_core`，未来 FPGA 顶层也不应使用这个 smoke driver。
+- `sim/litex/cislc_o3_axi_sim.py`
+  - 使用 LiteX AXI interconnect 和可初始化的虚拟 main RAM。
+  - 虚拟 main RAM 代替未来 DDR 区域，当前不接 LiteDRAM/DDR 控制器。
+  - 可选的 AXI monitor 只观察实际握手，不驱动总线，也不进入 FPGA 构建。
+- `config/cislc_o3_platform.json`
+  - 保存当前采用的 Rocket/Flow 风格地址布局；main RAM 位于 `0x80000000`。
+
+当前边界：这套访存框架只独立验证 AXI 和虚拟主存，尚未实现 LSU、DCache，
+也没有修改 backend 或 `o3_core` 的接口。
+
 - `rtl/backend/backend.sv`
   - 当前 rename 最小闭环的总装模块。
   - 串起 fetch-entry buffer、decoder、free_list、rename_map_table。
