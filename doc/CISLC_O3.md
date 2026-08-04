@@ -192,11 +192,11 @@
 - `rtl/memory/axi_memory_smoke_top.sv`
   - 仅用于 LiteX 仿真，依次验证初始化读取、写入和读回。
   - 不属于 `o3_core`，未来 FPGA 顶层也不应使用这个 smoke driver。
-- `sim/litex/cislc_o3_axi_sim.py`
+- `sim/litex/o3_axi_sim.py`
   - 使用 LiteX AXI interconnect 和可初始化的虚拟 main RAM。
   - 虚拟 main RAM 代替未来 DDR 区域，当前不接 LiteDRAM/DDR 控制器。
   - 可选的 AXI monitor 只观察实际握手，不驱动总线，也不进入 FPGA 构建。
-- `config/cislc_o3_platform.json`
+- `config/o3_platform.json`
   - 保存当前采用的 Rocket/Flow 风格地址布局；main RAM 位于 `0x80000000`。
 
 当前边界：这套访存框架只独立验证 AXI 和虚拟主存，尚未实现 LSU、DCache，

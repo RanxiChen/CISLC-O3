@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "platform": "cislc-o3-sim-v1",
+  "platform": "o3-sim-v1",
   "addressWidth": 32,
   "regions": [
     {"name": "clint", "origin": "0x02000000", "size": "0x00010000", "implemented": false},

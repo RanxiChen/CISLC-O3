@@ -18,7 +18,7 @@ from litex.soc.interconnect import axi
 
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-PLATFORM_CONFIG_PATH = os.path.join(REPO_ROOT, "config", "cislc_o3_platform.json")
+PLATFORM_CONFIG_PATH = os.path.join(REPO_ROOT, "config", "o3_platform.json")
 
 DATA_WIDTH = 64
 AXI_ID_WIDTH = 4
@@ -121,7 +121,7 @@ class SmokeCompletionMonitor(Module):
         ]
 
 
-class CislcO3AXISimSoC(SoCMini):
+class O3AXISimSoC(SoCMini):
     def __init__(self, ram_init, expected_initial_value, debug_axi=False,
                  axi_log_limit=64, timeout_cycles=1000):
         platform = Platform()
@@ -144,7 +144,7 @@ class CislcO3AXISimSoC(SoCMini):
             address_width=ADDRESS_WIDTH,
             id_width=AXI_ID_WIDTH,
         )
-        self.bus.add_master(name="cislc_o3_axi", master=memory_axi)
+        self.bus.add_master(name="o3_axi", master=memory_axi)
         self.add_ram(
             name="main_ram",
             origin=MAIN_RAM_ORIGIN,
@@ -263,7 +263,7 @@ def main():
         ram_init = [DEFAULT_INITIAL_VALUE, 0]
         expected_initial_value = DEFAULT_INITIAL_VALUE
 
-    soc = CislcO3AXISimSoC(
+    soc = O3AXISimSoC(
         ram_init=ram_init,
         expected_initial_value=expected_initial_value,
         debug_axi=args.debug_axi,
