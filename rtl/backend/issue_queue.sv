@@ -10,11 +10,12 @@
  * - 支持同拍选择多条 ready uop 发往多个 ALU
  * - 被发射的表项会在同拍从队列中删除，后续表项向前补位
  * - 对上游提供 ready/valid 风格背压
+ * - 每项携带branch mask；正确解析清bit，误预测时删除依赖目标分支的年轻项
  *
  * 当前没有实现的功能：
  * - 不做真实旁路广播网络；当前 wakeup 只观察 preg_ready_i，写回结果下一拍才对队列可见
  * - 不做年龄矩阵或更复杂的选择仲裁；当前严格按队列先后顺序选择
- * - 不做 flush / rollback / checkpoint 恢复
+ * - 不保存checkpoint快照，只执行branch mask kill合同
  * - 不做部分入队；同一拍要么整批整数 uop 全部进入，要么全部等待
  * - 当前阶段不附带测试代码和仿真代码，只先搭功能与注释
  *
@@ -35,15 +36,18 @@ module issue_queue
     import o3_pkg::*;
 #(
     parameter int MACHINE_WIDTH = 4,
-    parameter int ISSUE_WIDTH = 3,
+    parameter int ISSUE_WIDTH = 4,
     parameter int DEPTH = 16,
-    parameter int NUM_PHYS_REGS = 64
+    parameter int NUM_PHYS_REGS = 96
 ) (
     input  logic                                 clk,
     input  logic                                 rst,
     input  issue_queue_entry_t [MACHINE_WIDTH-1:0] enq_entry_i,
     input  logic                                 enq_valid_i,
     output logic                                 enq_ready_o,
+    input  logic                                 resolution_valid_i,
+    input  logic                                 resolution_mispredict_i,
+    input  branch_tag_t                          resolution_tag_i,
     input  logic                                 preg_ready_i [NUM_PHYS_REGS-1:0],
     output issue_queue_entry_t [ISSUE_WIDTH-1:0] issue_entry_o,
     output logic              [ISSUE_WIDTH-1:0]  issue_valid_o,
@@ -80,14 +84,22 @@ module issue_queue
             wakeup_entry_o[idx] = '0;
             wakeup_valid_o[idx] = 1'b0;
 
-            if (queue_q[idx].valid) begin
+            if (resolution_valid_i && queue_q[idx].valid) begin
+                if (resolution_mispredict_i && queue_q[idx].branch_mask[resolution_tag_i]) begin
+                    queue_wakeup[idx].valid = 1'b0;
+                end else begin
+                    queue_wakeup[idx].branch_mask[resolution_tag_i] = 1'b0;
+                end
+            end
+
+            if (queue_wakeup[idx].valid) begin
                 // 队列内只根据物理寄存器 ready table 逐源更新 ready 位。
                 // 本次不接写回旁路，因此新写回结果要到下一拍才会体现在 preg_ready_i 上。
-                if (queue_q[idx].src1_valid && !queue_q[idx].src1_ready && preg_ready_i[queue_q[idx].src1_preg]) begin
+                if (queue_wakeup[idx].src1_valid && !queue_wakeup[idx].src1_ready && preg_ready_i[queue_wakeup[idx].src1_preg]) begin
                     queue_wakeup[idx].src1_ready = 1'b1;
                 end
 
-                if (queue_q[idx].src2_valid && !queue_q[idx].src2_ready && preg_ready_i[queue_q[idx].src2_preg]) begin
+                if (queue_wakeup[idx].src2_valid && !queue_wakeup[idx].src2_ready && preg_ready_i[queue_wakeup[idx].src2_preg]) begin
                     queue_wakeup[idx].src2_ready = 1'b1;
                 end
 

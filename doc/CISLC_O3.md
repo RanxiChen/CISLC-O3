@@ -10,8 +10,8 @@
   3. 最后按 [`agent.md`](/home/chen/work/CISLC-O3/agent.md) 中的规则落修改。
 
 ## 当前实现状态
-- `backend` 已经具备一个最小 fetch-entry buffer，可以承接 frontend 输入；公共 `fetch_entry_t` 现在包含 lane 级 `valid`、`pc`、`instruction`、`fetch_addr_misaligned` 和 `fetch_access_fault`。
-- `backend` 已经把整数最小主链路拆成 `fetch/decode -> decoded uop queue -> rename/ROB alloc -> issue queue wakeup/select -> issue reg -> regread -> execute -> execute result reg -> writeback/ROB complete -> 3-wide retire/free-list release`。
+- `backend` 已经具备一组 Decode Input Register，可以承接 frontend 输入；公共 `fetch_entry_t` 包含 lane 级 `valid/pc/raw_instruction/instruction/inst_len/is_rvc` 和统一的 `exception_valid/exception_cause/exception_tval`。
+- 当前重构数据流已经推进到 `fetch/decode -> Decode Queue -> variable-prefix Rename -> Rename/Dispatch Queue -> variable-prefix Dispatch -> Integer/Memory/Branch IQ`；Integer IQ和Memory IQ已经分别闭环到ALU与LSU，Branch IQ仍冻结。
 - `backend` 在 `O3_SIM` 宏下已支持逐周期文本调试，按 cycle 把 `DECODE/RENAME/WAKEUP/ISSUE/REGREAD/EXECUTE/WRITEBACK/RETIRE` 各级组织成一个日志块输出。
 - `backend` 在 `O3_SIM_SINGLE_INST_TRACE` 宏下会关闭普通逐周期文本块，只追踪第一条进入 backend 的有效指令，从 `ACCEPT` 打到 `RETIRE`，并通过 `single_inst_retired_o` 给 core 单指令仿真提供结束条件。
 - `backend` / `o3_core` 在 `ENABLE_RETIRE_INFO` 宏下透出 `retire_info_o[BACKEND_NUM_INT_ALUS]`，每个 valid entry 描述一条已经从 ROB head 提交的指令；当前字段覆盖 `rob_idx/instruction_id/pc/instruction/rd/rd_write_en/rd_wdata`，用于仿真 monitor 和 C++ 断言。
@@ -19,16 +19,26 @@
 - `backend` 已新增内部 `instruction_id` 体系：每条被 backend 接收的指令都会分配一个 64 位调试编号，高位表示“第几批被接收的 fetch group”，低位表示“该批内的 lane 编号”；当前 core 集成默认 `MACHINE_WIDTH=4`，低 2 位表示 lane id。
 - 当前后端并行宽度命名统一使用 `machine width` / `MACHINE_WIDTH`，表示每周期并行处理的 lane 数。
 - 当前 core/backend 固定配置集中在 `rtl/common/o3_pkg.sv` 的 `CORE_FETCH_WIDTH` 与 `BACKEND_*` 参数中；当前版本 `CORE_FETCH_WIDTH=4`，`BACKEND_MACHINE_WIDTH=4`。
+- 物理寄存器默认配置为96项，编号宽度7位。复位时`p0~p31`承担初始架构映射、`p32~p95`空闲；后续被提交新映射覆盖的`p1~p31`也可进入Free List，只有`p0`永久保留。
 - `decoder` 已经能提取 `rs1/rs2/rd`，并对 RV64I 的整数 R/I 算术指令给出 `rs1_read_en/rs2_read_en/rd_write_en/use_imm/imm_type/imm_raw/int_alu_op/is_int_uop`。
 - `o3_pkg` 已新增统一的 `int_alu_op_t` 与 `imm_type_t`，用于对齐 `decoder` 和 `int_execute_unit`。
-- `uop_queue` 已新增，作为 decode 后、rename 前的成组缓冲。
-- `free_list` 已经支持“按本拍真实请求数”分配空闲物理寄存器。
-- `rename_map_table` 已新增，负责维护架构寄存器到当前物理寄存器的映射。
-- `backend` 已新增最小 `preg_ready` 表，用于跟踪每个物理寄存器是否已经持有可读值；当前写回结果在下一拍才对 issue queue 的 wakeup 可见。
-- `rob` 已新增，负责在 rename 阶段按真实有效 uop 数量分配最小 ROB entry 编号，存储 `instruction_id/exception/old_dst_preg/complete` 元信息，并支持从队头连续退休最多 3 条；在 `ENABLE_RETIRE_INFO` 下额外保存 ALU retire 观测所需的 `pc/instruction/rd/rd_write_en/rd_wdata`。
-- `issue_queue` 已新增，负责把 rename 完成后的整数 uop 按 lane 顺序压入单一整数 issue 队列，并基于 `preg_ready` 做真实 ready/wakeup、按年龄选择和压缩补位。
-- `physical_regfile` 已接入 backend 主链路，当前支持整数 regread 和多路整数写回；其中 `p0` 固定为零物理寄存器，读恒为 0、写忽略。
-- `int_execute_unit` 已接入 backend 主链路，当前用于整数 R/I 算术指令执行。
+- `uop_queue` 已重构为默认 16-entry 的单-uop 队列：4-wide 配置下采用 4 bank，压紧写入，并从队头展示最多 4 条最老 uop；原始 fetch/decode bundle 边界不进入队列语义。
+- `rename_stage` 已按lane0最老的顺序联合检查ROB、Free List、LQ、SQ、branch checkpoint和Rename/Dispatch Queue容量，每拍接受0～4条连续前缀；任一指令资源不足时停止该指令及所有年轻lane。
+- `free_list` 已改为96位物理寄存器空闲位图，并为每个未决分支维护allocation mask；误预测时一拍返还错误路径分配的preg。
+- `rename_map_table` 同时维护speculative map、committed map和每分支完整speculative map快照。
+- `rename_map_table` 已支持同一 packed rename bundle 内的顺序映射旁路：年轻 lane 的 `rs1/rs2` 会看到最近的年老 lane 刚分配的目的 preg，同批 WAW 的 `old_dst_preg` 也会指向最近的旧版本。
+- 后端已新增4槽branch checkpoint file、8-entry Load Queue、8-entry Store Queue和16-entry Rename/Dispatch Queue。
+- `branch_resolution_i` 是未来BRU驱动的正式后端接口；正确解析清除branch bit，误预测恢复Map/Free List/ROB/LQ/SQ、清空Decode侧并输出redirect。
+- `backend` 保留最小 `preg_ready` 表；三个IQ依据该表维护源ready，只有真正获得PRF写口的ALU/Load结果才写表并广播，下一拍参与Select。
+- 同批依赖的年轻 uop 在 IQ 入队时会强制把相应源标为 not-ready，不会误读 Free List 中该 preg 分配前的 ready 状态。
+- `rob`在Rename阶段按真实uop数分配entry，保存`instruction_id/exception/new/old preg/complete`等元信息，并支持从队头连续退休最多4条。
+- `dispatch_stage`按队头年龄计算0～4条连续前缀，并在前缀内部把uop并行分流到16-entry Integer IQ、8-entry Memory IQ和4-entry Branch IQ。
+- `backend_issue_queue`是三个IQ共用的存储与调度骨架：压紧入队、容量反压、源ready更新、最老ready候选和branch-mask恢复均已实现。
+- Integer与Memory IQ按ROB年龄共同竞争逻辑8个PRF读口，一条uop所需读口原子授权；Integer连接4个ALU，Memory连接单发射LSU，Branch IQ仍冻结。
+- 4个ALU结果与1个Load结果按ROB年龄竞争4个PRF写口；未获grant的结果留在各自结果寄存器并逐级反压，grant周期原子执行PRF写入、wakeup和ROB complete。
+- LSU已经连接AGU、LQ/SQ依赖查询、单个更老Store完整覆盖转发和64KiB内部Data SRAM；committed Store优先使用单SRAM请求口。
+- Store在AGU把地址/数据/mask写入SQ后complete，ROB顺序退休只把SQ entry变为committed，Data SRAM真正接受后才释放SQ容量。
+- RV64I `OP-IMM`计算指令与R型共用该整数闭环：IQ只等待`rs1`，RegRead分别保存`src1`和符号扩展立即数，ALU由`use_imm`显式选择第二操作数。
 - `mul_execute_unit` 已新增，提供独立的 RV64M 乘法单元，当前采用“预计算结果 + 固定拍数返回”的简化骨架。
 - `div_execute_unit` 已新增，提供独立的 RV64M 除法/取余单元，当前采用“预计算结果 + 固定拍数返回”的简化骨架。
 - `backend_testharness` 已更新为当前后端主链路对应的 Verilator 仿真入口；当前通过 DPI-C 伪造 6-lane 虚拟前端，从 `pc=0` 开始按组向 backend 提供固定的 RV64I 整形运算指令，并在最后一组 fetch 被接收后继续保留固定排空窗口，便于观察 `decode/rename/issue/regread/execute` 多拍日志。
@@ -36,10 +46,10 @@
 - `sim/core_single_inst` 是 core 级单指令 smoke test：用真实 frontend 发起 ICache refill，用测试内存返回 `addi x1, x0, 1`，默认打开 `ENABLE_RETIRE_INFO`，在 C++ 中采样 `retire_info_o` 并断言该指令提交时写 `x1=1`。
 
 ## 当前后端数据流
-- 当前数据流是：`frontend -> fetch_entry buffer -> decoder -> decoded uop queue -> free_list + rename_map_table + rob -> integer issue queue -> ALU issue reg -> regread -> execute -> execute result reg -> physical regfile writeback + ROB complete -> ROB retire + free_list release`
+- 当前数据流是：`frontend -> Decode Input Register -> decoder -> 16-entry Decode Queue -> prefix Rename planner -> Map + Free List + ROB + checkpoint + LQ/SQ原子分配 -> 16-entry Rename/Dispatch Queue -> prefix Dispatch planner -> Integer/Memory/Branch IQ`。
 - `backend` 在 `fetch_fire` 时为整组指令生成 `instruction_id`，随后该编号随 `decoded_uop -> rename_uop -> issue_queue_entry -> ALU 流水寄存器` 一路传递，供 `O3_SIM` 和后续调试使用。
-- `fetch_entry_t.valid` 决定该 lane 是否形成真实 decoded uop；前端取指异常当前用 `fetch_addr_misaligned || fetch_access_fault` 合成为后端内部 `exception`。
-- `decoder` 先产生最小 decoded uop 语义。
+- `fetch_entry_t.valid` 决定该 lane 是否形成真实 decoded uop；前端异常元数据原样进入 decoded uop，Decoder 未识别的编码形成 illegal-instruction 异常。
+- `decoder` 并行产生最多 `MACHINE_WIDTH` 条最小 decoded uop 语义；异常 uop 保留顺序和异常元数据，但关闭寄存器与整数执行副作用。
 - `backend` 基于队头 uop 的 `rd_write_en && rd != 0` 生成 `alloc_req`。
 - `backend` 基于队头 uop 的 `valid` 生成 `rob_req`，并把 uop 中的 `exception` 一起送入 ROB。
 - `backend` 固定采用 `x0 -> p0` 的零寄存器语义；`rd==0` 的指令不会申请新物理寄存器，也不会形成真实目的写回。
@@ -47,12 +57,13 @@
 - `rename_map_table` 组合读出 `src1_preg/src2_preg/old_dst_preg`，并在 `rename_fire` 时更新 `rd` 的映射。
 - `rob` 按 lane 顺序给真正有效的 uop 分配 ROB entry 编号，并在分配成功的同拍写入 `exception/old_dst_preg`，在写回时更新 `complete` 位。
 - 在 `ENABLE_RETIRE_INFO` 下，ROB allocate 同拍还会记录 `pc/instruction/rd/rd_write_en`；ALU writeback complete 同拍按 `rob_idx` 记录 `rd_wdata`；retire 组合口从 ROB head 输出对应 `retire_info_o`。
-- rename 完成后的整数 uop 当前会直接进入一个单一 `issue_queue`。
-- `issue_queue` 当前根据 `preg_ready` 判断源操作数是否真的 ready；本拍写回结果要到下一拍才会体现在 wakeup 上。
-- 被选中的整数 uop 会进入 3 路 ALU 流水寄存器，随后完成 regread、立即数扩展和 execute。
-- `alu_result_q` 中保存的执行结果会在下一拍作为统一整数 writeback 源，驱动 physical regfile 写回和 ROB complete。
-- `rob` 当前会从队头连续退休最多 3 条已经 complete 且无异常的指令，并把 `old_dst_preg` 返还给 free list。
-- 当前还没有异常恢复、store 提交和更复杂的 commit/flush 链路。
+- rename结果先进入独立Rename/Dispatch Queue；Dispatch根据三个IQ空位接受最大队头连续前缀，并在该前缀内部按类型分流。
+- 三个IQ根据`preg_ready`和四路Writeback广播维护源状态；Integer/Memory ready候选进入共享8读口仲裁，Branch IQ不出队。
+- `alu_result_q`与`load_result_q`是可保持的写回源；共享仲裁每拍选择最多4个最老结果写PRF并complete ROB。
+- Load经AGU后检查更老SQ entry：未知或部分重叠时等待，完整覆盖时从最年轻匹配Store转发，否则请求Data SRAM；LQ generation tag丢弃flush或复用后的迟到响应。
+- Store退休时不会释放SQ；SQ队头最老committed Store写入Data SRAM并握手后才释放。
+- `rob`从队头连续退休最多4条已经complete且无异常的指令，并提交映射、返还`old_dst_preg`。
+- 当前已有后端分支误预测恢复合同，但没有真实BRU产生`branch_resolution_i`，也没有连接Frontend redirect；精确异常恢复和Store写Cache仍未实现。
 
 ## 当前核心集成状态
 - `rtl/core/o3_core.sv` 是当前真实 frontend + backend 的 core 级连接入口。
@@ -67,14 +78,14 @@
 ## 模块说明
 ### backend
 - 职责：承接 frontend 指令组，驱动 decode queue 与基础 rename 流程。
-- 当前实现：fetch buffer + 解码 + decoded uop queue + 物理寄存器分配请求 + rename map 更新 + 最小 ROB 分配/存储/complete/retire + preg ready 跟踪 + rename 后整数 uop 入 issue queue + issue/select + regread + execute + result reg + writeback + free-list release。
+- 当前实现：Decode Input Register + Decode Queue + 可变前缀Rename + Map/Free List/checkpoint/ROB/LQ/SQ原子分配 + Rename/Dispatch Queue + 三路Dispatch/IQ；Integer闭合到4路ALU，Memory闭合到单发射LSU、内部Data SRAM和4-wide Commit。
 - 调试能力：
   - 当只定义 `O3_SIM` 时，backend 按周期块输出 `DECODE/RENAME/WAKEUP/ISSUE/REGREAD/EXECUTE/WRITEBACK/RETIRE/RETIRE_COUNT`；其中 `RENAME` 行可通过 DPI-C 调用 RV64I 反汇编 helper 显示汇编字符串。
   - 当定义 `O3_SIM_KANATA` 时，backend 输出 Kanata 格式文件。
   - 当定义 `O3_SIM_SINGLE_INST_TRACE` 时，backend 不输出普通整周期文本块，只追踪第一条进入 backend 的有效指令，并在目标指令退休后拉高 `single_inst_retired_o`。
   - 当定义 `ENABLE_RETIRE_INFO` 时，backend 输出 retire-time observation record，供外部 testbench/scoreboard 判断 commit 指令的架构效果。
 - 宽度语义：使用 `MACHINE_WIDTH` 表示每周期并行进入 rename 数据流的 lane 数。
-- 当前未做：同拍写回旁路广播、异常/分支恢复、store 提交，以及非整数 issue/dispatch 数据流。
+- 当前未做：真实BRU、Frontend redirect连接、精确异常恢复、Cache/MMU/PMA、Load replay、内存访问异常和完整内存序模型。
 
 ### o3_core
 - 职责：作为当前 core 级最小集成入口，实例化真实 frontend 和真实 backend。
@@ -104,13 +115,18 @@
 - 当前各类指令解码结果：
   - R-type 算术：读 `rs1/rs2`、写 `rd`，`use_imm=0`，`imm_type=IMM_TYPE_NONE`
   - I-type 算术：读 `rs1`、写 `rd`，`use_imm=1`，`imm_type=IMM_TYPE_I`，`imm_raw=instruction[31:20]`
+  - RV64移位立即数使用6位`shamt[5:0]`；`SLLI/SRLI/SRAI`合法性检查`instruction[31:26]`，允许移位量32～63
+  - Load/Store：生成寄存器副作用、立即数、LQ/SQ分类、访问宽度和Load signed/unsigned语义
+  - Branch/JAL/JALR：生成Rename/checkpoint所需分类
   - 其它 opcode 或未识别的 `funct3/funct7`：保守输出全 0，不触发 rename 侧寄存器分配
-- 当前未做：branch/load/store/jump/system 的完整控制语义、RV64I word 指令、更细的功能单元类型、CSR 详细行为、trap 语义。
+- 当前未做：Branch/Jump执行控制、system/fence、RV64I word指令、CSR和trap执行语义。
 
 ### uop_queue
-- 职责：作为 decode 后、rename 前的成组 uop 缓冲。
-- 当前实现：按 `MACHINE_WIDTH` 整组入队/出队，支持对 decode 和 rename 两侧背压。
-- 当前未做：不做 lane 级部分推进、不做 wakeup/select、不做 flush 恢复。
+- 职责：作为 decode 后、rename 前按单条 uop 计数的顺序缓冲，消除不同输入批次留下的容量碎片。
+- 当前实现：默认深度为 16 entries；存储按 `MACHINE_WIDTH` 个 bank 组织。每拍接收一个已经压紧的有效前缀，并从队头展示最多 `MACHINE_WIDTH` 条最老 uop。
+- 出队合同：`deq_count_o` 表示当前展示条数，Rename用`deq_accept_count_i`回报本拍真正原子获得全部资源的最老前缀长度0～4。
+- 背压合同：只有当前空位可容纳本拍全部 Decode 输出时才允许入队，不借用同拍即将出队的空间，因此 Rename 的资源判断不会形成直达 Decode 的组合路径。
+- 当前未做：不计算Rename资源、不做指令融合或wakeup/select；mispredict时只按合同整体清空。
 
 ### free_list
 - 职责：维护空闲物理寄存器池，为 rename 提供新物理寄存器。
@@ -119,8 +135,7 @@
   - `x0~x31 -> p0~p31`
   - `p0` 固定作为零物理寄存器，不从 free list 重新分配
   - 空闲池从 `p32` 开始
-- 当前实现补充：支持在 retire 阶段把最多 3 个 `old_dst_preg` 追加回 free list 队尾；这些释放结果从下一拍起参与分配。
-- 当前未做：checkpoint、rollback、flush 恢复。
+- 当前实现补充：使用空闲位图做最多4路优先分配；commit释放旧preg；每个branch tag保存96位allocation mask，mispredict时一拍合并返还。
 
 ### rename_map_table
 - 职责：维护架构寄存器到当前物理寄存器的映射。
@@ -128,44 +143,53 @@
 - reset 约定：
   - `x0~x31 -> p0~p31`
   - 其中 `x0` 固定视为 `p0`
-- 当前未做：commit map、checkpoint map、lane 间依赖和覆盖处理。
+- 当前实现：speculative map服务Rename，committed map随ROB退休更新；每个分支保存完整32×7位Map快照并支持一拍恢复。
+
+### rename_stage / branch_checkpoint_file
+- `rename_stage`是无状态前缀规划器，从最老lane开始累计资源消耗，输出0～4条接受前缀及完整`renamed_uop_t`。
+- 每条指令必须同时取得它需要的ROB、preg、LQ/SQ、checkpoint和Rename/Dispatch Queue位置；不存在部分分配。
+- `branch_checkpoint_file`管理4个branch tag、当前active branch mask以及每个分支的ROB/LQ/SQ恢复tail。
+- 分支自己的uop不携带自己的branch bit；同拍更年轻lane立即携带该bit。
+
+### load_queue / store_queue
+- 当前默认各8项，在Rename阶段按真实Load/Store数量分配索引并保存ROB年龄和branch mask。
+- LQ保存AGU地址和outstanding状态，每次复用翻转generation；Load响应只有tag仍匹配有效entry时才可进入写回，ROB退休时释放最老Load。
+- SQ保存地址、数据、byte mask和committed状态；ROB退休不释放Store，只置committed，队头Store被Data SRAM接受后才释放。
+- Load查询全部更老Store；支持从单个最年轻完整覆盖Store转发，未知地址/数据或部分重叠保守阻塞。
+- mispredict按branch mask删除未提交年轻entry并恢复checkpoint tail；committed Store不可被flush。
+
+### rename_dispatch_queue
+- 默认16项，按单条renamed uop压紧存储，隔离Rename和后续Dispatch背压。
+- 正确分支解析清除branch bit；误预测删除所有携带目标bit的年轻uop。
+- 入队宽度和出队Dispatch宽度独立参数化；当前分别为4和4。
+
+### dispatch_stage / backend_issue_queue
+- `dispatch_stage`只接受RDQ队头0～4条最大连续前缀，不允许年轻uop绕过被阻塞的老uop。
+- 接受前缀内部按`is_int_uop`、`is_load/is_store`、`is_branch/is_jal/is_jalr`分别进入Integer、Memory和Branch IQ。
+- 任一lane所需目标IQ无空位时，该lane及全部年轻lane留在RDQ；已经Dispatch的更老前缀同拍从RDQ删除。
+- 三个`backend_issue_queue`保存完整renamed uop，分别维护容量、源ready、最老ready候选和分支恢复。
+- Integer IQ最多提供4个候选，Memory IQ提供1个候选；全局按ROB年龄和8个PRF读口做原子grant，未获读口或FU槽位的候选留在IQ。Branch IQ的`issue_ready=0`。
 
 ### rob
 - 职责：在 rename 阶段为真实有效的 uop 分配 ROB entry 编号，并存储最小提交前元信息。
-- 当前实现：按 lane 顺序给出连续编号；当前 ROB 表项写入 `instruction_id`、`exception`、`old_dst_preg`，并在整数写回时按 `rob_idx` 标记 `complete`；同时从队头连续退休最多 3 条已经 complete 且无异常的指令。
+- 当前实现：按lane顺序给出连续编号；ALU/Load写回与Store AGU按`rob_idx`标记`complete`；从队头连续退休最多4条已经complete且无异常的指令。
 - `ENABLE_RETIRE_INFO` 调试路径：allocate 时额外保存 `pc/instruction/rd/rd_write_en`，ALU complete 时保存 `rd_wdata`，retire 时输出 `retire_info_o`。
-- 当前未做：store/branch/异常恢复约束下的完整 commit、flush/rollback，以及 CSR、内存访问、异常 cause 等更完整的 ROB 元信息。
+- 当前未做：branch/异常恢复约束下的完整commit，以及CSR、访存异常cause等更完整ROB元信息。
 
-### issue_queue
-- 职责：作为 rename 后、整数执行前的单一 issue 队列骨架。
-- 当前实现：
-  - 每个表项保存 1 条 rename 完成后的整数 uop。
-  - 支持一拍从多个 lane 原子入队到同一个队列。
-  - 同拍多个 lane 入队时，按 `lane0 -> lane1 -> ...` 的顺序压紧写入，保持组内隐式程序顺序。
-  - 当前对“上一拍已经在队列中的有效表项”按 `preg_ready` 做真实唤醒。
-  - 当前按队列从前往后扫描，把最靠前的 ready 表项优先分配给编号更小的 ALU。
-  - 被发射表项会在同拍从队列删除，后续表项向前补位，始终保持压缩式队列。
-- 当前表项字段：
-  - `valid`
-  - `instruction_id`
-  - `src1_preg/src2_preg`
-  - `src1_valid/src2_valid`
-  - `src1_ready/src2_ready`
-  - `rob_idx`
-  - `dst_preg/dst_write_en`
-  - `imm_raw/imm_valid/imm_type`
-  - `int_alu_op`
-- 当前 ready 位策略：
-  - `backend` 当前已经维护最小物理寄存器 ready table。
-  - rename 入队时：不需要读取的源操作数视为 ready；立即数形式的第二操作数视为 ready；`x0/p0` 源固定视为 ready；真正依赖寄存器结果的源操作数根据当前 `preg_ready` 初始化。
-  - 进入 queue 以后，每拍只根据 `preg_ready` 更新旧表项；本拍写回结果下一拍才可见，不做同拍旁路。
-- 当前未做：同拍广播旁路、flush/rollback 恢复、跨功能单元的更复杂选择仲裁。
+### legacy issue_queue
+- 旧`issue_queue.sv`仍保留在仓库中供后续迁移参考，但backend当前不再实例化它。
+- 当前正式路径使用三个`backend_issue_queue`实例；不能再把旧单一整数IQ的周期行为当作现行Dispatch合同。
 
 ### physical_regfile
 - 职责：提供物理寄存器存储体。
 - 当前实现：已接入 backend 的 regread 和 writeback 阶段，支持多读端口、多写端口和同拍写后读旁路；当前 reset 后所有物理寄存器清零。
 - 当前特殊约定：`p0` 固定为零物理寄存器，读恒为 0，写请求被忽略。
-- 当前未做：更复杂的物理实现优化与跨功能单元写回仲裁。
+- 当前backend已在PRF外实现8读口与4写口仲裁；PRF本体尚未做bank、真实宏单元映射或端口冲突物理优化。
+
+### load_store_unit / simple_data_sram / writeback_arbiter
+- `load_store_unit`接收一条已经读出操作数的Memory uop，组合执行AGU和SQ依赖判断；Store写SQ并complete，Load转发或建立单个SRAM outstanding请求。
+- `simple_data_sram`是后端私有64KiB字节数组，单请求端口，Store握手上升沿修改数据，Load握手后一拍产生可反压响应；它不与Frontend/ICache相连。
+- `writeback_arbiter`在4个ALU result和1个Load result之间按ROB年龄分配4个写口；未获grant的生产者保持，grant与PRF写、wakeup、ROB complete原子对应。
 
 ### int_execute_unit
 - 职责：提供 RV64I 整数算术、逻辑、移位、比较类运算的数据通路。
@@ -199,8 +223,8 @@
 - `config/o3_platform.json`
   - 保存当前采用的 Rocket/Flow 风格地址布局；main RAM 位于 `0x80000000`。
 
-当前边界：这套访存框架只独立验证 AXI 和虚拟主存，尚未实现 LSU、DCache，
-也没有修改 backend 或 `o3_core` 的接口。
+当前边界：这套AXI访存框架仍未接入core。Backend本次使用的是独立的
+`simple_data_sram`，没有把LSU接到AXI、DCache或`o3_core`外部接口。
 
 - `rtl/backend/backend.sv`
   - 当前 rename 最小闭环的总装模块。
@@ -208,15 +232,29 @@
 - `rtl/backend/decoder.sv`
   - 负责把 32 位指令变成 decoded uop 阶段所需的最小语义。
 - `rtl/backend/uop_queue.sv`
-  - 负责在 decode 与 rename 之间缓存一整组 decoded uop。
+  - 负责在 decode 与 rename 之间缓存 16 条按程序顺序连续排列的 decoded uop，并提供最多 `MACHINE_WIDTH` 条的队头前缀。
 - `rtl/backend/free_list.sv`
   - 负责按真实请求数分配新物理寄存器。
 - `rtl/backend/rename_map_table.sv`
-  - 负责维护架构寄存器到物理寄存器的当前映射。
+  - 负责speculative/committed映射、同拍旁路和完整分支Map快照恢复。
+- `rtl/backend/rename_stage.sv`
+  - 负责0～4条最老前缀的联合资源判断和renamed uop组装。
+- `rtl/backend/branch_checkpoint_file.sv`
+  - 负责branch tag、active mask和ROB/LQ/SQ恢复tail。
+- `rtl/backend/load_queue.sv` / `rtl/backend/store_queue.sv`
+  - 负责Rename位置预留、AGU状态、Load generation、Store commit buffer、转发查询和分支恢复。
+- `rtl/backend/load_store_unit.sv`
+  - 负责单发射Memory RegRead之后的AGU、Load依赖判断、SRAM仲裁和Load结果保持。
+- `rtl/backend/writeback_arbiter.sv`
+  - 负责4个ALU结果与1个Load结果到4个PRF写口的最老优先仲裁。
+- `rtl/memory/simple_data_sram.sv`
+  - 后端私有64KiB单端口字节寻址SRAM；当前不连接Frontend、ICache或AXI。
+- `rtl/backend/rename_dispatch_queue.sv`
+  - 负责缓存renamed uop并执行branch mask清除/删除。
 - `rtl/backend/rob.sv`
   - 负责按真实有效 uop 数量分配最小 ROB entry 编号，并存储 exception 位。
-- `rtl/backend/issue_queue.sv`
-  - 负责把 rename 完成后的整数 uop 按 lane 顺序压入单一 issue 队列，并在队列内完成默认唤醒、选择和压缩补位。
+- `rtl/backend/backend_issue_queue.sv`
+  - 三类IQ共用的压紧存储、wakeup、最老ready候选和分支恢复骨架；candidate输出与ready删除逻辑分离，允许外部资源仲裁安全回送ready。
 - `rtl/backend/physical_regfile.sv`
   - 物理寄存器文件实现，当前已接入 backend 的 regread 阶段。
 - `rtl/backend/int_execute_unit.sv`
@@ -228,7 +266,7 @@
 - `rtl/common/o3_pkg.sv`
   - 定义 `fetch_entry_t`、`decode_in_t`、`decode_out_t`、`int_alu_op_t`、`imm_type_t` 等跨模块接口类型，以及 `decoded_uop/renamed_uop` 使用的 `instruction_id` 字段。
   - 当前也集中定义 `CORE_FETCH_WIDTH` 与 `BACKEND_*` 固定配置参数。
-  - `fetch_entry_t` 是前后端共同认可的单 lane 指令包，包含 `valid/pc/instruction/fetch_addr_misaligned/fetch_access_fault`。
+  - `fetch_entry_t` 是前后端共同认可的单 lane 指令包，包含 `valid/pc/raw_instruction/instruction/inst_len/is_rvc/exception_valid/exception_cause/exception_tval`。
 - `rtl/frontend/frontend.sv`
   - frontend 侧实现入口，和 backend 对接时需要一起看接口约束。
 - `rtl/core/o3_core.sv`
@@ -249,30 +287,34 @@
 周期 N 组合阶段：
 - `fetch_entry_q` 中保存当前待 decode 的指令组。
 - `fetch_instruction_id_q` 中保存当前 fetch buffer 这组指令对应的调试编号；编号的低位是 lane id，高位是被 backend 接收时的 group 序号。
-- `fetch_entry_q[lane].valid` 决定该 lane 的 `decoded_uop.valid`；两个 fetch 异常位 OR 后形成当前后端内部的 `decoded_uop.exception`。
-- `decoder` 组合输出 `rs1/rs2/rd`、`rs1_read_en/rs2_read_en/rd_write_en`、`use_imm`、`imm_type`、`imm_raw`、`int_alu_op` 和 `is_int_uop`。
+- `fetch_entry_q[lane].valid` 决定该 lane 的 `decoded_uop.valid`；统一的前端异常元数据或 Decoder 的非法指令判定形成 `decoded_uop.exception_*`。
+- `decoder` 组合输出 `rs1/rs2/rd`、`rs1_read_en/rs2_read_en/rd_write_en`、`use_imm`、`imm_type`、`imm_raw`、`int_alu_op`、`is_int_uop` 和 `illegal_instruction`。
 - 若 `uop_queue` 可接收，则当前 fetch 组在本拍以 `decoded_uop` 形式入队。
-- `uop_queue` 队头保存当前待 rename 的一组 uop。
+- `uop_queue` 从队头展示当前最老的最多 `MACHINE_WIDTH` 条 uop，输出 lane 始终是无洞的有效前缀。
 - `free_list` 组合输出本拍候选 `new_dst_preg`。
 - `rename_map_table` 组合输出 `src1_preg/src2_preg/old_dst_preg`。
 - `rob` 组合输出本拍候选 `rob_idx`。
-- `backend` 组合把 `rename_uop_head` 中 `is_int_uop=1` 的 lane 转成 `issue_queue_entry`，并按 lane 顺序统计本拍整数 issue 入队需求。
-- `backend` 当前对 `rd!=0` 的真实目的写生成 `alloc_req`，对 `x0/p0` 源直接视为零寄存器 ready。
-- 若 `issue_queue` 剩余空间足够，则 `issueq_enq_ready=1`，rename 才允许和 free list / rob 一起握手成功。
-- `issue_queue` 对旧表项组合地产生基于 `preg_ready` 的 wakeup 后视图，并按队列顺序把最靠前的 ready 表项分配给编号更小的 ALU issue 端口。
-- `alu_issue_q` 当前持有的物理寄存器编号直接驱动 `physical_regfile` 读端口。
+- `rename_stage`从lane0开始累计检查ROB、preg、LQ、SQ、checkpoint和Rename/Dispatch Queue空位，得到最大可接受前缀。
+- Map、Free List、ROB、LQ/SQ组合给出该前缀的候选编号；同拍更年轻lane看到更老lane的新映射。
+- Rename/Dispatch Queue隔离IQ背压，因此IQ不直接决定同拍Rename数量。
+- `dispatch_stage`按Integer/Memory/Branch IQ拍初空位接受RDQ队头最大连续前缀；前缀内部可以三路并行分流。
+- 三个IQ组合更新源ready视图并输出最老ready候选；Integer和Memory候选按ROB年龄参与8读口/FU槽位联合仲裁，Branch候选冻结。
+- 读仲裁按候选实际需要的0/1/2个源原子分配PRF端口，无法完整满足时不向IQ回送ready。
 - `alu_regread_q` 当前持有的真实操作数值直接驱动 `int_execute_unit`。
-- `alu_result_q` 当前持有的上一拍执行结果会在本拍组合地形成 writeback 请求，驱动 physical regfile 写口和 ROB complete 端口。
-- `rob` 当前会从队头开始连续检查最多 3 项，只退休队头连续 `complete=1 && exception=0` 的前缀。
+- 4个`alu_result_q`和1个Load结果槽按ROB年龄竞争4个写口；只有grant形成PRF写、wakeup和ROB complete。
+- LSU对当前Memory uop组合产生AGU地址，查询SQ后选择Store forwarding或Data SRAM；committed Store优先请求单端口SRAM。
+- `rob`从队头开始连续检查最多4项，只退休队头连续`complete=1 && exception=0`的前缀。
 
 周期 N 上升沿：
 - 如果 `decode_fire=1`，则当前 fetch 组完成 decode 并进入 `uop_queue`。
-- 如果 `rename_fire=1`，则当前 `uop_queue` 队头这组 uop 完成本版 rename；其中所有整数 uop 会按 lane 从小到大连续写入 `issue_queue`，而且所有 `rd!=0` 的新目的 preg 会被清成 not-ready。
-- `issue_queue` 会把上一拍已经在队列中的未 ready 表项按 `preg_ready` 结果更新，并删除本拍已经被接受发射的表项。
-- 本拍被选中的整数 uop 会进入 `alu_issue_q`。
-- 上一拍 `alu_issue_q` 中的 uop 会完成 regread 和立即数扩展，并进入 `alu_regread_q`。
+- 如果`rename_accept_count`非零，前缀中的每条指令在同一上升沿原子更新Map/Free List/ROB/LQ/SQ/checkpoint并进入Rename/Dispatch Queue；Decode Queue删除相同条数。
+- 如果`branch_resolution_i.valid && mispredict`，恢复优先于正常Rename：Decode侧清空，Map/Free List/ROB/LQ/SQ恢复，后端队列和流水删除目标分支之后的uop。
+- 三个IQ分别压紧写入本拍Dispatch给自己的uop，并把旧表项按`preg_ready`结果更新；只有获得全部读口与FU槽位的Integer/Memory候选被删除。
+- grant的Integer/Memory候选在该上升沿锁存PRF读值和扩展立即数；Branch没有uop进入BRU。
 - 上一拍 `alu_regread_q` 中的 uop 会经过 `int_execute_unit` 计算，并进入 `alu_result_q`。
-- 当前 `alu_result_q` 中所有 `valid` 的整数结果会在本拍写回时把对应 ROB 项标记为 complete；其中 `dst_write_en=1` 的结果还会写回 PRF，并把目标 preg 置为 ready。
+- 写口grant的ALU/Load结果写PRF、置目标preg ready、广播并complete ROB；未grant结果保持，逐级阻塞对应RegRead和IQ端口。
+- Store AGU把地址/数据/mask写入SQ并complete ROB；Load建立SRAM请求或把转发值写入Load结果槽。
+- ROB退休的Load释放LQ；退休的Store只把SQ entry置committed，随后由最老Store drain写SRAM并在请求握手后释放。
 - 当前从 ROB 队头退休的指令会在本拍把 `old_dst_preg` 返还给 free list；这些被释放的寄存器会从下一拍起重新出现在 rename 分配候选中。
 - `backend` 会在本拍把真实退休条数累加到 `retired_inst_count_q`。
 - 如果 `fetch_fire=1`，则 frontend 新的一组指令写入 buffer，并按“group 序号 + lane id”生成新的 `instruction_id`。
@@ -290,7 +332,7 @@
   - 日志块首尾各打印一条分割线，便于把同一个 cycle 的信息组织在一起。
 
 周期 N+1：
-- 看到更新后的 `uop_queue`、free list、rename map、rob、`issue_queue` 和 3 级 ALU 流水寄存器状态。
+- 看到更新后的`uop_queue`、free list、rename map、ROB、三个IQ及可反压ALU/LSU流水状态。
 - 看到刚刚被写回的目标物理寄存器在 `preg_ready` 中变为 ready。
 - 看到刚刚退休并释放的旧物理寄存器重新回到 free list 可见范围。
 - 看到新 buffer 中的下一组指令，以及新的 rename 队头。
@@ -314,47 +356,64 @@
 
 ### uop_queue 周期级行为
 周期 N 组合阶段：
-- 若队列非空，则队头这一组 `decoded_uop` 直接对 rename 级可见。
-- 若队列未满，则 `enq_ready_o=1`，decode 级可在本拍把一整组 uop 压入队列。
+- 统计 Decode 输入无洞有效前缀的条数；只有当前空位足以容纳整个前缀时，`enq_ready_o=1`。
+- 从 `head_q` 开始读取最多 `MACHINE_WIDTH` 条最老 uop，压紧放在输出 lane0 起始的有效前缀中，并通过 `deq_count_o` 给出条数。
 
 周期 N 上升沿：
-- 若 `enq_valid_i && enq_ready_o`，则一整组 decoded uop 写入队尾。
-- 若 `deq_valid_o && deq_ready_i`，则当前队头这一组 uop 被 rename 级消费。
-- 若入队和出队同拍发生，则队列深度不变，只移动头尾指针。
+- 若入队握手成立，则从 `tail_q` 起连续写入本拍真实有效的 decoded uop；每个逻辑位置按照模 `MACHINE_WIDTH` 映射到一个 bank。
+- 删除 `deq_accept_count_i` 指定数量的最老 uop；该数只能是当前展示前缀的长度以内。
+- 入队和出队可同拍发生，`head_q/tail_q/count_q` 按各自真实数量原子更新。
 
 周期 N+1：
 - 对外看到更新后的队头、队尾和空满状态。
 
-### issue_queue 周期级行为
+### dispatch_stage / backend_issue_queue 周期级行为
 周期 N 组合阶段：
-- `backend` 把当前 rename 队头里属于整数计算的 lane 组装成 `issue_queue_entry`。
-- `issue_queue` 对上一拍已经在队列中的未 ready 表项按 `preg_ready` 检查是否可以唤醒。
-- `issue_queue` 从前往后扫描 wakeup 后的队列，把最靠前的 ready 表项优先分配给编号更小的 ALU issue 端口。
-- `issue_queue` 根据“本拍将会被发射删除的条数”和“本拍想入队的整数 uop 数”共同判断 `enq_ready_o`；若空间不足，则整批等待，不做部分入队。
+- `dispatch_stage`从RDQ lane0开始累计三个IQ的拍初空位，形成0～4条最大连续接受前缀。
+- 接受前缀中的Integer、Load/Store和Branch/Jump分别形成三个无洞的逻辑入队集合。
+- 每个`backend_issue_queue`根据`preg_ready`更新旧表项ready视图，并从年龄最老端产生ready候选。
+- Integer与Memory IQ候选按ROB年龄参加8读口/FU容量仲裁；Branch的`issue_ready`为0。
 
 周期 N 上升沿：
-- 若本拍有被接受发射的表项，则这些表项从队列中删除，后续表项向前补位。
-- 若 `enq_valid_i && enq_ready_o`，则本拍所有有效整数 uop 按 `lane0 -> lane1 -> ...` 顺序连续追加到压缩后队尾。
-- 若同拍既有发射又有入队，则最终看到的是“先删除发射表项、再在队尾追加新表项”的压缩结果。
+- RDQ删除Dispatch接受的最老前缀；三个IQ分别按原lane年龄压紧追加属于自己的uop。
+- IQ旧表项写回更新后的源ready状态；获得全部资源的候选按各自ready握手删除，未grant候选保持。
+- 分支恢复拍禁止Dispatch：正确解析清branch bit，误预测删除携带目标bit的错误路径表项并压紧。
 
 周期 N+1：
-- 对外看到更新后的压缩式队列内容，以及下一拍可继续参与 wakeup/select 的整数 issue entry。
+- 对外看到RDQ新队头、三个IQ的新容量和各自新的最老ready候选。
 
 ### integer ALU 流水寄存器周期级行为
 周期 N 组合阶段：
-- `alu_issue_q` 直接驱动 `physical_regfile` 读端口地址。
-- `physical_regfile` 组合读出 `src1/src2` 值。
-- `backend` 在 regread 阶段把 `imm_raw/imm_type` 扩展成 64 位立即数，并根据 `imm_valid/src2_valid` 生成真正的 `src2_value`。
+- 全局读仲裁从Integer/Memory IQ候选中按ROB年龄贪心选择，组合驱动8个`physical_regfile`读地址。
+- `physical_regfile`组合读出grant候选需要的`src1/src2`值。
+- `backend`在RegRead阶段把`imm_raw/imm_type`扩展成64位`imm_value`，同时独立保存寄存器`src2_value`；`int_execute_unit`根据`imm_valid`选择第二操作数。
 - `alu_regread_q` 直接驱动 `int_execute_unit` 的输入。
 - `int_execute_unit` 组合地产生执行结果。
 
 周期 N 上升沿：
-- 本拍新选择出来的 issue uop 进入 `alu_issue_q`。
-- 上一拍 `alu_issue_q` 中的 uop 进入 `alu_regread_q`。
+- 本拍获得读口的Integer候选及其操作数进入`alu_regread_q`；`alu_issue_q`只保留现有日志观察副本。
 - 上一拍 `alu_regread_q` 中的 uop 执行结果进入 `alu_result_q`。
+- 若旧`alu_result_q`未获写口，则它和对应`alu_regread_q`保持，本拍该ALU不接受新IQ候选。
 
 周期 N+1：
 - 同一条整数指令会在日志中向后移动到下一拍的下一级寄存器。
+
+### LSU、SQ commit buffer与Data SRAM周期级行为
+周期 N 组合阶段：
+- `mem_execute_q`组合产生有效地址和访问byte mask，Load同时查询全部更老SQ entry。
+- 更老Store地址/数据未知或部分重叠时，Load保持；单个最年轻Store完整覆盖时形成转发结果；否则申请SRAM读。
+- SQ队头若为地址/数据齐全的committed Store，则优先于Load占用SRAM请求口。
+- SRAM Load响应只有LQ `{generation,lq_idx}`仍存活且Load结果槽可接收时才握手。
+
+周期 N 上升沿：
+- Store把地址、数据和mask写入Rename时分配的SQ entry，并向ROB报告complete。
+- Load SRAM请求锁存唯一pending元数据；固定一拍后返回的数据或Store转发值进入可保持Load结果槽。
+- ROB退休Store只设置对应SQ entry的`committed`；SRAM接受队头Store写请求才推进SQ head并释放容量。
+- 获得共享写口的Load结果写PRF、广播wakeup并complete ROB；未获写口时结果保持并阻塞新的Load结果。
+
+周期 N+1：
+- SRAM请求返回、SQ committed状态、LQ outstanding状态和释放后的容量对外可见。
+- flush后迟到的Load响应因generation或branch mask失配被消费但不产生写回。
 
 ### backend_testharness 周期级行为
 周期 N 组合阶段：
@@ -374,8 +433,7 @@
 ### rename_map_table 周期级行为
 周期 N 组合阶段：
 - 输入当前 lane 的 `rs1/rs2/rd`。
-- 直接读取 map table，得到 `src1_preg/src2_preg/old_dst_preg`。
-- 若该 lane 需要写 `rd`，backend 同拍还会拿到对应 `new_dst_preg`。
+- 读取speculative map，并按lane0到lane3让更老lane的新目的映射覆盖年轻lane的源和old-destination读值。
 
 ### 当前解码输出到 uop 的样子
 - `decoder` 的直接输出是 `decode_out_t`，字段为：
@@ -386,15 +444,18 @@
   - `imm_raw`
   - `int_alu_op`
   - `is_int_uop`
+  - `illegal_instruction`
 - `backend` 会把 frontend 带来的原始信息与这些解码字段拼成 `decoded_uop_t` 后再入 `uop_queue`。
 - 当前 `decoded_uop_t` 的内容是：
-  - frontend 原样透传：`valid/instruction_id/pc/instruction/exception`
+  - frontend/Backend 输入寄存器透传：`valid/instruction_id/pc/raw_instruction/instruction/inst_len/is_rvc/exception_valid/exception_cause/exception_tval`
   - decoder 新产生：`rs1/rs2/rd`、`rs1_read_en/rs2_read_en/rd_write_en`、`use_imm`、`imm_type`、`imm_raw`、`int_alu_op`、`is_int_uop`
 - 也就是说，当前 decode 级产出的不是“完整执行控制词”，而是“原始指令 + 最小 rename/整数 ALU 语义”的一组 uop。
 - 当前 decode 不再输出 XLEN 展开的 `imm_value`；立即数的符号扩展计划留到后续寄存器读阶段完成。
 
 周期 N 上升沿：
-- 若 `rename_fire=1 && rd_write_en=1 && rd!=0`，则更新 `map_table[rd] = new_dst_preg`。
+- 正常Rename时更新接受前缀的目的映射；遇到分支lane时保存包含该lane自身修改、但不包含更年轻lane的完整Map快照。
+- ROB顺序退休时同步更新committed map。
+- mispredict时恢复优先，一拍把目标checkpoint复制回speculative map。
 
 周期 N+1 组合阶段：
 - 若再次读取同一个 `rd`，会看到更新后的物理寄存器编号。
@@ -417,16 +478,15 @@
 
 ### free_list 周期级行为
 周期 N 组合阶段：
-- 统计本拍所有 lane 的 `alloc_req_i` 请求数。
-- 若剩余空闲寄存器数足够，则 `alloc_valid_o=1`。
-- 对请求为 1 的 lane，按 lane 顺序给出连续的候选新物理寄存器。
+- 统计96位free bitmap，并从lane0开始为真实目的写逐级优先选择不同的候选preg。
 
 周期 N 上升沿：
-- 若 `alloc_valid_o=1 && alloc_ready_i=1`，则真正消耗本拍请求数个物理寄存器。
-- `head_q` 和 `count_q` 在上升沿更新。
+- 正常Rename原子清除接受前缀分配的preg位，并把每个新preg记入它所依赖的所有活动分支allocation mask。
+- Commit释放的old preg重新置为空闲。
+- mispredict时禁止新分配，将目标分支allocation mask与commit释放集合合并回free bitmap。
 
 周期 N+1 组合阶段：
-- 对外看到新的队头位置和下一批候选物理寄存器。
+- 对外看到正常分配或恢复后的空闲集合；被放弃preg中的PRF数据不会清零。
 
 ### int_execute_unit 周期级行为
 周期 N 组合阶段：
@@ -469,26 +529,27 @@
 - 若上一拍刚完成，则这一拍 `resp_valid_o=1`，随后单元回到可接收状态。
 
 ## 已知限制
-- 当前多发射只是“并行 lane”，同拍 lane 之间按彼此无关处理。
-- 当前不处理组内 RAW/WAW/WAR。
-- 当前不处理同拍多个 lane 写同一个 `rd` 的精确定义。
-- 当前不做 commit、ROB entry 释放、旧物理寄存器释放、checkpoint、rollback、flush。
-- 当前 ROB 只存 exception 位，还没有存 pc、目标寄存器、完成状态等完整表项信息。
+- 当前重构边界已经推进到Memory IQ、LSU、内部Data SRAM、共享8R4W仲裁和Store commit buffer；真实BRU与Frontend redirect尚未接入。
+- `branch_resolution_i`必须由未来BRU提供；当前代码不会自行检测分支误预测。
+- Load只支持单个更老Store完整覆盖转发；未知地址/数据及部分重叠保守等待，不实现violation检测或replay。
+- Data SRAM是后端内部64KiB单端口字节数组，不接Cache、AXI、PMA/MMU，不产生访问或对齐异常，也没有程序镜像初始化接口。
+- 当前最多一个SRAM Load outstanding；committed Store固定优先，持续Store drain可能推迟Load。
+- Branch IQ已建立但issue端口冻结；Branch/Jump会占用ROB和Branch IQ而不会执行或退休。
+- 本段只执行了普通backend与`O3_SIM`配置的Verilator lint以及`git diff --check`；没有运行仿真或回归，旧testbench尚未迁移Load/Store/SRAM观察合同。
 - 当前 `SYSTEM` 指令先按保守方式处理，不纳入 CSR 重命名细节。
-- 当前整数/乘法/除法执行单元还没有接入 backend 主链路。
-- 当前 renamed uop 只是先暂存在 backend 内部，还没有接真正的 issue queue。
+- `alu_issue_q`当前只保留日志观察副本，真实grant候选的操作数直接锁存到`alu_regread_q`；后续做时序收敛时可重新切分Select/RegRead边界。
+- 乘除单元和BRU尚未接入新Issue/写回仲裁接口。
 - 当前 `mul_execute_unit/div_execute_unit` 只是固定拍数骨架，不代表最终工业级实现。
 - 当前不处理乘法高低位融合、除法商余融合，也不处理多请求并发执行。
-- 当前不要求任何测试代码。
+- 当前不迁移或新增测试代码。
 - 当前虽然已经有专用仿真入口，但仍未建立完整验证闭环；现有 `backend_testharness` 只用于驱动后端最小 rename 数据流。
 - 当前不做完整代码检测闭环，统一留到后续数据流更完整后再补。
 
 ## 后续扩展入口
-- 组内依赖处理：优先在 `backend` 的 lane 间旁路逻辑或 `rename_map_table` 前级仲裁逻辑中接入。
-- 提交与旧物理寄存器释放：在 `rename_map_table` 已输出的 `old_dst_preg` 基础上向 ROB / commit 级联。
-- checkpoint / rollback：在 `rename_map_table` 上扩展 speculative map 管理。
-- 分支恢复：在 rename 状态与 free list 状态上同时增加可恢复快照。
-- 执行单元接入：在 rename 之后新增 issue / dispatch 输入定义，把 `int_execute_unit`、`mul_execute_unit`、`div_execute_unit` 串入真正的执行与回写链路。
+- BRU接入：产生`branch_resolution_i`并把`redirect_valid_o/redirect_pc_o`连接到Frontend。
+- LSU扩展：加入多Load outstanding、Load violation检测/replay、多个Store字节合并转发和真实DCache接口。
+- PRF扩展：在逻辑8R4W合同稳定后加入bank映射、bank conflict replay或固定延迟FU的未来写回槽预订。
+- 执行单元扩展：整数R/I和Memory路径已经闭合；后续接入BRU、Mul/Div并纳入共享读写口仲裁。
 - 乘法器扩展：在保持当前固定拍数接口不变的前提下，将内部实现替换为 DSP 优化、Booth 或华莱士树结构。
 - 除法器扩展：在保持当前固定拍数接口不变的前提下，将内部实现替换为迭代式除法器，并视需要扩展可取消与融合能力。
 

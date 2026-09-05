@@ -22,6 +22,17 @@ make test
 make run
 ```
 
+The same directory also contains a directed same-bundle Rename dependency test:
+
+```bash
+make test TEST=rename_bundle_dependencies
+```
+
+It places `addi x1,5; add x2,x1,x1; sub x3,x2,x1; xor x1,x3,x2` in one
+four-lane bundle.  The test checks same-bundle RAW forwarding, the WAW chain
+for `x1`, next-cycle wakeup, in-order ROB retirement, and final values
+`5, 10, 5, 15`.
+
 Default logging defines `O3_SIM` and `ENABLE_RETIRE_INFO`, but not
 `O3_SIM_SINGLE_INST_TRACE`. The backend therefore prints the normal per-cycle
 stage block. Look for one cycle with:

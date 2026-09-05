@@ -87,7 +87,8 @@ uint32_t read_inst(uint64_t pc) {
     }
 }
 
-uint64_t read_wide_bits(const WData* words, int lsb, int width) {
+template <typename WideSignal>
+uint64_t read_wide_bits(const WideSignal& words, int lsb, int width) {
     uint64_t value = 0;
     for (int bit = 0; bit < width; ++bit) {
         const int src_bit = lsb + bit;
@@ -98,7 +99,7 @@ uint64_t read_wide_bits(const WData* words, int lsb, int width) {
 }
 
 RetireInfo read_retire_info(const Vo3_core& dut, int port) {
-    const WData* raw = dut.retire_info_o[port];
+    const auto& raw = dut.retire_info_o[port];
     return RetireInfo{
         .valid = read_wide_bits(raw, 211, 1) != 0,
         .rob_idx = read_wide_bits(raw, 205, 6),

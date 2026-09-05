@@ -1,93 +1,174 @@
 /**
  * Decode Uop Queue
  *
- * 当前已经实现的功能：
- * - 作为 decode 后、rename 前的成组 uop 缓冲
- * - 每个表项保存一整组 MACHINE_WIDTH 的 decoded_uop
- * - 支持 enqueue / dequeue 同拍发生
- * - 采用 ready/valid 风格对 decode 级和 rename 级背压
+ * 职责：
+ * - 位于 Decode 与未来 Rename 之间，按单条 decoded uop 连续保存程序顺序。
+ * - 每拍最多接收 MACHINE_WIDTH 条已经压紧的 uop。
+ * - 每拍向下游展示最多 MACHINE_WIDTH 条最老 uop。
+ * - 输入 bundle 的边界不进入存储语义；相邻两批 uop 在队列中连续排列。
  *
- * 当前没有实现的功能：
- * - 不做 lane 级部分入队、部分出队
- * - 不做按年龄选择，不做 issue / wakeup / select
- * - 不做 flush / rollback / checkpoint 恢复
- * - 当前阶段不附带测试代码和仿真代码，只先搭功能与注释
+ * 当前实现：
+ * - DEPTH 按单条 uop 计数，默认由顶层配置为 16 entries。
+ * - 存储按 MACHINE_WIDTH 个 bank 组织；逻辑位置对 bank 数取模决定物理 bank。
+ * - 输入和输出均要求 lane0 最老、有效 lane 为连续前缀。
+ * - 下游用 deq_accept_count_i 表示本拍接受的最老前缀长度。
+ * - 入队 ready 只使用本拍开始时已有的空位，不借用本拍即将出队的空间，
+ *   从而避免把未来 Rename 的资源判断组合地反传到 Decode。
  *
- * 时序行为：
+ * 当前不负责：
+ * - 不计算 Rename 能接受多少条；ROB、Free List、IQ 等资源不属于本模块。
+ * - 不做指令融合、任意 lane 压缩、按年龄选择、wakeup 或 issue。
+ * - 不保存checkpoint；mispredict时由flush_i整体清空，因为其中所有指令都比分支年轻。
+ *
+ * 周期行为：
  * - 周期 N 组合阶段：
- *   1) 根据 count_q 产生 enq_ready_o / deq_valid_o
- *   2) 若队列非空，则 deq_uop_o 直接看到当前 head_q 指向的整组 uop
+ *   1) 统计 Decode 输入的有效前缀长度 enq_count。
+ *   2) 若当前已有空位不少于 enq_count，则 enq_ready_o=1。
+ *   3) 从 head_q 开始向下游展示最多 MACHINE_WIDTH 条最老 uop。
  * - 周期 N 上升沿：
- *   1) 若 enq_valid_i && enq_ready_o，则把一整组 decoded_uop 写入 tail_q
- *   2) 若 deq_valid_o && deq_ready_i，则弹出当前 head_q 指向的整组 uop
- *   3) 若同拍既入队又出队，则 count_q 保持不变，只更新 head_q / tail_q
+ *   0) flush_i优先时清空head/tail/count，不接受正常读写。
+ *   1) 入队握手成立时，从 tail_q 起连续写入 enq_count 条 uop。
+ *   2) deq_accept_count_i 非零时，从队头删除对应数量的最老 uop。
+ *   3) head/tail/count 按真实读写数量原子更新。
  * - 周期 N+1：
- *   看到更新后的队列头部、空满状态和下一组可供 rename 的 uop
+ *   下游看到新的最老前缀，Decode 看到更新后的空位状态。
  */
 
 module uop_queue
     import o3_pkg::*;
 #(
     parameter int MACHINE_WIDTH = 4,
-    parameter int DEPTH = 2
+    parameter int DEPTH = 16
 ) (
-    input  logic                            clk,
-    input  logic                            rst,
-    input  decoded_uop_t [MACHINE_WIDTH-1:0] enq_uop_i,
-    input  logic                            enq_valid_i,
-    output logic                            enq_ready_o,
-    output decoded_uop_t [MACHINE_WIDTH-1:0] deq_uop_o,
-    output logic                            deq_valid_o,
-    input  logic                            deq_ready_i
+    input  logic                              clk,
+    input  logic                              rst,
+    input  logic                              flush_i,
+
+    input  decoded_uop_t [MACHINE_WIDTH-1:0]  enq_uop_i,
+    input  logic                              enq_valid_i,
+    output logic                              enq_ready_o,
+
+    output decoded_uop_t [MACHINE_WIDTH-1:0]  deq_uop_o,
+    output logic [$clog2(MACHINE_WIDTH+1)-1:0] deq_count_o,
+    input  logic [$clog2(MACHINE_WIDTH+1)-1:0] deq_accept_count_i
 );
 
     localparam int PTR_WIDTH = (DEPTH > 1) ? $clog2(DEPTH) : 1;
     localparam int COUNT_WIDTH = $clog2(DEPTH + 1);
+    localparam int LANE_COUNT_WIDTH = $clog2(MACHINE_WIDTH + 1);
+    localparam int ROWS_PER_BANK = DEPTH / MACHINE_WIDTH;
 
-    decoded_uop_t [MACHINE_WIDTH-1:0] queue_mem [DEPTH-1:0];
-    logic [PTR_WIDTH-1:0]             head_q;
-    logic [PTR_WIDTH-1:0]             tail_q;
-    logic [COUNT_WIDTH-1:0]           count_q;
-    logic                             enq_fire;
-    logic                             deq_fire;
+    decoded_uop_t bank_mem [MACHINE_WIDTH-1:0][ROWS_PER_BANK-1:0];
+    logic [PTR_WIDTH-1:0]   head_q;
+    logic [PTR_WIDTH-1:0]   tail_q;
+    logic [COUNT_WIDTH-1:0] count_q;
 
-    function automatic logic [PTR_WIDTH-1:0] next_ptr(input logic [PTR_WIDTH-1:0] ptr);
-        if (DEPTH == 1) begin
-            next_ptr = '0;
-        end else if (ptr == PTR_WIDTH'(DEPTH - 1)) begin
-            next_ptr = '0;
-        end else begin
-            next_ptr = ptr + PTR_WIDTH'(1);
+    logic [COUNT_WIDTH-1:0] free_count;
+    logic [COUNT_WIDTH-1:0] enq_count;
+    logic [COUNT_WIDTH-1:0] visible_count;
+    logic [COUNT_WIDTH-1:0] accepted_count;
+    logic                   enq_fire;
+
+    function automatic logic [PTR_WIDTH-1:0] ptr_add(
+        input logic [PTR_WIDTH-1:0] ptr,
+        input int unsigned          offset
+    );
+        int unsigned next_ptr;
+        begin
+            next_ptr = int'(ptr) + offset;
+            ptr_add = PTR_WIDTH'(next_ptr % DEPTH);
         end
     endfunction
 
-    assign enq_ready_o = (count_q < COUNT_WIDTH'(DEPTH));
-    assign deq_valid_o = (count_q != '0);
-    assign enq_fire    = enq_valid_i && enq_ready_o;
-    assign deq_fire    = deq_valid_o && deq_ready_i;
-    assign deq_uop_o   = queue_mem[head_q];
+    always_comb begin
+        enq_count = '0;
+        for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
+            if (enq_uop_i[lane].valid) begin
+                enq_count = enq_count + COUNT_WIDTH'(1);
+            end
+        end
+    end
+
+    assign free_count = COUNT_WIDTH'(DEPTH) - count_q;
+    assign enq_ready_o = !enq_valid_i || (free_count >= enq_count);
+    assign enq_fire = enq_valid_i && (enq_count != '0) && enq_ready_o;
+
+    assign visible_count = (count_q >= COUNT_WIDTH'(MACHINE_WIDTH))
+                         ? COUNT_WIDTH'(MACHINE_WIDTH)
+                         : count_q;
+    assign deq_count_o = LANE_COUNT_WIDTH'(visible_count);
+    assign accepted_count = COUNT_WIDTH'(deq_accept_count_i);
+
+    always_comb begin
+        deq_uop_o = '0;
+        for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
+            int unsigned logical_pos;
+            int unsigned bank_idx;
+            int unsigned row_idx;
+            logical_pos = (int'(head_q) + lane) % DEPTH;
+            bank_idx = logical_pos % MACHINE_WIDTH;
+            row_idx = logical_pos / MACHINE_WIDTH;
+            if (COUNT_WIDTH'(lane) < visible_count) begin
+                deq_uop_o[lane] = bank_mem[bank_idx][row_idx];
+            end
+        end
+    end
 
     always_ff @(posedge clk) begin
-        if (rst) begin
+        if (rst || flush_i) begin
             head_q  <= '0;
             tail_q  <= '0;
             count_q <= '0;
-            queue_mem <= '{default: '0};
         end else begin
             if (enq_fire) begin
-                queue_mem[tail_q] <= enq_uop_i;
-                tail_q            <= next_ptr(tail_q);
+                for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
+                    if (COUNT_WIDTH'(lane) < enq_count) begin
+                        int unsigned logical_pos;
+                        int unsigned bank_idx;
+                        int unsigned row_idx;
+                        logical_pos = (int'(tail_q) + lane) % DEPTH;
+                        bank_idx = logical_pos % MACHINE_WIDTH;
+                        row_idx = logical_pos / MACHINE_WIDTH;
+                        bank_mem[bank_idx][row_idx] <= enq_uop_i[lane];
+                    end
+                end
+                tail_q <= ptr_add(tail_q, int'(enq_count));
             end
 
-            if (deq_fire) begin
-                head_q <= next_ptr(head_q);
+            if (accepted_count != '0) begin
+                head_q <= ptr_add(head_q, int'(accepted_count));
             end
 
-            unique case ({enq_fire, deq_fire})
-                2'b10: count_q <= count_q + COUNT_WIDTH'(1);
-                2'b01: count_q <= count_q - COUNT_WIDTH'(1);
-                default: count_q <= count_q;
-            endcase
+            count_q <= count_q
+                     + (enq_fire ? enq_count : '0)
+                     - accepted_count;
+
+`ifndef SYNTHESIS
+            if (enq_valid_i) begin
+                bit saw_invalid_lane;
+                saw_invalid_lane = 1'b0;
+                for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
+                    if (!enq_uop_i[lane].valid) begin
+                        saw_invalid_lane = 1'b1;
+                    end else if (saw_invalid_lane) begin
+                        $fatal(1,
+                               "[uop_queue] packed-lane violation: lane%0d valid after an invalid lane",
+                               lane);
+                    end
+                end
+                if (enq_count == '0) begin
+                    $fatal(1,
+                           "[uop_queue] enq_valid_i asserted with no valid uop");
+                end
+            end
+
+            if (accepted_count > visible_count) begin
+                $fatal(1,
+                       "[uop_queue] deq_accept_count=%0d exceeds visible_count=%0d",
+                       accepted_count,
+                       visible_count);
+            end
+`endif
         end
     end
 
@@ -95,9 +176,11 @@ module uop_queue
         if (MACHINE_WIDTH <= 0) begin
             $error("uop_queue requires MACHINE_WIDTH > 0");
         end
-
-        if (DEPTH <= 0) begin
-            $error("uop_queue requires DEPTH > 0");
+        if (DEPTH < MACHINE_WIDTH) begin
+            $error("uop_queue requires DEPTH >= MACHINE_WIDTH");
+        end
+        if ((DEPTH % MACHINE_WIDTH) != 0) begin
+            $error("uop_queue requires DEPTH to be divisible by MACHINE_WIDTH");
         end
     end
 

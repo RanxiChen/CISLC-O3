@@ -18,9 +18,11 @@
  *   4) `imm_type/imm_raw`：立即数类型与原始编码；当前只有 `IMM_TYPE_I + instruction[31:20]`
  *   5) `int_alu_op`：整数 ALU 操作类型，和 `int_execute_unit` 共用同一套编码
  *   6) `is_int_uop`：当前是否先归入统一整数数据流
+ *   7) `illegal_instruction`：当前编码是否未被本阶段识别
  * - 当前覆盖的指令如下：
  *   1) R-type：`ADD/SUB/SLL/SLT/SLTU/XOR/SRL/SRA/OR/AND`
  *   2) I-type：`ADDI/SLLI/SLTI/SLTIU/XORI/SRLI/SRAI/ORI/ANDI`
+ *   3) RV64I Load/Store：同时生成LQ/SQ分类、访问宽度和Load signed/unsigned语义
  * - 对于已覆盖的 I-type 算术指令：
  *   1) `use_imm=1`
  *   2) `imm_type=IMM_TYPE_I`
@@ -30,11 +32,13 @@
  *   2) `imm_type=IMM_TYPE_NONE`
  *   3) `imm_raw=0`
  * - 对未覆盖 opcode 或未识别的 `funct3/funct7` 组合：
- *   1) 先按保守方式不给寄存器重命名副作用
+ *   1) 不产生寄存器读写副作用
  *   2) `imm_type` 保持全 0，表示立即数无效
+ *   3) `illegal_instruction=1`，由 Decode Stage 形成精确异常元数据
  *
  * 当前没有实现的功能：
- * - 不覆盖 branch / load / store / jump / system / fence
+ * - Branch/Jump当前只解码Rename所需字段，不包含完整BRU执行控制
+ * - 不覆盖 system / fence
  * - 不覆盖 RV64I 的 word 指令，如 `ADDIW/ADDW/SLLIW/SLLW`
  * - 不区分 ALU / BRU / LSU / MUL / DIV 等更细执行类型
  * - 不输出 CSR / 异常 / trap / commit 相关信息
@@ -68,9 +72,15 @@ module decoder
 
     localparam logic [6:0] OPCODE_OP_IMM   = 7'b0010011;
     localparam logic [6:0] OPCODE_OP       = 7'b0110011;
+    localparam logic [6:0] OPCODE_LOAD     = 7'b0000011;
+    localparam logic [6:0] OPCODE_STORE    = 7'b0100011;
+    localparam logic [6:0] OPCODE_BRANCH   = 7'b1100011;
+    localparam logic [6:0] OPCODE_JAL      = 7'b1101111;
+    localparam logic [6:0] OPCODE_JALR     = 7'b1100111;
 
     logic [6:0] opcode;
     logic [2:0] funct3;
+    logic [5:0] funct6;
     logic [6:0] funct7;
 
     assign decode_o.rd  = decode_i.instruction[11:7];
@@ -78,6 +88,7 @@ module decoder
     assign decode_o.rs2 = decode_i.instruction[24:20];
     assign opcode       = decode_i.instruction[6:0];
     assign funct3       = decode_i.instruction[14:12];
+    assign funct6       = decode_i.instruction[31:26];
     assign funct7       = decode_i.instruction[31:25];
 
     always_comb begin
@@ -91,13 +102,23 @@ module decoder
         decode_o.imm_raw     = '0;
         decode_o.int_alu_op  = INT_ALU_OP_ADD;
         decode_o.is_int_uop  = 1'b0;
+        decode_o.is_load     = 1'b0;
+        decode_o.is_store    = 1'b0;
+        decode_o.mem_size    = MEM_SIZE_1B;
+        decode_o.mem_unsigned = 1'b0;
+        decode_o.is_branch   = 1'b0;
+        decode_o.is_jal      = 1'b0;
+        decode_o.is_jalr     = 1'b0;
+        decode_o.needs_checkpoint = 1'b0;
+        decode_o.illegal_instruction = 1'b1;
 
         unique case (opcode)
             OPCODE_OP_IMM: begin
                 unique case (funct3)
                     3'b000: decode_o.int_alu_op = INT_ALU_OP_ADD;
                     3'b001: begin
-                        if (funct7 == 7'b0000000) begin
+                        // RV64移位立即数使用6位shamt，bit25属于shamt而不是funct字段。
+                        if (funct6 == 6'b000000) begin
                             decode_o.int_alu_op = INT_ALU_OP_SLL;
                         end
                     end
@@ -105,9 +126,9 @@ module decoder
                     3'b011: decode_o.int_alu_op = INT_ALU_OP_SLTU;
                     3'b100: decode_o.int_alu_op = INT_ALU_OP_XOR;
                     3'b101: begin
-                        if (funct7 == 7'b0000000) begin
+                        if (funct6 == 6'b000000) begin
                             decode_o.int_alu_op = INT_ALU_OP_SRL;
-                        end else if (funct7 == 7'b0100000) begin
+                        end else if (funct6 == 6'b010000) begin
                             decode_o.int_alu_op = INT_ALU_OP_SRA;
                         end
                     end
@@ -118,14 +139,16 @@ module decoder
                 endcase
 
                 if ((funct3 != 3'b001 && funct3 != 3'b101)
-                 || (funct7 == 7'b0000000)
-                 || (funct3 == 3'b101 && funct7 == 7'b0100000)) begin
+                 || (funct3 == 3'b001 && funct6 == 6'b000000)
+                 || (funct3 == 3'b101
+                     && (funct6 == 6'b000000 || funct6 == 6'b010000))) begin
                     decode_o.rs1_read_en = 1'b1;
                     decode_o.rd_write_en = 1'b1;
                     decode_o.use_imm     = 1'b1;
                     decode_o.imm_type    = IMM_TYPE_I;
-                    decode_o.imm_raw     = decode_i.instruction[31:20];
+                    decode_o.imm_raw[11:0] = decode_i.instruction[31:20];
                     decode_o.is_int_uop  = 1'b1;
+                    decode_o.illegal_instruction = 1'b0;
                 end
             end
 
@@ -188,6 +211,80 @@ module decoder
                     decode_o.rs2_read_en = 1'b1;
                     decode_o.rd_write_en = 1'b1;
                     decode_o.is_int_uop  = 1'b1;
+                    decode_o.illegal_instruction = 1'b0;
+                end
+            end
+
+            // 当前只生成 Rename/LSQ 所需的分类和寄存器副作用。
+            // 地址生成、尺寸/符号扩展和真正访存语义留在 LSU 阶段。
+            OPCODE_LOAD: begin
+                if (funct3 != 3'b111) begin
+                    decode_o.rs1_read_en = 1'b1;
+                    decode_o.rd_write_en = 1'b1;
+                    decode_o.use_imm     = 1'b1;
+                    decode_o.imm_type    = IMM_TYPE_I;
+                    decode_o.imm_raw[11:0] = decode_i.instruction[31:20];
+                    decode_o.is_load     = 1'b1;
+                    unique case (funct3)
+                        3'b000, 3'b100: decode_o.mem_size = MEM_SIZE_1B;
+                        3'b001, 3'b101: decode_o.mem_size = MEM_SIZE_2B;
+                        3'b010, 3'b110: decode_o.mem_size = MEM_SIZE_4B;
+                        3'b011:         decode_o.mem_size = MEM_SIZE_8B;
+                        default:        decode_o.mem_size = MEM_SIZE_1B;
+                    endcase
+                    decode_o.mem_unsigned = funct3[2];
+                    decode_o.illegal_instruction = 1'b0;
+                end
+            end
+
+            OPCODE_STORE: begin
+                if (funct3 inside {3'b000, 3'b001, 3'b010, 3'b011}) begin
+                    decode_o.rs1_read_en = 1'b1;
+                    decode_o.rs2_read_en = 1'b1;
+                    decode_o.use_imm     = 1'b1;
+                    decode_o.imm_type    = IMM_TYPE_S;
+                    decode_o.imm_raw[11:0] = {decode_i.instruction[31:25], decode_i.instruction[11:7]};
+                    decode_o.is_store    = 1'b1;
+                    decode_o.mem_size    = mem_size_t'(funct3[1:0]);
+                    decode_o.illegal_instruction = 1'b0;
+                end
+            end
+
+            OPCODE_BRANCH: begin
+                if (funct3 inside {3'b000, 3'b001, 3'b100, 3'b101, 3'b110, 3'b111}) begin
+                    decode_o.rs1_read_en = 1'b1;
+                    decode_o.rs2_read_en = 1'b1;
+                    decode_o.use_imm     = 1'b1;
+                    decode_o.imm_type    = IMM_TYPE_B;
+                    decode_o.imm_raw[12:0] = {decode_i.instruction[31], decode_i.instruction[7],
+                                              decode_i.instruction[30:25], decode_i.instruction[11:8], 1'b0};
+                    decode_o.is_branch   = 1'b1;
+                    decode_o.needs_checkpoint = 1'b1;
+                    decode_o.illegal_instruction = 1'b0;
+                end
+            end
+
+            OPCODE_JAL: begin
+                decode_o.rd_write_en = 1'b1;
+                decode_o.use_imm     = 1'b1;
+                decode_o.imm_type    = IMM_TYPE_J;
+                decode_o.imm_raw[20:0] = {decode_i.instruction[31], decode_i.instruction[19:12],
+                                           decode_i.instruction[20], decode_i.instruction[30:21], 1'b0};
+                decode_o.is_jal      = 1'b1;
+                decode_o.needs_checkpoint = 1'b1;
+                decode_o.illegal_instruction = 1'b0;
+            end
+
+            OPCODE_JALR: begin
+                if (funct3 == 3'b000) begin
+                    decode_o.rs1_read_en = 1'b1;
+                    decode_o.rd_write_en = 1'b1;
+                    decode_o.use_imm     = 1'b1;
+                    decode_o.imm_type    = IMM_TYPE_I;
+                    decode_o.imm_raw[11:0] = decode_i.instruction[31:20];
+                    decode_o.is_jalr     = 1'b1;
+                    decode_o.needs_checkpoint = 1'b1;
+                    decode_o.illegal_instruction = 1'b0;
                 end
             end
 

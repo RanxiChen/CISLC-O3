@@ -5,6 +5,7 @@
  *
  * 当前已经实现的功能：
  * - 支持参数化的多读端口、多写端口物理寄存器文件
+ * - 当前backend在本模块外对Integer/Memory读请求仲裁为8R，对ALU/Load结果仲裁为4W
  * - 支持同拍写后读旁路，避免本拍读到旧值
  * - reset 后把所有物理寄存器清零，保证当前阶段日志和最小执行链路可预测
  * - p0 作为零物理寄存器：读恒为 0，所有写入请求都会被忽略
@@ -12,14 +13,14 @@
  * - 在未定义 `FPGA_TARGET` 时提供一个行为等价的通用实现，便于当前阶段 backend 集成和静态检查
  *
  * 当前没有实现的功能：
- * - 不负责 rename / free list / writeback 仲裁
+ * - 不负责 rename / free list / 读写端口仲裁；本模块只执行已经grant的物理访问
  * - 不实现 ASIC 工艺下的真多端口寄存器堆优化
  * - 当前阶段不附带测试代码和仿真代码，只先搭功能与注释
  *
  * 参数说明：
  * - NUM_READ_PORTS:  读端口数量（默认8，支持4发射×2操作数）
  * - NUM_WRITE_PORTS: 写端口数量（默认4，支持4发射写回）
- * - NUM_ENTRIES:     物理寄存器数量（默认64）
+ * - NUM_ENTRIES:     物理寄存器数量（默认96）
  * - DATA_WIDTH:      数据宽度（默认64位）
  *
  * 时序行为：
@@ -39,7 +40,7 @@ module physical_regfile
 #(
     parameter int NUM_READ_PORTS  = 8,   // 读端口数量
     parameter int NUM_WRITE_PORTS = 4,   // 写端口数量
-    parameter int NUM_ENTRIES     = 64,  // 物理寄存器数量
+    parameter int NUM_ENTRIES     = 96,  // 物理寄存器数量
     parameter int DATA_WIDTH      = 64,  // 数据宽度
     parameter bit USE_BANK_LATEST_TAG = 1'b1, // 0: 强制bank一致, 1: bank+latest-tag
     parameter bit USE_NO_BANK_FLAT = 1'b0 // 1: 单数组不分bank（后写端口覆盖前写端口）
