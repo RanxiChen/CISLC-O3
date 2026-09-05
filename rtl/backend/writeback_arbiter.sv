@@ -1,7 +1,7 @@
 /**
  * Shared PRF writeback arbiter
  *
- * Four integer result holding registers and one Load result holding register compete for
+ * Integer、Load和JAL/JALR链接值结果保持寄存器竞争
  * PRF_WRITE_PORTS physical write ports. Candidates are selected oldest-first relative to
  * current ROB head. A producer is consumed only when killed, when it has no architectural
  * destination, or when it wins a write port. PRF write, wakeup and ROB complete therefore
@@ -18,6 +18,7 @@ module writeback_arbiter
 ) (
     input int_execute_result_t alu_result_i [NUM_ALUS-1:0],
     input load_result_t load_result_i,
+    input branch_result_t branch_result_i,
     input logic [$clog2(NUM_ROB_ENTRIES)-1:0] rob_head_i,
     input logic resolution_valid_i,
     input logic resolution_mispredict_i,
@@ -25,14 +26,15 @@ module writeback_arbiter
 
     output logic alu_consume_o [NUM_ALUS-1:0],
     output logic load_consume_o,
+    output logic branch_consume_o,
     output logic prf_wr_en_o [PRF_WRITE_PORTS-1:0],
     output logic [PREG_IDX_WIDTH-1:0] prf_wr_addr_o [PRF_WRITE_PORTS-1:0],
     output logic [XLEN-1:0] prf_wr_data_o [PRF_WRITE_PORTS-1:0],
-    output logic complete_valid_o [NUM_ALUS:0],
-    output logic [ROB_IDX_WIDTH-1:0] complete_idx_o [NUM_ALUS:0],
-    output logic [XLEN-1:0] complete_data_o [NUM_ALUS:0]
+    output logic complete_valid_o [NUM_ALUS+1:0],
+    output logic [ROB_IDX_WIDTH-1:0] complete_idx_o [NUM_ALUS+1:0],
+    output logic [XLEN-1:0] complete_data_o [NUM_ALUS+1:0]
 );
-    localparam int NUM_SOURCES = NUM_ALUS + 1;
+    localparam int NUM_SOURCES = NUM_ALUS + 2;
     logic candidate_valid [NUM_SOURCES-1:0];
     logic [ROB_IDX_WIDTH-1:0] candidate_rob [NUM_SOURCES-1:0];
     logic [PREG_IDX_WIDTH-1:0] candidate_dst [NUM_SOURCES-1:0];
@@ -73,6 +75,12 @@ module writeback_arbiter
         candidate_rob[NUM_ALUS] = load_result_i.rob_idx;
         candidate_dst[NUM_ALUS] = load_result_i.dst_preg;
         candidate_data[NUM_ALUS] = load_result_i.result;
+        candidate_valid[NUM_ALUS+1] = branch_result_i.valid
+                                    && branch_result_i.dst_write_en
+                                    && !killed(branch_result_i.branch_mask);
+        candidate_rob[NUM_ALUS+1] = branch_result_i.rob_idx;
+        candidate_dst[NUM_ALUS+1] = branch_result_i.dst_preg;
+        candidate_data[NUM_ALUS+1] = branch_result_i.link_value;
 
         for (int port = 0; port < PRF_WRITE_PORTS; port++) begin
             int chosen;
@@ -113,5 +121,15 @@ module writeback_arbiter
                                    && selected[NUM_ALUS];
         complete_idx_o[NUM_ALUS] = load_result_i.rob_idx;
         complete_data_o[NUM_ALUS] = load_result_i.result;
+        branch_consume_o = !branch_result_i.valid
+                         || killed(branch_result_i.branch_mask)
+                         || !branch_result_i.dst_write_en
+                         || selected[NUM_ALUS+1];
+        complete_valid_o[NUM_ALUS+1] = branch_result_i.valid
+                                     && branch_result_i.dst_write_en
+                                     && !killed(branch_result_i.branch_mask)
+                                     && selected[NUM_ALUS+1];
+        complete_idx_o[NUM_ALUS+1] = branch_result_i.rob_idx;
+        complete_data_o[NUM_ALUS+1] = branch_result_i.link_value;
     end
 endmodule

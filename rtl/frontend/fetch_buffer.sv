@@ -14,12 +14,13 @@
  * 当前没有实现：
  * - 不做 redirect 精确清除。
  * - 不做按 FTQ index 或分支恢复的选择性失效。
- * - 不保存 `ftq_idx`，当前只存前后端共同认可的 `fetch_entry_t`。
+ * - 不单独解释预测语义；`ftq_idx/ftq_last/predicted_next_pc`随公共
+ *   `fetch_entry_t`原样存取。
  *
  * 后续扩展入口：
  * - 后续可把 `icache_req_allowed_o` 的阈值和 IFU/ICache 在飞请求数量绑定。
  * - 后续可增加 redirect/flush metadata，实现错误路径条目的精确清除。
- * - 如果后端需要 FTQ 回查，可统一扩展公共 `fetch_entry_t` 后再接入。
+ * - 后续增加更丰富预测元数据时继续通过公共entry合同迁移。
  *
  * 当前阶段说明：
  * - 当前阶段只实现 RTL 主体，不写测试代码，不写仿真代码。

@@ -70,8 +70,7 @@ package o3_pkg;
     // - exception_* 携带统一的精确异常元数据；取指地址异常的 tval 为故障地址，
     //   非法 RVC 可以在 tval 低位保留原始 16 位编码。
     //
-    // 当前阶段故意不携带 instruction_id 和分支预测元数据；
-    // 它们分别属于 Backend 年龄管理和后续分支预测阶段。
+    // instruction_id仍由Backend分配；FTQ身份与预测下一PC从Frontend随指令传播。
     typedef struct packed {
         logic                     valid;
         logic [PC_WIDTH-1:0]      pc;
@@ -82,6 +81,9 @@ package o3_pkg;
         logic                     exception_valid;
         exception_cause_t         exception_cause;
         logic [XLEN-1:0]          exception_tval;
+        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
+        logic                     ftq_last;
+        logic [PC_WIDTH-1:0]      predicted_next_pc;
     } fetch_entry_t;
 
     // ========================================
@@ -124,6 +126,15 @@ package o3_pkg;
         MEM_SIZE_8B = 2'd3
     } mem_size_t;
 
+    typedef enum logic [2:0] {
+        BRANCH_COND_EQ  = 3'b000,
+        BRANCH_COND_NE  = 3'b001,
+        BRANCH_COND_LT  = 3'b100,
+        BRANCH_COND_GE  = 3'b101,
+        BRANCH_COND_LTU = 3'b110,
+        BRANCH_COND_GEU = 3'b111
+    } branch_cond_t;
+
     // 解码器输出：寄存器索引与整数 ALU 最小语义。
     // 当前阶段为 decode queue / rename 两拍拆分补齐这些信息：
     // - 哪些源寄存器需要读取
@@ -153,6 +164,7 @@ package o3_pkg;
         logic                      is_branch;
         logic                      is_jal;
         logic                      is_jalr;
+        branch_cond_t              branch_cond;
         logic                      needs_checkpoint;
         logic                      illegal_instruction;
     } decode_out_t;
@@ -173,6 +185,9 @@ package o3_pkg;
         logic                      exception_valid;
         exception_cause_t          exception_cause;
         logic [XLEN-1:0]           exception_tval;
+        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
+        logic                      ftq_last;
+        logic [PC_WIDTH-1:0]       predicted_next_pc;
         logic [REG_ADDR_WIDTH-1:0] rs1;
         logic [REG_ADDR_WIDTH-1:0] rs2;
         logic [REG_ADDR_WIDTH-1:0] rd;
@@ -191,6 +206,7 @@ package o3_pkg;
         logic                      is_branch;
         logic                      is_jal;
         logic                      is_jalr;
+        branch_cond_t              branch_cond;
         logic                      needs_checkpoint;
     } decoded_uop_t;
 
@@ -210,6 +226,9 @@ package o3_pkg;
         logic                      exception_valid;
         exception_cause_t          exception_cause;
         logic [XLEN-1:0]           exception_tval;
+        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
+        logic                      ftq_last;
+        logic [PC_WIDTH-1:0]       predicted_next_pc;
         logic [REG_ADDR_WIDTH-1:0] rs1;
         logic [REG_ADDR_WIDTH-1:0] rs2;
         logic [REG_ADDR_WIDTH-1:0] rd;
@@ -228,6 +247,7 @@ package o3_pkg;
         logic                      is_branch;
         logic                      is_jal;
         logic                      is_jalr;
+        branch_cond_t              branch_cond;
         logic                      needs_checkpoint;
         logic [PREG_IDX_WIDTH-1:0] src1_preg;
         logic [PREG_IDX_WIDTH-1:0] src2_preg;
@@ -247,7 +267,15 @@ package o3_pkg;
         logic                      mispredict;
         branch_tag_t               branch_tag;
         logic [ROB_IDX_WIDTH-1:0]  branch_rob_idx;
+        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
+        logic [PC_WIDTH-1:0]       branch_pc;
+        logic                      is_branch;
+        logic                      is_jal;
+        logic                      is_jalr;
+        logic                      actual_taken;
+        logic [PC_WIDTH-1:0]       actual_target;
         logic [PC_WIDTH-1:0]       redirect_pc;
+        logic                      completes_rob;
     } branch_resolution_t;
 
     // 已完成 rename、等待进入整数 issue queue 的表项。
@@ -372,6 +400,47 @@ package o3_pkg;
         logic [XLEN-1:0]           result;
         branch_mask_t              branch_mask;
     } load_result_t;
+
+    typedef struct packed {
+        logic                      valid;
+        logic [INST_ID_WIDTH-1:0]  instruction_id;
+        logic [ROB_IDX_WIDTH-1:0]  rob_idx;
+        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
+        branch_tag_t               branch_tag;
+        branch_mask_t              branch_mask;
+        logic [PC_WIDTH-1:0]       pc;
+        logic [2:0]                inst_len;
+        logic [PC_WIDTH-1:0]       predicted_next_pc;
+        logic                      is_branch;
+        logic                      is_jal;
+        logic                      is_jalr;
+        branch_cond_t              branch_cond;
+        logic [XLEN-1:0]           src1_value;
+        logic [XLEN-1:0]           src2_value;
+        logic [XLEN-1:0]           imm_value;
+        logic [PREG_IDX_WIDTH-1:0] dst_preg;
+        logic                      dst_write_en;
+    } branch_execute_uop_t;
+
+    typedef struct packed {
+        logic                      valid;
+        logic [INST_ID_WIDTH-1:0]  instruction_id;
+        logic [ROB_IDX_WIDTH-1:0]  rob_idx;
+        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
+        branch_tag_t               branch_tag;
+        branch_mask_t              branch_mask;
+        logic                      actual_taken;
+        logic [PC_WIDTH-1:0]       branch_pc;
+        logic                      is_branch;
+        logic                      is_jal;
+        logic                      is_jalr;
+        logic [PC_WIDTH-1:0]       actual_target;
+        logic [PC_WIDTH-1:0]       actual_next_pc;
+        logic                      mispredict;
+        logic [PREG_IDX_WIDTH-1:0] dst_preg;
+        logic                      dst_write_en;
+        logic [XLEN-1:0]           link_value;
+    } branch_result_t;
 
 `ifdef ENABLE_RETIRE_INFO
     // Retire-time architectural observation record.

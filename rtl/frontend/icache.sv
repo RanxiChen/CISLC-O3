@@ -1,6 +1,12 @@
 /**
-* 这个文件讲用来存放使用的ICache
-*/
+ * Blocking Instruction Cache
+ *
+ * 已实现4-way、64B line、16B窗口查找和单miss refill状态机。flush使Cache line
+ * 失效；branch redirect使用kill，只清查找/replay并丢弃迟到refill，不破坏有效数据。
+ * 未实现多miss、MSHR、TLB/PMP和一致性；本阶段不新增测试。
+ * 周期N组合产生ready/hit/refill请求，周期N上升沿锁存查找或推进miss状态，周期N+1
+ * 可见命中返回、等待状态或refill完成数据。
+ */
 
 module ICache #(
     parameter int ADDR_WIDTH = 64,
@@ -12,6 +18,7 @@ module ICache #(
     input  logic                      clk,
     input  logic                      rst,
     input  logic                      flush,
+    input  logic                      kill,
     input  logic                      s0_valid,
     output logic                      s0_ready,
     input  logic [ADDR_WIDTH-1:0]     s0_pc,
@@ -157,7 +164,7 @@ module ICache #(
 
     assign s0_ready = (state_q == ICACHE_WORK);
     assign s0_fire = s0_valid && s0_ready;
-    assign replay_fire = (state_q == ICACHE_DONE) && replay_valid_q && !flush;
+    assign replay_fire = (state_q == ICACHE_DONE) && replay_valid_q && !flush && !kill;
     assign lookup_fire = s0_fire || replay_fire;
     assign lookup_pc = replay_fire ? replay_pc_q : s0_pc;
     assign lookup_set_idx = get_set_index(lookup_pc);
@@ -168,12 +175,12 @@ module ICache #(
     assign refill_req_pc = miss_refill_pc_q;
 
     assign out_hit = (state_q == ICACHE_WORK) && s1_hit;
-    assign out_valid = ((state_q == ICACHE_WORK) && s1_valid_q && s1_hit && !flush) ||
-                       ((state_q == ICACHE_DONE) && !refill_discard_q && !flush);
+    assign out_valid = ((state_q == ICACHE_WORK) && s1_valid_q && s1_hit && !flush && !kill) ||
+                       ((state_q == ICACHE_DONE) && !refill_discard_q && !flush && !kill);
     assign out_pc = (state_q == ICACHE_DONE) ? miss_pc_q : s1_pc_q;
     assign out_data = (state_q == ICACHE_DONE) ? done_data_q : s1_selected_data;
     assign out_error = (state_q == ICACHE_DONE) ? done_error_q : 1'b0;
-    assign work_miss = (state_q == ICACHE_WORK) && s1_valid_q && !s1_hit && !flush;
+    assign work_miss = (state_q == ICACHE_WORK) && s1_valid_q && !s1_hit && !flush && !kill;
     assign lfsr_enable = (state_q == ICACHE_DONE);
 `ifdef O3_ICACHE_DEBUG
     assign dbg_s0_fire = s0_fire;
@@ -274,7 +281,7 @@ module ICache #(
                     `endif
                 end
             end
-        end else if (flush) begin
+        end else if (flush || kill) begin
             s1_valid_q <= 1'b0;
             s1_pc_q <= '0;
             s1_set_idx_q <= '0;
@@ -298,13 +305,15 @@ module ICache #(
                 end
             endcase
 
-            for (int way = 0; way < ICACHE_WAYS; way++) begin
-                for (int set = 0; set < NUM_SETS; set++) begin
-                    `ifdef O3_ICACHE_WAY0_VALID
-                    valid_array_q[way][set] <= (way == 0) ? valid_array_q[way][set] : 1'b0;
-                    `else
-                    valid_array_q[way][set] <= 1'b0;
-                    `endif
+            if (flush) begin
+                for (int way = 0; way < ICACHE_WAYS; way++) begin
+                    for (int set = 0; set < NUM_SETS; set++) begin
+                        `ifdef O3_ICACHE_WAY0_VALID
+                        valid_array_q[way][set] <= (way == 0) ? valid_array_q[way][set] : 1'b0;
+                        `else
+                        valid_array_q[way][set] <= 1'b0;
+                        `endif
+                    end
                 end
             end
         end else begin

@@ -130,6 +130,9 @@ module rename_stage
             renamed_uop_o[lane].exception_valid = decoded_i[lane].exception_valid;
             renamed_uop_o[lane].exception_cause = decoded_i[lane].exception_cause;
             renamed_uop_o[lane].exception_tval = decoded_i[lane].exception_tval;
+            renamed_uop_o[lane].ftq_idx = decoded_i[lane].ftq_idx;
+            renamed_uop_o[lane].ftq_last = decoded_i[lane].ftq_last;
+            renamed_uop_o[lane].predicted_next_pc = decoded_i[lane].predicted_next_pc;
             renamed_uop_o[lane].rs1 = decoded_i[lane].rs1;
             renamed_uop_o[lane].rs2 = decoded_i[lane].rs2;
             renamed_uop_o[lane].rd = decoded_i[lane].rd;
@@ -148,6 +151,7 @@ module rename_stage
             renamed_uop_o[lane].is_branch = decoded_i[lane].is_branch;
             renamed_uop_o[lane].is_jal = decoded_i[lane].is_jal;
             renamed_uop_o[lane].is_jalr = decoded_i[lane].is_jalr;
+            renamed_uop_o[lane].branch_cond = decoded_i[lane].branch_cond;
             renamed_uop_o[lane].needs_checkpoint = decoded_i[lane].needs_checkpoint;
             renamed_uop_o[lane].src1_preg = src1_preg_i[lane];
             renamed_uop_o[lane].src2_preg = src2_preg_i[lane];

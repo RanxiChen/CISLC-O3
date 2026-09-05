@@ -10,15 +10,15 @@
  * - 接入完整Rename Map checkpoint、每分支preg allocation mask、Load Queue、Store Queue和Rename/Dispatch Queue
  * - Dispatch从Rename/Dispatch Queue接受0..DISPATCH_WIDTH条最老连续前缀，并按类型并行分流到Integer/Memory/Branch三个IQ
  * - 三个IQ分别提供容量反压、preg ready跟踪、最老ready候选和branch-mask恢复
- * - 通过branch_resolution_i接受未来BRU的正确/错误解析；错误预测时恢复后端推测状态并输出redirect
+ * - Branch IQ经共享PRF读口进入单发射BRU；结果寄存后广播解析，错误预测恢复并输出redirect
  * - 在 backend 内维护最小 preg_ready table，并把 rename 完成后的整数 uop 按 lane 顺序压入单一 integer issue queue
  * - 在 issue queue 内基于 preg_ready table 做最小真实 wakeup
  * - 在 issue queue 内实现按年龄顺序的 select，并把最靠前的 ready uop 发给多个整数 ALU
- * - Integer/Memory候选按ROB年龄共同竞争逻辑8读口；拿不到一条uop所需全部读口时留在IQ
+ * - Integer/Memory/Branch候选按ROB年龄共同竞争逻辑8读口；拿不到全部读口时留在IQ
  * - 整数RegRead与execute result均为可反压槽；结果没获得写口时保持并阻塞该ALU前级
  * - Memory IQ已接单发射RegRead/AGU/LQ/SQ、Store forwarding和内部单端口Data SRAM
  * - 接入多个 `int_execute_unit`，完成 RV64I R/I 整数算术指令的最小执行链路
- * - 四个ALU结果与一个Load结果按ROB年龄竞争4个PRF写口；grant同拍原子写PRF、wakeup并complete ROB
+ * - 四个ALU、一个Load和JAL/JALR链接结果按ROB年龄竞争4个PRF写口
  * - Store在AGU完成后complete ROB，退休时转为committed SQ entry，Data SRAM接受后才释放
  * - 接入4-wide in-order retire：从ROB队头连续退休最多4条，并把old_dst_preg回收到Free List
  * - 维护从 reset 开始累计的 retired instruction counter，按每拍真实退休条数累加
@@ -30,8 +30,8 @@
  * - 统一 x0/p0 语义：x0 固定映射到 p0，p0 在 physical_regfile 中读恒为 0、写忽略
  *
  * 当前没有实现的功能：
- * - 本模块不产生branch_resolution_i；真实BRU将在后续执行阶段接入该正式接口
- * - Branch IQ仍冻结，真实BRU尚未连接
+ * - 当前预测器固定not-taken，不实现BTB/BHT/RAS训练表
+ * - 不实现多BRU并发、分支执行旁路和预测表训练
  * - Data SRAM不实现Cache/MSHR/PMA/MMU、访问异常、对齐异常或初始化镜像
  * - Store forwarding只处理单个更老Store完整覆盖；未知地址/数据和部分重叠保守阻塞
  * - 四路整数写回向三个IQ广播目的preg；ready在上升沿记入IQ，下一拍参与Select，不做同拍wakeup-select旁路
@@ -50,11 +50,11 @@
  * - 周期 N 组合阶段：
  *   1) decoder 组合地产生 rs1/rs2/rd、use_imm、imm_type、imm_raw、int_alu_op 和最小 uop 语义
  *   2) rename 阶段从 uop_queue 展示的最老有效前缀组合读取 alloc_req / rob_req / rename map 结果
- *   3) Dispatch按三个IQ拍初空位计算队头最大连续前缀；Integer与Memory IQ产生ready候选
+ *   3) Dispatch按三个IQ拍初空位计算队头最大连续前缀；三个IQ产生ready候选
  *   4) 全局读仲裁按ROB年龄分配8个PRF读口，FU忙或端口不足的候选不握手
  *   5) grant候选的PRF读值和扩展立即数锁存进对应RegRead槽
  *   6) int_execute_unit 基于 alu_regread_q 中的真实操作数组合地产生执行结果
- *   7) ALU/Load结果共同竞争4个写口；只有grant结果驱动PRF、preg_ready和ROB complete
+ *   7) ALU/Load/Branch链接结果共同竞争4个写口；只有grant驱动写回和ROB complete
  *   8) LSU组合执行AGU、SQ依赖查询和Store优先的SRAM请求仲裁
  *   9) ROB 当前会从队头开始连续检查最多4项，决定本拍retire的前缀长度
  * - 周期 N 上升沿：
@@ -102,7 +102,8 @@ module backend
     input  fetch_entry_t [MACHINE_WIDTH-1:0] fetch_entry_i,
     input  logic                             fetch_valid_i,
     output logic                             fetch_ready_o,
-    input  branch_resolution_t               branch_resolution_i,
+    output branch_resolution_t               branch_resolution_o,
+    output logic [$clog2(MACHINE_WIDTH+1)-1:0] ftq_release_count_o,
     output logic                             redirect_valid_o,
     output logic [PC_WIDTH-1:0]              redirect_pc_o,
     output logic                             done,
@@ -170,12 +171,14 @@ module backend
     logic                      rename_rs2_read_en [MACHINE_WIDTH-1:0];
     logic                      rename_rd_write_en [MACHINE_WIDTH-1:0];
     logic [INST_ID_WIDTH-1:0]  rob_alloc_instruction_id [MACHINE_WIDTH-1:0];
+    logic [FTQ_INDEX_WIDTH-1:0] rob_alloc_ftq_idx [MACHINE_WIDTH-1:0];
+    logic                       rob_alloc_ftq_last [MACHINE_WIDTH-1:0];
 `ifdef ENABLE_RETIRE_INFO
     logic [PC_WIDTH-1:0]       rob_alloc_pc          [MACHINE_WIDTH-1:0];
     logic [ILEN-1:0]           rob_alloc_instruction [MACHINE_WIDTH-1:0];
     logic [REG_ADDR_WIDTH-1:0] rob_alloc_rd          [MACHINE_WIDTH-1:0];
     logic                      rob_alloc_rd_write_en [MACHINE_WIDTH-1:0];
-    logic [XLEN-1:0]           rob_complete_rd_wdata [NUM_INT_ALUS+1:0];
+    logic [XLEN-1:0]           rob_complete_rd_wdata [NUM_INT_ALUS+2:0];
 `endif
 
     logic [BACKEND_PREG_IDX_WIDTH-1:0] dst_new_preg [MACHINE_WIDTH-1:0];
@@ -235,15 +238,25 @@ module backend
     int_execute_result_t    alu_result_q  [NUM_INT_ALUS-1:0];
     mem_execute_uop_t       mem_execute_q;
     load_result_t           load_result;
+    branch_execute_uop_t    branch_regread_q;
+    branch_result_t         branch_execute_result;
+    branch_result_t         branch_result_q;
+    logic                   branch_resolution_sent_q;
+    branch_resolution_t     branch_resolution_i;
 
     logic alu_result_consume [NUM_INT_ALUS-1:0];
     logic load_result_consume;
+    logic branch_result_consume;
+    logic branch_execute_ready;
+    logic branch_regread_ready;
     logic alu_regread_ready [NUM_INT_ALUS-1:0];
     logic [NUM_INT_ALUS-1:0] int_read_grant;
     logic mem_read_grant;
+    logic branch_read_grant;
     logic [$clog2(PRF_READ_PORTS)-1:0] int_src1_port [NUM_INT_ALUS-1:0];
     logic [$clog2(PRF_READ_PORTS)-1:0] int_src2_port [NUM_INT_ALUS-1:0];
     logic [$clog2(PRF_READ_PORTS)-1:0] mem_src1_port, mem_src2_port;
+    logic [$clog2(PRF_READ_PORTS)-1:0] branch_src1_port, branch_src2_port;
 
     logic [BACKEND_PREG_IDX_WIDTH-1:0] prf_rd_addr [PRF_READ_PORTS-1:0];
     logic [XLEN-1:0]                   prf_rd_data [PRF_READ_PORTS-1:0];
@@ -255,11 +268,11 @@ module backend
     logic [XLEN-1:0]                   exec_result  [NUM_INT_ALUS-1:0];
     logic                              exec_cmp_true[NUM_INT_ALUS-1:0];
     logic                              preg_ready_q [NUM_PHYS_REGS-1:0];
-    logic                              rob_complete_valid [NUM_INT_ALUS+1:0];
-    logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_complete_idx   [NUM_INT_ALUS+1:0];
-    logic                              wb_complete_valid [NUM_INT_ALUS:0];
-    logic [BACKEND_ROB_IDX_WIDTH-1:0]  wb_complete_idx [NUM_INT_ALUS:0];
-    logic [XLEN-1:0]                   wb_complete_data [NUM_INT_ALUS:0];
+    logic                              rob_complete_valid [NUM_INT_ALUS+2:0];
+    logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_complete_idx   [NUM_INT_ALUS+2:0];
+    logic                              wb_complete_valid [NUM_INT_ALUS+1:0];
+    logic [BACKEND_ROB_IDX_WIDTH-1:0]  wb_complete_idx [NUM_INT_ALUS+1:0];
+    logic [XLEN-1:0]                   wb_complete_data [NUM_INT_ALUS+1:0];
     logic                              rob_retire_valid   [NUM_INT_ALUS-1:0];
     logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_retire_idx     [NUM_INT_ALUS-1:0];
     logic [BACKEND_PREG_IDX_WIDTH-1:0] rob_retire_old_dst_preg [NUM_INT_ALUS-1:0];
@@ -271,6 +284,8 @@ module backend
     logic rob_retire_is_store [NUM_INT_ALUS-1:0];
     logic [LQ_IDX_WIDTH-1:0] rob_retire_lq_idx [NUM_INT_ALUS-1:0];
     logic [SQ_IDX_WIDTH-1:0] rob_retire_sq_idx [NUM_INT_ALUS-1:0];
+    logic [FTQ_INDEX_WIDTH-1:0] rob_retire_ftq_idx [NUM_INT_ALUS-1:0];
+    logic rob_retire_ftq_last [NUM_INT_ALUS-1:0];
     logic free_release_valid [NUM_INT_ALUS-1:0];
     logic [BACKEND_LANE_COUNT_WIDTH-1:0] lq_release_count;
     logic                              rob_retire_any;
@@ -447,6 +462,9 @@ module backend
                                                   : (decode_out[i].illegal_instruction
                                                      ? XLEN'(fetch_entry_q[i].raw_instruction)
                                                      : '0);
+            assign decoded_uop[i].ftq_idx        = fetch_entry_q[i].ftq_idx;
+            assign decoded_uop[i].ftq_last       = fetch_entry_q[i].ftq_last;
+            assign decoded_uop[i].predicted_next_pc = fetch_entry_q[i].predicted_next_pc;
             assign decoded_uop[i].rs1            = decode_out[i].rs1;
             assign decoded_uop[i].rs2            = decode_out[i].rs2;
             assign decoded_uop[i].rd             = decode_out[i].rd;
@@ -465,6 +483,7 @@ module backend
             assign decoded_uop[i].is_branch      = !decoded_exception && decode_out[i].is_branch;
             assign decoded_uop[i].is_jal         = !decoded_exception && decode_out[i].is_jal;
             assign decoded_uop[i].is_jalr        = !decoded_exception && decode_out[i].is_jalr;
+            assign decoded_uop[i].branch_cond    = decode_out[i].branch_cond;
             assign decoded_uop[i].needs_checkpoint = !decoded_exception && decode_out[i].needs_checkpoint;
         end
     endgenerate
@@ -482,6 +501,8 @@ module backend
                                                && rename_uop_head[i].needs_checkpoint;
             assign rob_exception[i] = renamed_uop[i].exception_valid;
             assign rob_alloc_instruction_id[i] = rename_uop_head[i].instruction_id;
+            assign rob_alloc_ftq_idx[i] = rename_uop_head[i].ftq_idx;
+            assign rob_alloc_ftq_last[i] = rename_uop_head[i].ftq_last;
 `ifdef ENABLE_RETIRE_INFO
             assign rob_alloc_pc[i]          = rename_uop_head[i].pc;
             assign rob_alloc_instruction[i] = rename_uop_head[i].instruction;
@@ -515,9 +536,22 @@ module backend
     assign uopq_deq_accept_count = rename_accept_count;
     assign redirect_valid_o = branch_resolution_i.valid && branch_resolution_i.mispredict;
     assign redirect_pc_o = branch_resolution_i.redirect_pc;
+    assign branch_resolution_o = branch_resolution_i;
+    assign branch_resolution_i.valid = branch_result_q.valid && !branch_resolution_sent_q;
+    assign branch_resolution_i.mispredict = branch_result_q.mispredict;
+    assign branch_resolution_i.branch_tag = branch_result_q.branch_tag;
+    assign branch_resolution_i.branch_rob_idx = branch_result_q.rob_idx;
+    assign branch_resolution_i.ftq_idx = branch_result_q.ftq_idx;
+    assign branch_resolution_i.branch_pc = branch_result_q.branch_pc;
+    assign branch_resolution_i.is_branch = branch_result_q.is_branch;
+    assign branch_resolution_i.is_jal = branch_result_q.is_jal;
+    assign branch_resolution_i.is_jalr = branch_result_q.is_jalr;
+    assign branch_resolution_i.actual_taken = branch_result_q.actual_taken;
+    assign branch_resolution_i.actual_target = branch_result_q.actual_target;
+    assign branch_resolution_i.redirect_pc = branch_result_q.actual_next_pc;
+    assign branch_resolution_i.completes_rob = !branch_result_q.dst_write_en;
     assign done            = 1'b0;
-    // Integer与Memory候选共享8个逻辑PRF读口；真正grant在下方年龄优先仲裁器产生。
-    assign br_iq_issue_ready = '0;
+    // Integer、Memory与Branch候选共享8个逻辑PRF读口；真正grant由年龄优先仲裁产生。
     assign issueq_issue_ready = int_read_grant;
     assign retired_inst_count_o = retired_inst_count_q;
 
@@ -553,6 +587,7 @@ module backend
 
     always_comb begin
         lq_release_count = '0;
+        ftq_release_count_o = '0;
         for (int port = 0; port < NUM_INT_ALUS; port++) begin
             sq_commit_valid[port] = rob_retire_valid[port] && rob_retire_is_store[port];
             free_release_valid[port] = rob_retire_valid[port]
@@ -560,6 +595,9 @@ module backend
                                     && (rob_retire_old_dst_preg[port] != '0);
             if (rob_retire_valid[port] && rob_retire_is_load[port]) begin
                 lq_release_count = lq_release_count + BACKEND_LANE_COUNT_WIDTH'(1);
+            end
+            if (rob_retire_valid[port] && rob_retire_ftq_last[port]) begin
+                ftq_release_count_o = ftq_release_count_o + BACKEND_LANE_COUNT_WIDTH'(1);
             end
         end
     end
@@ -589,20 +627,25 @@ module backend
     always_comb begin
         logic [NUM_INT_ALUS-1:0] considered_int;
         logic considered_mem;
+        logic considered_branch;
         int unsigned read_used;
 
         prf_rd_addr = '{default: '0};
         int_read_grant = '0;
         mem_read_grant = 1'b0;
+        branch_read_grant = 1'b0;
         int_src1_port = '{default: '0};
         int_src2_port = '{default: '0};
         mem_src1_port = '0;
         mem_src2_port = '0;
+        branch_src1_port = '0;
+        branch_src2_port = '0;
         considered_int = '0;
         considered_mem = 1'b0;
+        considered_branch = 1'b0;
         read_used = 0;
 
-        for (int choice = 0; choice < NUM_INT_ALUS + 1; choice++) begin
+        for (int choice = 0; choice < NUM_INT_ALUS + 2; choice++) begin
             int chosen_kind;
             int chosen_idx;
             int unsigned chosen_age;
@@ -628,6 +671,13 @@ module backend
                 chosen_kind = 1;
                 chosen_idx = 0;
                 chosen_age = rob_age(mem_iq_issue_uop[0].rob_idx);
+            end
+            if (!branch_resolution_i.valid && !considered_branch && br_iq_issue_valid[0]
+             && branch_regread_ready
+             && ((chosen_kind < 0) || (rob_age(br_iq_issue_uop[0].rob_idx) < chosen_age))) begin
+                chosen_kind = 2;
+                chosen_idx = 0;
+                chosen_age = rob_age(br_iq_issue_uop[0].rob_idx);
             end
 
             if (chosen_kind == 0) begin
@@ -666,11 +716,29 @@ module backend
                         read_used++;
                     end
                 end
+            end else if (chosen_kind == 2) begin
+                considered_branch = 1'b1;
+                read_need = int'(br_iq_issue_uop[0].rs1_read_en)
+                          + int'(br_iq_issue_uop[0].rs2_read_en);
+                if ((read_used + read_need) <= PRF_READ_PORTS) begin
+                    branch_read_grant = 1'b1;
+                    if (br_iq_issue_uop[0].rs1_read_en) begin
+                        branch_src1_port = $clog2(PRF_READ_PORTS)'(read_used);
+                        prf_rd_addr[read_used] = br_iq_issue_uop[0].src1_preg;
+                        read_used++;
+                    end
+                    if (br_iq_issue_uop[0].rs2_read_en) begin
+                        branch_src2_port = $clog2(PRF_READ_PORTS)'(read_used);
+                        prf_rd_addr[read_used] = br_iq_issue_uop[0].src2_preg;
+                        read_used++;
+                    end
+                end
             end
         end
 
         int_iq_issue_ready = int_read_grant;
         mem_iq_issue_ready[0] = mem_read_grant;
+        br_iq_issue_ready[0] = branch_read_grant;
     end
 
     always_comb begin
@@ -800,7 +868,7 @@ module backend
         .MACHINE_WIDTH(MACHINE_WIDTH),
         .NUM_ROB_ENTRIES(NUM_ROB_ENTRIES),
         .NUM_PHYS_REGS(NUM_PHYS_REGS),
-        .COMPLETE_WIDTH(NUM_INT_ALUS + 2),
+        .COMPLETE_WIDTH(NUM_INT_ALUS + 3),
         .RETIRE_WIDTH(NUM_INT_ALUS)
     ) u_rob (
         .clk(clk),
@@ -816,6 +884,8 @@ module backend
         .alloc_lq_idx_i(lq_idx),
         .alloc_sq_idx_i(sq_idx),
         .alloc_branch_mask_i(rename_branch_mask),
+        .alloc_ftq_idx_i(rob_alloc_ftq_idx),
+        .alloc_ftq_last_i(rob_alloc_ftq_last),
         .alloc_instruction_id_i(rob_alloc_instruction_id),
 `ifdef ENABLE_RETIRE_INFO
         .alloc_pc_i(rob_alloc_pc),
@@ -828,6 +898,7 @@ module backend
         .resolution_mispredict_i(branch_resolution_i.mispredict),
         .resolution_tag_i(branch_resolution_i.branch_tag),
         .resolution_rob_idx_i(branch_resolution_i.branch_rob_idx),
+        .resolution_completes_rob_i(branch_resolution_i.completes_rob),
         .restore_tail_i(restore_rob_tail),
 `ifdef ENABLE_RETIRE_INFO
         .complete_rd_wdata_i(rob_complete_rd_wdata),
@@ -847,7 +918,9 @@ module backend
         .retire_is_store_o(rob_retire_is_store),
         .retire_lq_idx_o(rob_retire_lq_idx),
         .retire_sq_idx_o(rob_retire_sq_idx),
-        .retire_instruction_id_o(rob_retire_instruction_id)
+        .retire_instruction_id_o(rob_retire_instruction_id),
+        .retire_ftq_idx_o(rob_retire_ftq_idx),
+        .retire_ftq_last_o(rob_retire_ftq_last)
 `ifdef ENABLE_RETIRE_INFO
         ,.retire_info_o(retire_info_o)
 `endif
@@ -1036,32 +1109,39 @@ module backend
         .resolution_tag_i(branch_resolution_i.branch_tag)
     );
 
+    branch_execute_unit u_branch_execute_unit (
+        .uop_i(branch_regread_q),
+        .result_o(branch_execute_result)
+    );
+
     writeback_arbiter #(
         .NUM_ALUS(NUM_INT_ALUS), .PRF_WRITE_PORTS(PRF_WRITE_PORTS),
         .NUM_ROB_ENTRIES(NUM_ROB_ENTRIES)
     ) u_writeback_arbiter (
-        .alu_result_i(alu_result_q), .load_result_i(load_result), .rob_head_i(rob_head),
+        .alu_result_i(alu_result_q), .load_result_i(load_result),
+        .branch_result_i(branch_result_q), .rob_head_i(rob_head),
         .resolution_valid_i(branch_resolution_i.valid),
         .resolution_mispredict_i(branch_resolution_i.mispredict),
         .resolution_tag_i(branch_resolution_i.branch_tag),
         .alu_consume_o(alu_result_consume), .load_consume_o(load_result_consume),
+        .branch_consume_o(branch_result_consume),
         .prf_wr_en_o(prf_wr_en), .prf_wr_addr_o(prf_wr_addr), .prf_wr_data_o(prf_wr_data),
         .complete_valid_o(wb_complete_valid), .complete_idx_o(wb_complete_idx),
         .complete_data_o(wb_complete_data)
     );
 
     always_comb begin
-        for (int source = 0; source < NUM_INT_ALUS + 1; source++) begin
+        for (int source = 0; source < NUM_INT_ALUS + 2; source++) begin
             rob_complete_valid[source] = wb_complete_valid[source];
             rob_complete_idx[source] = wb_complete_idx[source];
 `ifdef ENABLE_RETIRE_INFO
             rob_complete_rd_wdata[source] = wb_complete_data[source];
 `endif
         end
-        rob_complete_valid[NUM_INT_ALUS+1] = store_complete_valid;
-        rob_complete_idx[NUM_INT_ALUS+1] = store_complete_rob_idx;
+        rob_complete_valid[NUM_INT_ALUS+2] = store_complete_valid;
+        rob_complete_idx[NUM_INT_ALUS+2] = store_complete_rob_idx;
 `ifdef ENABLE_RETIRE_INFO
-        rob_complete_rd_wdata[NUM_INT_ALUS+1] = '0;
+        rob_complete_rd_wdata[NUM_INT_ALUS+2] = '0;
 `endif
     end
 
@@ -1070,6 +1150,8 @@ module backend
             assign alu_regread_ready[i] = !alu_regread_q[i].valid || alu_result_consume[i];
         end
     endgenerate
+    assign branch_execute_ready = !branch_result_q.valid || branch_result_consume;
+    assign branch_regread_ready = !branch_regread_q.valid || branch_execute_ready;
 
     physical_regfile #(
         .NUM_READ_PORTS(PRF_READ_PORTS),
@@ -1115,6 +1197,9 @@ module backend
             alu_regread_q          <= '{default: '0};
             alu_result_q           <= '{default: '0};
             mem_execute_q          <= '0;
+            branch_regread_q       <= '0;
+            branch_result_q        <= '0;
+            branch_resolution_sent_q <= 1'b0;
             retired_inst_count_q   <= 64'd0;
             for (int preg = 0; preg < NUM_PHYS_REGS; preg++) begin
                 preg_ready_q[preg] <= (preg < NUM_ARCH_REGS);
@@ -1683,6 +1768,49 @@ module backend
                 alu_issue_q[alu].imm_type <= issueq_issue_entry[alu].imm_type;
                 alu_issue_q[alu].int_alu_op <= issueq_issue_entry[alu].int_alu_op;
                 alu_issue_q[alu].branch_mask <= resolved_branch_mask(issueq_issue_entry[alu].branch_mask);
+            end
+
+            // BRU结果槽把解析广播与JAL/JALR链接值写回解耦。解析只发一次；
+            // 链接值未取得共享写口时，结果槽继续保持并反压Branch流水线。
+            if (branch_execute_ready) begin
+                branch_result_q <= branch_execute_result;
+                branch_result_q.valid <= branch_execute_result.valid
+                                      && !killed_by_resolution(branch_execute_result.branch_mask);
+                branch_result_q.branch_mask <= resolved_branch_mask(branch_execute_result.branch_mask);
+                branch_resolution_sent_q <= 1'b0;
+            end else if (branch_resolution_i.valid) begin
+                branch_resolution_sent_q <= 1'b1;
+            end
+
+            // Branch候选只有同时获得全部所需PRF读口后才从IQ删除并锁存。
+            if (branch_resolution_i.valid && branch_resolution_i.mispredict
+             && branch_regread_q.branch_mask[branch_resolution_i.branch_tag]) begin
+                branch_regread_q.valid <= 1'b0;
+            end else if (branch_regread_ready) begin
+                branch_regread_q.valid <= branch_read_grant;
+                branch_regread_q.instruction_id <= br_iq_issue_uop[0].instruction_id;
+                branch_regread_q.rob_idx <= br_iq_issue_uop[0].rob_idx;
+                branch_regread_q.ftq_idx <= br_iq_issue_uop[0].ftq_idx;
+                branch_regread_q.branch_tag <= br_iq_issue_uop[0].branch_tag;
+                branch_regread_q.branch_mask <= resolved_branch_mask(br_iq_issue_uop[0].branch_mask);
+                branch_regread_q.pc <= br_iq_issue_uop[0].pc;
+                branch_regread_q.inst_len <= br_iq_issue_uop[0].inst_len;
+                branch_regread_q.predicted_next_pc <= br_iq_issue_uop[0].predicted_next_pc;
+                branch_regread_q.is_branch <= br_iq_issue_uop[0].is_branch;
+                branch_regread_q.is_jal <= br_iq_issue_uop[0].is_jal;
+                branch_regread_q.is_jalr <= br_iq_issue_uop[0].is_jalr;
+                branch_regread_q.branch_cond <= br_iq_issue_uop[0].branch_cond;
+                branch_regread_q.src1_value <= br_iq_issue_uop[0].rs1_read_en
+                                             ? prf_rd_data[branch_src1_port] : '0;
+                branch_regread_q.src2_value <= br_iq_issue_uop[0].rs2_read_en
+                                             ? prf_rd_data[branch_src2_port] : '0;
+                branch_regread_q.imm_value <= expand_imm_value(
+                    br_iq_issue_uop[0].imm_type, br_iq_issue_uop[0].imm_raw);
+                branch_regread_q.dst_preg <= br_iq_issue_uop[0].dst_preg;
+                branch_regread_q.dst_write_en <= br_iq_issue_uop[0].rd_write_en
+                                               && (br_iq_issue_uop[0].rd != '0);
+            end else if (branch_resolution_i.valid) begin
+                branch_regread_q.branch_mask <= resolved_branch_mask(branch_regread_q.branch_mask);
             end
 
             if (!mem_execute_q.valid || mem_execute_ready) begin

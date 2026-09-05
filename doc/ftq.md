@@ -1,197 +1,75 @@
-# FTQ 字段说明
+# FTQ 字段与生命周期
 
-## 文档定位
-- 本文记录 `rtl/frontend/ftq.sv` 中第一版 FTQ 类型定义。
-- 当前 `ftq` 模块已经实现 BPU 入队、IFU 消费和三指针骨架。
-- 当前 FTQ 面向按 block 进行分支预测的前端，用来保存每个 fetch block 的预测边界、控制流信息和后续恢复所需元信息。
+FTQ是16项预测块环形队列。它保存预测控制记录，不保存ICache返回的指令数据；IFU消费
+entry以后也不会立即释放，必须等待对应块在Backend提交。
 
-## 基础常量
-- `FTQ_DEPTH`
-  - 后续 FTQ 环形队列的表项数量。
-  - 当前先固定为 16。
-- `FTQ_BLOCK_BYTES`
-  - 一个 FTQ block 覆盖的字节数。
-  - 当前先固定为 32B。
-- `FTQ_FETCH_WINDOW_BYTES`
-  - IFU 一次取指窗口的字节数。
-  - 当前先固定为 16B，只作为 FTQ 与 IFU 边界说明；实际窗口拆分和 lane mask 由 IFU 管理。
-- `FTQ_BRANCH_SLOT_WIDTH`
-  - `branch_slot` 的宽度。
-  - 用于表示分支指令在当前 fetch block 的第几个 lane。
-  - 当前 32B block 最多包含 8 条 32 位指令，因此该宽度先固定为 3。
-- `FTQ_INDEX_WIDTH`
-  - `ftq_idx_t` 的宽度。
-  - 后续分支执行或 redirect 回查 FTQ 时使用。
-- `FTQ_EXCEPTION_CAUSE_WIDTH`
-  - `exception_cause` 的宽度。
-  - 当前先保留 8 位，具体 cause 编码后续再统一。
+## 块参数
 
-## 分支类型
-- `FTQ_BRANCH_NONE`
-  - 当前 block 没有控制流指令。
-- `FTQ_BRANCH_COND`
-  - 条件分支。
-- `FTQ_BRANCH_JAL`
-  - RISC-V `JAL` 直接跳转。
-- `FTQ_BRANCH_JALR`
-  - RISC-V `JALR` 间接跳转。
-- `FTQ_BRANCH_CALL`
-  - 调用类跳转，后续可用于 RAS push。
-- `FTQ_BRANCH_RET`
-  - 返回类跳转，后续可用于 RAS pop。
+- `FTQ_BLOCK_BYTES=32`：当前预测块最大范围。
+- `FTQ_FETCH_WINDOW_BYTES=16`：串行IFU一次ICache请求宽度。
+- `FTQ_INDEX_WIDTH=4`：16项FTQ索引宽度。
 
-## FTQ Entry 字段
-- `valid`
-  - 当前 FTQ entry 是否有效。
-  - 后续让一个 block 失效时，预期只清这个字段，不立即搬移其它 entry。
-- `start_pc`
-  - 当前 fetch block 的起始 PC。
-- `end_pc`
-  - 当前 fetch block 的开区间结束 PC。
-  - 含义是顺序取指下第一条不属于本 block 的指令地址。
-- `has_branch`
-  - 当前 block 内是否包含分支、跳转、调用或返回类控制流指令。
-- `branch_pc`
-  - 当前 block 内控制流指令的 PC。
-  - 当 `has_branch=0` 时该字段无效。
-- `branch_slot`
-  - 控制流指令在当前 fetch block 内的 lane 编号。
-  - 相比只保存 `branch_pc`，该字段更方便做 block 内 lane 级对账。
-- `branch_type`
-  - 当前控制流指令的类型。
-- `pred_taken`
-  - 前端对当前控制流指令的预测方向。
-  - 当 `has_branch=0` 时通常为 0。
-- `target_pc`
-  - 如果预测或实际结果为 taken，控制流跳转到的目标 PC。
-- `fallthrough_pc`
-  - 如果预测或实际结果为 not-taken，顺序执行应该到达的 PC。
-- `next_pc`
-  - 前端当时实际选择的下一个 fetch PC。
-  - 通常等于 `pred_taken ? target_pc : fallthrough_pc`，但保留成独立字段便于 debug 和后续复杂预测器对账。
-- `exception`
-  - 当前 fetch block 是否携带取指异常。
-- `exception_cause`
-  - 取指异常原因。
-  - 当前只保留字段，具体编码后续统一。
+预测块使用`[start_pc,end_pc)`表示有效范围。未来预测到块内taken控制流时，块可以在
+该控制流指令后提前结束；当前BPU没有预测表，始终生成完整32B顺序块。
 
-## 不属于 FTQ Entry 的信息
-- `fetch_mask` 不放在 FTQ entry 中。
-- 原因是 FTQ 描述的是 block 级预测结果，而 IFU 的实际取指窗口当前是 16B，小于当前 FTQ block 的 32B。
-- 一个 FTQ block 后续可能由 IFU 分多拍取完，每拍哪些 lane 有效应由 IFU 根据取指窗口、PC 对齐、ICache 返回、跨 line、跨页和异常情况自行生成。
+## Entry内容
 
-## 目标结构
-FTQ 后续不按普通 FIFO 实现。普通 FIFO 在消费后会释放队头 entry，但 FTQ entry 在被 IFU 消费后仍需要保留，供后端分支解析、redirect 恢复和后续调试回查使用。
+预测阶段写入：
 
-目标结构是多指针环形窗口：
+- `start_pc/end_pc`
+- `has_branch/branch_pc/branch_slot/branch_type`
+- `pred_taken/target_pc/fallthrough_pc/next_pc`
+- 块级取指异常占位
 
-- `entries_q[FTQ_DEPTH]`
-  - 保存所有 `ftq_entry_t`。
-- `allocated_q[FTQ_DEPTH]`
-  - 表示对应槽位是否已经被 FTQ 分配。
-  - 分配表示该槽位属于当前 FTQ 窗口，不等于该 block 一定仍在正确路径上。
-- `consumed_q[FTQ_DEPTH]`
-  - 表示对应 entry 是否已经提供给 IFU 消费过。
-  - IFU 消费只设置该位，不清 entry 内容，也不清 `entry.valid`。
-- `alloc_tail_q`
-  - BPU 写入新 block 的位置。
-  - 当前阶段已经由 BPU 入队端推进。
-- `ifu_head_q`
-  - IFU 下一次消费 entry 的位置。
-  - 当前阶段已经由 IFU 消费端推进。
-- `release_head_q`
-  - 后续 commit、安全回收或其它释放机制真正释放 entry 的位置。
-  - 当前阶段只 reset，不推进。
-- `allocated_count_q`
-  - 当前已经分配但尚未 release 的 entry 数量。
-  - 用于判断 FTQ 是否已满，决定是否对 BPU 拉高 `bpu_ready_o`。
-- `entry.valid`
-  - 表示该 block 是否仍属于当前有效路径。
-  - 失效某个 block 时清 `entry.valid`，但不等价于释放该槽位。
+BRU解析后回填：
 
-## Entry 生命周期
-目标生命周期如下：
+- `actual_valid`
+- `actual_branch_pc/actual_branch_type`
+- `actual_taken/actual_target`
 
-1. BPU 产生一个预测 block，在 `alloc_tail_q` 分配 FTQ entry。
-2. IFU 从 `ifu_head_q` 消费该 entry，拿到 block 级 PC 边界和预测信息。
-3. IFU 消费后只标记 `consumed_q`，entry 继续保留。
-4. 后端分支执行、redirect 或调试逻辑仍可通过 `ftq_idx` 回查这个 entry。
-5. 当 commit 或其它安全回收机制确认该 entry 不再需要时，才由 `release_head_q` 真正释放槽位。
-6. flush 或 redirect 可以清掉错误路径上的 `entry.valid`，并修正相关指针。
+回填内容在Commit释放entry的同拍形成训练观察输出；当前BPU不消费它。
 
-## 当前阶段实现范围
-当前阶段实现 BPU 入队端和 IFU 消费端，保留 release 指针但不实现 release/commit 回收，不实现失效和 flush。
+## 三指针
 
-### Reset 行为
-Reset 后 FTQ 为空，不再预置顺序 block：
+- `alloc_tail_q`：BPU写新预测块的位置。
+- `ifu_head_q`：IFU消费最老未取指块的位置。
+- `release_head_q`：Commit释放最老已完成块的位置。
+- `allocated_count_q`：已分配但尚未释放的entry数量，用于反压BPU。
 
-- `entries_q = 0`
-- `allocated_q = 0`
-- `consumed_q = 0`
-- `alloc_tail_q = 0`
-- `ifu_head_q = 0`
-- `release_head_q = 0`
-- `allocated_count_q = 0`
+周期N的BPU ready/valid握手写入`alloc_tail`；IFU ready/valid握手只标记entry已消费并
+推进`ifu_head`。Backend本拍提交的`ftq_last`数量作为`release_count`，上升沿从
+`release_head`连续清除对应数量的entry。三种动作在无恢复时可以同拍发生，count按
+“分配数减释放数”原子更新。
 
-reset 释放后，BPU 从 `frontend.reset_pc_i` 开始生成第一个 `ftq_entry_t`，FTQ 在未满时接收该 entry。
+## 指令身份
 
-### BPU 入队端握手
-FTQ 从 BPU 接收 block 级预测结果：
+IFU从FTQ取得块时，把下列字段写入每条`fetch_entry_t`：
 
-- `bpu_valid_i`
-  - BPU 当前有一个 `ftq_entry_t` 可以写入 FTQ。
-- `bpu_ready_o`
-  - FTQ 未满时为 1。
-  - 当前定义为 `allocated_count_q < FTQ_DEPTH`。
-- `bpu_entry_i`
-  - BPU 生成的 fetch block。
+- `ftq_idx`：所属FTQ entry。
+- `ftq_last`：块内最后一条有效指令。
+- `predicted_next_pc`：该指令当初预测的下一PC。
 
-当 `bpu_valid_i && bpu_ready_o` 成立时：
+这些字段经过Decode/Rename进入ROB。ROB从队头提交带`ftq_last`的指令时产生FTQ释放。
 
-- `entries_q[alloc_tail_q] <= bpu_entry_i`。
-- `allocated_q[alloc_tail_q] <= 1`。
-- `consumed_q[alloc_tail_q] <= 0`。
-- `alloc_tail_q` 前进到下一个 entry。
-- `allocated_count_q` 加 1。
+## Mispredict恢复
 
-如果 `allocated_count_q == FTQ_DEPTH`：
+BRU的`branch_resolution`携带`ftq_idx`、branch checkpoint tag、实际方向、实际目标和
+正确下一PC。误预测时FTQ：
 
-- `bpu_ready_o = 0`。
-- 即使 IFU 同拍消费 entry，也不会释放容量。
-- 只有未来 release/commit 回收逻辑才能让 FTQ 再次接收 BPU entry。
+1. 保留包含出错分支的entry并回填实际结果。
+2. 删除该entry之后、`alloc_tail`之前的所有年轻entry。
+3. 把`alloc_tail`和`ifu_head`恢复到出错entry的下一个位置。
+4. 保持`release_head`不变，出错entry仍等待非推测提交。
 
-### IFU 消费端握手
-FTQ 向 IFU 提供 ready/valid 风格接口：
+如果默认not-taken在块中部遇到真实taken分支，原块尾指令会被后端杀掉。ROB同时把
+该分支标记成新的`ftq_last`，保证它提交时仍能释放这个FTQ entry。
 
-- `ifu_valid_o`
-  - 当前 `ifu_head_q` 指向的 entry 已分配、有效且尚未被 IFU 消费时为 1。
-- `ifu_ready_i`
-  - IFU 表示本拍接受当前 entry。
-- `ifu_entry_o`
-  - 当前提供给 IFU 的 FTQ entry。
-- `ifu_ftq_idx_o`
-  - 当前 entry 对应的 FTQ index。
+外部flush清空全部FTQ状态；普通正确分支解析只回填实际结果，不改变三个指针。
 
-当 `ifu_valid_o && ifu_ready_i` 成立时：
+## 当前限制
 
-- `consumed_q[ifu_head_q]` 置 1。
-- `ifu_head_q` 前进到下一个 entry。
-- 不清 `entries_q[ifu_head_q]`。
-- 不清 `entries_q[ifu_head_q].valid`。
-- 不清 `allocated_q[ifu_head_q]`。
-- 不减少 `allocated_count_q`。
-
-### 当前容量限制
-当前 FTQ 已经是三指针骨架，但 release 端尚未实现。因此：
-
-1. BPU 最多可以向 FTQ 分配 `FTQ_DEPTH` 个 entry。
-2. IFU 可以按顺序消费这些 entry。
-3. IFU 消费后 entry 仍然保留，容量不会释放。
-4. 当 `allocated_count_q == FTQ_DEPTH` 后，`bpu_ready_o=0`，BPU 停在当前 PC。
-5. IFU 消费完所有已分配 entry 后，`ifu_valid_o=0`，前端停止继续向后产生新 fetch block。
-
-### 当前未实现
-- 尚未实现 release 端。
-- 尚未实现按 `ftq_idx` 失效。
-- 尚未实现 flush 和 redirect。
-- 尚未实现后端或 branch execute 的 FTQ 回查端口。
+- 训练观察没有接BTB/BHT/RAS。
+- 一个FTQ entry只保存一组实际控制流训练记录。
+- 没有BPU到IFU同拍bypass。
+- 没有多线程、复杂历史恢复或多路预测器更新仲裁。
+- 本阶段没有更新或运行测试，只做RTL静态检查。

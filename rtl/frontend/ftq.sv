@@ -1,5 +1,5 @@
 /**
- * Fetch Target Queue — BPU 入队三指针骨架
+ * Fetch Target Queue — prediction/fetch/commit三指针队列
  *
  * 当前已经实现的内容：
  * - BPU 入队端口（bpu_valid_i / bpu_ready_o / bpu_entry_i）
@@ -9,15 +9,11 @@
  * - reset 后 FTQ 为空，运行时由 BPU 写入、IFU 消费
  *
  * 当前没有实现的内容：
- * - 不实现 release / commit 回收（release_head_q 只保留状态，不推进）
- * - 不实现 flush / redirect / invalidate
- * - 不实现后端或 branch execute 的 FTQ 回查端口
+ * - 训练观察输出尚未接入BTB/BHT/RAS
  * - 不实现 BPU-to-IFU bypass（BPU 入队的 entry 下一拍才可见于 IFU）
  *
  * 后续扩展入口：
- * - release 逻辑会清 allocated_q / consumed_q / entry，推进 release_head_q，
- *   并将 allocated_count_q 减 1，从而释放 FTQ 容量
- * - flush / redirect 逻辑需要同时维护三指针和 allocated_count_q
+ * - 真实预测器可消费train输出并生成带预测控制流边界的ftq_entry
  *
  * 逐周期说明：
  * - 周期 N 组合阶段：
@@ -36,8 +32,9 @@
  *      - 置 consumed_q[ifu_head_q]=1，ifu_head_q 前进
  *      - 不清 entries_q，不清 allocated_q，不减少 allocated_count_q
  *   4) bpu_fire 与 ifu_fire 可同拍成立，各自独立推进
+ *   5) release_count清除最老连续entry；mispredict优先保留目标块并截断年轻项
  * - 周期 N+1：
- *   看到更新后的指针；BPU 入队的 entry 此拍才可被 IFU 看到
+ *   看到更新后的三指针、容量和恢复后的正确路径分配位置
  */
 
 package ftq_pkg;
@@ -80,6 +77,12 @@ package ftq_pkg;
         ftq_pc_t                    fallthrough_pc;
         ftq_pc_t                    next_pc;
 
+        logic                       actual_valid;
+        ftq_pc_t                    actual_branch_pc;
+        ftq_branch_type_t           actual_branch_type;
+        logic                       actual_taken;
+        ftq_pc_t                    actual_target;
+
         logic                       exception;
         ftq_exception_cause_t       exception_cause;
     } ftq_entry_t;
@@ -88,9 +91,13 @@ endpackage
 
 module ftq
     import ftq_pkg::*;
+#(
+    parameter int RELEASE_WIDTH = o3_pkg::BACKEND_MACHINE_WIDTH
+)
 (
     input  logic       clk_i,
     input  logic       rst_i,
+    input  logic       flush_i,
 
     // BPU enqueue port
     input  logic       bpu_valid_i,
@@ -101,7 +108,12 @@ module ftq
     output logic       ifu_valid_o,
     input  logic       ifu_ready_i,
     output ftq_entry_t ifu_entry_o,
-    output ftq_idx_t   ifu_ftq_idx_o
+    output ftq_idx_t   ifu_ftq_idx_o,
+
+    input  logic [$clog2(RELEASE_WIDTH+1)-1:0] release_count_i,
+    input  o3_pkg::branch_resolution_t         resolution_i,
+    output logic [RELEASE_WIDTH-1:0]           train_valid_o,
+    output ftq_entry_t                         train_entry_o [RELEASE_WIDTH-1:0]
 
     `ifdef O3_FRONTEND_DEBUG
     ,output logic       dbg_ifu_fire_o
@@ -145,8 +157,12 @@ module ftq
         end
     endfunction
 
+    function automatic ftq_idx_t ptr_add(input ftq_idx_t ptr, input int unsigned offset);
+        ptr_add = ftq_idx_t'((int'(ptr) + offset) % FTQ_DEPTH);
+    endfunction
+
     // BPU enqueue
-    assign bpu_ready_o = (allocated_count_q < FTQ_DEPTH);
+    assign bpu_ready_o = (allocated_count_q < $clog2(FTQ_DEPTH+1)'(FTQ_DEPTH));
     assign bpu_fire    = bpu_valid_i && bpu_ready_o;
 
     // IFU consume
@@ -157,8 +173,19 @@ module ftq
     assign ifu_ftq_idx_o = ifu_head_q;
     assign ifu_fire      = ifu_valid_o && ifu_ready_i;
 
+    always_comb begin
+        train_valid_o = '0;
+        train_entry_o = '{default: '0};
+        for (int lane = 0; lane < RELEASE_WIDTH; lane++) begin
+            if (lane < int'(release_count_i)) begin
+                train_entry_o[lane] = entries_q[ptr_add(release_head_q, lane)];
+                train_valid_o[lane] = entries_q[ptr_add(release_head_q, lane)].actual_valid;
+            end
+        end
+    end
+
     always_ff @(posedge clk_i) begin
-        if (rst_i) begin
+        if (rst_i || flush_i) begin
             entries_q         <= '{default: '0};
             allocated_q       <= '0;
             consumed_q        <= '0;
@@ -170,6 +197,27 @@ module ftq
             dbg_bpu_fire_q    <= 1'b0;
             dbg_ifu_fire_q    <= 1'b0;
             `endif
+        end else if (resolution_i.valid && resolution_i.mispredict) begin
+            int unsigned branch_age;
+            branch_age = (int'(resolution_i.ftq_idx) + FTQ_DEPTH - int'(release_head_q)) % FTQ_DEPTH;
+            for (int entry = 0; entry < FTQ_DEPTH; entry++) begin
+                int unsigned entry_age;
+                entry_age = (entry + FTQ_DEPTH - int'(release_head_q)) % FTQ_DEPTH;
+                if (allocated_q[entry] && (entry_age > branch_age)) begin
+                    entries_q[entry]   <= '0;
+                    allocated_q[entry] <= 1'b0;
+                    consumed_q[entry]  <= 1'b0;
+                end
+            end
+            entries_q[resolution_i.ftq_idx].actual_valid  <= 1'b1;
+            entries_q[resolution_i.ftq_idx].actual_branch_pc <= resolution_i.branch_pc;
+            entries_q[resolution_i.ftq_idx].actual_branch_type <= resolution_i.is_jalr
+                ? FTQ_BRANCH_JALR : (resolution_i.is_jal ? FTQ_BRANCH_JAL : FTQ_BRANCH_COND);
+            entries_q[resolution_i.ftq_idx].actual_taken  <= resolution_i.actual_taken;
+            entries_q[resolution_i.ftq_idx].actual_target <= resolution_i.actual_target;
+            alloc_tail_q      <= next_ptr(ftq_idx_t'(resolution_i.ftq_idx));
+            ifu_head_q        <= next_ptr(ftq_idx_t'(resolution_i.ftq_idx));
+            allocated_count_q <= $clog2(FTQ_DEPTH+1)'(branch_age + 1);
         end else begin
             `ifdef O3_FRONTEND_DEBUG
             dbg_bpu_fire_q <= bpu_fire;
@@ -182,7 +230,6 @@ module ftq
                 allocated_q[alloc_tail_q] <= 1'b1;
                 consumed_q[alloc_tail_q]  <= 1'b0;
                 alloc_tail_q              <= next_ptr(alloc_tail_q);
-                allocated_count_q         <= allocated_count_q + 1'b1;
             end
 
             // IFU consume — does not release capacity
@@ -191,13 +238,30 @@ module ftq
                 ifu_head_q             <= next_ptr(ifu_head_q);
             end
 
-            // Release logic: not yet implemented.
-            // Future behavior will:
-            //   - clear allocated_q[release_head_q]
-            //   - clear consumed_q[release_head_q]
-            //   - clear entries_q[release_head_q]
-            //   - advance release_head_q
-            //   - allocated_count_q -= 1
+            // Commit按程序顺序给出可释放FTQ项数；训练观察值在清除前组合输出。
+            for (int released = 0; released < RELEASE_WIDTH; released++) begin
+                if (released < int'(release_count_i)) begin
+                    entries_q[ptr_add(release_head_q, released)]   <= '0;
+                    allocated_q[ptr_add(release_head_q, released)] <= 1'b0;
+                    consumed_q[ptr_add(release_head_q, released)]  <= 1'b0;
+                end
+            end
+            if (release_count_i != '0) begin
+                release_head_q <= ptr_add(release_head_q, int'(release_count_i));
+            end
+
+            if (resolution_i.valid) begin
+                entries_q[resolution_i.ftq_idx].actual_valid  <= 1'b1;
+                entries_q[resolution_i.ftq_idx].actual_branch_pc <= resolution_i.branch_pc;
+                entries_q[resolution_i.ftq_idx].actual_branch_type <= resolution_i.is_jalr
+                    ? FTQ_BRANCH_JALR : (resolution_i.is_jal ? FTQ_BRANCH_JAL : FTQ_BRANCH_COND);
+                entries_q[resolution_i.ftq_idx].actual_taken  <= resolution_i.actual_taken;
+                entries_q[resolution_i.ftq_idx].actual_target <= resolution_i.actual_target;
+            end
+
+            allocated_count_q <= allocated_count_q
+                               + $clog2(FTQ_DEPTH+1)'(bpu_fire)
+                               - $clog2(FTQ_DEPTH+1)'(release_count_i);
         end
     end
 

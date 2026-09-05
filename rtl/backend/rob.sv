@@ -54,6 +54,8 @@ module rob #(
     input  logic [o3_pkg::LQ_IDX_WIDTH-1:0]     alloc_lq_idx_i [MACHINE_WIDTH-1:0],
     input  logic [o3_pkg::SQ_IDX_WIDTH-1:0]     alloc_sq_idx_i [MACHINE_WIDTH-1:0],
     input  o3_pkg::branch_mask_t                alloc_branch_mask_i [MACHINE_WIDTH-1:0],
+    input  logic [o3_pkg::FTQ_INDEX_WIDTH-1:0]  alloc_ftq_idx_i [MACHINE_WIDTH-1:0],
+    input  logic                               alloc_ftq_last_i [MACHINE_WIDTH-1:0],
     input  logic [o3_pkg::INST_ID_WIDTH-1:0]   alloc_instruction_id_i [MACHINE_WIDTH-1:0],
 `ifdef ENABLE_RETIRE_INFO
     input  logic [o3_pkg::PC_WIDTH-1:0]         alloc_pc_i        [MACHINE_WIDTH-1:0],
@@ -66,6 +68,7 @@ module rob #(
     input  logic                               resolution_mispredict_i,
     input  o3_pkg::branch_tag_t                resolution_tag_i,
     input  logic [$clog2(NUM_ROB_ENTRIES)-1:0] resolution_rob_idx_i,
+    input  logic                               resolution_completes_rob_i,
     input  logic [$clog2(NUM_ROB_ENTRIES)-1:0] restore_tail_i,
 `ifdef ENABLE_RETIRE_INFO
     input  logic [o3_pkg::XLEN-1:0]             complete_rd_wdata_i [COMPLETE_WIDTH-1:0],
@@ -86,6 +89,8 @@ module rob #(
     output logic [o3_pkg::LQ_IDX_WIDTH-1:0]     retire_lq_idx_o [RETIRE_WIDTH-1:0],
     output logic [o3_pkg::SQ_IDX_WIDTH-1:0]     retire_sq_idx_o [RETIRE_WIDTH-1:0],
     output logic [o3_pkg::INST_ID_WIDTH-1:0]   retire_instruction_id_o [RETIRE_WIDTH-1:0]
+    ,output logic [o3_pkg::FTQ_INDEX_WIDTH-1:0] retire_ftq_idx_o [RETIRE_WIDTH-1:0]
+    ,output logic                              retire_ftq_last_o [RETIRE_WIDTH-1:0]
 `ifdef ENABLE_RETIRE_INFO
     ,output o3_pkg::retire_info_t              retire_info_o     [RETIRE_WIDTH-1:0]
 `endif
@@ -116,6 +121,8 @@ module rob #(
     logic [o3_pkg::LQ_IDX_WIDTH-1:0] entry_lq_idx_q [NUM_ROB_ENTRIES-1:0];
     logic [o3_pkg::SQ_IDX_WIDTH-1:0] entry_sq_idx_q [NUM_ROB_ENTRIES-1:0];
     o3_pkg::branch_mask_t entry_branch_mask_q [NUM_ROB_ENTRIES-1:0];
+    logic [o3_pkg::FTQ_INDEX_WIDTH-1:0] entry_ftq_idx_q [NUM_ROB_ENTRIES-1:0];
+    logic entry_ftq_last_q [NUM_ROB_ENTRIES-1:0];
     logic                      entry_complete_q  [NUM_ROB_ENTRIES-1:0];
     logic [INST_ID_WIDTH_LOCAL-1:0]  entry_instruction_id_q [NUM_ROB_ENTRIES-1:0];
 `ifdef ENABLE_RETIRE_INFO
@@ -189,6 +196,8 @@ module rob #(
             assign retire_lq_idx_o[ridx] = entry_lq_idx_q[retire_idx];
             assign retire_sq_idx_o[ridx] = entry_sq_idx_q[retire_idx];
             assign retire_instruction_id_o[ridx] = entry_instruction_id_q[retire_idx];
+            assign retire_ftq_idx_o[ridx] = entry_ftq_idx_q[retire_idx];
+            assign retire_ftq_last_o[ridx] = entry_ftq_last_q[retire_idx];
 `ifdef ENABLE_RETIRE_INFO
             always_comb begin
                 retire_info_o[ridx] = '0;
@@ -248,6 +257,8 @@ module rob #(
                 entry_lq_idx_q[entry] <= '0;
                 entry_sq_idx_q[entry] <= '0;
                 entry_branch_mask_q[entry] <= '0;
+                entry_ftq_idx_q[entry] <= '0;
+                entry_ftq_last_q[entry] <= 1'b0;
                 entry_complete_q[entry]  <= 1'b0;
                 entry_instruction_id_q[entry] <= '0;
 `ifdef ENABLE_RETIRE_INFO
@@ -266,7 +277,22 @@ module rob #(
                     kept_count++;
                 end
             end
-            entry_complete_q[resolution_rob_idx_i] <= 1'b1;
+            if (resolution_completes_rob_i) begin
+                entry_complete_q[resolution_rob_idx_i] <= 1'b1;
+            end
+            // 默认not-taken可能在块中部才发现真实控制流；恢复后该分支成为此FTQ块
+            // 最后一条仍存活的指令，提交时据此释放包含它的FTQ entry。
+            entry_ftq_last_q[resolution_rob_idx_i] <= 1'b1;
+            // Resolution与普通写回是独立网络；JAL/JALR可能在同拍取得PRF写口。
+            // 恢复优先级不能吞掉该写回，否则保留下来的分支自身将永远无法提交。
+            for (int c = 0; c < COMPLETE_WIDTH; c++) begin
+                if (complete_valid_i[c]) begin
+                    entry_complete_q[complete_idx_i[c]] <= 1'b1;
+`ifdef ENABLE_RETIRE_INFO
+                    entry_rd_wdata_q[complete_idx_i[c]] <= complete_rd_wdata_i[c];
+`endif
+                end
+            end
             tail_q <= restore_tail_i;
             free_count_q <= COUNT_WIDTH'(NUM_ROB_ENTRIES - kept_count);
         end else begin
@@ -274,7 +300,9 @@ module rob #(
                 for (int entry = 0; entry < NUM_ROB_ENTRIES; entry++) begin
                     entry_branch_mask_q[entry][resolution_tag_i] <= 1'b0;
                 end
-                entry_complete_q[resolution_rob_idx_i] <= 1'b1;
+                if (resolution_completes_rob_i) begin
+                    entry_complete_q[resolution_rob_idx_i] <= 1'b1;
+                end
             end
             for (int port = 0; port < RETIRE_WIDTH; port++) begin
                 if (retire_valid_o[port]) begin
@@ -295,6 +323,8 @@ module rob #(
                     entry_lq_idx_q[alloc_idx_o[lane]] <= alloc_lq_idx_i[lane];
                     entry_sq_idx_q[alloc_idx_o[lane]] <= alloc_sq_idx_i[lane];
                     entry_branch_mask_q[alloc_idx_o[lane]] <= alloc_branch_mask_i[lane];
+                    entry_ftq_idx_q[alloc_idx_o[lane]] <= alloc_ftq_idx_i[lane];
+                    entry_ftq_last_q[alloc_idx_o[lane]] <= alloc_ftq_last_i[lane];
                     entry_complete_q[alloc_idx_o[lane]]  <= 1'b0;
                     entry_instruction_id_q[alloc_idx_o[lane]] <= alloc_instruction_id_i[lane];
 `ifdef ENABLE_RETIRE_INFO

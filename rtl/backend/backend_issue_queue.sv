@@ -13,7 +13,7 @@
  * - 不区分整数、访存或分支执行语义；类型隔离由Dispatch保证。
  * - 不做写回同拍旁路、年龄矩阵、端口亲和性和多周期FU占用仲裁。
  * - 是否真正发射完全由每个实例的issue_ready_i决定；Integer实例接四路ALU，
- *   Memory/Branch实例当前固定为0。本阶段故意不增加测试或仿真代码。
+ *   Integer/Memory/Branch实例均由共享读口和对应FU可用性回送ready。
  *
  * 周期N组合阶段更新ready视图、选择候选并计算压缩后的next状态；
  * 周期N上升沿原子删除已握手候选、追加Dispatch输入或执行恢复；

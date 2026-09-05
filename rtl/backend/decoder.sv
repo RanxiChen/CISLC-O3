@@ -109,6 +109,7 @@ module decoder
         decode_o.is_branch   = 1'b0;
         decode_o.is_jal      = 1'b0;
         decode_o.is_jalr     = 1'b0;
+        decode_o.branch_cond = BRANCH_COND_EQ;
         decode_o.needs_checkpoint = 1'b0;
         decode_o.illegal_instruction = 1'b1;
 
@@ -259,6 +260,7 @@ module decoder
                     decode_o.imm_raw[12:0] = {decode_i.instruction[31], decode_i.instruction[7],
                                               decode_i.instruction[30:25], decode_i.instruction[11:8], 1'b0};
                     decode_o.is_branch   = 1'b1;
+                    decode_o.branch_cond = branch_cond_t'(funct3);
                     decode_o.needs_checkpoint = 1'b1;
                     decode_o.illegal_instruction = 1'b0;
                 end

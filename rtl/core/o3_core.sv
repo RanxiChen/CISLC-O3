@@ -6,15 +6,16 @@
  * - 直接连接 frontend 已有 fetch_buffer 出队口到 backend fetch 输入口。
  * - 将 frontend ICache refill request/response 端口从 core 顶层透出。
  * - 将 backend 的 done 和 retired instruction counter 透出。
+ * - 将Backend分支解析和Commit FTQ释放反馈接回Frontend。
  *
  * 当前没有实现：
  * - 不在 core 层额外实例化 fetch_buffer；fetch_buffer 已经在 frontend 内部。
- * - 不实现 data cache、LSU、外部总线、异常恢复、分支 redirect 或精确 flush。
+ * - 不实现外部data cache/总线、精确异常恢复或真实分支预测表。
  * - 不在 core 层生成 ICache refill response；下一级存储或 testbench 需要从外部接入。
  *
  * 后续扩展入口：
  * - 后续可在本层接入 L2/总线，把 refill 端口接到真实存储系统。
- * - 后续 redirect/flush 接口补齐后，可在本层统一连接 backend 恢复信号到 frontend。
+ * - 后续预测器可直接消费FTQ训练观察并替换默认not-taken结果。
  * - 后续可把 `done` 定义为程序结束条件，而不是直接使用 backend 当前占位输出。
  *
  * 当前阶段说明：
@@ -35,6 +36,7 @@
  */
 module o3_core
     import o3_pkg::*;
+    import ftq_pkg::*;
 (
     input  logic clk_i,
     input  logic rst_i,
@@ -63,12 +65,23 @@ module o3_core
     logic         core_fetch_valid;
     logic [CORE_FETCH_WIDTH-1:0] core_fetch_valid_mask;
     logic         core_fetch_ready;
+    branch_resolution_t core_branch_resolution;
+    logic [$clog2(BACKEND_MACHINE_WIDTH+1)-1:0] core_ftq_release_count;
+    logic backend_redirect_valid_unused;
+    logic [PC_WIDTH-1:0] backend_redirect_pc_unused;
+`ifdef O3_FRONTEND_DEBUG
+    logic dbg_ftq_ifu_fire_unused, dbg_ftq_bpu_fire_unused;
+    ftq_idx_t dbg_ftq_alloc_tail_unused, dbg_ftq_ifu_head_unused, dbg_ftq_release_head_unused;
+    logic [$clog2(FTQ_DEPTH+1)-1:0] dbg_ftq_allocated_count_unused;
+`endif
 
     frontend u_frontend (
         .clk_i               (clk_i),
         .rst_i               (rst_i),
         .flush_i             (flush_i),
         .reset_pc_i          (reset_pc_i),
+        .branch_resolution_i (core_branch_resolution),
+        .ftq_release_count_i (core_ftq_release_count),
         .refill_req_pc_o     (refill_req_pc_o),
         .refill_req_valid_o  (refill_req_valid_o),
         .refill_resp_valid_i (refill_resp_valid_i),
@@ -79,6 +92,14 @@ module o3_core
         .fetch_valid_o       (core_fetch_valid),
         .fetch_valid_mask_o  (core_fetch_valid_mask),
         .fetch_ready_i       (core_fetch_ready)
+`ifdef O3_FRONTEND_DEBUG
+        ,.dbg_ftq_ifu_fire_o(dbg_ftq_ifu_fire_unused)
+        ,.dbg_ftq_bpu_fire_o(dbg_ftq_bpu_fire_unused)
+        ,.dbg_ftq_alloc_tail_o(dbg_ftq_alloc_tail_unused)
+        ,.dbg_ftq_ifu_head_o(dbg_ftq_ifu_head_unused)
+        ,.dbg_ftq_release_head_o(dbg_ftq_release_head_unused)
+        ,.dbg_ftq_allocated_count_o(dbg_ftq_allocated_count_unused)
+`endif
     );
 
     backend #(
@@ -95,6 +116,10 @@ module o3_core
         .fetch_entry_i       (backend_fetch_entry),
         .fetch_valid_i       (core_fetch_valid),
         .fetch_ready_o       (core_fetch_ready),
+        .branch_resolution_o (core_branch_resolution),
+        .ftq_release_count_o (core_ftq_release_count),
+        .redirect_valid_o    (backend_redirect_valid_unused),
+        .redirect_pc_o       (backend_redirect_pc_unused),
         .done                (done_o),
         .retired_inst_count_o(retired_inst_count_o)
 `ifdef ENABLE_RETIRE_INFO
@@ -106,7 +131,18 @@ module o3_core
     );
 
     logic unused_fetch_valid_mask;
-    assign unused_fetch_valid_mask = ^core_fetch_valid_mask;
+    assign unused_fetch_valid_mask = ^core_fetch_valid_mask
+                                   ^ backend_redirect_valid_unused
+                                   ^ ^backend_redirect_pc_unused
+`ifdef O3_FRONTEND_DEBUG
+                                   ^ dbg_ftq_ifu_fire_unused
+                                   ^ dbg_ftq_bpu_fire_unused
+                                   ^ ^dbg_ftq_alloc_tail_unused
+                                   ^ ^dbg_ftq_ifu_head_unused
+                                   ^ ^dbg_ftq_release_head_unused
+                                   ^ ^dbg_ftq_allocated_count_unused
+`endif
+                                   ;
 
     genvar lane;
     generate
