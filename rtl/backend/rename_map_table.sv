@@ -111,7 +111,11 @@ module rename_map_table
                 speculative_map_q[arch] <= PREG_IDX_WIDTH'(arch);
                 committed_map_q[arch] <= PREG_IDX_WIDTH'(arch);
             end
-            checkpoint_map_q <= '{default: '0};
+            for (int checkpoint = 0; checkpoint < NUM_CHECKPOINTS; checkpoint++) begin
+                for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
+                    checkpoint_map_q[checkpoint][arch] <= '0;
+                end
+            end
         end else begin
             // Committed map与推测恢复正交；只接受ROB顺序退休提供的新映射。
             for (int port = 0; port < COMMIT_WIDTH; port++) begin
