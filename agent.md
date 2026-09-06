@@ -139,25 +139,16 @@
 
 ## 固定回归要求
 - 本节只在用户明确要求运行测试、检查回归或当前工作已经进入统一测试阶段时生效；框架重构期不默认执行，也不要求这些测试保持通过。
-- 当用户要求“检查已有测试是否还能正常运行”“跑一下现有测试”“确认前端没坏”等类似任务时，必须至少运行前端基础回归：
+- 当前仿真已经收敛为一个完整 `o3_core` Verilator入口。用户要求检查当前整核仿真或Tandem退休输出时，运行：
 
 ```bash
-cd sim/frontend
-make clean-test TEST=frontend_basic
-make test TEST=frontend_basic
-```
-
-- `frontend_basic` 是当前前端功能的长期 smoke/regression 入口。后续即使新增更多前端测试，这个测试仍应作为默认必跑项之一。
-- 当前 `frontend_basic` 通过 `O3_FRONTEND_DEBUG` 观察 FTQ 向 IFU 成功出队 block，并检查已经从 frontend output 出队的有效指令流是否保持顺序。
-- 如果该测试失败，最终回复必须说明失败阶段属于编译/接口问题、FTQ debug 停止条件问题、refill/ICache 行为问题，还是 frontend output 顺序 checker mismatch。
-- 当用户要求检查真实 frontend/backend 是否接通、core smoke、单指令 core 仿真等任务时，运行：
-
-```bash
-cd sim/core_single_inst
+cd sim/o3
 make test
 ```
 
-- `core_single_inst` 默认定义 `O3_SIM_SINGLE_INST_TRACE`，只打印第一条进入 backend 的有效指令从 `ACCEPT` 到 `RETIRE` 的单指令轨迹，并在该指令退休后结束。
+- `sim/o3` 是当前唯一仿真入口：外部C++驱动真实Frontend/Backend和ICache refill，并输出按ROB退休顺序排列的JSONL记录。
+- 当前结果只证明Tandem trace producer能够运行，不表示已经与Spike完成差分验证。
+- 如果该入口失败，最终回复必须区分Verilator编译、ICache refill、核心超时和退休记录错误。
 
 ## 建议保留在主文档中的代码索引
 以下信息建议长期保留在 [`doc/CISLC_O3.md`](/home/chen/work/CISLC-O3/doc/CISLC_O3.md)，不要外移：
@@ -168,7 +159,7 @@ make test
 - `rtl/backend/physical_regfile.sv`：物理寄存器文件实现与后续接入口。
 - `rtl/common/o3_pkg.sv`：跨模块数据结构定义。
 - `rtl/core/o3_core.sv`：当前真实 frontend + backend 的 core 级连接入口。
-- `sim/core_single_inst/`：当前 core 级单指令 smoke 入口。
+- `sim/o3/`：当前唯一的完整core Verilator与Tandem退休轨迹入口。
 
 以下信息建议长期保留在 [`doc/CISLC_O3_frontend.md`](/home/chen/work/CISLC-O3/doc/CISLC_O3_frontend.md)，不要外移：
 - `rtl/frontend/frontend.sv`：前端当前实现入口。

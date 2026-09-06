@@ -2,14 +2,8 @@ VERILATOR ?= verilator
 
 SIM_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 REPO_ROOT := $(abspath $(SIM_DIR)/../..)
-
-TEST ?= single_addi
-TOP ?= o3_core
-KANATA ?= 0
-
-BUILD_ROOT := $(SIM_DIR)/build
-BUILD_DIR := $(BUILD_ROOT)/$(TEST)
-TEST_SRC := $(SIM_DIR)/tests/$(TEST).cpp
+BUILD_DIR := $(SIM_DIR)/build
+TOP := o3_tandem_top
 RUN_BIN := $(BUILD_DIR)/V$(TOP)
 
 RTL_SRCS := \
@@ -25,22 +19,26 @@ RTL_SRCS := \
 	$(REPO_ROOT)/rtl/backend/decoder.sv \
 	$(REPO_ROOT)/rtl/backend/free_list.sv \
 	$(REPO_ROOT)/rtl/backend/rename_map_table.sv \
+	$(REPO_ROOT)/rtl/backend/branch_checkpoint_file.sv \
 	$(REPO_ROOT)/rtl/backend/uop_queue.sv \
-	$(REPO_ROOT)/rtl/backend/rob.sv \
-	$(REPO_ROOT)/rtl/backend/issue_queue.sv \
+	$(REPO_ROOT)/rtl/backend/rename_stage.sv \
+	$(REPO_ROOT)/rtl/backend/rename_dispatch_queue.sv \
+	$(REPO_ROOT)/rtl/backend/dispatch_stage.sv \
+	$(REPO_ROOT)/rtl/backend/backend_issue_queue.sv \
+	$(REPO_ROOT)/rtl/backend/load_queue.sv \
+	$(REPO_ROOT)/rtl/backend/store_queue.sv \
 	$(REPO_ROOT)/rtl/backend/physical_regfile.sv \
 	$(REPO_ROOT)/rtl/backend/int_execute_unit.sv \
+	$(REPO_ROOT)/rtl/backend/mul_execute_unit.sv \
+	$(REPO_ROOT)/rtl/backend/div_execute_unit.sv \
+	$(REPO_ROOT)/rtl/backend/branch_execute_unit.sv \
+	$(REPO_ROOT)/rtl/backend/writeback_arbiter.sv \
+	$(REPO_ROOT)/rtl/memory/simple_data_sram.sv \
+	$(REPO_ROOT)/rtl/backend/load_store_unit.sv \
+	$(REPO_ROOT)/rtl/backend/rob.sv \
 	$(REPO_ROOT)/rtl/backend/backend.sv \
-	$(REPO_ROOT)/rtl/core/o3_core.sv
-
-CPP_SRCS := \
-	$(SIM_DIR)/dpi_stubs.cpp
-
-VERILATOR_DEFINES := -DO3_SIM -DO3_SIM_SINGLE_INST_TRACE -DENABLE_RETIRE_INFO
-
-ifeq ($(KANATA),1)
-	VERILATOR_DEFINES += -DO3_SIM_KANATA -DO3_SIM_KANATA_LOG_NAME=\"core_single_inst\"
-endif
+	$(REPO_ROOT)/rtl/core/o3_core.sv \
+	$(SIM_DIR)/o3_tandem_top.sv
 
 VERILATOR_FLAGS := \
 	--cc \
@@ -48,38 +46,26 @@ VERILATOR_FLAGS := \
 	--build \
 	-Wall \
 	-Wno-fatal \
-	-I$(REPO_ROOT)/tb \
 	--top-module $(TOP) \
 	--Mdir $(BUILD_DIR) \
-	$(VERILATOR_DEFINES)
+	-DENABLE_RETIRE_INFO
 
-.PHONY: list build run test clean clean-test
-
-list:
-	@echo "Available core single-instruction tests:"
-	@find $(SIM_DIR)/tests -maxdepth 1 -name "*.cpp" -printf "  %f\n" | sed 's/\.cpp$$//'
+.PHONY: build run test clean
 
 build:
-	@if [ ! -f "$(TEST_SRC)" ]; then \
-		echo "Missing test source: $(TEST_SRC)"; \
-		exit 1; \
-	fi
 	rm -rf $(BUILD_DIR)
 	mkdir -p $(BUILD_DIR)
-	cd $(SIM_DIR) && $(VERILATOR) $(VERILATOR_FLAGS) $(TEST_SRC) $(CPP_SRCS) $(RTL_SRCS)
+	cd $(SIM_DIR) && $(VERILATOR) $(VERILATOR_FLAGS) $(SIM_DIR)/main.cpp $(RTL_SRCS)
 
 run:
 	@if [ ! -x "$(RUN_BIN)" ]; then \
 		echo "Missing binary: $(RUN_BIN)"; \
-		echo "Run: make build TEST=$(TEST)"; \
+		echo "Run: make build"; \
 		exit 1; \
 	fi
-	cd $(SIM_DIR) && $(RUN_BIN)
+	cd $(SIM_DIR) && $(RUN_BIN) --image tests/smoke.hex --trace tandem.jsonl --max-retires 4
 
 test: build run
 
-clean-test:
-	rm -rf $(BUILD_DIR)
-
 clean:
-	rm -rf $(BUILD_ROOT)
+	rm -rf $(BUILD_DIR) tandem.jsonl

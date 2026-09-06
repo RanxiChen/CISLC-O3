@@ -41,9 +41,8 @@
 - RV64I `OP-IMM`计算指令与R型共用该整数闭环：IQ只等待`rs1`，RegRead分别保存`src1`和符号扩展立即数，ALU由`use_imm`显式选择第二操作数。
 - `mul_execute_unit` 已新增，提供独立的 RV64M 乘法单元，当前采用“预计算结果 + 固定拍数返回”的简化骨架。
 - `div_execute_unit` 已新增，提供独立的 RV64M 除法/取余单元，当前采用“预计算结果 + 固定拍数返回”的简化骨架。
-- `backend_testharness` 已更新为当前后端主链路对应的 Verilator 仿真入口；当前通过 DPI-C 伪造 6-lane 虚拟前端，从 `pc=0` 开始按组向 backend 提供固定的 RV64I 整形运算指令，并在最后一组 fetch 被接收后继续保留固定排空窗口，便于观察 `decode/rename/issue/regread/execute` 多拍日志。
 - `rtl/core/o3_core.sv` 已经把真实 frontend 和真实 backend 接通；frontend 内部已有 fetch buffer，core 层不再额外实例化 fetch buffer。
-- `sim/core_single_inst` 是 core 级单指令 smoke test：用真实 frontend 发起 ICache refill，用测试内存返回 `addi x1, x0, 1`，默认打开 `ENABLE_RETIRE_INFO`，在 C++ 中采样 `retire_info_o` 并断言该指令提交时写 `x1=1`。
+- `sim/o3` 是当前唯一的完整core Verilator入口：C++驱动真实Frontend/Backend和ICache refill，仿真顶层展开`retire_info_o`并输出有序JSONL Tandem记录；当前不运行Spike，也不输出微架构事件。
 
 ## 当前后端数据流
 - 当前数据流是：`frontend -> Decode Input Register -> decoder -> 16-entry Decode Queue -> prefix Rename planner -> Map + Free List + ROB + checkpoint + LQ/SQ原子分配 -> 16-entry Rename/Dispatch Queue -> prefix Dispatch planner -> Integer/Memory/Branch IQ`。
@@ -221,10 +220,6 @@
 - `rtl/memory/axi_memory_smoke_top.sv`
   - 仅用于 LiteX 仿真，依次验证初始化读取、写入和读回。
   - 不属于 `o3_core`，未来 FPGA 顶层也不应使用这个 smoke driver。
-- `sim/litex/o3_axi_sim.py`
-  - 使用 LiteX AXI interconnect 和可初始化的虚拟 main RAM。
-  - 虚拟 main RAM 代替未来 DDR 区域，当前不接 LiteDRAM/DDR 控制器。
-  - 可选的 AXI monitor 只观察实际握手，不驱动总线，也不进入 FPGA 构建。
 - `config/o3_platform.json`
   - 保存当前采用的 Rocket/Flow 风格地址布局；main RAM 位于 `0x80000000`。
 
@@ -282,12 +277,9 @@
   - 旧系统级入口；当前仍是 LED 占位逻辑，尚未包住 `o3_core`。
 - `rtl/Tile.sv`
   - 更上层系统封装入口；当前仍包住占位 `o3`，真实 core 集成后需要同步更新。
-- `tb/backend_testharness.sv`
-  - 后端专用仿真顶层，实例化 `backend` 并通过 DPI-C 虚拟前端产生 6-lane fetch group；同时在最后一个 fetch group 被接收后再等待固定排空窗口。
-- `sim/backend_testharness/`
-  - 后端 Verilator 仿真目录，包含 `main.cpp`、固定指令流 DPI-C 实现、本地说明文档，以及当前 backend 主链路所需的 Verilator 构建入口。
-- `sim/core_single_inst/`
-  - core 级单指令仿真目录，用真实 frontend/backend 跑 `addi x1, x0, 1`，默认启用 `O3_SIM_SINGLE_INST_TRACE`。
+- `sim/o3/`
+  - 当前唯一的完整core Verilator入口；包含统一RTL清单、ICache refill驱动、最小指令镜像和JSONL Tandem退休轨迹生产器。
+  - 当前只生成退休记录，不启动Spike，不进行差分判断，也不生成Kanata微架构轨迹。
 
 ## 关键时序行为
 ### backend 周期级行为
