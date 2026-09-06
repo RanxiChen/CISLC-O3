@@ -152,10 +152,12 @@ package o3_pkg;
         logic                      rs1_read_en; // 该指令是否真正读取 rs1
         logic                      rs2_read_en; // 该指令是否真正读取 rs2
         logic                      rd_write_en; // 该指令是否真正写回 rd
+        logic                      src1_is_pc; // 第一操作数选择当前指令PC；AUIPC使用
         logic                      use_imm;     // 第二操作数是否取立即数
         imm_type_t                 imm_type;    // 立即数原始编码类型；全 0 表示无效
         logic [IMM_RAW_WIDTH-1:0]  imm_raw;     // 原始立即数字段；当前只承载 I-type[31:20]
         int_alu_op_t               int_alu_op;  // 整数 ALU 操作类型
+        logic                      is_word_op; // RV64 *W结果截断为32位后符号扩展
         logic                      is_int_uop;  // 当前是否纳入统一整数执行流
         logic                      is_load;
         logic                      is_store;
@@ -194,10 +196,12 @@ package o3_pkg;
         logic                      rs1_read_en;
         logic                      rs2_read_en;
         logic                      rd_write_en;
+        logic                      src1_is_pc;
         logic                      use_imm;
         imm_type_t                 imm_type;
         logic [IMM_RAW_WIDTH-1:0]  imm_raw;
         int_alu_op_t               int_alu_op;
+        logic                      is_word_op;
         logic                      is_int_uop;
         logic                      is_load;
         logic                      is_store;
@@ -235,10 +239,12 @@ package o3_pkg;
         logic                      rs1_read_en;
         logic                      rs2_read_en;
         logic                      rd_write_en;
+        logic                      src1_is_pc;
         logic                      use_imm;
         imm_type_t                 imm_type;
         logic [IMM_RAW_WIDTH-1:0]  imm_raw;
         int_alu_op_t               int_alu_op;
+        logic                      is_word_op;
         logic                      is_int_uop;
         logic                      is_load;
         logic                      is_store;
@@ -347,6 +353,7 @@ package o3_pkg;
         logic [XLEN-1:0]           imm_value;
         logic                      imm_valid;
         int_alu_op_t               int_alu_op;
+        logic                      is_word_op;
         branch_mask_t              branch_mask;
     } int_regread_pipe_uop_t;
 

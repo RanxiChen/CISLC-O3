@@ -139,10 +139,12 @@ module rename_stage
             renamed_uop_o[lane].rs1_read_en = decoded_i[lane].rs1_read_en;
             renamed_uop_o[lane].rs2_read_en = decoded_i[lane].rs2_read_en;
             renamed_uop_o[lane].rd_write_en = decoded_i[lane].rd_write_en;
+            renamed_uop_o[lane].src1_is_pc = decoded_i[lane].src1_is_pc;
             renamed_uop_o[lane].use_imm = decoded_i[lane].use_imm;
             renamed_uop_o[lane].imm_type = decoded_i[lane].imm_type;
             renamed_uop_o[lane].imm_raw = decoded_i[lane].imm_raw;
             renamed_uop_o[lane].int_alu_op = decoded_i[lane].int_alu_op;
+            renamed_uop_o[lane].is_word_op = decoded_i[lane].is_word_op;
             renamed_uop_o[lane].is_int_uop = decoded_i[lane].is_int_uop;
             renamed_uop_o[lane].is_load = decoded_i[lane].is_load;
             renamed_uop_o[lane].is_store = decoded_i[lane].is_store;

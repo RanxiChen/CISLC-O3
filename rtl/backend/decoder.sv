@@ -3,7 +3,7 @@
  *
  * 当前已经实现的功能：
  * - 从 32 位指令中直接提取 rs1 / rs2 / rd 编码字段
- * - 为 RV64I 中直接走整数 ALU 的 R/I 算术指令给出 decode queue / rename 阶段最小需要的语义位：
+ * - 为 RV64I 中直接走整数 ALU 的 U/R/I/word 算术指令给出 decode queue / rename 阶段需要的语义位：
  *   1) rs1_read_en
  *   2) rs2_read_en
  *   3) rd_write_en
@@ -15,14 +15,16 @@
  *   1) `rs1/rs2/rd`：直接来自指令编码位段 `[19:15] / [24:20] / [11:7]`
  *   2) `rs1_read_en/rs2_read_en/rd_write_en`：当前 rename 是否真的要读源寄存器、分配目的寄存器
  *   3) `use_imm`：第二操作数是否选择立即数
- *   4) `imm_type/imm_raw`：立即数类型与原始编码；当前只有 `IMM_TYPE_I + instruction[31:20]`
+ *   4) `imm_type/imm_raw`：立即数类型与原始编码，覆盖 I/S/B/U/J
  *   5) `int_alu_op`：整数 ALU 操作类型，和 `int_execute_unit` 共用同一套编码
  *   6) `is_int_uop`：当前是否先归入统一整数数据流
  *   7) `illegal_instruction`：当前编码是否未被本阶段识别
  * - 当前覆盖的指令如下：
- *   1) R-type：`ADD/SUB/SLL/SLT/SLTU/XOR/SRL/SRA/OR/AND`
- *   2) I-type：`ADDI/SLLI/SLTI/SLTIU/XORI/SRLI/SRAI/ORI/ANDI`
- *   3) RV64I Load/Store：同时生成LQ/SQ分类、访问宽度和Load signed/unsigned语义
+ *   1) U-type：`LUI/AUIPC`
+ *   2) R-type：`ADD/SUB/SLL/SLT/SLTU/XOR/SRL/SRA/OR/AND`
+ *   3) I-type：`ADDI/SLLI/SLTI/SLTIU/XORI/SRLI/SRAI/ORI/ANDI`
+ *   4) RV64 word：`ADDIW/SLLIW/SRLIW/SRAIW/ADDW/SUBW/SLLW/SRLW/SRAW`
+ *   5) RV64I Load/Store、六种条件分支以及`JAL/JALR`
  * - 对于已覆盖的 I-type 算术指令：
  *   1) `use_imm=1`
  *   2) `imm_type=IMM_TYPE_I`
@@ -37,16 +39,14 @@
  *   3) `illegal_instruction=1`，由 Decode Stage 形成精确异常元数据
  *
  * 当前没有实现的功能：
- * - Branch/Jump当前只解码Rename所需字段，不包含完整BRU执行控制
  * - 不覆盖 system / fence
- * - 不覆盖 RV64I 的 word 指令，如 `ADDIW/ADDW/SLLIW/SLLW`
  * - 不区分 ALU / BRU / LSU / MUL / DIV 等更细执行类型
  * - 不输出 CSR / 异常 / trap / commit 相关信息
  *
  * 扩展入口：
  * - 后续若要接 issue / execute，可在 `decode_out_t` 中继续增加 branch/load/store/jump 等控制语义
  * - 后续若要支持异常、CSR、分支恢复，应在这里补齐更完整的控制语义
- * - 当前阶段故意不写测试代码和仿真代码，只先把功能骨架和注释说明补齐
+ * - 本轮U-type/word扩展由`sim/o3`退休轨迹定向测试覆盖
  *
  * 时序行为：
  * - 周期 N 组合阶段：
@@ -72,6 +72,10 @@ module decoder
 
     localparam logic [6:0] OPCODE_OP_IMM   = 7'b0010011;
     localparam logic [6:0] OPCODE_OP       = 7'b0110011;
+    localparam logic [6:0] OPCODE_OP_IMM_32 = 7'b0011011;
+    localparam logic [6:0] OPCODE_OP_32     = 7'b0111011;
+    localparam logic [6:0] OPCODE_LUI       = 7'b0110111;
+    localparam logic [6:0] OPCODE_AUIPC     = 7'b0010111;
     localparam logic [6:0] OPCODE_LOAD     = 7'b0000011;
     localparam logic [6:0] OPCODE_STORE    = 7'b0100011;
     localparam logic [6:0] OPCODE_BRANCH   = 7'b1100011;
@@ -97,10 +101,12 @@ module decoder
         decode_o.rs1_read_en = 1'b0;
         decode_o.rs2_read_en = 1'b0;
         decode_o.rd_write_en = 1'b0;
+        decode_o.src1_is_pc  = 1'b0;
         decode_o.use_imm     = 1'b0;
         decode_o.imm_type    = IMM_TYPE_NONE;
         decode_o.imm_raw     = '0;
         decode_o.int_alu_op  = INT_ALU_OP_ADD;
+        decode_o.is_word_op  = 1'b0;
         decode_o.is_int_uop  = 1'b0;
         decode_o.is_load     = 1'b0;
         decode_o.is_store    = 1'b0;
@@ -114,6 +120,20 @@ module decoder
         decode_o.illegal_instruction = 1'b1;
 
         unique case (opcode)
+            OPCODE_LUI,
+            OPCODE_AUIPC: begin
+                // 两条U-type都走整数ADD：LUI使用0+imm，AUIPC使用pc+imm。
+                decode_o.rd_write_en = 1'b1;
+                decode_o.src1_is_pc = (opcode == OPCODE_AUIPC);
+                decode_o.use_imm = 1'b1;
+                decode_o.imm_type = IMM_TYPE_U;
+                // 立即数容器保留真实低零位，统一扩展函数再补剩余11个零。
+                decode_o.imm_raw[20:0] = {decode_i.instruction[31:12], 1'b0};
+                decode_o.int_alu_op = INT_ALU_OP_ADD;
+                decode_o.is_int_uop = 1'b1;
+                decode_o.illegal_instruction = 1'b0;
+            end
+
             OPCODE_OP_IMM: begin
                 unique case (funct3)
                     3'b000: decode_o.int_alu_op = INT_ALU_OP_ADD;
@@ -150,6 +170,42 @@ module decoder
                     decode_o.imm_raw[11:0] = decode_i.instruction[31:20];
                     decode_o.is_int_uop  = 1'b1;
                     decode_o.illegal_instruction = 1'b0;
+                end
+            end
+
+            OPCODE_OP_IMM_32: begin
+                unique case (funct3)
+                    3'b000: begin // ADDIW
+                        decode_o.int_alu_op = INT_ALU_OP_ADD;
+                        decode_o.illegal_instruction = 1'b0;
+                    end
+                    3'b001: begin // SLLIW；RV64 word立即数移位只允许5位shamt。
+                        if (funct7 == 7'b0000000) begin
+                            decode_o.int_alu_op = INT_ALU_OP_SLL;
+                            decode_o.illegal_instruction = 1'b0;
+                        end
+                    end
+                    3'b101: begin
+                        if (funct7 == 7'b0000000) begin
+                            decode_o.int_alu_op = INT_ALU_OP_SRL;
+                            decode_o.illegal_instruction = 1'b0;
+                        end else if (funct7 == 7'b0100000) begin
+                            decode_o.int_alu_op = INT_ALU_OP_SRA;
+                            decode_o.illegal_instruction = 1'b0;
+                        end
+                    end
+                    default: begin
+                    end
+                endcase
+
+                if (!decode_o.illegal_instruction) begin
+                    decode_o.rs1_read_en = 1'b1;
+                    decode_o.rd_write_en = 1'b1;
+                    decode_o.use_imm = 1'b1;
+                    decode_o.imm_type = IMM_TYPE_I;
+                    decode_o.imm_raw[11:0] = decode_i.instruction[31:20];
+                    decode_o.is_int_uop = 1'b1;
+                    decode_o.is_word_op = 1'b1;
                 end
             end
 
@@ -213,6 +269,45 @@ module decoder
                     decode_o.rd_write_en = 1'b1;
                     decode_o.is_int_uop  = 1'b1;
                     decode_o.illegal_instruction = 1'b0;
+                end
+            end
+
+            OPCODE_OP_32: begin
+                unique case (funct3)
+                    3'b000: begin
+                        if (funct7 == 7'b0000000) begin
+                            decode_o.int_alu_op = INT_ALU_OP_ADD;
+                            decode_o.illegal_instruction = 1'b0;
+                        end else if (funct7 == 7'b0100000) begin
+                            decode_o.int_alu_op = INT_ALU_OP_SUB;
+                            decode_o.illegal_instruction = 1'b0;
+                        end
+                    end
+                    3'b001: begin
+                        if (funct7 == 7'b0000000) begin
+                            decode_o.int_alu_op = INT_ALU_OP_SLL;
+                            decode_o.illegal_instruction = 1'b0;
+                        end
+                    end
+                    3'b101: begin
+                        if (funct7 == 7'b0000000) begin
+                            decode_o.int_alu_op = INT_ALU_OP_SRL;
+                            decode_o.illegal_instruction = 1'b0;
+                        end else if (funct7 == 7'b0100000) begin
+                            decode_o.int_alu_op = INT_ALU_OP_SRA;
+                            decode_o.illegal_instruction = 1'b0;
+                        end
+                    end
+                    default: begin
+                    end
+                endcase
+
+                if (!decode_o.illegal_instruction) begin
+                    decode_o.rs1_read_en = 1'b1;
+                    decode_o.rs2_read_en = 1'b1;
+                    decode_o.rd_write_en = 1'b1;
+                    decode_o.is_int_uop = 1'b1;
+                    decode_o.is_word_op = 1'b1;
                 end
             end
 

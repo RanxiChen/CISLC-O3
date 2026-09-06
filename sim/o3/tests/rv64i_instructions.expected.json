@@ -1,0 +1,16 @@
+[
+  {"pc":"0x0000000000","instruction":"0x800000b7","rd":1,"rd_write":true,"rd_wdata":"0xffffffff80000000"},
+  {"pc":"0x0000000004","instruction":"0x00001117","rd":2,"rd_write":true,"rd_wdata":"0x0000000000001004"},
+  {"pc":"0x0000000008","instruction":"0x0010819b","rd":3,"rd_write":true,"rd_wdata":"0xffffffff80000001"},
+  {"pc":"0x000000000c","instruction":"0x0011921b","rd":4,"rd_write":true,"rd_wdata":"0x0000000000000002"},
+  {"pc":"0x0000000010","instruction":"0x0011d29b","rd":5,"rd_write":true,"rd_wdata":"0x0000000040000000"},
+  {"pc":"0x0000000014","instruction":"0x4011d31b","rd":6,"rd_write":true,"rd_wdata":"0xffffffffc0000000"},
+  {"pc":"0x0000000018","instruction":"0x003183bb","rd":7,"rd_write":true,"rd_wdata":"0x0000000000000002"},
+  {"pc":"0x000000001c","instruction":"0x4030043b","rd":8,"rd_write":true,"rd_wdata":"0x000000007fffffff"},
+  {"pc":"0x0000000020","instruction":"0x004194bb","rd":9,"rd_write":true,"rd_wdata":"0x0000000000000004"},
+  {"pc":"0x0000000024","instruction":"0x0041d53b","rd":10,"rd_write":true,"rd_wdata":"0x0000000020000000"},
+  {"pc":"0x0000000028","instruction":"0x4041d5bb","rd":11,"rd_write":true,"rd_wdata":"0xffffffffe0000000"},
+  {"pc":"0x000000002c","instruction":"0x00438463","rd":8,"rd_write":false,"rd_wdata":"0x0000000000000000"},
+  {"pc":"0x0000000034","instruction":"0x008006ef","rd":13,"rd_write":true,"rd_wdata":"0x0000000000000038"},
+  {"pc":"0x000000003c","instruction":"0x00300793","rd":15,"rd_write":true,"rd_wdata":"0x0000000000000003"}
+]

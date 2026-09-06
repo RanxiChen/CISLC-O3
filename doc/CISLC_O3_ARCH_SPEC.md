@@ -1,7 +1,7 @@
 # CISLC-O3 架构规格 v1.0
 
-> 最后更新: 2026-08-26
-> 状态: 已定调，后续实现以此为唯一参考
+> 最后更新: 2026-09-06
+> 状态: 架构目标与当前实现边界并列记录
 
 ## 1. 定位
 
@@ -12,7 +12,7 @@ M-mode only，无 MMU，物理地址直通。后期增加协处理器通信机�
 
 | 扩展 | 状态 |
 |---|---|
-| RV64I | ✅ 已实现（R/I 算术 + branch + jump） |
+| RV64I | 🔧 U/R/I/word、Load/Store、branch/jump已接入；FENCE、ECALL/EBREAK待实现 |
 | RV64M (乘除) | 🔧 文件存在，未接入主流水线 |
 | RV64A (原子) | ❌ 待实现（LR/SC + AMO） |
 | F/D (浮点) | ❌ 不在当前规划 |
@@ -33,20 +33,20 @@ M-mode only，无 MMU，物理地址直通。后期增加协处理器通信机�
 │   Machine Width            4 lanes/拍 (decode + rename)     │
 │   Decode Queue             16 条 uop                         │
 │   Issue Queue              16 条目, 统一整数 issue queue     │
-│   Issue Width              3 uop/拍                         │
-│   ALU Pipelines            3 × int ALU + 1 × branch         │
+│   Issue Width              Int 4 / Mem 1 / Branch 1         │
+│   ALU Pipelines            4 × int ALU + 1 × branch         │
 │   Mul/Div                  待接入                             │
 │   PRF                      96 物理寄存器 (32 架构)            │
 │   ROB                      64 条目                           │
-│   Retire Width             3 uop/拍                          │
+│   Retire Width             4 uop/拍                          │
 │   Checkpoint               4 个                              │
 ├───────────────────────────────────────────────────────────┤
 │ 存储系统                                                     │
 │   I-Cache                  4-way, 64B line, 单端口           │
 │   D-Cache                  待实现: 单端口 non-blocking + MSHR │
 │   LSQ                      LQ 8 + SQ 8 分配/恢复骨架         │
-│   Store→Load forwarding    待实现: v1 不做，v2 补             │
-│   内存序                    通过 fence 保证                   │
+│   Store→Load forwarding    单个最年轻完整覆盖Store            │
+│   内存序                    FENCE尚未实现                      │
 ├───────────────────────────────────────────────────────────┤
 │ 特权架构                                                     │
 │   M-mode only              ✅ (当前未接入 CSR)               │
@@ -61,8 +61,8 @@ M-mode only，无 MMU，物理地址直通。后期增加协处理器通信机�
 ## 4. 流水线级数
 
 ```
-  Frontend (多拍) → fetch_entry_q → Decode (组合) → uop_queue (2-deep)
-  → Rename (组合) → Issue Queue (可变延迟, wakeup+select)
+  Frontend (多拍) → fetch_entry_q → Decode (组合) → uop_queue (16 entries)
+  → Rename → Rename/Dispatch Queue → 三类Issue Queue
   → alu_issue_q (1拍) → alu_regread_q (1拍) → alu_result_q (1拍)
   → Writeback (组合) → ROB Retire (组合)
 ```
@@ -79,7 +79,7 @@ M-mode only，无 MMU，物理地址直通。后期增加协处理器通信机�
 | Decode→Rename buffer | 16条uop | 4-bank紧凑Decode Queue |
 | Rename | 0～4 | 最老连续前缀，联合Map/Free List/ROB/LQ/SQ/checkpoint/RDQ分配 |
 | Dispatch | 0～4 | RDQ最老连续前缀，分流到Integer/Memory/Branch IQ |
-| Issue | Int 4 / Mem 1 / Branch 1 | Integer选择最老4条ready；Mem/Branch当前冻结 |
+| Issue | Int 4 / Mem 1 / Branch 1 | 三类IQ共同竞争8个PRF读口；Branch单发射 |
 | RegRead | 4 | 4个Issue Register使用8个逻辑PRF读口 |
 | Execute | 4 | 4个完全流水化整数ALU；其他FU未接入 |
 | Writeback | 4 | 4路整数结果写PRF、广播preg并置ROB complete |
@@ -119,13 +119,13 @@ Rename 是按原始指令顺序建立推测物理寄存器状态和 ROB 顺序�
 
 Rename 采用原子推进语义：只有 Free List、ROB 和下游 Buffer 都能接收当前有效前缀时，才允许 `rename_fire`；否则 Rename Map、Free List、ROB 和 Busy/Ready 状态都不得部分更新。`x0` 始终映射到 `p0`，不分配新 preg，`p0` 始终 ready。
 
-当前Rename不负责Dispatch选择、Wakeup/Select、PRF读取、Execute、Writeback和Commit选择。Rename已经为Load/Store预留LQ/SQ位置，并实现4槽分支checkpoint、完整Map快照、96位分支allocation mask和后端flush/rollback合同；真实LSU/BRU执行及Frontend redirect连接仍属于后续阶段。
+当前Rename不负责Dispatch选择、Wakeup/Select、PRF读取、Execute、Writeback和Commit选择。Rename为Load/Store分配LQ/SQ位置，并实现4槽分支checkpoint、完整Map快照、96位分支allocation mask和后端恢复合同；LSU、单发射BRU及Frontend redirect均已接入。
 
 整数`OP-IMM`与R型计算共用Integer IQ和4路IEW。立即数指令只等待`rs1`，I型12位立即数在RegRead符号扩展为64位并独立保存，由ALU输入选择器使用；RV64移位立即数按`funct6 + shamt[5:0]`解码，因此支持0～63位移。
 
 ### 5.3 Dispatch阶段合同
 
-Dispatch从Rename/Dispatch Queue队头查看最多4条uop，按年龄累计Integer、Memory和Branch IQ容量，只接受最大连续前缀。前缀内部可以同拍进入不同IQ，但不允许年轻uop绕过目标IQ已满的老uop。三个IQ深度当前分别为16、8、4；均保存完整renamed uop并维护preg ready与branch mask。Integer IQ已接4路整数IEW，Memory/Branch issue ready仍固定为0。
+Dispatch从Rename/Dispatch Queue队头查看最多4条uop，按年龄累计Integer、Memory和Branch IQ容量，只接受最大连续前缀。前缀内部可以同拍进入不同IQ，但不允许年轻uop绕过目标IQ已满的老uop。三个IQ深度当前分别为16、8、4；均保存完整renamed uop并维护preg ready与branch mask，且已分别接入ALU、LSU和BRU。
 
 ## 6. Wakeup / Bypass
 
@@ -138,9 +138,9 @@ Dispatch从Rename/Dispatch Queue队头查看最多4条uop，按年龄累计Integ
 | Phase | 内容 | 验证 |
 |---|---|---|
 | ✅ Phase 0 | 前端 + 整数后端最小链路 | single_addi, three_alu 系列 |
-| 🔧 Phase 1 | 后端Branch checkpoint / rollback合同 | RTL静态lint通过，未迁移测试 |
-| 🔧 Phase 1.25 | 有序可变前缀Dispatch + 三类IQ | RTL静态lint，执行端口冻结 |
-| 🎯 Phase 1.5 | BRU与Frontend redirect接入 | 全局重构后统一验证 |
+| ✅ Phase 1 | 后端Branch checkpoint / rollback合同 | 当前整核redirect路径已接入 |
+| ✅ Phase 1.25 | 有序可变前缀Dispatch + 三类IQ | ALU/LSU/BRU执行端口已接入 |
+| ✅ Phase 1.5 | BRU与Frontend redirect接入 | taken BEQ/JAL定向回归 |
 | 🎯 Phase 2 | D-Cache 模块 | 独立 testbench (read/write hit/miss/refill) |
 | 🔧 Phase 3 | LQ/SQ分配与恢复骨架已建，补真实LSU字段 | 全局重构后统一验证 |
 | 🎯 Phase 4 | LSQ + D-Cache 集成到 backend | sw/lw smoke test |

@@ -50,14 +50,16 @@ VERILATOR_FLAGS := \
 	--Mdir $(BUILD_DIR) \
 	-DENABLE_RETIRE_INFO
 
-.PHONY: build run test clean
+.PHONY: build run run-smoke run-rv64i-instructions test clean
 
 build:
 	rm -rf $(BUILD_DIR)
 	mkdir -p $(BUILD_DIR)
 	cd $(SIM_DIR) && $(VERILATOR) $(VERILATOR_FLAGS) $(SIM_DIR)/main.cpp $(RTL_SRCS)
 
-run:
+run: run-smoke
+
+run-smoke:
 	@if [ ! -x "$(RUN_BIN)" ]; then \
 		echo "Missing binary: $(RUN_BIN)"; \
 		echo "Run: make build"; \
@@ -65,7 +67,21 @@ run:
 	fi
 	cd $(SIM_DIR) && $(RUN_BIN) --image tests/smoke.hex --trace tandem.jsonl --max-retires 4
 
-test: build run
+run-rv64i-instructions:
+	@if [ ! -x "$(RUN_BIN)" ]; then \
+		echo "Missing binary: $(RUN_BIN)"; \
+		echo "Run: make build"; \
+		exit 1; \
+	fi
+	cd $(SIM_DIR) && $(RUN_BIN) \
+		--image tests/rv64i_instructions.hex \
+		--trace rv64i_instructions.jsonl \
+		--max-cycles 5000 --max-retires 14
+	cd $(SIM_DIR) && python3 check_trace.py \
+		--trace rv64i_instructions.jsonl \
+		--expect tests/rv64i_instructions.expected.json
+
+test: build run-smoke run-rv64i-instructions
 
 clean:
-	rm -rf $(BUILD_DIR) tandem.jsonl
+	rm -rf $(BUILD_DIR) tandem.jsonl rv64i_instructions.jsonl

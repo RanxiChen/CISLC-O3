@@ -20,7 +20,7 @@
 - 当前后端并行宽度命名统一使用 `machine width` / `MACHINE_WIDTH`，表示每周期并行处理的 lane 数。
 - 当前 core/backend 固定配置集中在 `rtl/common/o3_pkg.sv` 的 `CORE_FETCH_WIDTH` 与 `BACKEND_*` 参数中；当前版本 `CORE_FETCH_WIDTH=4`，`BACKEND_MACHINE_WIDTH=4`。
 - 物理寄存器默认配置为96项，编号宽度7位。复位时`p0~p31`承担初始架构映射、`p32~p95`空闲；后续被提交新映射覆盖的`p1~p31`也可进入Free List，只有`p0`永久保留。
-- `decoder` 已经能提取 `rs1/rs2/rd`，并对 RV64I 的整数 R/I 算术指令给出 `rs1_read_en/rs2_read_en/rd_write_en/use_imm/imm_type/imm_raw/int_alu_op/is_int_uop`。
+- `decoder` 已经能提取 `rs1/rs2/rd`，并覆盖RV64I的`LUI/AUIPC`、整数R/I算术、九条word算术、Load/Store、六种条件分支及`JAL/JALR`；`src1_is_pc`让AUIPC选择PC，`is_word_op`控制低32位结果符号扩展。
 - `o3_pkg` 已新增统一的 `int_alu_op_t` 与 `imm_type_t`，用于对齐 `decoder` 和 `int_execute_unit`。
 - `uop_queue` 已重构为默认 16-entry 的单-uop 队列：4-wide 配置下采用 4 bank，压紧写入，并从队头展示最多 4 条最老 uop；原始 fetch/decode bundle 边界不进入队列语义。
 - `rename_stage` 已按lane0最老的顺序联合检查ROB、Free List、LQ、SQ、branch checkpoint和Rename/Dispatch Queue容量，每拍接受0～4条连续前缀；任一指令资源不足时停止该指令及所有年轻lane。
@@ -107,9 +107,11 @@
 
 ### decoder
 - 职责：从 32 位指令中提取寄存器字段、原始立即数编码和基础整数 ALU uop 语义。
-- 当前覆盖：RV64I 中直接走整数 ALU 的 R/I 算术指令。
+- 当前覆盖：RV64I 中直接走整数 ALU 的U/R/I算术和word指令。
+  - U-type：`LUI/AUIPC`
   - R-type：`ADD/SUB/SLL/SLT/SLTU/XOR/SRL/SRA/OR/AND`
   - I-type：`ADDI/SLLI/SLTI/SLTIU/XORI/SRLI/SRAI/ORI/ANDI`
+  - Word：`ADDIW/SLLIW/SRLIW/SRAIW/ADDW/SUBW/SLLW/SRLW/SRAW`
 - 当前输出形态：输出 `decode_out_t`，包含 `rs1/rs2/rd`、`rs1_read_en/rs2_read_en/rd_write_en`、`use_imm`、`imm_type`、`imm_raw[11:0]`、`int_alu_op`、`is_int_uop`。
 - 当前各类指令解码结果：
   - R-type 算术：读 `rs1/rs2`、写 `rd`，`use_imm=0`，`imm_type=IMM_TYPE_NONE`
@@ -118,7 +120,7 @@
   - Load/Store：生成寄存器副作用、立即数、LQ/SQ分类、访问宽度和Load signed/unsigned语义
   - Branch/JAL/JALR：生成Rename/checkpoint所需分类
   - 其它 opcode 或未识别的 `funct3/funct7`：保守输出全 0，不触发 rename 侧寄存器分配
-- 当前已增加BEQ/BNE/BLT/BGE/BLTU/BGEU条件和JAL/JALR执行控制；仍未实现system/fence、RV64I word指令、CSR和trap执行语义。
+- 当前已接通BEQ/BNE/BLT/BGE/BLTU/BGEU和JAL/JALR执行、恢复与redirect；仍未实现system/fence、CSR和trap执行语义。
 
 ### uop_queue
 - 职责：作为 decode 后、rename 前按单条 uop 计数的顺序缓冲，消除不同输入批次留下的容量碎片。
@@ -528,27 +530,24 @@
 - 若上一拍刚完成，则这一拍 `resp_valid_o=1`，随后单元回到可接收状态。
 
 ## 已知限制
-- 当前重构边界已经推进到Memory IQ、LSU、内部Data SRAM、共享8R4W仲裁和Store commit buffer；真实BRU与Frontend redirect尚未接入。
-- `branch_resolution_i`必须由未来BRU提供；当前代码不会自行检测分支误预测。
+- 当前重构边界已经推进到Integer/Memory/Branch IQ、ALU/LSU/BRU、内部Data SRAM、共享8R4W仲裁、Store commit buffer和Frontend redirect。
+- 单发射BRU已经接通；预测器仍固定not-taken，不含BTB/BHT/RAS或训练表。
 - Load只支持单个更老Store完整覆盖转发；未知地址/数据及部分重叠保守等待，不实现violation检测或replay。
 - Data SRAM是后端内部64KiB单端口字节数组，不接Cache、AXI、PMA/MMU，不产生访问或对齐异常，也没有程序镜像初始化接口。
 - 当前最多一个SRAM Load outstanding；committed Store固定优先，持续Store drain可能推迟Load。
-- Branch IQ已建立但issue端口冻结；Branch/Jump会占用ROB和Branch IQ而不会执行或退休。
-- 本段只执行了普通backend与`O3_SIM`配置的Verilator lint以及`git diff --check`；没有运行仿真或回归，旧testbench尚未迁移Load/Store/SRAM观察合同。
+- Branch/Jump已有完整静态链路；定向整核测试覆盖taken BEQ、JAL、错误路径清除和链接值退休，尚未形成六种分支条件的完整矩阵。
 - 当前 `SYSTEM` 指令先按保守方式处理，不纳入 CSR 重命名细节。
 - `alu_issue_q`当前只保留日志观察副本，真实grant候选的操作数直接锁存到`alu_regread_q`；后续做时序收敛时可重新切分Select/RegRead边界。
-- 乘除单元和BRU尚未接入新Issue/写回仲裁接口。
+- 乘除单元尚未接入新Issue/写回仲裁接口。
 - 当前 `mul_execute_unit/div_execute_unit` 只是固定拍数骨架，不代表最终工业级实现。
 - 当前不处理乘法高低位融合、除法商余融合，也不处理多请求并发执行。
-- 当前不迁移或新增测试代码。
-- 当前虽然已经有专用仿真入口，但仍未建立完整验证闭环；现有 `backend_testharness` 只用于驱动后端最小 rename 数据流。
-- 当前不做完整代码检测闭环，统一留到后续数据流更完整后再补。
+- 当前虽然已有专用整核仿真入口和U-type/word/redirect定向测试，但仍未建立完整RV64I、ACT4或Spike差分闭环。
 
 ## 后续扩展入口
-- BRU接入：产生`branch_resolution_i`并把`redirect_valid_o/redirect_pc_o`连接到Frontend。
+- Branch预测扩展：在现有BRU/redirect闭环上增加BTB/BHT/RAS和训练消费。
 - LSU扩展：加入多Load outstanding、Load violation检测/replay、多个Store字节合并转发和真实DCache接口。
 - PRF扩展：在逻辑8R4W合同稳定后加入bank映射、bank conflict replay或固定延迟FU的未来写回槽预订。
-- 执行单元扩展：整数R/I和Memory路径已经闭合；后续接入BRU、Mul/Div并纳入共享读写口仲裁。
+- 执行单元扩展：U/R/I/word、Memory和Branch路径已经闭合；后续接入Mul/Div并纳入共享读写口仲裁。
 - 乘法器扩展：在保持当前固定拍数接口不变的前提下，将内部实现替换为 DSP 优化、Booth 或华莱士树结构。
 - 除法器扩展：在保持当前固定拍数接口不变的前提下，将内部实现替换为迭代式除法器，并视需要扩展可取消与融合能力。
 

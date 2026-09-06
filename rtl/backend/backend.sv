@@ -471,10 +471,12 @@ module backend
             assign decoded_uop[i].rs1_read_en    = !decoded_exception && decode_out[i].rs1_read_en;
             assign decoded_uop[i].rs2_read_en    = !decoded_exception && decode_out[i].rs2_read_en;
             assign decoded_uop[i].rd_write_en    = !decoded_exception && decode_out[i].rd_write_en;
+            assign decoded_uop[i].src1_is_pc     = !decoded_exception && decode_out[i].src1_is_pc;
             assign decoded_uop[i].use_imm        = !decoded_exception && decode_out[i].use_imm;
             assign decoded_uop[i].imm_type       = decode_out[i].imm_type;
             assign decoded_uop[i].imm_raw        = decode_out[i].imm_raw;
             assign decoded_uop[i].int_alu_op     = decode_out[i].int_alu_op;
+            assign decoded_uop[i].is_word_op     = !decoded_exception && decode_out[i].is_word_op;
             assign decoded_uop[i].is_int_uop     = !decoded_exception && decode_out[i].is_int_uop;
             assign decoded_uop[i].is_load        = !decoded_exception && decode_out[i].is_load;
             assign decoded_uop[i].is_store       = !decoded_exception && decode_out[i].is_store;
@@ -1179,7 +1181,7 @@ module backend
                 .src2_value_i(alu_regread_q[i].src2_value),
                 .imm_value_i(alu_regread_q[i].imm_value),
                 .use_imm_i(alu_regread_q[i].imm_valid),
-                .is_word_op_i(1'b0),
+                .is_word_op_i(alu_regread_q[i].is_word_op),
                 .valid_o(exec_valid[i]),
                 .result_o(exec_result[i]),
                 .cmp_true_o(exec_cmp_true[i])
@@ -1734,8 +1736,10 @@ module backend
                     alu_regread_q[alu].dst_preg <= int_iq_issue_uop[alu].dst_preg;
                     alu_regread_q[alu].dst_write_en <= int_iq_issue_uop[alu].rd_write_en
                                                      && (int_iq_issue_uop[alu].rd != '0);
-                    alu_regread_q[alu].src1_value <= int_iq_issue_uop[alu].rs1_read_en
-                                                  ? prf_rd_data[int_src1_port[alu]] : '0;
+                    alu_regread_q[alu].src1_value <= int_iq_issue_uop[alu].src1_is_pc
+                                                  ? XLEN'(int_iq_issue_uop[alu].pc)
+                                                  : (int_iq_issue_uop[alu].rs1_read_en
+                                                     ? prf_rd_data[int_src1_port[alu]] : '0);
                     alu_regread_q[alu].src2_value <= int_iq_issue_uop[alu].rs2_read_en
                                                   && !int_iq_issue_uop[alu].use_imm
                                                   ? prf_rd_data[int_src2_port[alu]] : '0;
@@ -1744,6 +1748,7 @@ module backend
                                                                    int_iq_issue_uop[alu].imm_raw) : '0;
                     alu_regread_q[alu].imm_valid <= int_iq_issue_uop[alu].use_imm;
                     alu_regread_q[alu].int_alu_op <= int_iq_issue_uop[alu].int_alu_op;
+                    alu_regread_q[alu].is_word_op <= int_iq_issue_uop[alu].is_word_op;
                     alu_regread_q[alu].branch_mask <= resolved_branch_mask(
                         int_iq_issue_uop[alu].branch_mask);
                 end else if (branch_resolution_i.valid) begin

@@ -15,7 +15,12 @@ make test
 ```
 
 The default smoke image retires four independent RV64I instructions and writes
-`tandem.jsonl`. Every `retire` record is architectural and ordered: `order=0`
+`tandem.jsonl`. The same `make test` invocation also runs a 14-retirement
+directed program covering `LUI/AUIPC`, all nine RV64 word ALU instructions,
+taken `BEQ/JAL`, wrong-path removal, and JAL link writeback. Its stable fields
+are checked against `tests/rv64i_instructions.expected.json`.
+
+Every `retire` record is architectural and ordered: `order=0`
 is the oldest retired instruction. A cycle may contain up to four consecutive
 records in increasing slot order.
 
