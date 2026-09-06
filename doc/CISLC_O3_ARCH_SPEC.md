@@ -12,7 +12,7 @@ M-mode only，无 MMU，物理地址直通。后期增加协处理器通信机�
 
 | 扩展 | 状态 |
 |---|---|
-| RV64I | 🔧 U/R/I/word、Load/Store、branch/jump已接入；FENCE、ECALL/EBREAK待实现 |
+| RV64I | 🔧 U/R/I/word、Load/Store、branch/jump已接入；ACT4-I生成用例51/51通过；FENCE屏障和ECALL/EBREAK待完成 |
 | RV64M (乘除) | 🔧 文件存在，未接入主流水线 |
 | RV64A (原子) | ❌ 待实现（LR/SC + AMO） |
 | F/D (浮点) | ❌ 不在当前规划 |
@@ -49,7 +49,7 @@ M-mode only，无 MMU，物理地址直通。后期增加协处理器通信机�
 │   D-Cache                  待实现                            │
 │   LSQ                      LQ 8 + SQ 8 分配/恢复骨架         │
 │   Store→Load forwarding    单个最年轻完整覆盖Store            │
-│   内存序                    FENCE尚未实现                      │
+│   内存序                    FENCE编码已接入，屏障待实现            │
 ├───────────────────────────────────────────────────────────┤
 │ 特权架构                                                     │
 │   M-mode only              ✅ (当前未接入 CSR)               │
@@ -65,6 +65,10 @@ M-mode only，无 MMU，物理地址直通。后期增加协处理器通信机�
 memory。数据访问完整落在DTCM时使用本地单端口SRAM，否则整笔通过LSU外部接口访问
 同一份软件memory。跨TCM边界不拆分。该接口后续可以替换为AXI/DCache；当前不支持
 自修改代码、PMA、MMU、访问异常或多个Load outstanding。
+
+当前`FENCE`编码会作为无寄存器副作用的uop进入ROB，但不会阻止年轻访存提前执行，
+也没有等待SQ排空。面向多 outstanding、写缓冲或真实外部总线的屏障状态机仍待
+实现，因此这里的ACT4通过不代表FENCE内存序、异常或完整RV64I已经闭合。
 
 ## 4. 流水线级数
 

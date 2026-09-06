@@ -24,7 +24,7 @@
  *   2) R-type：`ADD/SUB/SLL/SLT/SLTU/XOR/SRL/SRA/OR/AND`
  *   3) I-type：`ADDI/SLLI/SLTI/SLTIU/XORI/SRLI/SRAI/ORI/ANDI`
  *   4) RV64 word：`ADDIW/SLLIW/SRLIW/SRAIW/ADDW/SUBW/SLLW/SRLW/SRAW`
- *   5) RV64I Load/Store、六种条件分支以及`JAL/JALR`
+ *   5) RV64I Load/Store、六种条件分支、`JAL/JALR`以及`FENCE`
  * - 对于已覆盖的 I-type 算术指令：
  *   1) `use_imm=1`
  *   2) `imm_type=IMM_TYPE_I`
@@ -39,7 +39,8 @@
  *   3) `illegal_instruction=1`，由 Decode Stage 形成精确异常元数据
  *
  * 当前没有实现的功能：
- * - 不覆盖 system / fence
+ * - 不覆盖 system；当前FENCE在单请求软件memory模型中作为无寄存器副作用的
+ *   整数uop完成，尚未形成面向多 outstanding 外部总线的独立屏障状态机
  * - 不区分 ALU / BRU / LSU / MUL / DIV 等更细执行类型
  * - 不输出 CSR / 异常 / trap / commit 相关信息
  *
@@ -81,6 +82,7 @@ module decoder
     localparam logic [6:0] OPCODE_BRANCH   = 7'b1100011;
     localparam logic [6:0] OPCODE_JAL      = 7'b1101111;
     localparam logic [6:0] OPCODE_JALR     = 7'b1100111;
+    localparam logic [6:0] OPCODE_MISC_MEM = 7'b0001111;
 
     logic [6:0] opcode;
     logic [2:0] funct3;
@@ -381,6 +383,15 @@ module decoder
                     decode_o.imm_raw[11:0] = decode_i.instruction[31:20];
                     decode_o.is_jalr     = 1'b1;
                     decode_o.needs_checkpoint = 1'b1;
+                    decode_o.illegal_instruction = 1'b0;
+                end
+            end
+
+            OPCODE_MISC_MEM: begin
+                if (funct3 == 3'b000) begin
+                    // 当前只有单个Load outstanding，Memory IQ也按序发射。FENCE先
+                    // 作为无源、无目的整数uop进入ROB并完成，保留精确程序顺序。
+                    decode_o.is_int_uop = 1'b1;
                     decode_o.illegal_instruction = 1'b0;
                 end
             end

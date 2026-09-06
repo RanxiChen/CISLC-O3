@@ -36,6 +36,8 @@ struct Options {
     uint64_t reset_pc = 0;
     bool reset_pc_explicit = false;
     bool check_memory_stats = false;
+    bool watch_tohost = false;
+    uint64_t tohost_address = 0;
     std::array<uint64_t, 5> expected_memory_stats{};
 };
 
@@ -272,6 +274,9 @@ Options parse_options(int argc, char** argv) {
             options.expected_memory_stats = parse_memory_stats(
                 take_value("--expect-memory-stats"));
             options.check_memory_stats = true;
+        } else if (current == "--tohost-address") {
+            options.tohost_address = parse_u64(take_value("--tohost-address"));
+            options.watch_tohost = true;
         } else if (current == "--help") {
             std::cout
                 << "Usage: Vo3_tandem_top [options]\n"
@@ -282,6 +287,7 @@ Options parse_options(int argc, char** argv) {
                 << "  --reset-pc ADDRESS   reset PC and default hex load address\n"
                 << "  --expect-memory-stats I,D,F,R,W\n"
                 << "                       require exact ITCM/DTCM init beats and external counts\n"
+                << "  --tohost-address A   stop on a nonzero software-memory write at A\n"
                 << "Hex files may use @ADDRESS to change the byte load address.\n";
             std::exit(0);
         } else {
@@ -405,6 +411,7 @@ int main(int argc, char** argv) {
         uint64_t external_ifetches = 0;
         uint64_t external_data_reads = 0;
         uint64_t external_data_writes = 0;
+        uint64_t tohost_value = 0;
 
         dut.clk_i = 0;
         dut.rst_i = 1;
@@ -439,7 +446,8 @@ int main(int argc, char** argv) {
         clear_tcm_init(dut);
         dut.rst_i = 0;
 
-        while (cycle < options.max_cycles && next_order < options.max_retires) {
+        while (cycle < options.max_cycles && next_order < options.max_retires
+            && tohost_value == 0) {
             clear_refill_response(dut);
             clear_data_response(dut);
 
@@ -470,6 +478,11 @@ int main(int argc, char** argv) {
                                          dut.dmem_req_wdata_o,
                                          static_cast<uint8_t>(dut.dmem_req_wmask_o));
                     ++external_data_writes;
+                    if (options.watch_tohost
+                     && dut.dmem_req_addr_o <= options.tohost_address
+                     && options.tohost_address < dut.dmem_req_addr_o + 8) {
+                        tohost_value = image.memory.read64(options.tohost_address);
+                    }
                 } else {
                     pending_data_reads.push_back(PendingDataRead{
                         .addr = dut.dmem_req_addr_o,
@@ -490,13 +503,23 @@ int main(int argc, char** argv) {
         dut.final();
         trace.flush();
 
-        if (next_order < options.max_retires) {
+        if (options.watch_tohost && tohost_value != 0) {
+            std::cout << "[o3-tohost] value=0x" << std::hex << tohost_value << std::dec
+                      << " status=" << (tohost_value == 1 ? "PASS" : "FAIL") << "\n";
+            if (tohost_value != 1) {
+                return 1;
+            }
+        } else if (next_order < options.max_retires) {
             std::cerr << "[o3-tandem] timeout: cycles=" << cycle
                       << " retired=" << next_order
                       << " expected=" << options.max_retires
                       << " external_ifetches=" << external_ifetches
                       << " external_data_reads=" << external_data_reads
-                      << " external_data_writes=" << external_data_writes << "\n";
+                      << " external_data_writes=" << external_data_writes;
+            if (options.watch_tohost) {
+                std::cerr << " tohost=0x0";
+            }
+            std::cerr << "\n";
             return 1;
         }
 

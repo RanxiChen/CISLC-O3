@@ -14,6 +14,8 @@
  * - 不做写回同拍旁路、年龄矩阵、端口亲和性和多周期FU占用仲裁。
  * - 是否真正发射完全由每个实例的issue_ready_i决定；Integer实例接四路ALU，
  *   Integer/Memory/Branch实例均由共享读口和对应FU可用性回送ready。
+ * - OLDEST_ONLY=1时只允许物理队头成为候选；当前Memory实例用它避免年轻Load
+ *   占住唯一执行寄存器后等待尚未执行的老Store形成死锁。
  *
  * 周期N组合阶段更新ready视图、选择候选并计算压缩后的next状态；
  * 周期N上升沿原子删除已握手候选、追加Dispatch输入或执行恢复；
@@ -26,7 +28,8 @@ module backend_issue_queue
     parameter int ISSUE_WIDTH = 1,
     parameter int WAKEUP_WIDTH = BACKEND_NUM_INT_ALUS,
     parameter int DEPTH = 8,
-    parameter int NUM_PHYS_REGS = BACKEND_NUM_PHYS_REGS
+    parameter int NUM_PHYS_REGS = BACKEND_NUM_PHYS_REGS,
+    parameter bit OLDEST_ONLY = 1'b0
 ) (
     input  logic clk,
     input  logic rst,
@@ -88,8 +91,9 @@ module backend_issue_queue
             chosen = -1;
             for (int idx = 0; idx < DEPTH; idx++) begin
                 if (!resolution_valid_i && (chosen < 0) && queue_q[idx].valid && !selected[idx]
+                 && (!OLDEST_ONLY || (idx == 0))
                  && (!queue_q[idx].rs1_read_en || src1_ready_q[idx])
-                 && (!queue_q[idx].rs2_read_en || queue_q[idx].use_imm || src2_ready_q[idx])) begin
+                 && (!queue_q[idx].rs2_read_en || src2_ready_q[idx])) begin
                     chosen = idx;
                 end
             end
@@ -136,8 +140,10 @@ module backend_issue_queue
                                            || src1_ready_q[idx]
                                            || preg_ready_i[queue_q[idx].src1_preg]
                                            || wakeup_hits(queue_q[idx].src1_preg);
+                // use_imm只描述执行单元的立即数输入，不能代替真实rs2依赖。
+                // Branch同时使用B型立即数和rs2；只看use_imm会让Load->Branch
+                // 在Load写回前错误发射。
                 src2_ready_next[write_idx] = !queue_q[idx].rs2_read_en
-                                           || queue_q[idx].use_imm
                                            || src2_ready_q[idx]
                                            || preg_ready_i[queue_q[idx].src2_preg]
                                            || wakeup_hits(queue_q[idx].src2_preg);
@@ -154,7 +160,6 @@ module backend_issue_queue
                                                || preg_ready_i[enq_uop_i[lane].src1_preg]
                                                || wakeup_hits(enq_uop_i[lane].src1_preg);
                     src2_ready_next[write_idx] = !enq_uop_i[lane].rs2_read_en
-                                               || enq_uop_i[lane].use_imm
                                                || preg_ready_i[enq_uop_i[lane].src2_preg]
                                                || wakeup_hits(enq_uop_i[lane].src2_preg);
                     write_idx++;

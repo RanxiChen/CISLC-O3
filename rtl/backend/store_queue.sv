@@ -7,7 +7,8 @@
  *
  * 周期N组合阶段给出Load依赖结果和最老committed drain请求；周期N上升沿更新
  * allocate/execute/commit/drain状态；周期N+1可见。错误分支只删除未提交年轻项，
- * committed entry不受flush影响。本阶段不合并多个Store完成一次Load转发。
+ * committed entry不受flush影响；恢复同拍的存活老Store execute/commit/drain仍生效。
+ * 本阶段不合并多个Store完成一次Load转发，未来可在Load replay和多Store字节合并处扩展。
  */
 module store_queue
     import o3_pkg::*;
@@ -164,7 +165,9 @@ module store_queue
             branch_mask_q <= '{default: '0};
         end else if (resolution_valid_i && resolution_mispredict_i) begin
             int unsigned kept;
+            logic drain_fire;
             kept = 0;
+            drain_fire = drain_valid_o && drain_ready_i;
             for (int entry = 0; entry < DEPTH; entry++) begin
                 if (valid_q[entry] && !committed_q[entry]
                  && branch_mask_q[entry][resolution_tag_i]) begin
@@ -173,10 +176,36 @@ module store_queue
                     data_valid_q[entry] <= 1'b0;
                 end else if (valid_q[entry]) begin
                     kept++;
+                    branch_mask_q[entry][resolution_tag_i] <= 1'b0;
                 end
             end
+
+            // 恢复优先级只负责删除错误路径，不能吞掉同拍已经握手的老Store事件。
+            // 否则ROB会看到Store complete，而SQ对应entry仍没有地址/数据，队头
+            // 将永久无法drain。老Store不携带本次解析tag，因此可在恢复拍继续写入。
+            if (execute_valid_i && valid_q[execute_idx_i]
+             && !branch_mask_q[execute_idx_i][resolution_tag_i]) begin
+                addr_q[execute_idx_i] <= execute_addr_i;
+                data_q[execute_idx_i] <= execute_data_i;
+                mask_q[execute_idx_i] <= execute_mask_i;
+                addr_valid_q[execute_idx_i] <= 1'b1;
+                data_valid_q[execute_idx_i] <= 1'b1;
+            end
+            for (int port = 0; port < COMMIT_WIDTH; port++) begin
+                if (commit_valid_i[port] && valid_q[commit_idx_i[port]]
+                 && !branch_mask_q[commit_idx_i[port]][resolution_tag_i]) begin
+                    committed_q[commit_idx_i[port]] <= 1'b1;
+                end
+            end
+            if (drain_fire) begin
+                valid_q[head_q] <= 1'b0;
+                addr_valid_q[head_q] <= 1'b0;
+                data_valid_q[head_q] <= 1'b0;
+                committed_q[head_q] <= 1'b0;
+                head_q <= add_idx(head_q, 1);
+            end
             tail_q <= restore_tail_i;
-            count_q <= COUNT_WIDTH'(kept);
+            count_q <= COUNT_WIDTH'(kept) - COUNT_WIDTH'(drain_fire);
         end else begin
             int unsigned alloc_count;
             logic drain_fire;

@@ -20,7 +20,7 @@
 - 当前后端并行宽度命名统一使用 `machine width` / `MACHINE_WIDTH`，表示每周期并行处理的 lane 数。
 - 当前 core/backend 固定配置集中在 `rtl/common/o3_pkg.sv` 的 `CORE_FETCH_WIDTH` 与 `BACKEND_*` 参数中；当前版本 `CORE_FETCH_WIDTH=4`，`BACKEND_MACHINE_WIDTH=4`。
 - 物理寄存器默认配置为96项，编号宽度7位。复位时`p0~p31`承担初始架构映射、`p32~p95`空闲；后续被提交新映射覆盖的`p1~p31`也可进入Free List，只有`p0`永久保留。
-- `decoder` 已经能提取 `rs1/rs2/rd`，并覆盖RV64I的`LUI/AUIPC`、整数R/I算术、九条word算术、Load/Store、六种条件分支及`JAL/JALR`；`src1_is_pc`让AUIPC选择PC，`is_word_op`控制低32位结果符号扩展。
+- `decoder` 已经能提取 `rs1/rs2/rd`，并覆盖RV64I的`LUI/AUIPC`、整数R/I算术、九条word算术、Load/Store、六种条件分支、`JAL/JALR`及`FENCE`；`src1_is_pc`让AUIPC选择PC，`is_word_op`控制低32位结果符号扩展。
 - `o3_pkg` 已新增统一的 `int_alu_op_t` 与 `imm_type_t`，用于对齐 `decoder` 和 `int_execute_unit`。
 - `uop_queue` 已重构为默认 16-entry 的单-uop 队列：4-wide 配置下采用 4 bank，压紧写入，并从队头展示最多 4 条最老 uop；原始 fetch/decode bundle 边界不进入队列语义。
 - `rename_stage` 已按lane0最老的顺序联合检查ROB、Free List、LQ、SQ、branch checkpoint和Rename/Dispatch Queue容量，每拍接受0～4条连续前缀；任一指令资源不足时停止该指令及所有年轻lane。
@@ -38,6 +38,8 @@
 - 4个ALU结果、1个Load结果与JAL/JALR链接值按ROB年龄竞争4个PRF写口；未获grant的结果留在各自结果寄存器并逐级反压，grant周期原子执行PRF写入、wakeup和ROB complete。
 - LSU已经连接AGU、LQ/SQ依赖查询、单个更老Store完整覆盖转发、256KiB DTCM和范围外memory口；committed Store优先使用统一请求口。
 - Store在AGU把地址/数据/mask写入SQ后complete，ROB顺序退休只把SQ entry变为committed，DTCM或外部memory真正接受后才释放SQ容量。
+- Memory IQ在当前无replay、单请求LSU下只发射物理队头，避免年轻Load占住执行槽并等待尚未执行的老Store；Integer和Branch IQ仍按最老ready项选择。
+- Issue Queue的`use_imm`只选择执行单元输入，不再绕过真实`rs2`依赖；Branch可同时等待B型立即数和Load产生的`rs2`。
 - RV64I `OP-IMM`计算指令与R型共用该整数闭环：IQ只等待`rs1`，RegRead分别保存`src1`和符号扩展立即数，ALU由`use_imm`显式选择第二操作数。
 - `mul_execute_unit` 已新增，提供独立的 RV64M 乘法单元，当前采用“预计算结果 + 固定拍数返回”的简化骨架。
 - `div_execute_unit` 已新增，提供独立的 RV64M 除法/取余单元，当前采用“预计算结果 + 固定拍数返回”的简化骨架。
@@ -156,6 +158,7 @@
 - 当前默认各8项，在Rename阶段按真实Load/Store数量分配索引并保存ROB年龄和branch mask。
 - LQ保存AGU地址和outstanding状态，每次复用翻转generation；Load响应只有tag仍匹配有效entry时才可进入写回，ROB退休时释放最老Load。
 - SQ保存地址、数据、byte mask和committed状态；ROB退休不释放Store，只置committed，队头Store被DTCM或外部memory接受后才释放。
+- 分支恢复删除错误路径SQ项时，同拍已握手且不受该分支控制的老Store execute、commit和drain事件仍然生效。
 - Load查询全部更老Store；支持从单个最年轻完整覆盖Store转发，未知地址/数据或部分重叠保守阻塞。
 - mispredict按branch mask删除未提交年轻entry并恢复checkpoint tail；committed Store不可被flush。
 
@@ -373,8 +376,8 @@
 周期 N 组合阶段：
 - `dispatch_stage`从RDQ lane0开始累计三个IQ的拍初空位，形成0～4条最大连续接受前缀。
 - 接受前缀中的Integer、Load/Store和Branch/Jump分别形成三个无洞的逻辑入队集合。
-- 每个`backend_issue_queue`根据`preg_ready`更新旧表项ready视图，并从年龄最老端产生ready候选。
-- Integer与Memory IQ候选按ROB年龄参加8读口/FU容量仲裁；Branch的`issue_ready`为0。
+- 每个`backend_issue_queue`根据`preg_ready`更新旧表项ready视图；Integer和Branch选择最老ready候选，Memory在当前单请求LSU下只允许物理队头成为候选。
+- Integer、Memory与Branch IQ候选按ROB年龄参加8读口和对应FU容量仲裁。
 
 周期 N 上升沿：
 - RDQ删除Dispatch接受的最老前缀；三个IQ分别按原lane年龄压紧追加属于自己的uop。
@@ -409,6 +412,7 @@
 
 周期 N 上升沿：
 - Store把地址、数据和mask写入Rename时分配的SQ entry，并向ROB报告complete。
+- 若本拍同时发生分支误预测恢复，不携带该分支tag的更老Store execute/commit/drain事件仍原子生效，恢复只删除错误路径项。
 - Load请求锁存唯一pending元数据和目标类型；DTCM固定一拍返回，外部memory可以在任意后续周期返回，返回数据或Store转发值进入可保持Load结果槽。
 - ROB退休Store只设置对应SQ entry的`committed`；目标memory接受队头Store写请求才推进SQ head并释放容量。
 - 获得共享写口的Load结果写PRF、广播wakeup并complete ROB；未获写口时结果保持并阻塞新的Load结果。
@@ -537,13 +541,14 @@
 - 当前地址图包含64KiB ITCM和256KiB DTCM；范围外由简单外部memory接口处理，仿真中对应共享软件稀疏内存。
 - 当前最多一个Load outstanding；committed Store固定优先，持续Store drain可能推迟Load。
 - TCM跨边界请求整笔走外部memory；数据端写ITCM或指令端访问DTCM只更新/读取软件后备副本，不提供运行时双端口一致性，因此不支持自修改代码。
-- Branch/Jump已有完整静态链路；定向整核测试覆盖taken BEQ、JAL、错误路径清除和链接值退休，尚未形成六种分支条件的完整矩阵。
+- Branch/Jump已有完整静态链路；定向整核测试覆盖taken BEQ、JAL、错误路径清除和链接值退休，ACT4-I覆盖六种分支、JAL与JALR生成用例。
+- `FENCE`编码当前作为无寄存器副作用uop完成，但不会阻止年轻访存提前执行或等待SQ排空；屏障状态机仍未实现。
 - 当前 `SYSTEM` 指令先按保守方式处理，不纳入 CSR 重命名细节。
 - `alu_issue_q`当前只保留日志观察副本，真实grant候选的操作数直接锁存到`alu_regread_q`；后续做时序收敛时可重新切分Select/RegRead边界。
 - 乘除单元尚未接入新Issue/写回仲裁接口。
 - 当前 `mul_execute_unit/div_execute_unit` 只是固定拍数骨架，不代表最终工业级实现。
 - 当前不处理乘法高低位融合、除法商余融合，也不处理多请求并发执行。
-- 当前整核仿真支持ELF64 PT_LOAD、带绝对地址的hex、TCM初始化及范围外软件memory，并有定向路由测试；仍未建立完整RV64I、ACT4或Spike差分闭环。
+- 当前整核仿真支持ELF64 PT_LOAD、带绝对地址的hex、TCM初始化、范围外软件memory及`tohost`结束协议；固定ACT4版本生成的非特权RV64I-I共51项已形成整核回归并全部通过。该集合不含ECALL/EBREAK语义和FENCE内存序；Spike差分、特权态、异常与中断仍未进入该闭环。
 
 ## 后续扩展入口
 - Branch预测扩展：在现有BRU/redirect闭环上增加BTB/BHT/RAS和训练消费。

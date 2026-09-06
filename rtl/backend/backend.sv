@@ -16,7 +16,7 @@
  * - 在 issue queue 内实现按年龄顺序的 select，并把最靠前的 ready uop 发给多个整数 ALU
  * - Integer/Memory/Branch候选按ROB年龄共同竞争逻辑8读口；拿不到全部读口时留在IQ
  * - 整数RegRead与execute result均为可反压槽；结果没获得写口时保持并阻塞该ALU前级
- * - Memory IQ已接单发射RegRead/AGU/LQ/SQ、Store forwarding、DTCM和外部memory口
+ * - Memory IQ只允许物理队头发射，已接单发射RegRead/AGU/LQ/SQ、Store forwarding、DTCM和外部memory口
  * - 接入多个 `int_execute_unit`，完成 RV64I R/I 整数算术指令的最小执行链路
  * - 四个ALU、一个Load和JAL/JALR链接结果按ROB年龄竞争4个PRF写口
  * - Store在AGU完成后complete ROB，退休时转为committed SQ entry，memory请求接受后才释放
@@ -1072,7 +1072,8 @@ module backend
     backend_issue_queue #(
         .ENQ_WIDTH(DISPATCH_WIDTH), .ISSUE_WIDTH(1),
         .WAKEUP_WIDTH(NUM_INT_ALUS),
-        .DEPTH(MEM_ISSUE_QUEUE_DEPTH), .NUM_PHYS_REGS(NUM_PHYS_REGS)
+        .DEPTH(MEM_ISSUE_QUEUE_DEPTH), .NUM_PHYS_REGS(NUM_PHYS_REGS),
+        .OLDEST_ONLY(1'b1)
     ) u_mem_issue_queue (
         .clk(clk), .rst(rst), .enq_uop_i(mem_iq_enq_uop),
         .enq_fire_i(dispatch_accept_count != '0), .free_count_o(mem_iq_free_count),
