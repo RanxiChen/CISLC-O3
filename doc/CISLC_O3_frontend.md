@@ -13,14 +13,16 @@ sequential BPU -> FTQ -> serial IFU -> ICache -> Fetch Buffer -> Backend
 - BPU只生成最大32B的预测取指块，当前没有BTB/BHT/RAS，固定按not-taken顺序推进。
 - FTQ是16项预测块环形队列，不是一级流水寄存器。IFU消费与Commit释放使用独立指针。
 - IFU暂时采用单块、单ICache请求状态机，不实现多请求并发。
+- ICache内部包含`0x10000000`起始的64KiB ITCM；完整16B窗口位于该范围时固定一拍
+  返回，范围外继续走blocking Cache refill，由仿真器的软件后备内存响应。
 - Fetch Buffer继续作为前后端交接的紧凑指令队列。
 - Backend提交某块最后一条存活指令时，按序释放对应FTQ entry。
 - 分支误预测时，Frontend保留包含该分支的FTQ entry，截断所有年轻entry，并从
   `redirect_pc`重新生成预测块。
 - FTQ能够记录分支实际方向和目标并在释放时形成训练观察值；当前BPU不使用训练数据。
 
-本阶段没有更新或运行测试，只做RTL静态检查。RVC、真实预测算法、TLB/PMP、跨页取指、
-异常恢复和并发ICache请求仍未实现。
+统一内存定向测试已经覆盖ITCM初始化取指和范围外软件内存refill。RVC、真实预测算法、
+TLB/PMP、跨页取指、异常恢复和并发ICache请求仍未实现。
 
 ## 预测块与FTQ合同
 
@@ -80,6 +82,10 @@ IFU消费只推进`ifu_head_q`，不回收容量。Commit输出本拍跨过的`f
 Branch redirect不会清空ICache有效数据。`icache.flush`保留给reset级维护语义，redirect使用
 独立`kill`输入，仅处理错误路径的在飞控制状态。
 
+ITCM使用绝对物理地址初始化口。完整16B窗口命中ITCM时不查询tag、不分配Cache line；
+窗口跨越ITCM末端时整笔按范围外请求处理。flush和redirect都不擦除ITCM内容。当前数据端
+写ITCM不会同步修改该阵列，因此不支持自修改代码。
+
 第一版只有一个请求在飞，因此IFU被清空后可以直接忽略迟到返回；ICache在discard miss
 完成前保持blocking，不会把旧返回误配给新请求。未来增加多个outstanding后，需要epoch或
 请求tag。
@@ -99,7 +105,7 @@ Branch redirect不会清空ICache有效数据。`icache.flush`保留给reset级�
 - `rtl/frontend/bpu.sv`：顺序预测块生成与redirect PC恢复。
 - `rtl/frontend/ftq.sv`：预测块存储、IFU消费、Commit释放、误预测截断和训练观察。
 - `rtl/frontend/ifu.sv`：单块单请求取指状态机。
-- `rtl/frontend/icache.sv`：blocking ICache、refill以及redirect kill。
+- `rtl/frontend/icache.sv`：64KiB ITCM、blocking ICache、refill以及redirect kill。
 - `rtl/frontend/fetch_buffer.sv`：前后端交接的紧凑指令队列。
 - `rtl/frontend/frontend.sv`：上述模块总装和恢复信号分发。
 - `rtl/core/o3_core.sv`：Backend resolution/release到Frontend的闭环连接。

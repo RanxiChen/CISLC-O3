@@ -20,6 +20,13 @@ package o3_pkg;
     parameter int FTQ_INDEX_WIDTH = 4;
     parameter int ICACHE_LINE_BYTES = 64;
 
+    // 第一版统一物理地址图。Frontend只把ITCM窗口作为本地取指存储，LSU只把
+    // DTCM窗口作为本地数据存储；其他地址通过core外部存储接口交给下一级。
+    parameter logic [PC_WIDTH-1:0] ITCM_BASE_ADDR = PC_WIDTH'(32'h1000_0000);
+    parameter int ITCM_SIZE_BYTES = 64 * 1024;
+    parameter logic [XLEN-1:0] DTCM_BASE_ADDR = XLEN'(32'h1100_0000);
+    parameter int DTCM_SIZE_BYTES = 256 * 1024;
+
     // RISC-V 同步异常 cause 编码。当前先定义前端可能产生的指令端异常，
     // 后续增加 Load/Store、CSR 和特权架构时继续沿用同一类型扩展。
     typedef logic [5:0] exception_cause_t;

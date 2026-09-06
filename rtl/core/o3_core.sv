@@ -4,13 +4,13 @@
  * 当前已经实现：
  * - 实例化真实 frontend 和真实 backend。
  * - 直接连接 frontend 已有 fetch_buffer 出队口到 backend fetch 输入口。
- * - 将 frontend ICache refill request/response 端口从 core 顶层透出。
+ * - 将 frontend ICache refill、ITCM初始化、DTCM初始化和LSU外部memory端口透出。
  * - 将 backend 的 done 和 retired instruction counter 透出。
  * - 将Backend分支解析和Commit FTQ释放反馈接回Frontend。
  *
  * 当前没有实现：
  * - 不在 core 层额外实例化 fetch_buffer；fetch_buffer 已经在 frontend 内部。
- * - 不实现外部data cache/总线、精确异常恢复或真实分支预测表。
+ * - 不实现真实data cache/总线、精确异常恢复或真实分支预测表。
  * - 不在 core 层生成 ICache refill response；下一级存储或 testbench 需要从外部接入。
  *
  * 后续扩展入口：
@@ -50,6 +50,26 @@ module o3_core
     input  logic                refill_resp_error_i,
     input  logic [ICACHE_LINE_BYTES*8-1:0] refill_resp_data_i,
 
+    input  logic                         itcm_init_valid_i,
+    input  logic [PC_WIDTH-1:0]          itcm_init_addr_i,
+    input  logic [63:0]                  itcm_init_data_i,
+    input  logic [7:0]                   itcm_init_wmask_i,
+    input  logic                         dtcm_init_valid_i,
+    input  logic [XLEN-1:0]              dtcm_init_addr_i,
+    input  logic [XLEN-1:0]              dtcm_init_wdata_i,
+    input  logic [7:0]                   dtcm_init_wmask_i,
+
+    output logic                         dmem_req_valid_o,
+    input  logic                         dmem_req_ready_i,
+    output logic                         dmem_req_write_o,
+    output logic [XLEN-1:0]              dmem_req_addr_o,
+    output logic [XLEN-1:0]              dmem_req_wdata_o,
+    output logic [7:0]                   dmem_req_wmask_o,
+    input  logic                         dmem_rsp_valid_i,
+    output logic                         dmem_rsp_ready_o,
+    input  logic [XLEN-1:0]              dmem_rsp_rdata_i,
+    input  logic                         dmem_rsp_error_i,
+
     output logic done_o,
     output logic [63:0] retired_inst_count_o
 `ifdef ENABLE_RETIRE_INFO
@@ -88,6 +108,10 @@ module o3_core
         .refill_resp_pc_i    (refill_resp_pc_i),
         .refill_resp_error_i (refill_resp_error_i),
         .refill_resp_data_i  (refill_resp_data_i),
+        .itcm_init_valid_i   (itcm_init_valid_i),
+        .itcm_init_addr_i    (itcm_init_addr_i),
+        .itcm_init_data_i    (itcm_init_data_i),
+        .itcm_init_wmask_i   (itcm_init_wmask_i),
         .fetch_entry_o       (frontend_fetch_entry),
         .fetch_valid_o       (core_fetch_valid),
         .fetch_valid_mask_o  (core_fetch_valid_mask),
@@ -120,6 +144,20 @@ module o3_core
         .ftq_release_count_o (core_ftq_release_count),
         .redirect_valid_o    (backend_redirect_valid_unused),
         .redirect_pc_o       (backend_redirect_pc_unused),
+        .dtcm_init_valid_i   (dtcm_init_valid_i),
+        .dtcm_init_addr_i    (dtcm_init_addr_i),
+        .dtcm_init_wdata_i   (dtcm_init_wdata_i),
+        .dtcm_init_wmask_i   (dtcm_init_wmask_i),
+        .dmem_req_valid_o    (dmem_req_valid_o),
+        .dmem_req_ready_i    (dmem_req_ready_i),
+        .dmem_req_write_o    (dmem_req_write_o),
+        .dmem_req_addr_o     (dmem_req_addr_o),
+        .dmem_req_wdata_o    (dmem_req_wdata_o),
+        .dmem_req_wmask_o    (dmem_req_wmask_o),
+        .dmem_rsp_valid_i    (dmem_rsp_valid_i),
+        .dmem_rsp_ready_o    (dmem_rsp_ready_o),
+        .dmem_rsp_rdata_i    (dmem_rsp_rdata_i),
+        .dmem_rsp_error_i    (dmem_rsp_error_i),
         .done                (done_o),
         .retired_inst_count_o(retired_inst_count_o)
 `ifdef ENABLE_RETIRE_INFO

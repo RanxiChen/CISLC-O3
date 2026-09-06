@@ -2,7 +2,7 @@
  * CISLC-O3 Verilator Tandem trace top
  *
  * 当前已经实现：
- * - 实例化完整o3_core，并原样透传时钟、复位和ICache refill接口。
+ * - 实例化完整o3_core，并透传时钟、复位、TCM初始化与软件memory接口。
  * - 将core已有的packed retire_info拆成每个退休lane独立的基础类型端口，
  *   避免C++仿真器依赖SystemVerilog packed struct的位布局。
  * - 输出只描述已经从ROB队头按序退休的体系结构结果，不暴露推测状态。
@@ -32,6 +32,26 @@ module o3_tandem_top
     input  logic                refill_resp_error_i,
     input  logic [ICACHE_LINE_BYTES*8-1:0] refill_resp_data_i,
 
+    input  logic                         itcm_init_valid_i,
+    input  logic [PC_WIDTH-1:0]          itcm_init_addr_i,
+    input  logic [63:0]                  itcm_init_data_i,
+    input  logic [7:0]                   itcm_init_wmask_i,
+    input  logic                         dtcm_init_valid_i,
+    input  logic [XLEN-1:0]              dtcm_init_addr_i,
+    input  logic [XLEN-1:0]              dtcm_init_wdata_i,
+    input  logic [7:0]                   dtcm_init_wmask_i,
+
+    output logic                         dmem_req_valid_o,
+    input  logic                         dmem_req_ready_i,
+    output logic                         dmem_req_write_o,
+    output logic [XLEN-1:0]              dmem_req_addr_o,
+    output logic [XLEN-1:0]              dmem_req_wdata_o,
+    output logic [7:0]                   dmem_req_wmask_o,
+    input  logic                         dmem_rsp_valid_i,
+    output logic                         dmem_rsp_ready_o,
+    input  logic [XLEN-1:0]              dmem_rsp_rdata_i,
+    input  logic                         dmem_rsp_error_i,
+
     output logic done_o,
     output logic [63:0] retired_inst_count_o,
 
@@ -57,6 +77,24 @@ module o3_tandem_top
         .refill_resp_pc_i     (refill_resp_pc_i),
         .refill_resp_error_i  (refill_resp_error_i),
         .refill_resp_data_i   (refill_resp_data_i),
+        .itcm_init_valid_i    (itcm_init_valid_i),
+        .itcm_init_addr_i     (itcm_init_addr_i),
+        .itcm_init_data_i     (itcm_init_data_i),
+        .itcm_init_wmask_i    (itcm_init_wmask_i),
+        .dtcm_init_valid_i    (dtcm_init_valid_i),
+        .dtcm_init_addr_i     (dtcm_init_addr_i),
+        .dtcm_init_wdata_i    (dtcm_init_wdata_i),
+        .dtcm_init_wmask_i    (dtcm_init_wmask_i),
+        .dmem_req_valid_o     (dmem_req_valid_o),
+        .dmem_req_ready_i     (dmem_req_ready_i),
+        .dmem_req_write_o     (dmem_req_write_o),
+        .dmem_req_addr_o      (dmem_req_addr_o),
+        .dmem_req_wdata_o     (dmem_req_wdata_o),
+        .dmem_req_wmask_o     (dmem_req_wmask_o),
+        .dmem_rsp_valid_i     (dmem_rsp_valid_i),
+        .dmem_rsp_ready_o     (dmem_rsp_ready_o),
+        .dmem_rsp_rdata_i     (dmem_rsp_rdata_i),
+        .dmem_rsp_error_i     (dmem_rsp_error_i),
         .done_o               (done_o),
         .retired_inst_count_o (retired_inst_count_o),
         .retire_info_o        (retire_info)

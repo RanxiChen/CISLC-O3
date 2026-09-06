@@ -36,8 +36,8 @@
 - `backend_issue_queue`是三个IQ共用的存储与调度骨架：压紧入队、容量反压、源ready更新、最老ready候选和branch-mask恢复均已实现。
 - Integer、Memory与Branch IQ按ROB年龄共同竞争逻辑8个PRF读口，一条uop所需读口原子授权；Branch一次最多发射一条。
 - 4个ALU结果、1个Load结果与JAL/JALR链接值按ROB年龄竞争4个PRF写口；未获grant的结果留在各自结果寄存器并逐级反压，grant周期原子执行PRF写入、wakeup和ROB complete。
-- LSU已经连接AGU、LQ/SQ依赖查询、单个更老Store完整覆盖转发和64KiB内部Data SRAM；committed Store优先使用单SRAM请求口。
-- Store在AGU把地址/数据/mask写入SQ后complete，ROB顺序退休只把SQ entry变为committed，Data SRAM真正接受后才释放SQ容量。
+- LSU已经连接AGU、LQ/SQ依赖查询、单个更老Store完整覆盖转发、256KiB DTCM和范围外memory口；committed Store优先使用统一请求口。
+- Store在AGU把地址/数据/mask写入SQ后complete，ROB顺序退休只把SQ entry变为committed，DTCM或外部memory真正接受后才释放SQ容量。
 - RV64I `OP-IMM`计算指令与R型共用该整数闭环：IQ只等待`rs1`，RegRead分别保存`src1`和符号扩展立即数，ALU由`use_imm`显式选择第二操作数。
 - `mul_execute_unit` 已新增，提供独立的 RV64M 乘法单元，当前采用“预计算结果 + 固定拍数返回”的简化骨架。
 - `div_execute_unit` 已新增，提供独立的 RV64M 除法/取余单元，当前采用“预计算结果 + 固定拍数返回”的简化骨架。
@@ -59,18 +59,18 @@
 - rename结果先进入独立Rename/Dispatch Queue；Dispatch根据三个IQ空位接受最大队头连续前缀，并在该前缀内部按类型分流。
 - 三个IQ根据`preg_ready`和四路Writeback广播维护源状态；Integer/Memory/Branch ready候选共同进入共享8读口仲裁。
 - `alu_result_q`、`load_result_q`与Branch链接结果是可保持的写回源；共享仲裁每拍选择最多4个最老结果写PRF并complete ROB。
-- Load经AGU后检查更老SQ entry：未知或部分重叠时等待，完整覆盖时从最年轻匹配Store转发，否则请求Data SRAM；LQ generation tag丢弃flush或复用后的迟到响应。
-- Store退休时不会释放SQ；SQ队头最老committed Store写入Data SRAM并握手后才释放。
+- Load经AGU后检查更老SQ entry：未知或部分重叠时等待，完整覆盖时从最年轻匹配Store转发，否则按地址请求DTCM或core外部memory；LQ generation tag丢弃flush或复用后的迟到响应。
+- Store退休时不会释放SQ；SQ队头最老committed Store完成DTCM或外部memory请求握手后才释放。
 - `rob`从队头连续退休最多4条已经complete且无异常的指令，并提交映射、返还`old_dst_preg`。
 - Branch IQ经共享读口进入Branch RegRead和BRU；Branch Result下一周期广播resolution，redirect不等待JAL/JALR链接值写回。Commit按`ftq_last`产生FTQ释放计数并已在core连接Frontend。
 
 ## 当前核心集成状态
 - `rtl/core/o3_core.sv` 是当前真实 frontend + backend 的 core 级连接入口。
-- core 顶层透出 `reset_pc_i`、ICache refill request/response、backend `done_o` 和 `retired_inst_count_o`；在 `ENABLE_RETIRE_INFO` 下额外透出 `retire_info_o`。
+- core 顶层透出 `reset_pc_i`、ICache refill、TCM初始化、LSU外部memory request/response、backend `done_o` 和 `retired_inst_count_o`；在 `ENABLE_RETIRE_INFO` 下额外透出 `retire_info_o`。
 - frontend 输出 4-lane `fetch_entry_t` group；backend 当前通过 `BACKEND_MACHINE_WIDTH=4` 对齐该宽度。
 - frontend 端口是 unpacked array，backend 端口是 packed aggregate，core 内部用逐 lane bridge 做形状转换；该 bridge 不改变 lane 顺序、不压缩 bubble、不做协议转换。
 - `fetch_valid_o/fetch_ready_i` 与 `fetch_valid_i/fetch_ready_o` 是 group 级 ready/valid；后端不能单独 ready 某个 lane。
-- ICache refill 端口仍需要 testbench 或后续存储系统驱动；core 当前不生成 refill response。
+- ICache范围外refill和LSU范围外请求仍需要testbench或后续存储系统驱动；当前整核仿真由一份共享C++稀疏内存响应。
 - FTQ已经由Backend Commit按`ftq_last`顺序释放；mispredict时Backend resolution同时驱动Frontend恢复。
 - `rtl/O3.sv` 与 `rtl/Tile.sv` 仍是 LED 占位系统入口，尚未包住 `o3_core`。
 
@@ -84,7 +84,7 @@
   - 当定义 `O3_SIM_SINGLE_INST_TRACE` 时，backend 不输出普通整周期文本块，只追踪第一条进入 backend 的有效指令，并在目标指令退休后拉高 `single_inst_retired_o`。
   - 当定义 `ENABLE_RETIRE_INFO` 时，backend 输出 retire-time observation record，供外部 testbench/scoreboard 判断 commit 指令的架构效果。
 - 宽度语义：使用 `MACHINE_WIDTH` 表示每周期并行进入 rename 数据流的 lane 数。
-- 当前未做：BTB/BHT/RAS训练表、精确异常恢复、Cache/MMU/PMA、Load replay、内存访问异常和完整内存序模型。
+- 当前未做：BTB/BHT/RAS训练表、精确异常恢复、DCache/MMU/PMA、Load replay、内存访问异常和完整内存序模型。
 
 ### o3_core
 - 职责：作为当前 core 级最小集成入口，实例化真实 frontend 和真实 backend。
@@ -155,7 +155,7 @@
 ### load_queue / store_queue
 - 当前默认各8项，在Rename阶段按真实Load/Store数量分配索引并保存ROB年龄和branch mask。
 - LQ保存AGU地址和outstanding状态，每次复用翻转generation；Load响应只有tag仍匹配有效entry时才可进入写回，ROB退休时释放最老Load。
-- SQ保存地址、数据、byte mask和committed状态；ROB退休不释放Store，只置committed，队头Store被Data SRAM接受后才释放。
+- SQ保存地址、数据、byte mask和committed状态；ROB退休不释放Store，只置committed，队头Store被DTCM或外部memory接受后才释放。
 - Load查询全部更老Store；支持从单个最年轻完整覆盖Store转发，未知地址/数据或部分重叠保守阻塞。
 - mispredict按branch mask删除未提交年轻entry并恢复checkpoint tail；committed Store不可被flush。
 
@@ -193,8 +193,9 @@
 - 所有resolution都会释放checkpoint或清branch mask；只有mispredict触发前后端恢复。resolution周期冻结新Rename/checkpoint分配。
 
 ### load_store_unit / simple_data_sram / writeback_arbiter
-- `load_store_unit`接收一条已经读出操作数的Memory uop，组合执行AGU和SQ依赖判断；Store写SQ并complete，Load转发或建立单个SRAM outstanding请求。
-- `simple_data_sram`是后端私有64KiB字节数组，单请求端口，Store握手上升沿修改数据，Load握手后一拍产生可反压响应；它不与Frontend/ICache相连。
+- `load_store_unit`接收一条已经读出操作数的Memory uop，组合执行AGU和SQ依赖判断；Store写SQ并complete，Load转发或建立单个memory outstanding请求。完整访问位于`0x11000000..0x1103ffff`时选择DTCM，否则整笔选择外部memory口。
+- `simple_data_sram`是后端私有256KiB DTCM字节数组，使用绝对物理地址和初始化写口；Store握手上升沿修改数据，Load握手后一拍产生可反压响应。
+- 外部memory口允许可变响应延迟，当前仍只允许一个Load outstanding；Store只有请求握手，没有返回包。仿真入口让取指与数据端共享同一份C++稀疏内存。
 - `writeback_arbiter`在4个ALU result、1个Load result和JAL/JALR链接结果之间按ROB年龄分配4个写口；未获grant的生产者保持，grant与PRF写、wakeup、ROB complete原子对应。
 
 ### int_execute_unit
@@ -225,8 +226,8 @@
 - `config/o3_platform.json`
   - 保存当前采用的 Rocket/Flow 风格地址布局；main RAM 位于 `0x80000000`。
 
-当前边界：这套AXI访存框架仍未接入core。Backend本次使用的是独立的
-`simple_data_sram`，没有把LSU接到AXI、DCache或`o3_core`外部接口。
+当前边界：这套AXI访存框架仍未接入core。`o3_core`已经透出简单的单请求外部memory
+接口，整核仿真用软件模型响应；它还没有转换成AXI或真实DCache协议。
 
 - `rtl/backend/backend.sv`
   - 当前 rename 最小闭环的总装模块。
@@ -252,7 +253,7 @@
 - `rtl/backend/writeback_arbiter.sv`
   - 负责4个ALU结果与1个Load结果到4个PRF写口的最老优先仲裁。
 - `rtl/memory/simple_data_sram.sv`
-  - 后端私有64KiB单端口字节寻址SRAM；当前不连接Frontend、ICache或AXI。
+  - 后端私有256KiB DTCM，单端口、字节寻址并带绝对地址初始化口；当前不连接AXI。
 - `rtl/backend/rename_dispatch_queue.sv`
   - 负责缓存renamed uop并执行branch mask清除/删除。
 - `rtl/backend/rob.sv`
@@ -303,7 +304,7 @@
 - 读仲裁按候选实际需要的0/1/2个源原子分配PRF端口，无法完整满足时不向IQ回送ready。
 - `alu_regread_q` 当前持有的真实操作数值直接驱动 `int_execute_unit`。
 - 4个`alu_result_q`、1个Load结果槽和JAL/JALR链接结果按ROB年龄竞争4个写口；只有grant形成PRF写、wakeup和ROB complete。
-- LSU对当前Memory uop组合产生AGU地址，查询SQ后选择Store forwarding或Data SRAM；committed Store优先请求单端口SRAM。
+- LSU对当前Memory uop组合产生AGU地址，查询SQ后选择Store forwarding、DTCM或外部memory；committed Store优先请求统一端口。
 - `rob`从队头开始连续检查最多4项，只退休队头连续`complete=1 && exception=0`的前缀。
 
 周期 N 上升沿：
@@ -314,7 +315,7 @@
 - grant的Integer/Memory/Branch候选在该上升沿锁存PRF读值和扩展立即数；Branch下一拍由BRU计算并进入结果保持寄存器。
 - 上一拍 `alu_regread_q` 中的 uop 会经过 `int_execute_unit` 计算，并进入 `alu_result_q`。
 - 写口grant的ALU/Load结果写PRF、置目标preg ready、广播并complete ROB；未grant结果保持，逐级阻塞对应RegRead和IQ端口。
-- Store AGU把地址/数据/mask写入SQ并complete ROB；Load建立SRAM请求或把转发值写入Load结果槽。
+- Store AGU把地址/数据/mask写入SQ并complete ROB；Load建立DTCM/外部memory请求或把转发值写入Load结果槽。
 - ROB退休的Load释放LQ；退休的Store只把SQ entry置committed，随后由最老Store drain写SRAM并在请求握手后释放。
 - 当前从 ROB 队头退休的指令会在本拍把 `old_dst_preg` 返还给 free list；这些被释放的寄存器会从下一拍起重新出现在 rename 分配候选中。
 - `backend` 会在本拍把真实退休条数累加到 `retired_inst_count_q`。
@@ -399,21 +400,21 @@
 周期 N+1：
 - 同一条整数指令会在日志中向后移动到下一拍的下一级寄存器。
 
-### LSU、SQ commit buffer与Data SRAM周期级行为
+### LSU、SQ commit buffer与统一memory周期级行为
 周期 N 组合阶段：
 - `mem_execute_q`组合产生有效地址和访问byte mask，Load同时查询全部更老SQ entry。
-- 更老Store地址/数据未知或部分重叠时，Load保持；单个最年轻Store完整覆盖时形成转发结果；否则申请SRAM读。
-- SQ队头若为地址/数据齐全的committed Store，则优先于Load占用SRAM请求口。
-- SRAM Load响应只有LQ `{generation,lq_idx}`仍存活且Load结果槽可接收时才握手。
+- 更老Store地址/数据未知或部分重叠时，Load保持；单个最年轻Store完整覆盖时形成转发结果；否则按完整访问范围选择DTCM或外部memory。
+- SQ队头若为地址/数据齐全的committed Store，则优先于Load占用统一请求口。
+- DTCM或外部Load响应只有LQ `{generation,lq_idx}`仍存活且Load结果槽可接收时才握手。
 
 周期 N 上升沿：
 - Store把地址、数据和mask写入Rename时分配的SQ entry，并向ROB报告complete。
-- Load SRAM请求锁存唯一pending元数据；固定一拍后返回的数据或Store转发值进入可保持Load结果槽。
-- ROB退休Store只设置对应SQ entry的`committed`；SRAM接受队头Store写请求才推进SQ head并释放容量。
+- Load请求锁存唯一pending元数据和目标类型；DTCM固定一拍返回，外部memory可以在任意后续周期返回，返回数据或Store转发值进入可保持Load结果槽。
+- ROB退休Store只设置对应SQ entry的`committed`；目标memory接受队头Store写请求才推进SQ head并释放容量。
 - 获得共享写口的Load结果写PRF、广播wakeup并complete ROB；未获写口时结果保持并阻塞新的Load结果。
 
 周期 N+1：
-- SRAM请求返回、SQ committed状态、LQ outstanding状态和释放后的容量对外可见。
+- DTCM响应或外部握手、SQ committed状态、LQ outstanding状态和释放后的容量对外可见。
 - flush后迟到的Load响应因generation或branch mask失配被消费但不产生写回。
 
 ### backend_testharness 周期级行为
@@ -530,18 +531,19 @@
 - 若上一拍刚完成，则这一拍 `resp_valid_o=1`，随后单元回到可接收状态。
 
 ## 已知限制
-- 当前重构边界已经推进到Integer/Memory/Branch IQ、ALU/LSU/BRU、内部Data SRAM、共享8R4W仲裁、Store commit buffer和Frontend redirect。
+- 当前重构边界已经推进到Integer/Memory/Branch IQ、ALU/LSU/BRU、ITCM/DTCM与外部memory、共享8R4W仲裁、Store commit buffer和Frontend redirect。
 - 单发射BRU已经接通；预测器仍固定not-taken，不含BTB/BHT/RAS或训练表。
 - Load只支持单个更老Store完整覆盖转发；未知地址/数据及部分重叠保守等待，不实现violation检测或replay。
-- Data SRAM是后端内部64KiB单端口字节数组，不接Cache、AXI、PMA/MMU，不产生访问或对齐异常，也没有程序镜像初始化接口。
-- 当前最多一个SRAM Load outstanding；committed Store固定优先，持续Store drain可能推迟Load。
+- 当前地址图包含64KiB ITCM和256KiB DTCM；范围外由简单外部memory接口处理，仿真中对应共享软件稀疏内存。
+- 当前最多一个Load outstanding；committed Store固定优先，持续Store drain可能推迟Load。
+- TCM跨边界请求整笔走外部memory；数据端写ITCM或指令端访问DTCM只更新/读取软件后备副本，不提供运行时双端口一致性，因此不支持自修改代码。
 - Branch/Jump已有完整静态链路；定向整核测试覆盖taken BEQ、JAL、错误路径清除和链接值退休，尚未形成六种分支条件的完整矩阵。
 - 当前 `SYSTEM` 指令先按保守方式处理，不纳入 CSR 重命名细节。
 - `alu_issue_q`当前只保留日志观察副本，真实grant候选的操作数直接锁存到`alu_regread_q`；后续做时序收敛时可重新切分Select/RegRead边界。
 - 乘除单元尚未接入新Issue/写回仲裁接口。
 - 当前 `mul_execute_unit/div_execute_unit` 只是固定拍数骨架，不代表最终工业级实现。
 - 当前不处理乘法高低位融合、除法商余融合，也不处理多请求并发执行。
-- 当前虽然已有专用整核仿真入口和U-type/word/redirect定向测试，但仍未建立完整RV64I、ACT4或Spike差分闭环。
+- 当前整核仿真支持ELF64 PT_LOAD、带绝对地址的hex、TCM初始化及范围外软件memory，并有定向路由测试；仍未建立完整RV64I、ACT4或Spike差分闭环。
 
 ## 后续扩展入口
 - Branch预测扩展：在现有BRU/redirect闭环上增加BTB/BHT/RAS和训练消费。

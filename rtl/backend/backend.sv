@@ -16,10 +16,10 @@
  * - 在 issue queue 内实现按年龄顺序的 select，并把最靠前的 ready uop 发给多个整数 ALU
  * - Integer/Memory/Branch候选按ROB年龄共同竞争逻辑8读口；拿不到全部读口时留在IQ
  * - 整数RegRead与execute result均为可反压槽；结果没获得写口时保持并阻塞该ALU前级
- * - Memory IQ已接单发射RegRead/AGU/LQ/SQ、Store forwarding和内部单端口Data SRAM
+ * - Memory IQ已接单发射RegRead/AGU/LQ/SQ、Store forwarding、DTCM和外部memory口
  * - 接入多个 `int_execute_unit`，完成 RV64I R/I 整数算术指令的最小执行链路
  * - 四个ALU、一个Load和JAL/JALR链接结果按ROB年龄竞争4个PRF写口
- * - Store在AGU完成后complete ROB，退休时转为committed SQ entry，Data SRAM接受后才释放
+ * - Store在AGU完成后complete ROB，退休时转为committed SQ entry，memory请求接受后才释放
  * - 接入4-wide in-order retire：从ROB队头连续退休最多4条，并把old_dst_preg回收到Free List
  * - 维护从 reset 开始累计的 retired instruction counter，按每拍真实退休条数累加
  * - 支持按 MACHINE_WIDTH 参数化并行处理多个 lane
@@ -32,12 +32,12 @@
  * 当前没有实现的功能：
  * - 当前预测器固定not-taken，不实现BTB/BHT/RAS训练表
  * - 不实现多BRU并发、分支执行旁路和预测表训练
- * - Data SRAM不实现Cache/MSHR/PMA/MMU、访问异常、对齐异常或初始化镜像
+ * - DTCM/外部memory路径不实现DCache/MSHR/PMA/MMU、访问异常或对齐异常
  * - Store forwarding只处理单个更老Store完整覆盖；未知地址/数据和部分重叠保守阻塞
  * - 四路整数写回向三个IQ广播目的preg；ready在上升沿记入IQ，下一拍参与Select，不做同拍wakeup-select旁路
  * - 不实现精确异常恢复、Load replay和更完整的内存序模型
  * - done 仍然只是占位信号
- * - 当前阶段不附带测试代码和仿真代码，只先搭功能与注释
+ * - 整核仿真已覆盖DTCM初始化与范围外软件memory读写；尚未形成Spike差分闭环
  *
  * 时序行为：
  * - 周期 N 开始时：
@@ -55,7 +55,7 @@
  *   5) grant候选的PRF读值和扩展立即数锁存进对应RegRead槽
  *   6) int_execute_unit 基于 alu_regread_q 中的真实操作数组合地产生执行结果
  *   7) ALU/Load/Branch链接结果共同竞争4个写口；只有grant驱动写回和ROB complete
- *   8) LSU组合执行AGU、SQ依赖查询和Store优先的SRAM请求仲裁
+ *   8) LSU组合执行AGU、SQ依赖查询和Store优先的DTCM/外部memory仲裁
  *   9) ROB 当前会从队头开始连续检查最多4项，决定本拍retire的前缀长度
  * - 周期 N 上升沿：
  *   1) 若 decode_fire=1，则当前 fetch 组以 decoded uop 形式进入 uop_queue
@@ -70,7 +70,7 @@
  * - 周期 N+1：
  *   1) issue_queue 中看到唤醒、压缩补位、追加入队后的新队列内容
  *   2) 刚刚被写回的目的物理寄存器在 preg_ready_q 中表现为 ready，可继续唤醒后继指令
- *   3) SRAM Load响应进入可保持的Load结果槽；committed Store被SRAM接受后释放SQ
+ *   3) Load响应进入可保持的Load结果槽；committed Store被目标memory接受后释放SQ
  *   4) 日志中可看到同一条 instruction_id 按阶段继续向后流动，并在退休后离开 ROB
  */
 
@@ -106,6 +106,20 @@ module backend
     output logic [$clog2(MACHINE_WIDTH+1)-1:0] ftq_release_count_o,
     output logic                             redirect_valid_o,
     output logic [PC_WIDTH-1:0]              redirect_pc_o,
+    input  logic                             dtcm_init_valid_i,
+    input  logic [XLEN-1:0]                  dtcm_init_addr_i,
+    input  logic [XLEN-1:0]                  dtcm_init_wdata_i,
+    input  logic [7:0]                       dtcm_init_wmask_i,
+    output logic                             dmem_req_valid_o,
+    input  logic                             dmem_req_ready_i,
+    output logic                             dmem_req_write_o,
+    output logic [XLEN-1:0]                  dmem_req_addr_o,
+    output logic [XLEN-1:0]                  dmem_req_wdata_o,
+    output logic [7:0]                       dmem_req_wmask_o,
+    input  logic                             dmem_rsp_valid_i,
+    output logic                             dmem_rsp_ready_o,
+    input  logic [XLEN-1:0]                  dmem_rsp_rdata_i,
+    input  logic                             dmem_rsp_error_i,
     output logic                             done,
     output logic [63:0]                      retired_inst_count_o
 `ifdef ENABLE_RETIRE_INFO
@@ -1085,7 +1099,7 @@ module backend
         .resolution_tag_i(branch_resolution_i.branch_tag)
     );
 
-    // LSU拥有单发射Memory流水、LQ/SQ依赖查询后的SRAM请求以及可保持的Load结果。
+    // LSU拥有单发射Memory流水、LQ/SQ依赖查询后的统一memory请求以及可保持的Load结果。
     load_store_unit u_load_store_unit (
         .clk(clk), .rst(rst), .mem_uop_i(mem_execute_q), .mem_ready_o(mem_execute_ready),
         .lq_execute_valid_o(lq_execute_valid), .lq_execute_idx_o(lq_execute_idx),
@@ -1108,7 +1122,14 @@ module backend
         .load_result_o(load_result), .load_result_ready_i(load_result_consume),
         .resolution_valid_i(branch_resolution_i.valid),
         .resolution_mispredict_i(branch_resolution_i.mispredict),
-        .resolution_tag_i(branch_resolution_i.branch_tag)
+        .resolution_tag_i(branch_resolution_i.branch_tag),
+        .dtcm_init_valid_i(dtcm_init_valid_i), .dtcm_init_addr_i(dtcm_init_addr_i),
+        .dtcm_init_wdata_i(dtcm_init_wdata_i), .dtcm_init_wmask_i(dtcm_init_wmask_i),
+        .ext_req_valid_o(dmem_req_valid_o), .ext_req_ready_i(dmem_req_ready_i),
+        .ext_req_write_o(dmem_req_write_o), .ext_req_addr_o(dmem_req_addr_o),
+        .ext_req_wdata_o(dmem_req_wdata_o), .ext_req_wmask_o(dmem_req_wmask_o),
+        .ext_rsp_valid_i(dmem_rsp_valid_i), .ext_rsp_ready_o(dmem_rsp_ready_o),
+        .ext_rsp_rdata_i(dmem_rsp_rdata_i), .ext_rsp_error_i(dmem_rsp_error_i)
     );
 
     branch_execute_unit u_branch_execute_unit (

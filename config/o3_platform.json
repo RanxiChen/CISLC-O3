@@ -5,8 +5,8 @@
   "regions": [
     {"name": "clint", "origin": "0x02000000", "size": "0x00010000", "implemented": false},
     {"name": "plic", "origin": "0x0c000000", "size": "0x04000000", "implemented": false},
-    {"name": "boot_rom", "origin": "0x10000000", "size": "0x00010000", "implemented": false},
-    {"name": "sram", "origin": "0x11000000", "size": "0x00040000", "implemented": false},
+    {"name": "itcm", "origin": "0x10000000", "size": "0x00010000", "implemented": true},
+    {"name": "dtcm", "origin": "0x11000000", "size": "0x00040000", "implemented": true},
     {"name": "litex_mmio", "origin": "0x12000000", "size": "0x01000000", "implemented": false},
     {"name": "ethmac", "origin": "0x30000000", "size": "0x00020000", "implemented": false},
     {"name": "main_ram", "origin": "0x80000000", "size": "0x02000000", "implemented": true}

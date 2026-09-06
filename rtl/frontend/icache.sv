@@ -1,11 +1,12 @@
 /**
- * Blocking Instruction Cache
+ * Blocking Instruction Cache with a local ITCM window
  *
- * 已实现4-way、64B line、16B窗口查找和单miss refill状态机。flush使Cache line
- * 失效；branch redirect使用kill，只清查找/replay并丢弃迟到refill，不破坏有效数据。
- * 未实现多miss、MSHR、TLB/PMP和一致性；本阶段不新增测试。
- * 周期N组合产生ready/hit/refill请求，周期N上升沿锁存查找或推进miss状态，周期N+1
- * 可见命中返回、等待状态或refill完成数据。
+ * 已实现固定地址ITCM、4-way Cache、64B line、16B窗口查找和单miss refill状态机。
+ * 完整落在ITCM范围内的请求固定一拍返回且不分配Cache line；范围外请求沿用Cache
+ * miss/refill路径。flush使Cache line失效但不擦除ITCM；branch redirect使用kill，只清
+ * 查找/replay并丢弃迟到refill。未实现跨边界拆分、多miss、MSHR、TLB/PMP和一致性。
+ * 周期N组合产生ready与范围判断，周期N上升沿锁存ITCM数据或推进Cache miss状态，
+ * 周期N+1可见ITCM/Cache命中返回、等待状态或refill完成数据。
  */
 
 module ICache #(
@@ -13,7 +14,9 @@ module ICache #(
     parameter int ICACHE_WAYS = 4,
     parameter int ICACHE_BLOCK_SIZE_BYTES = 64,
     parameter int FETCH_BYTES = 16,
-    parameter int NUM_SETS = 64
+    parameter int NUM_SETS = 64,
+    parameter logic [ADDR_WIDTH-1:0] ITCM_BASE = ADDR_WIDTH'(32'h1000_0000),
+    parameter int ITCM_BYTES = 64 * 1024
 ) (
     input  logic                      clk,
     input  logic                      rst,
@@ -28,6 +31,10 @@ module ICache #(
     input  logic [ADDR_WIDTH-1:0]     refill_resp_pc,
     input  logic                      refill_resp_error,
     input  logic [ICACHE_BLOCK_SIZE_BYTES*8-1:0] refill_resp_data,
+    input  logic                      itcm_init_valid_i,
+    input  logic [ADDR_WIDTH-1:0]     itcm_init_addr_i,
+    input  logic [63:0]               itcm_init_data_i,
+    input  logic [7:0]                itcm_init_wmask_i,
     output logic                      out_valid,
     output logic                      out_hit,
     output logic [ADDR_WIDTH-1:0]     out_pc,
@@ -115,6 +122,19 @@ module ICache #(
     logic [WAY_INDEX_BITS-1:0]          selected_victim_way;
     logic [15:0]                        lfsr_out;
     logic                               lfsr_enable;
+    logic [7:0]                         itcm_mem_q [0:ITCM_BYTES-1];
+    logic                               s1_itcm_q;
+    logic [DATA_BANK_WIDTH-1:0]         s1_itcm_data_q;
+
+    function automatic logic access_in_itcm(input logic [ADDR_WIDTH-1:0] pc);
+        logic [ADDR_WIDTH:0] access_end;
+        begin
+            access_end = {1'b0, pc} + (ADDR_WIDTH + 1)'(FETCH_BYTES - 1);
+            access_in_itcm = (pc >= ITCM_BASE)
+                          && (access_end < ({1'b0, ITCM_BASE}
+                              + (ADDR_WIDTH + 1)'(ITCM_BYTES)));
+        end
+    endfunction
 
     function automatic logic [SET_INDEX_BITS-1:0] get_set_index(input logic [ADDR_WIDTH-1:0] pc);
         return pc[SET_INDEX_LSB +: SET_INDEX_BITS];
@@ -160,6 +180,9 @@ module ICache #(
         // 当前实现仅支持每周期取 4 条指令（4 * 4B = 16B），详见 doc/icache.md
         assert (FETCH_BYTES == 16)
             else $fatal(1, "ICache: only FETCH_BYTES == 16 (4 instructions per fetch) is supported, got %0d", FETCH_BYTES);
+
+        assert (ITCM_BYTES > 0)
+            else $fatal(1, "ICache: ITCM_BYTES must be greater than 0");
     end
 
     assign s0_ready = (state_q == ICACHE_WORK);
@@ -178,7 +201,8 @@ module ICache #(
     assign out_valid = ((state_q == ICACHE_WORK) && s1_valid_q && s1_hit && !flush && !kill) ||
                        ((state_q == ICACHE_DONE) && !refill_discard_q && !flush && !kill);
     assign out_pc = (state_q == ICACHE_DONE) ? miss_pc_q : s1_pc_q;
-    assign out_data = (state_q == ICACHE_DONE) ? done_data_q : s1_selected_data;
+    assign out_data = (state_q == ICACHE_DONE) ? done_data_q
+                                               : (s1_itcm_q ? s1_itcm_data_q : s1_selected_data);
     assign out_error = (state_q == ICACHE_DONE) ? done_error_q : 1'b0;
     assign work_miss = (state_q == ICACHE_WORK) && s1_valid_q && !s1_hit && !flush && !kill;
     assign lfsr_enable = (state_q == ICACHE_DONE);
@@ -250,7 +274,24 @@ module ICache #(
         end
     end
 
-    assign s1_hit = |s1_way_hit;
+    assign s1_hit = s1_itcm_q || |s1_way_hit;
+
+    // 仿真/调试初始化口使用绝对物理地址。初始化不依赖reset状态，因此testbench
+    // 可以在保持核心reset时逐拍装入ELF的ITCM字节。
+    always_ff @(posedge clk) begin
+        if (itcm_init_valid_i) begin
+            for (int byte_idx = 0; byte_idx < 8; byte_idx++) begin
+                if (itcm_init_wmask_i[byte_idx]
+                 && ((itcm_init_addr_i + ADDR_WIDTH'(byte_idx)) >= ITCM_BASE)
+                 && ((itcm_init_addr_i + ADDR_WIDTH'(byte_idx))
+                     < (ITCM_BASE + ADDR_WIDTH'(ITCM_BYTES)))) begin
+                    itcm_mem_q[$clog2(ITCM_BYTES)'(
+                        itcm_init_addr_i + ADDR_WIDTH'(byte_idx) - ITCM_BASE)]
+                        <= itcm_init_data_i[(8*byte_idx) +: 8];
+                end
+            end
+        end
+    end
 
     always_ff @(posedge clk) begin
         if (rst) begin
@@ -271,6 +312,8 @@ module ICache #(
             done_error_q <= 1'b0;
             replay_valid_q <= 1'b0;
             replay_pc_q <= '0;
+            s1_itcm_q <= 1'b0;
+            s1_itcm_data_q <= '0;
 
             for (int way = 0; way < ICACHE_WAYS; way++) begin
                 for (int set = 0; set < NUM_SETS; set++) begin
@@ -289,6 +332,7 @@ module ICache #(
             s1_tag_q <= '0;
             replay_valid_q <= 1'b0;
             replay_pc_q <= '0;
+            s1_itcm_q <= 1'b0;
 
             unique case (state_q)
                 ICACHE_REQ: begin
@@ -337,11 +381,19 @@ module ICache #(
                     end else begin
                         state_q <= ICACHE_WORK;
                         s1_valid_q <= lookup_fire;
+                        s1_itcm_q <= lookup_fire && access_in_itcm(lookup_pc);
                         if (lookup_fire) begin
                             s1_pc_q <= lookup_pc;
                             s1_set_idx_q <= lookup_set_idx;
                             s1_bank_idx_q <= lookup_bank_idx;
                             s1_tag_q <= lookup_tag;
+                            if (access_in_itcm(lookup_pc)) begin
+                                for (int byte_idx = 0; byte_idx < FETCH_BYTES; byte_idx++) begin
+                                    s1_itcm_data_q[(8*byte_idx) +: 8]
+                                        <= itcm_mem_q[$clog2(ITCM_BYTES)'(
+                                            lookup_pc + ADDR_WIDTH'(byte_idx) - ITCM_BASE)];
+                                end
+                            end
                         end
                     end
                 end
@@ -372,6 +424,7 @@ module ICache #(
                     refill_discard_q <= 1'b0;
                     replay_valid_q <= 1'b0;
                     s1_valid_q <= replay_fire;
+                    s1_itcm_q <= replay_fire && access_in_itcm(lookup_pc);
                     if (replay_fire) begin
                         s1_pc_q <= lookup_pc;
                         s1_set_idx_q <= lookup_set_idx;

@@ -42,8 +42,11 @@ M-mode only，无 MMU，物理地址直通。后期增加协处理器通信机�
 │   Checkpoint               4 个                              │
 ├───────────────────────────────────────────────────────────┤
 │ 存储系统                                                     │
+│   ITCM                     64 KiB @ 0x10000000               │
+│   DTCM                     256 KiB @ 0x11000000              │
 │   I-Cache                  4-way, 64B line, 单端口           │
-│   D-Cache                  待实现: 单端口 non-blocking + MSHR │
+│   外部仿真内存              统一C++稀疏memory，固定延迟         │
+│   D-Cache                  待实现                            │
 │   LSQ                      LQ 8 + SQ 8 分配/恢复骨架         │
 │   Store→Load forwarding    单个最年轻完整覆盖Store            │
 │   内存序                    FENCE尚未实现                      │
@@ -57,6 +60,11 @@ M-mode only，无 MMU，物理地址直通。后期增加协处理器通信机�
 │   异常                     待定 (至少需要 illegal inst + ecall)│
 └───────────────────────────────────────────────────────────┘
 ```
+
+取指窗口完整落在ITCM时固定一拍返回，其他取指通过blocking ICache refill访问外部
+memory。数据访问完整落在DTCM时使用本地单端口SRAM，否则整笔通过LSU外部接口访问
+同一份软件memory。跨TCM边界不拆分。该接口后续可以替换为AXI/DCache；当前不支持
+自修改代码、PMA、MMU、访问异常或多个Load outstanding。
 
 ## 4. 流水线级数
 

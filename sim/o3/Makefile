@@ -50,7 +50,7 @@ VERILATOR_FLAGS := \
 	--Mdir $(BUILD_DIR) \
 	-DENABLE_RETIRE_INFO
 
-.PHONY: build run run-smoke run-rv64i-instructions test clean
+.PHONY: build run run-smoke run-rv64i-instructions run-unified-memory test clean
 
 build:
 	rm -rf $(BUILD_DIR)
@@ -65,7 +65,8 @@ run-smoke:
 		echo "Run: make build"; \
 		exit 1; \
 	fi
-	cd $(SIM_DIR) && $(RUN_BIN) --image tests/smoke.hex --trace tandem.jsonl --max-retires 4
+	cd $(SIM_DIR) && $(RUN_BIN) --image tests/smoke.hex --trace tandem.jsonl \
+		--max-retires 4 --expect-memory-stats 0,0,1,0,0
 
 run-rv64i-instructions:
 	@if [ ! -x "$(RUN_BIN)" ]; then \
@@ -76,12 +77,29 @@ run-rv64i-instructions:
 	cd $(SIM_DIR) && $(RUN_BIN) \
 		--image tests/rv64i_instructions.hex \
 		--trace rv64i_instructions.jsonl \
-		--max-cycles 5000 --max-retires 14
+		--max-cycles 5000 --max-retires 14 \
+		--expect-memory-stats 0,0,3,0,0
 	cd $(SIM_DIR) && python3 check_trace.py \
 		--trace rv64i_instructions.jsonl \
 		--expect tests/rv64i_instructions.expected.json
 
-test: build run-smoke run-rv64i-instructions
+run-unified-memory:
+	@if [ ! -x "$(RUN_BIN)" ]; then \
+		echo "Missing binary: $(RUN_BIN)"; \
+		echo "Run: make build"; \
+		exit 1; \
+	fi
+	cd $(SIM_DIR) && $(RUN_BIN) \
+		--image tests/unified_memory.hex \
+		--reset-pc 0x10000000 \
+		--trace unified_memory.jsonl \
+		--max-cycles 5000 --max-retires 18 \
+		--expect-memory-stats 9,2,0,3,1
+	cd $(SIM_DIR) && python3 check_trace.py \
+		--trace unified_memory.jsonl \
+		--expect tests/unified_memory.expected.json
+
+test: build run-smoke run-rv64i-instructions run-unified-memory
 
 clean:
-	rm -rf $(BUILD_DIR) tandem.jsonl rv64i_instructions.jsonl
+	rm -rf $(BUILD_DIR) tandem.jsonl rv64i_instructions.jsonl unified_memory.jsonl
