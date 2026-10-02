@@ -18,7 +18,7 @@ export TEST_SEED
 
 EXTRA_ARGS += --timing -Wno-fatal
 ifeq ($(WAVES),1)
-EXTRA_ARGS += --trace --trace-fst --trace-structs
+EXTRA_ARGS += --trace --trace-structs
 endif
 
 include $(shell cocotb-config --makefiles)/Makefile.sim

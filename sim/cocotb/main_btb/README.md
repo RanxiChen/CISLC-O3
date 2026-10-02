@@ -11,8 +11,8 @@ make -C sim/cocotb/main_btb SIM=verilator TEST_SEED=1
 make -C sim/cocotb/main_btb SIM=verilator TEST_SEED=1 WAVES=1
 ```
 
-第二条使用独立的带 FST 跟踪的构建目录；结果为本目录的 `results.xml`，
-可选波形 `dump.fst`，编译产物在 `sim_build/`，均不提交。
+第二条使用独立的带 VCD 跟踪的构建目录；结果为本目录的 `results.xml`，
+可选波形 `dump.vcd`，编译产物在 `sim_build/`，均不提交。
 `requirements.txt` 固定 Python 依赖；系统 Verilator 不在仓库内安装。
 
 测试每周期先在低电平设置输入，等组合逻辑稳定后检查旧响应（stall/kill
