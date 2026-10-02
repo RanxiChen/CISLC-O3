@@ -1,4 +1,13 @@
 /**
+ *
+ * 【2026-10-02 框架：目标机制与缺口】
+ * - 实例按 KIND（IQ_INT/IQ_MEM/IQ_BR/IQ_FP）从 CFG 取深度与发射宽度，无默认值。
+ * - 需要补充：第三源（FMA）ready；源寄存器域（INT/FP 两套 ready 表与唤醒广播）；
+ *   多个写回域的 wakeup 输入；M FU 与 FP FU 的发射/占用约束（DIV 单请求迭代时不能连续发射，
+ *   乘法完成端容量预留或可停顿流水的选择待讨论，B21）。
+ * - OLDEST_ONLY：现状 Memory 实例只发射物理队头，规避单请求 LSU 死锁；B04 要求
+ *   “已知无关的旧访存不应成为固定的队头阻塞原因”，replay 与未知地址策略落实后撤销。
+ * - 现有选择：最老 ready 优先，没有同拍 wakeup-select 旁路（保持）。
  * Generic backend Issue Queue
  *
  * 已实现：
@@ -24,12 +33,18 @@
 module backend_issue_queue
     import o3_pkg::*;
 #(
-    parameter int ENQ_WIDTH = BACKEND_DISPATCH_WIDTH,
-    parameter int ISSUE_WIDTH = 1,
-    parameter int WAKEUP_WIDTH = BACKEND_NUM_INT_ALUS,
-    parameter int DEPTH = 8,
-    parameter int NUM_PHYS_REGS = BACKEND_NUM_PHYS_REGS,
-    parameter bit OLDEST_ONLY = 1'b0
+    parameter  o3_cfg_pkg::backend_cfg_t CFG,
+    parameter  o3_types_pkg::iq_kind_e KIND,          // 实例选择，无默认值
+    localparam int ENQ_WIDTH = CFG.dispatch.width,
+    localparam int ISSUE_WIDTH = (KIND == o3_types_pkg::IQ_INT) ? CFG.exec.num_alu : 1,  // MEM/BR 现状单发射；FP 待定
+    localparam int WAKEUP_WIDTH = CFG.exec.int_prf_write_ports,
+    localparam int DEPTH = (KIND == o3_types_pkg::IQ_INT) ? CFG.dispatch.int_iq_depth
+                         : (KIND == o3_types_pkg::IQ_MEM) ? CFG.dispatch.mem_iq_depth
+                         : (KIND == o3_types_pkg::IQ_BR)  ? CFG.dispatch.br_iq_depth
+                         : CFG.dispatch.fp_iq_depth,
+    localparam int NUM_PHYS_REGS = (KIND == o3_types_pkg::IQ_FP) ? CFG.rename.fp_phys_regs : CFG.rename.int_phys_regs,
+    // 现状：Memory IQ 只发射物理队头，规避单请求 LSU 死锁；B04 replay 落实后撤销。
+    localparam bit OLDEST_ONLY = (KIND == o3_types_pkg::IQ_MEM)
 ) (
     input  logic clk,
     input  logic rst,
@@ -39,7 +54,7 @@ module backend_issue_queue
 
     input  logic preg_ready_i [NUM_PHYS_REGS-1:0],
     input  logic wakeup_valid_i [WAKEUP_WIDTH-1:0],
-    input  logic [$clog2(NUM_PHYS_REGS)-1:0] wakeup_preg_i [WAKEUP_WIDTH-1:0],
+    input  logic [PREG_IDX_WIDTH-1:0] wakeup_preg_i [WAKEUP_WIDTH-1:0],
     output renamed_uop_t [ISSUE_WIDTH-1:0] issue_uop_o,
     output logic [ISSUE_WIDTH-1:0] issue_valid_o,
     input  logic [ISSUE_WIDTH-1:0] issue_ready_i,
@@ -62,7 +77,7 @@ module backend_issue_queue
     logic [$clog2(DEPTH)-1:0] issue_selected_idx [ISSUE_WIDTH-1:0];
 
     function automatic logic wakeup_hits(
-        input logic [$clog2(NUM_PHYS_REGS)-1:0] preg
+        input logic [PREG_IDX_WIDTH-1:0] preg
     );
         logic hit;
         begin

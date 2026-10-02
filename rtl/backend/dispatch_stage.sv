@@ -1,4 +1,13 @@
 /**
+ *
+ * 【2026-10-02 框架：目标机制与缺口】
+ * 需要补充的去向（按 uop.ext.fu_class）：
+ * - FU_MUL/FU_DIV：M FU 的 IQ 归属未定（独立 IQ 或与整数 IQ 共享，B21 待定）。
+ * - FU_FMA/FDIVSQRT/FMISC/FCONV：FP IQ 组织未定（B14/B15），FP_IQ_DEPTH 先占位。
+ * - FU_LDST（含 FLW/FLD/FSW/FSD）、FU_AMO：进入 Memory IQ，遵守 B05/B09。
+ * - FU_CSR/FU_SYS：串行化指令，进入哪一级等待 ROB 队头未设计（建议作为 ROB 队头执行项）。
+ * - 现状无法分类的 uop 停在队头，会阻塞后续全部指令。
+ * - recovery_block_i 现接 branch_resolution.valid（B12 缺口 1）。
  * In-order variable-prefix Dispatch planner
  *
  * 已实现：
@@ -19,10 +28,12 @@
 module dispatch_stage
     import o3_pkg::*;
 #(
-    parameter int DISPATCH_WIDTH = BACKEND_DISPATCH_WIDTH,
-    parameter int INT_IQ_DEPTH = BACKEND_INT_ISSUE_QUEUE_DEPTH,
-    parameter int MEM_IQ_DEPTH = BACKEND_MEM_ISSUE_QUEUE_DEPTH,
-    parameter int BR_IQ_DEPTH = BACKEND_BRANCH_ISSUE_QUEUE_DEPTH
+    parameter  o3_cfg_pkg::backend_cfg_t CFG,
+    localparam int DISPATCH_WIDTH = CFG.dispatch.width,
+    localparam int INT_IQ_DEPTH = CFG.dispatch.int_iq_depth,
+    localparam int MEM_IQ_DEPTH = CFG.dispatch.mem_iq_depth,
+    localparam int BR_IQ_DEPTH = CFG.dispatch.br_iq_depth,
+    localparam int FP_IQ_DEPTH = CFG.dispatch.fp_iq_depth       // 框架新增，未接入
 ) (
     input  renamed_uop_t [DISPATCH_WIDTH-1:0] uop_i,
     input  logic [$clog2(DISPATCH_WIDTH+1)-1:0] visible_count_i,

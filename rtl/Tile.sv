@@ -1,24 +1,16 @@
-module Tile(
-	input logic clk,
-	input logic rst,
-	output logic status
+/**
+ * Tile —— 单 hart 计算瓦片（2026-10-02 框架：空壳）
+ *
+ * 目标作用：包住 o3_core，向整机提供 DDR AXI 主口、DMA 行事务入口与中断输入；
+ * 本地 CLINT（mtime/mtimecmp/msip）是否放在 Tile 内未设计。
+ * 原状态灯逻辑（count==0 判 ERROR）已删除。
+ *
+ * 当前实现状态：空壳，没有逻辑。本阶段不写测试代码和仿真代码。
+ */
+module Tile (
+    input  logic clk,
+    input  logic rst,
+    output logic status
 );
-
-typedef enum logic [0:0] {
-	NORMAL = 1'd0,
-	ERROR = 1'd1
-} tile_state_t;
-
-tile_state_t state;
-logic [3:0] count;
-o3 core_inst(.clk(clk), .rst(rst), .led(count));
-always_comb begin
-	if(count == 4'd0) begin
-		state = ERROR;
-	end
-	else begin
-		state = NORMAL;
-	end
-end
-assign status = state == NORMAL;
+    // 未实现：o3_core 例化与 Tile 级端口。
 endmodule

@@ -1,4 +1,8 @@
 /**
+ *
+ * 【2026-10-02 框架：目标机制与缺口】
+ * - 入队宽度为 rename 宽度（B01 暂定 6），出队宽度为 dispatch 宽度（待定）。
+ * - 下文“当前只由旧整数Dispatch消费”已过时：现由 dispatch_stage 分流到三类 IQ。
  * Rename to Dispatch Queue
  *
  * 按单条renamed uop连续保存，解耦Rename资源分配和后续Dispatch/IQ背压。
@@ -10,9 +14,10 @@
 module rename_dispatch_queue
     import o3_pkg::*;
 #(
-    parameter int ENQ_WIDTH = BACKEND_MACHINE_WIDTH,
-    parameter int DEQ_WIDTH = BACKEND_DISPATCH_WIDTH,
-    parameter int DEPTH = BACKEND_RENAME_DISPATCH_QUEUE_DEPTH
+    parameter  o3_cfg_pkg::backend_cfg_t CFG,
+    localparam int ENQ_WIDTH = BACKEND_MACHINE_WIDTH,
+    localparam int DEQ_WIDTH = CFG.dispatch.width,
+    localparam int DEPTH = CFG.rename.rdq_depth
 ) (
     input logic clk,
     input logic rst,

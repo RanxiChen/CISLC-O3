@@ -1,4 +1,6 @@
 /**
+ *
+ * 【2026-10-02 框架】保留：组合 RV64I ALU 符合目标。乘除法不在此（mul/div_execute_unit）。
  * 整数执行单元
  *
  * 当前已经实现的功能：
@@ -76,7 +78,7 @@
 module int_execute_unit
     import o3_pkg::*;
 #(
-    parameter int DATA_WIDTH = XLEN
+    localparam int DATA_WIDTH = XLEN      // ISA 固定
 ) (
     input  int_alu_op_t           op_i,          // 本拍整数操作类型；仅在 valid_i=1 时应被下游视为有效。
     input  logic                  valid_i,       // 本拍输入是否有效；valid_o 直接透传该信号。

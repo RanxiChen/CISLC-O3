@@ -1,5 +1,24 @@
 /**
- * Frontend Fetch Buffer
+ * Frontend Fetch Buffer（指令 buffer）
+ *
+ * 作用（目标，第 10 节、第 16.2 节）：
+ * - F1 之后的指令 buffer：合并多个 FTQ 块的有效指令，承担超过四条的留存、不足四条的
+ *   跨块合并与回压，按序每拍最多向后端交付 4 条。
+ *
+ * 需要补充实现的机制：
+ * - 按 D24 取消边界选择性失效（kill_i）：F1 预解码修正获胜时，buffer 中已有指令比
+ *   修正位置更老，必须保留；只清除比边界年轻的项。执行/系统重定向时 buffer 内全部
+ *   比出错指令年轻，可整体清除。年龄判断使用 ftq_id + slot，相对 FTQ 最老项处理回绕。
+ * - D25：FENCE.I 同步时清除旧路径内容（kill_i.all）。
+ * - 交付事件统计：后端愿意接收时不足四条的周期、后端回压周期（第 12.2 节），perf_o。
+ *
+ * 细节待定：深度（CFG.fetch.ibuf_depth）；入队宽度 = F1 每拍输出数（CFG.fetch.f1_width）。
+ *
+ * 当前实现缺口：
+ * - flush_i 整体清空，尚未实现 kill_i 选择性失效；kill_i、perf_o 未接入逻辑。
+ * - icache_req_allowed_o 是旧串行 IFU 的节流合同；目标路径由返回队列预留控制取指，
+ *   目标总装不再连接该端口，迁移后删除。
+ * - 参数已改为由 CFG 推导，模块不再有默认值；entry 类型改为 o3_types_pkg::fetch_entry_t。
  *
  * 当前已经实现：
  * - 独立的前后端交界取指缓冲。
@@ -41,12 +60,13 @@
  *   2) IFU 看到更新后的 `enq_ready_o` 和 `icache_req_allowed_o`。
  */
 module fetch_buffer
-    import o3_pkg::*;
+    import o3_types_pkg::*;
 #(
-    parameter int ENQ_WIDTH = 4,
-    parameter int DEQ_WIDTH = 4,
-    parameter int DEPTH = 16,
-    parameter int ICACHE_REQ_FREE_THRESHOLD = 8
+    parameter  o3_cfg_pkg::frontend_cfg_t CFG,
+    localparam int ENQ_WIDTH = CFG.fetch.f1_width,
+    localparam int DEQ_WIDTH = CFG.fetch.deliver_width,
+    localparam int DEPTH = CFG.fetch.ibuf_depth,
+    localparam int ICACHE_REQ_FREE_THRESHOLD = CFG.fetch.ibuf_req_free_threshold  // 旧合同
 ) (
     input  logic clk_i,
     input  logic rst_i,
@@ -60,7 +80,11 @@ module fetch_buffer
     output logic               deq_valid_o,
     input  logic               deq_ready_i,
 
-    output logic               icache_req_allowed_o
+    output logic               icache_req_allowed_o,   // 旧合同，迁移后删除
+
+    // 目标：D24 取消边界选择性失效（未实现）
+    input  fe_kill_t           kill_i,
+    output fe_perf_t           perf_o
 );
 
     localparam int PTR_WIDTH = (DEPTH > 1) ? $clog2(DEPTH) : 1;

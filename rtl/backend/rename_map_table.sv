@@ -1,4 +1,13 @@
 /**
+ *
+ * 【2026-10-02 框架：目标机制与缺口】
+ * - 实例化两份：DOMAIN=RD_INT（x0→p0 恒零）与 DOMAIN=RD_FP（f0 正常可写，32→64，B15）。
+ *   HAS_ZERO_REG 参数已给出，但现有逻辑仍按整数域硬编码 x0/p0，FP 实例未接入。
+ * - 目标（B02）：组内 RAW/WAW 比较移到 R1（rename_dep_r1）；本模块只保留读当前 RAT、
+ *   按 R1 结果选择“本组更老生产者的新 preg”或 RAT 映射、checkpoint 快照与 committed map。
+ *   现有 src*_from_older_lane 旁路逻辑待迁移后删除。
+ * - 需要补充：第三源 rs3 的映射读口（FMA）；宽度改为 CFG.rename.width。
+ * - 快照包含分支自身和更老指令，不包含更年轻指令（不变量保持）。
  * Speculative and Committed Rename Map Table
  *
  * 职责：
@@ -19,11 +28,16 @@
 module rename_map_table
     import o3_pkg::*;
 #(
-    parameter int MACHINE_WIDTH = 4,
-    parameter int NUM_ARCH_REGS = 32,
-    parameter int NUM_PHYS_REGS = 96,
-    parameter int NUM_CHECKPOINTS = BACKEND_NUM_BRANCH_CHECKPOINTS,
-    parameter int COMMIT_WIDTH = 4
+    parameter  o3_cfg_pkg::backend_cfg_t CFG,
+    parameter  o3_types_pkg::reg_domain_e DOMAIN,     // RD_INT / RD_FP，无默认值
+    localparam int MACHINE_WIDTH = BACKEND_MACHINE_WIDTH,
+    localparam int NUM_ARCH_REGS = o3_isa_pkg::NUM_ARCH_REGS,
+    localparam int NUM_PHYS_REGS = (DOMAIN == o3_types_pkg::RD_FP) ? CFG.rename.fp_phys_regs
+                                                                   : CFG.rename.int_phys_regs,
+    localparam int NUM_CHECKPOINTS = CFG.rename.checkpoints,
+    localparam int COMMIT_WIDTH = o3_cfg_pkg::O3_CFG.core.commit_width,
+    // 整数域 x0 恒映射 p0；FP 域 f0 正常可写，不做恒零映射（B15）。
+    localparam bit HAS_ZERO_REG = (DOMAIN == o3_types_pkg::RD_INT)
 ) (
     input  logic clk,
     input  logic rst,
@@ -36,7 +50,7 @@ module rename_map_table
     input  logic                             rs1_read_en_i [MACHINE_WIDTH-1:0],
     input  logic                             rs2_read_en_i [MACHINE_WIDTH-1:0],
     input  logic                             rd_write_en_i [MACHINE_WIDTH-1:0],
-    input  logic [$clog2(NUM_PHYS_REGS)-1:0] new_dst_preg_i [MACHINE_WIDTH-1:0],
+    input  logic [PREG_IDX_WIDTH-1:0] new_dst_preg_i [MACHINE_WIDTH-1:0],
 
     input  logic                             checkpoint_create_i [MACHINE_WIDTH-1:0],
     input  branch_tag_t                      checkpoint_create_tag_i [MACHINE_WIDTH-1:0],
@@ -47,17 +61,17 @@ module rename_map_table
     input  logic                             commit_valid_i [COMMIT_WIDTH-1:0],
     input  logic [$clog2(NUM_ARCH_REGS)-1:0] commit_rd_i [COMMIT_WIDTH-1:0],
     input  logic                             commit_rd_write_en_i [COMMIT_WIDTH-1:0],
-    input  logic [$clog2(NUM_PHYS_REGS)-1:0] commit_new_preg_i [COMMIT_WIDTH-1:0],
+    input  logic [PREG_IDX_WIDTH-1:0] commit_new_preg_i [COMMIT_WIDTH-1:0],
 
-    output logic [$clog2(NUM_PHYS_REGS)-1:0] src1_preg_o [MACHINE_WIDTH-1:0],
-    output logic [$clog2(NUM_PHYS_REGS)-1:0] src2_preg_o [MACHINE_WIDTH-1:0],
-    output logic [$clog2(NUM_PHYS_REGS)-1:0] old_dst_preg_o [MACHINE_WIDTH-1:0],
+    output logic [PREG_IDX_WIDTH-1:0] src1_preg_o [MACHINE_WIDTH-1:0],
+    output logic [PREG_IDX_WIDTH-1:0] src2_preg_o [MACHINE_WIDTH-1:0],
+    output logic [PREG_IDX_WIDTH-1:0] old_dst_preg_o [MACHINE_WIDTH-1:0],
     output logic                             src1_from_older_lane_o [MACHINE_WIDTH-1:0],
     output logic                             src2_from_older_lane_o [MACHINE_WIDTH-1:0]
 );
 
     localparam int ARCH_IDX_WIDTH = $clog2(NUM_ARCH_REGS);
-    localparam int PREG_IDX_WIDTH = $clog2(NUM_PHYS_REGS);
+    // preg 字段宽度统一使用 o3_pkg::PREG_IDX_WIDTH（两域共用，o3_types_pkg::PREG_W）。
 
     logic [PREG_IDX_WIDTH-1:0] speculative_map_q [NUM_ARCH_REGS-1:0];
     logic [PREG_IDX_WIDTH-1:0] committed_map_q [NUM_ARCH_REGS-1:0];

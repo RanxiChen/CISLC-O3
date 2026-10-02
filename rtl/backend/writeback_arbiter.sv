@@ -1,4 +1,14 @@
 /**
+ *
+ * 【2026-10-02 框架：目标机制与缺口】
+ * - 现有：4 个 ALU、1 个 Load、JAL/JALR 链接值按 ROB 年龄竞争整数写口；PRF 写入、wakeup、
+ *   ROB complete 同一 grant 原子生效；被杀/无目的结果直接消费。
+ * - 需要补充：extra_src_i 中的 MUL、DIV、FP→INT、CSR、AMO 结果作为候选（端口已列，未接入）；
+ *   写口数 CFG.exec.int_prf_write_ports 待定；FP 域另有 fp_writeback_arbiter。
+ * - 完成 FIFO（B33 已定）：MUL/FP 等流水 FU 的结果先进各自 fu_completion_fifo，头部作为候选；未赢得
+ *   写口时留在 FIFO 头继续作 bypass 源，已发出的提前唤醒承诺不因仲裁推迟失效。融合乘法的两个结果
+ *   是两个独立候选。公平性规则仍待定（纯年龄优先可能让长延迟结果长期占槽）。
+ * - 取消：现用 resolution 掩码过滤；目标与 D24 统一取消边界一致。
  * Shared PRF writeback arbiter
  *
  * Integer、Load和JAL/JALR链接值结果保持寄存器竞争
@@ -12,9 +22,13 @@
 module writeback_arbiter
     import o3_pkg::*;
 #(
-    parameter int NUM_ALUS = BACKEND_NUM_INT_ALUS,
-    parameter int PRF_WRITE_PORTS = BACKEND_NUM_INT_ALUS,
-    parameter int NUM_ROB_ENTRIES = BACKEND_NUM_ROB_ENTRIES
+    parameter  o3_cfg_pkg::backend_cfg_t CFG,
+    localparam int NUM_ALUS = CFG.exec.num_alu,
+    localparam int PRF_WRITE_PORTS = CFG.exec.int_prf_write_ports,
+    localparam int NUM_ROB_ENTRIES = CFG.rob.entries,
+    // 目标新增整数写回源（框架，未接入选择逻辑）：
+    //   0 MUL、1 DIV、2 FP-MISC→INT（比较/分类）、3 FP-CONV→INT（F2I/FMV.X）、4 CSR、5 AMO/LR/SC
+    localparam int NUM_EXTRA_SRC = 6
 ) (
     input int_execute_result_t alu_result_i [NUM_ALUS-1:0],
     input load_result_t load_result_i,
@@ -32,7 +46,11 @@ module writeback_arbiter
     output logic [XLEN-1:0] prf_wr_data_o [PRF_WRITE_PORTS-1:0],
     output logic complete_valid_o [NUM_ALUS+1:0],
     output logic [ROB_IDX_WIDTH-1:0] complete_idx_o [NUM_ALUS+1:0],
-    output logic [XLEN-1:0] complete_data_o [NUM_ALUS+1:0]
+    output logic [XLEN-1:0] complete_data_o [NUM_ALUS+1:0],
+
+    // ---------------- 目标合同（未接入） ----------------
+    input  o3_types_pkg::wb_req_t extra_src_i [NUM_EXTRA_SRC],
+    output logic                  extra_consume_o [NUM_EXTRA_SRC]
 );
     localparam int NUM_SOURCES = NUM_ALUS + 2;
     logic candidate_valid [NUM_SOURCES-1:0];

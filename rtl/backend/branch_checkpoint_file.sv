@@ -1,4 +1,10 @@
 /**
+ *
+ * 【2026-10-02 框架：目标机制与缺口】
+ * - checkpoint 数 CFG.rename.checkpoints 待定。FP 映射快照与 FP allocation mask 分别由
+ *   FP 实例的 rename_map_table / free_list 保存，本模块合同不变（B15）。
+ * - 恢复入口：目标由 D24 统一赢家边界驱动（执行纠错）；提交端异常/xRET 的整体恢复
+ *   （使用 committed map）未设计，随 trap_ctrl 闭合。
  * Branch Checkpoint File
  *
  * 职责：
@@ -18,11 +24,12 @@
 module branch_checkpoint_file
     import o3_pkg::*;
 #(
-    parameter int MACHINE_WIDTH = 4,
-    parameter int NUM_CHECKPOINTS = BACKEND_NUM_BRANCH_CHECKPOINTS,
-    parameter int NUM_ROB_ENTRIES = BACKEND_NUM_ROB_ENTRIES,
-    parameter int LQ_DEPTH = BACKEND_LOAD_QUEUE_DEPTH,
-    parameter int SQ_DEPTH = BACKEND_STORE_QUEUE_DEPTH
+    parameter  o3_cfg_pkg::backend_cfg_t CFG,
+    localparam int MACHINE_WIDTH = BACKEND_MACHINE_WIDTH,
+    localparam int NUM_CHECKPOINTS = CFG.rename.checkpoints,
+    localparam int NUM_ROB_ENTRIES = CFG.rob.entries,
+    localparam int LQ_DEPTH = CFG.lsu.lq_depth,
+    localparam int SQ_DEPTH = CFG.lsu.sq_depth
 ) (
     input  logic clk,
     input  logic rst,

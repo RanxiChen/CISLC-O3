@@ -1,5 +1,105 @@
 # CISLC_O3 Long-Term Notes
 
+## 后端目标框架（2026-10-02 搭建，未实现、不能运行）
+
+本节记录按后端设计基线 B01～B15、B21 与前端第 16 节搭建的模块与端口框架。下面“当前实现状态”
+及之后各节描述的是 HEAD `06462b0` 的旧实现（仍是 backend 内实际运行的数据流），保留作迁移参考。
+本次未提交 git，未运行 `sim/o3` 测试、仿真、综合或 FPGA。
+
+### 参数与类型分层
+
+- `rtl/common/o3_cfg_pkg.sv`：唯一写数值的位置，`O3_CFG = {core, fe, be}`。每个字段标注
+  已定/暂定/待定/现状沿用与出处；待定写 `` `O3_TBD ``（展开为空，故意编译失败）。
+  配置结构为 packed struct（Verilator 5.050 不支持 unpacked struct 作常量参数传递，已核实）。
+- `rtl/common/o3_isa_pkg.sv`：ISA 固定常量与异常 cause。
+- `rtl/common/o3_types_pkg.sv`：从 `O3_CFG` 推导的位宽与跨模块合同（前端 + 后端新增：寄存器域、
+  FU 类别与操作、`fu_tag_t`、M/FP 请求、DCache/PTW/DMA、CSR/trap、`rob_commit_t`、性能事件）。
+- `rtl/common/o3_pkg.sv`：后端旧流水类型；原 `BACKEND_*` 改为从 `O3_CFG` 推导；`decoded_uop_t`/
+  `renamed_uop_t` 增加 `ext`/`rext` 框架字段（未产生、未消费）；FTQ 身份改为 `ftq_id_t`。
+- 所有模块参数 `parameter ... CFG` 无默认值；多实例模块另有无默认值的 `KIND`/`DOMAIN` 选择参数。
+
+### 静态检查（仅语法/连线，不是功能验证）
+
+- 脚本核对 74 个模块实例的端口与参数名：0 处不一致。
+- Verilator 5.050 `--lint-only`，命令行临时 `-DO3_TBD=4`：VA/PA 填 39/56 时 0 个 error；
+  全部填 4 时只剩旧 ICache 因地址宽度过小导致的 tag 宽度为负（占位值伪影）。
+  框架空壳的未驱动输出等 warning 已屏蔽，未逐条审阅。
+
+### 模块清单（后端与系统）
+
+| 位置 | 模块 | 状态 | 出处 |
+| --- | --- | --- | --- |
+| backend | `backend` | 重组为总装：旧数据流保留；目标结构一节例化新模块（未接入旧数据流） | 全部 |
+| backend | `prf_read_arbiter` / `alu_pipe` / `branch_unit` / `preg_ready_table` | 从 backend.sv 原样迁出，逻辑未改 | B12 |
+| backend | `decoder` | 保留；注释写明 M/A/F/D/Zicsr/SYSTEM 待补 | B09/B13/B15 |
+| backend | `uop_queue` | 保留；入/出队宽度拆为 decode/rename 两个参数（机械拆分） | B01 |
+| backend | `rename_dep_r1` / `rename_stage_buffer` | 新增空壳 | B02 |
+| backend | `rename_stage` / `rename_map_table` / `free_list` / `branch_checkpoint_file` | 保留；参数改 CFG；INT/FP 两域（FP 实例未接入） | B02/B15 |
+| backend | `rename_dispatch_queue` / `dispatch_stage` / `backend_issue_queue` | 保留；IQ 按 KIND 取规模；M FU 与 FP IQ 归属待定 | B21/B14 |
+| backend | `physical_regfile` / `writeback_arbiter` | 保留；FP 实例与新增写回源未接入 | B14/B15 |
+| backend | `fp_writeback_arbiter` | 新增空壳 | B14/B15 |
+| backend | `mul_execute_unit` / `div_execute_unit` | 原占位实现移除，改为 FU 包装空壳 | B21 |
+| backend | `signed_mul65x65` / `unsigned_radix4_divider` | 新增空壳（待转写 Breeze 数据通路） | B21 |
+| backend/fpu | `fpu_fma_fu`×2 / `fpu_divsqrt_fu` / `fpu_misc_fu` / `fpu_conv_fu` | 新增空壳 | B14 |
+| backend | `load_store_unit` / `load_queue` / `store_queue` | 保留旧实现；新增目标端口（`t_*`，未接入） | B03～B09 |
+| backend | `rob` | 保留；新增目标端口（异常、fflags、队头串行、提交信息） | B06/B15 |
+| lsu | `dtlb` / `ptw` / `walk_cache` / `dcache` / `dcache_mshr` / `dcache_writeback` / `dcache_amo_unit` / `data_prefetcher` | 新增空壳 | B03～B09 |
+| memory | `l2_cache` / `dma_line_coord` | 新增空壳 | B03/B08 |
+| system | `commit_ctrl` / `csr_file` / `trap_ctrl` / `backend_perf_events` | 新增空壳（CSR/异常/中断大部分未设计） | B10/B21、D24～D28 |
+| common | `pmp_checker` / `pma_checker` | 从 frontend 移来，前后端共用 | B06、D28 |
+| core | `o3_core` | 改为 frontend + backend + l2_cache 连线 | — |
+| rtl | `O3` / `Tile` | 改为整机/瓦片空壳（SoC 未设计） | — |
+
+已删除：`rtl/backend/issue_queue.sv`、`rtl/backend/physical_regfile_variants.sv`（无引用）、
+`rtl/circuit01.sv`（LED 占位）、`rtl/frontend/ifu.sv`。
+
+### 明确标为“未设计”或“待定”的内容
+
+- 2026-10-02 第二轮校正：异常/中断/xRET 主流程（B26/B27）、FENCE.I 数据侧 clean 的发起方（commit_ctrl）、
+  乘法完成端（B33）、未知地址旧 store（B32 保守等待）均已定，见下一节；以下只列仍未设计/待定项。
+- 未设计：CSR 集合与 WARL 细节；各同步握手的信号编码与拍数；后端恢复与前端 D24 赢家的取消边界归属；
+  系统 committed 预测上下文来源与入口取指元数据绑定；SoC（DDR 控制器、SD 控制器、启动 ROM、
+  CLINT/PLIC、地址图）；PMA 地址图；TCM 去留。
+- 待定：M FU 的 IQ 归属；FP IQ/端口/跨域写回；写回公平性；全部容量、端口、bank、MSHR/回收槽数；
+  L2 “整行收齐再交付、暂不 early restart”（仅建议，未确认）。
+- B12 缺口 1～4 原样保留并在 `branch_unit`、`alu_pipe`、`prf_read_arbiter`、`backend` 中标注。
+
+### 已知不一致（符合 agent.md 顺序重构约定）
+
+- `sim/o3/Makefile`、C++ 驱动和 `tb/*` 仍按旧接口，未迁移；新文件未加入构建。
+- 旧合同端口与新目标端口在若干模块中并存，迁移完成后删除旧端口。
+
+
+### 第二轮框架补齐（2026-10-02，B22～B41、D29、L2 inclusive）
+
+来源：后端基线 B22～B31，以及本轮用户确认、已写入基线的 B32～B41；前端 D29/16.4。只补类型、接口、
+模块边界、接线与合同注释；新模块全部是空壳，没有逻辑，输出未驱动；没有用固定成功响应代替空壳。
+本次未编译、未仿真、未综合、未运行测试、未提交 git。静态检查只做了脚本核对：改动涉及的实例端口名
+与模块声明一致（dcache 的 LSU 端口仍按原框架标注“未接入”）。
+
+| 决定 | 落点 | 本轮框架内容 |
+| --- | --- | --- |
+| B22/B23/B24/B38 Decode→Rename 串行阻塞 | 新增 `backend/rename_entry_gate.sv`；`uop_ext_t.block_younger/fence_pred/fence_succ` | 截断到最老串行 uop（含），阻塞到其退休；兼管 WFI 停顿与 fatal 隔离 |
+| B32 load 遇未知旧 store 地址保守等待 | `ld_wait_e`；`load_queue`/`store_queue`/`load_store_unit` 注释 | 等依赖条件解除，不以超时越过；无推测越过 |
+| B33 提前唤醒 + 完成 FIFO | 新增 `backend/fu_completion_fifo.sv`；`wake_promise_t`/`cpl_bypass_t`；`mul/div_execute_unit` 新增 `bypass_o`/`wake_o`；`CFG.exec.cpl_fifo_depth` | 接受时预留完成空间、FIFO 头 bypass、承诺不失效；除法仅在结束时间确定时承诺 |
+| B34 MULH 类 + MUL 融合 | 新增 `backend/mul_fusion_detect.sv`（DQ 出口、R1 前）；`fuse_role_e`、`mdu_fuse_t` | 一次乘法、两个结果归属、两 ROB 项两次退休；融合对整对接受 |
+| B35 LR/SC reservation | 新增 `lsu/lrsc_reservation.sv`；`rsv_clear_e`/`rsv_conflict_t`；`dcache_amo_unit` 改接 | 清除表逐项列出；DMA 写在 DCache 接受 `PROBE_DMA(dma_write)` 时排序 |
+| B36 硬件 A/D | 新增 `lsu/pte_ad_updater.sv`；`pte_ad_req_t/resp_t`、`DC_SRC_PTE_AD`；`ptw`/`dcache` 新端口 | DCache 内部 PTE 比较+条件置位入口；store D=0 → needs_D 队首非推测更新；不经 AMO 队首门控 |
+| B37 committed_next_pc | `commit_ctrl.committed_next_pc_o`、`rob_commit_t.succ_pc`、`trap_req_t` 注释 | 中断 EPC 来源；复位为启动入口 |
+| B38 WFI | 新增 `system/wfi_ctrl.sv`；`irq_view_t`；中断输入改进 `csr_file` | 唤醒 = 单项 mip&mie，与正式中断条件分开 |
+| B39 fatal 隔离 | 新增 `system/fatal_err_ctrl.sv`；`fatal_evt_t`；`dcache`/`dcache_writeback`/`l2_cache` 上报口；`o3_core.fatal_o` | sticky 到复位；停止推进与退休，保留总线收尾 |
+| B40 FP 状态退休 | `fp_retire_evt_t`；`commit_ctrl.fp_retire_o` → `csr_file.fp_retire_i` | fflags OR 合并、FS Dirty 规则、与 CSR/trap 互斥 |
+| B41 L2 inclusive | 新增 `memory/l2_recall_ctrl.sv`；`l1_recall_req_t`/`l1i_recall_resp_t`；`dc_probe_kind_e`；`l2_cache` 重写头注释与端口；`CFG.be.l2.recall_slots/wb_buffers` | 组相联、tree-PLRU；回收定向失效 L1I/L1D、同行统一事务、包含关系错误输出 |
+| B22/B23/B31 计数器 | `be_perf_evt_e` 新增 6 项（另加融合观测 1 项） | 口径见各基线条目 |
+| 系统同步归属 | `commit_ctrl` 统一编排；`frontend_sync_ctrl` 去掉 dclean；`backend`/`o3_core` 删除 `fe_dclean_*` | FENCE.I：SQ drain → L1D 脏行扫描写回 → 前端同步 → 退休 |
+
+总原则（2026-10-02 用户确认）：简单情况要快。常规 load/store 与取指命中流水不为一致性、A/D、LR/SC、
+回收、维护增加流水级或组合检查；L2 回收与 DMA 探测共用 L1D 维护入口，L1I 回收走 ICache 维护入口。
+
+仍是空壳/未连接：上表全部新模块；`backend.sv` 框架段中 Decode Queue 出口、R2 接受、IQ 唤醒广播、bypass
+网络、写回仲裁 extra_src、SQ/ROB 目标端口、`t_serial_retire` 等仍标注“未接入”；`l2_cache` 内部未例化
+`dma_line_coord`/`l2_recall_ctrl`。新文件未加入 `sim/o3/Makefile`。
+
 ## 文档定位
 - 本文件保留为“当前实现状态 + 代码索引 + 时序入口”文档。
 - 面向后续 agent / 协作者的执行规则、注释规范、阶段边界，已拆分到 [`agent.md`](/home/chen/work/CISLC-O3/agent.md)。

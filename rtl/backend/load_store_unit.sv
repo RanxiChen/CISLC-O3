@@ -1,4 +1,23 @@
 /**
+ *
+ * 【2026-10-02 框架：目标机制与缺口】
+ * 目标（B03～B11）：本模块成为访存执行总装：访存发射 → AGU → DTLB → LQ/SQ 依赖检查与 replay → 多 bank DCache。
+ * - Load 生命周期（B04）：翻译与 PMP/PMA/边界检查完成才允许有效结果；TLB miss 挂起并释放执行级；
+ *   SQ 与 cache 并行查询、统一选择；完成后写回、唤醒、报告 ROB；取消/复用后的迟到响应不得写入。
+ * - Store（B05）：地址/数据/mask 与检查齐备即完成；ROB 提交后 SQ 后台 drain；地址与数据是否分开发射未定。
+ * - MMIO/不缓存访问：到 ROB 队头、满足先前排序后发出，保留 ROB 等结果，同步错误在原指令报告（B05）。
+ * - AMO/LR/SC：ROB 队头交给 DCache 内原子单元（B09）。
+ * - FLW/FLD 写 FP preg；FSW/FSD 使用 FP 数据源，进入既有 SQ（B15）。
+ * - 精确同步异常：page fault、PMP/PMA 拒绝、对齐/边界错误保留原指令身份报告 ROB；故障 VA 与 PA 分开（B06）。
+ * - 依赖（B32 已定）：更老 store 地址未知时 load 等依赖解除，不以固定超时越过；首版无推测越过。
+ * - 非对齐（B31 已定）：普通可缓存标量访问同 line 内硬件支持，跨 line 报地址非对齐异常（异常身份
+ *   带 crossline_misalign 标志到提交端计数）；MMIO 不走拆分；A 扩展自然对齐。
+ * - A/D（B36 已定）：TLB 命中且权限、A/D 满足时走原流水，不新增流水级；store 遇 D=0 标记 needs_D。
+ * - 总原则（2026-10-02）：常规 load/store 流水不为一致性/A/D/LR/SC/回收增加流水级或组合检查，
+ *   慢路径都在旁侧。
+ * 待定：AGU 管线条数与 load/store 组合。
+ * 当前缺口：只有单发射、单 Load 在途；DTCM + 单口外部 memory（旧合同）；无 DTLB/DCache/MSHR/异常；
+ * 目标端口（t_*）均未驱动；内部尚未例化 dtlb、data_prefetcher 训练逻辑。
  * Single-issue Load/Store execution unit with DTCM and external memory
  *
  * 输入已经完成PRF读取；组合AGU产生字节地址。Store把地址/数据/mask写入SQ并
@@ -14,8 +33,9 @@
 module load_store_unit
     import o3_pkg::*;
 #(
-    parameter int DATA_SRAM_BYTES = DTCM_SIZE_BYTES,
-    parameter logic [XLEN-1:0] DATA_SRAM_BASE = DTCM_BASE_ADDR
+    parameter  o3_cfg_pkg::backend_cfg_t CFG,
+    localparam int DATA_SRAM_BYTES = CFG.lsu.dtcm_bytes,                 // DTCM：现状沿用，去留未设计
+    localparam logic [XLEN-1:0] DATA_SRAM_BASE = XLEN'(CFG.lsu.dtcm_base)
 ) (
     input logic clk,
     input logic rst,
@@ -74,6 +94,45 @@ module load_store_unit
     output logic ext_rsp_ready_o,
     input logic [XLEN-1:0] ext_rsp_rdata_i,
     input logic ext_rsp_error_i
+,
+
+    // ---------------- 目标合同（框架新增，未接入逻辑） ----------------
+    // DTLB 与共享 PTW
+    output logic                       t_ptw_req_valid_o,
+    input  logic                       t_ptw_req_ready_i,
+    output o3_types_pkg::ptw_req_t     t_ptw_req_o,
+    input  o3_types_pkg::ptw_resp_t    t_ptw_resp_i,
+    input  o3_types_pkg::dmmu_csr_t    t_csr_i,
+    input  o3_types_pkg::pmp_state_t   t_pmp_i,
+    input  o3_types_pkg::sfence_req_t  t_sfence_i,
+    output logic                       t_sfence_done_o,
+    // DCache load 管线与 store drain
+    output logic                       t_dc_ld_req_valid_o [CFG.lsu.agu_pipes],
+    input  logic                       t_dc_ld_req_ready_i [CFG.lsu.agu_pipes],
+    output o3_types_pkg::dcache_req_t  t_dc_ld_req_o       [CFG.lsu.agu_pipes],
+    input  o3_types_pkg::dcache_resp_t t_dc_ld_resp_i      [CFG.lsu.agu_pipes],
+    output logic                       t_dc_st_req_valid_o,
+    input  logic                       t_dc_st_req_ready_i,
+    output o3_types_pkg::dcache_req_t  t_dc_st_req_o,
+    input  o3_types_pkg::dcache_resp_t t_dc_st_resp_i,
+    input  o3_types_pkg::dc_wake_t     t_dc_wake_i,
+    // AMO（ROB 队头）
+    output logic                       t_dc_amo_req_valid_o,
+    input  logic                       t_dc_amo_req_ready_i,
+    output o3_types_pkg::dcache_req_t  t_dc_amo_req_o,
+    input  o3_types_pkg::dcache_resp_t t_dc_amo_resp_i,
+    // 精确同步异常报告到原 ROB 项（B06）
+    output logic                       t_exc_valid_o,
+    output logic [ROB_IDX_WIDTH-1:0]   t_exc_rob_idx_o,
+    output o3_types_pkg::exc_info_t    t_exc_o,
+    // ROB 队头信息：MMIO/AMO/串行化访存在队头执行（B05/B09）
+    input  logic [ROB_IDX_WIDTH-1:0]   t_rob_head_i,
+    // stride 预取训练
+    output logic                       t_pf_train_valid_o,
+    output o3_types_pkg::vaddr_t       t_pf_train_pc_o,
+    output o3_types_pkg::paddr_t       t_pf_train_paddr_o,
+    output logic                       t_pf_train_miss_o,
+    output o3_types_pkg::be_perf_t     t_perf_o
 );
     localparam int SRAM_TAG_WIDTH = LQ_IDX_WIDTH + 1;
     logic [XLEN-1:0] effective_addr;

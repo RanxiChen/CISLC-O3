@@ -1,25 +1,80 @@
 /**
- * Blocking Instruction Cache with a local ITCM window
+ * ICache —— 四级流水、两 bank、非阻塞指令缓存（目标），含 ITLB/PMP/PMA
  *
- * 已实现固定地址ITCM、4-way Cache、64B line、16B窗口查找和单miss refill状态机。
- * 完整落在ITCM范围内的请求固定一拍返回且不分配Cache line；范围外请求沿用Cache
- * miss/refill路径。flush使Cache line失效但不擦除ITCM；branch redirect使用kill，只清
- * 查找/replay并丢弃迟到refill。未实现跨边界拆分、多miss、MSHR、TLB/PMP和一致性。
+ * 作用（目标，第 8～9 节）：
+ * - 正常命中、无资源冲突时每拍接受一个 demand 请求，四拍返回（D10）。
+ *     S0：并行启动 ITLB 与 tag/data 阵列访问；
+ *     S1：ITLB 命中比较、PPN/权限选择；
+ *     S2：way tag 比较、PMP 范围匹配、PMA 属性判定；
+ *     S3：PMP 优先级/权限汇总、数据选择，形成响应或 miss 请求。
+ * - 响应按 rq_idx 写回返回队列，允许 hit under miss（D14）；异常也完成队列项。
+ * - 接受 FTQ 预取请求：查询 L1/在途，必要时由 MSHR 向 L2 预取（D18、第 11.3 节）。
+ *
+ * 需要补充实现的机制（基线已定）：
+ * 1) D11/D12：64B line 整条交错到 2 个 bank，bank = addr[6]；每 bank 一读口一写口；
+ *    16B 内不再分 bank。tag/status 阵列端口也要核对。
+ * 2) VIPT 思路：4KiB 页下 index 与 bank 位必须落在页内偏移，或另行处理同义地址（第 8 节）。
+ * 3) 翻译/权限/PMP 未完成时不能把数据交给指令流；TLB miss 不是错误物理地址的 hit。
+ * 4) D13：回填冲突等待，优先在 S0 用 ready=0 阻止已知危险访问；已进流水的请求遇到
+ *    必须等待的条件时保持所在阶段并正确回压，不靠取消重发。
+ * 5) 未完整安装的 line 不参与命中；完整可用后才发布 valid；read-during-write 显式定义。
+ * 6) refill 必须能前进，不被等待它的 demand 反向堵死。
+ * 7) D17：错误路径已接受请求照常完成，由返回队列丢弃；本模块无需按年龄 kill。
+ * 8) D27：请求携带 epoch，旧 epoch 结果被隔离；D28：命中仍按当前 PMP 检查。
+ * 9) D25：inv_all_i 使整个 ICache 失效（清 valid，不写零 data）；调用前由
+ *    frontend_sync_ctrl 保证在途结束（idle_o）。
+ * 10) 预取与 demand 不同 bank 时可并行查 tag；同 bank 两读竞争读口（第 11.3 节）。
+ * 11) B41 L2 inclusive 回收（2026-10-02 确认）：recall_* 收到 L2 定向失效某物理行时，
+ *     经本模块自己的维护入口（与回填写口仲裁，不进入 S0 demand 查询路径，不增加普通命中
+ *     的流水级）清该行 valid；若同行回填仍在 MSHR 中，标记为不可安装，旧响应不得在失效后
+ *     重新装回；完成后回复 quiesced。L1I 无脏数据。回收应答不得依赖普通 miss 的空闲 MSHR，
+ *     也不能被等待中的 demand 反向堵死。
+ *
+ * 细节待定：容量、路数、替换、ITLB 组织、MSHR 数、refill beat 宽度、冲突等待粒度
+ * （第 13 节第 5 条）；预取查询仲裁与公平性。
+ *
+ * 未设计：
+ * - ITCM：不在设计基线中，去留未定。当前实现及 itcm_init_* 端口沿用现状。
+ * - 不可缓存取指路径（与 pma_checker 一同未设计）。
+ *
+ * 当前实现状态与缺口：
+ * - 保留 HEAD 06462b0 的阻塞式实现：固定地址 ITCM、组相联 Cache、64B line、16B 窗口、
+ *   单 miss refill 状态机；flush 失效 Cache line；kill 清查找/replay 并丢弃迟到 refill。
+ *   对应端口（s0_*、refill_*、out_*、flush、kill）标为“旧合同”，目标总装不再连接。
+ * - 旧实现缺口：只有一个 miss；没有 S0～S3 流水；没有请求身份；内部“bank”是行内按 16B
+ *   切分（NUM_BANKS=line/fetch），不符合 D11 的整行交错两 bank；无 ITLB/PMP/PMA；
+ *   refill 一次返回整条 line；PC 当作物理地址使用。
+ * - 参数已改为由 CFG 推导，模块不再有默认值。目标端口与子模块例化已列出，均未驱动。
+ *
+ * 旧实现逐周期说明：
  * 周期N组合产生ready与范围判断，周期N上升沿锁存ITCM数据或推进Cache miss状态，
  * 周期N+1可见ITCM/Cache命中返回、等待状态或refill完成数据。
+ *
+ * 目标周期行为：
+ * - 周期 N：req 握手进入 S0；N+1 S1；N+2 S2；N+3 S3 产生 resp_o 或 miss 分配 MSHR。
+ * - miss 请求在 MSHR 安装完成后重新查询（或由 MSHR 数据直接响应，方式待定）。
+ *
+ * 本阶段不写测试代码和仿真代码。
  */
 
-module ICache #(
-    parameter int ADDR_WIDTH = 64,
-    parameter int ICACHE_WAYS = 4,
-    parameter int ICACHE_BLOCK_SIZE_BYTES = 64,
-    parameter int FETCH_BYTES = 16,
-    parameter int NUM_SETS = 64,
-    parameter logic [ADDR_WIDTH-1:0] ITCM_BASE = ADDR_WIDTH'(32'h1000_0000),
-    parameter int ITCM_BYTES = 64 * 1024
+module ICache
+    import o3_types_pkg::*;
+#(
+    parameter  o3_cfg_pkg::frontend_cfg_t CFG,
+    // 旧实现使用的名称，全部由 CFG 推导，不再有默认值。
+    localparam int ADDR_WIDTH = o3_pkg::PC_WIDTH,              // 旧合同：未区分 VA/PA
+    localparam int ICACHE_WAYS = CFG.icache.ways,
+    localparam int ICACHE_BLOCK_SIZE_BYTES = CFG.icache.line_bytes,
+    localparam int FETCH_BYTES = CFG.fetch.region_bytes,
+    localparam int NUM_SETS = CFG.icache.sets,
+    localparam logic [ADDR_WIDTH-1:0] ITCM_BASE = ADDR_WIDTH'(CFG.icache.itcm_base),
+    localparam int ITCM_BYTES = CFG.icache.itcm_bytes
 ) (
+
     input  logic                      clk,
     input  logic                      rst,
+
+    // ---------------- 旧合同（迁移后删除；itcm_init_* 去留未设计） ----------------
     input  logic                      flush,
     input  logic                      kill,
     input  logic                      s0_valid,
@@ -39,7 +94,51 @@ module ICache #(
     output logic                      out_hit,
     output logic [ADDR_WIDTH-1:0]     out_pc,
     output logic [FETCH_BYTES*8-1:0]  out_data,
-    output logic                      out_error
+    output logic                      out_error,
+
+    // ---------------- 目标合同 ----------------
+    // demand：FTQ → S0；响应按 rq_idx 写回返回队列
+    input  logic                      req_valid_i,
+    output logic                      req_ready_o,
+    input  icache_req_t               req_i,
+    output icache_resp_t              resp_o,
+
+    // 预取查询（已翻译或需翻译）
+    input  logic                      pf_req_valid_i,
+    output logic                      pf_req_ready_o,
+    input  pf_req_t                   pf_req_i,
+    output pf_resp_t                  pf_resp_o,
+
+    // 共享 PTW（经 ITLB）
+    output logic                      ptw_req_valid_o,
+    input  logic                      ptw_req_ready_i,
+    output ptw_req_t                  ptw_req_o,
+    input  ptw_resp_t                 ptw_resp_i,
+
+    // L2
+    output logic                      l2_req_valid_o,
+    input  logic                      l2_req_ready_i,
+    output l2_req_t                   l2_req_o,
+    input  l2_resp_t                  l2_resp_i,
+    output logic                      l2_resp_ready_o,
+
+    // CSR 派生状态与系统同步
+    input  fe_csr_t                   csr_i,
+    input  pmp_state_t                pmp_i,
+    output logic                      pmp_update_done_o,
+    input  sfence_req_t               sfence_i,
+    output logic                      sfence_done_o,
+    input  logic                      inv_all_i,
+    output logic                      inv_done_o,
+    output logic                      idle_o,
+
+    // L2 inclusive 回收的定向失效（B41）
+    input  logic                      recall_valid_i,
+    output logic                      recall_ready_o,
+    input  l1_recall_req_t            recall_i,
+    output l1i_recall_resp_t          recall_resp_o,
+
+    output fe_perf_t                  perf_o
 `ifdef O3_ICACHE_DEBUG
     ,
     output logic                      dbg_s0_fire,
@@ -57,6 +156,76 @@ module ICache #(
     output logic [ADDR_WIDTH-1:0]     dbg_miss_refill_pc
 `endif
 );
+
+    // ============================================================
+    // 目标结构：子模块例化。S0～S3 流水、阵列 bank 化、仲裁均未实现。
+    // ============================================================
+    logic             t_itlb_s0_valid;          // 未实现：S0 demand/预取仲裁结果
+    vaddr_t           t_itlb_s0_vaddr;
+    logic             t_itlb_s1_valid, t_itlb_s1_hit, t_itlb_s1_miss;
+    logic [PPN_W-1:0] t_itlb_s1_ppn;
+    logic [1:0]       t_itlb_s1_level;
+    logic             t_itlb_s1_pf, t_itlb_s1_af;
+    paddr_t           t_s2_paddr;               // 未实现：S2 物理地址寄存
+    logic             t_s2_valid, t_stall;
+    logic             t_pmp_s3_valid, t_pmp_s3_allow, t_pmp_s3_fault;
+    logic             t_pma_exec_ok, t_pma_cacheable, t_pma_exists;
+    logic             t_mshr_alloc_valid, t_mshr_alloc_ready, t_mshr_alloc_merged;
+    paddr_t           t_mshr_alloc_paddr, t_mshr_probe_paddr;
+    l2_req_kind_e     t_mshr_alloc_kind;
+    logic             t_mshr_probe_inflight;
+    logic             t_fill_wr_valid, t_fill_wr_ready, t_fill_wr_error, t_fill_done;
+    paddr_t           t_fill_wr_paddr, t_fill_done_paddr;
+    logic [ICACHE_LINE_BYTES*8-1:0] t_fill_wr_data;
+    logic             t_mshr_idle;
+    fe_perf_t         t_perf_itlb, t_perf_mshr;
+
+    itlb #(.CFG(CFG)) u_itlb (
+        .clk_i(clk), .rst_i(rst),
+        .s0_valid_i(t_itlb_s0_valid), .s0_vaddr_i(t_itlb_s0_vaddr),
+        .s1_valid_o(t_itlb_s1_valid), .s1_hit_o(t_itlb_s1_hit), .s1_miss_o(t_itlb_s1_miss),
+        .s1_ppn_o(t_itlb_s1_ppn), .s1_level_o(t_itlb_s1_level),
+        .s1_page_fault_o(t_itlb_s1_pf), .s1_access_fault_o(t_itlb_s1_af),
+        .ptw_req_valid_o(ptw_req_valid_o), .ptw_req_ready_i(ptw_req_ready_i),
+        .ptw_req_o(ptw_req_o), .ptw_resp_i(ptw_resp_i),
+        .csr_i(csr_i), .sfence_i(sfence_i), .sfence_done_o(sfence_done_o),
+        .perf_o(t_perf_itlb)
+    );
+
+    pmp_checker #(.CFG(CFG)) u_pmp_checker (
+        .clk_i(clk), .rst_i(rst),
+        .s2_valid_i(t_s2_valid), .s2_paddr_i(t_s2_paddr), .stall_i(t_stall),
+        .s3_valid_o(t_pmp_s3_valid), .s3_allow_o(t_pmp_s3_allow), .s3_fault_o(t_pmp_s3_fault),
+        .cfg_i(pmp_i), .priv_i(csr_i.priv), .cfg_update_done_o(pmp_update_done_o)
+    );
+
+    pma_checker #(.CFG(CFG)) u_pma_checker (
+        .paddr_i(t_s2_paddr),
+        .exec_ok_o(t_pma_exec_ok), .cacheable_o(t_pma_cacheable), .exists_o(t_pma_exists)
+    );
+
+    icache_mshr #(.CFG(CFG)) u_icache_mshr (
+        .clk_i(clk), .rst_i(rst),
+        .alloc_valid_i(t_mshr_alloc_valid), .alloc_ready_o(t_mshr_alloc_ready),
+        .alloc_line_paddr_i(t_mshr_alloc_paddr), .alloc_kind_i(t_mshr_alloc_kind),
+        .alloc_merged_o(t_mshr_alloc_merged),
+        .probe_line_paddr_i(t_mshr_probe_paddr), .probe_inflight_o(t_mshr_probe_inflight),
+        .l2_req_valid_o(l2_req_valid_o), .l2_req_ready_i(l2_req_ready_i), .l2_req_o(l2_req_o),
+        .l2_resp_i(l2_resp_i), .l2_resp_ready_o(l2_resp_ready_o),
+        .fill_wr_valid_o(t_fill_wr_valid), .fill_wr_ready_i(t_fill_wr_ready),
+        .fill_wr_line_paddr_o(t_fill_wr_paddr), .fill_wr_data_o(t_fill_wr_data),
+        .fill_wr_error_o(t_fill_wr_error),
+        .fill_done_o(t_fill_done), .fill_done_line_paddr_o(t_fill_done_paddr),
+        .idle_o(t_mshr_idle),
+        .perf_o(t_perf_mshr)
+    );
+
+    // 未实现：req_ready_o/resp_o/pf_*/inv_done_o/idle_o/recall_*/perf_o 的驱动。
+
+    // ============================================================
+    // 旧合同实现（HEAD 06462b0），迁移后删除或改造。
+    // 注意：下面的 NUM_BANKS 是行内 16B 切分数，不是 D11 的两 bank。
+    // ============================================================
 
     // 一条 cache line 按 FETCH_BYTES 横向切分得到的 bank 数
     localparam int NUM_BANKS = ICACHE_BLOCK_SIZE_BYTES / FETCH_BYTES;

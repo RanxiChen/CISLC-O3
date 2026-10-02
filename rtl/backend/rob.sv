@@ -1,4 +1,22 @@
 /**
+ *
+ * 【2026-10-02 框架：目标机制与缺口】
+ * - 当前缺口：异常项到达队头后永远不退休（只退休 complete 且无异常的前缀），没有精确异常入口。
+ * - 需要补充：
+ *   1) 保存异常 cause/tval（含执行期报告）、fflags、FTQ 动态身份与槽位、寄存器域、串行化类型。
+ *   2) 提交宽度 core.commit_width（待定）；输出 rob_commit_t 给 commit_ctrl，由其生成
+ *      ftq_commit_t（区域有效指令全部提交后交接训练并回收，不要求整个 ROB 清空，前端 16.2）、
+ *      SQ committed、committed RAT/free list 归还（按目的域）、fflags 按序并入。
+ *   3) 串行化：CSR、FENCE、FENCE.I、SFENCE.VMA、AMO、MMIO、ECALL/EBREAK/xRET/WFI 在队头等待执行完成
+ *      后退休；FENCE.I/SFENCE/satp/PMP 触发 sys_redirect 与前端同步（D24～D28）。
+ *   4) 队头异常（B26 已定）：退休停在故障指令之前，下一拍故障项为最老时在无正常退休的 trap 拍
+ *      交给 commit_ctrl/trap_ctrl，故障项不退休，整体清除年轻状态（committed 边界恢复）；
+ *      合法 xRET 自身退休触发返回（B27）；中断 EPC 用 committed_next_pc（B37）。
+ *   5) 每项保存 succ_pc（B37）：普通指令 pc+inst_len，控制流由 BRU 解析写入真实后继；
+ *      crossline_misalign（B31）；fuse_role（B34：融合成员各自占 ROB 项、各自退休，成员由
+ *      FUSE_HEAD 的同一次乘法请求的低位结果完成，不独立执行）。
+ * - 现有 ftq_last 回收方式需与“区域全部提交”合同核对（前端 fetch_entry_t 注释）。
+ * - 目标端口（t_*）未接入；resolution 现在会阻止退休（B12 缺口 1）。
  * Minimal ROB
  *
  * 当前已经实现的功能：
@@ -35,18 +53,20 @@
  */
 
 module rob #(
-    parameter int MACHINE_WIDTH = 4,
-    parameter int NUM_ROB_ENTRIES = 64,
-    parameter int NUM_PHYS_REGS = 96,
-    parameter int COMPLETE_WIDTH = 4,
-    parameter int RETIRE_WIDTH = 4
+    parameter  o3_cfg_pkg::backend_cfg_t CFG,
+    parameter  int COMPLETE_WIDTH,                   // 完成报告源数量，由 backend 按写回源数给出
+    localparam int MACHINE_WIDTH = o3_pkg::BACKEND_MACHINE_WIDTH,
+    localparam int NUM_ROB_ENTRIES = CFG.rob.entries,
+    localparam int NUM_PHYS_REGS = o3_types_pkg::INT_PREGS > o3_types_pkg::FP_PREGS
+                                 ? o3_types_pkg::INT_PREGS : o3_types_pkg::FP_PREGS,
+    localparam int RETIRE_WIDTH = o3_cfg_pkg::O3_CFG.core.commit_width
 ) (
     input  logic clk,
     input  logic rst,
     input  logic                               alloc_req_i       [MACHINE_WIDTH-1:0],
     input  logic                               alloc_exception_i [MACHINE_WIDTH-1:0],
-    input  logic [$clog2(NUM_PHYS_REGS)-1:0]   alloc_old_dst_preg_i [MACHINE_WIDTH-1:0],
-    input  logic [$clog2(NUM_PHYS_REGS)-1:0]   alloc_new_dst_preg_i [MACHINE_WIDTH-1:0],
+    input  logic [o3_pkg::PREG_IDX_WIDTH-1:0]   alloc_old_dst_preg_i [MACHINE_WIDTH-1:0],
+    input  logic [o3_pkg::PREG_IDX_WIDTH-1:0]   alloc_new_dst_preg_i [MACHINE_WIDTH-1:0],
     input  logic [o3_pkg::REG_ADDR_WIDTH-1:0]  alloc_rd_i [MACHINE_WIDTH-1:0],
     input  logic                               alloc_rd_write_en_i [MACHINE_WIDTH-1:0],
     input  logic                               alloc_is_load_i [MACHINE_WIDTH-1:0],
@@ -54,7 +74,7 @@ module rob #(
     input  logic [o3_pkg::LQ_IDX_WIDTH-1:0]     alloc_lq_idx_i [MACHINE_WIDTH-1:0],
     input  logic [o3_pkg::SQ_IDX_WIDTH-1:0]     alloc_sq_idx_i [MACHINE_WIDTH-1:0],
     input  o3_pkg::branch_mask_t                alloc_branch_mask_i [MACHINE_WIDTH-1:0],
-    input  logic [o3_pkg::FTQ_INDEX_WIDTH-1:0]  alloc_ftq_idx_i [MACHINE_WIDTH-1:0],
+    input  o3_types_pkg::ftq_id_t                 alloc_ftq_idx_i [MACHINE_WIDTH-1:0],
     input  logic                               alloc_ftq_last_i [MACHINE_WIDTH-1:0],
     input  logic [o3_pkg::INST_ID_WIDTH-1:0]   alloc_instruction_id_i [MACHINE_WIDTH-1:0],
 `ifdef ENABLE_RETIRE_INFO
@@ -80,8 +100,8 @@ module rob #(
     output logic [$clog2(NUM_ROB_ENTRIES)-1:0] alloc_idx_o       [MACHINE_WIDTH-1:0],
     output logic                               retire_valid_o    [RETIRE_WIDTH-1:0],
     output logic [$clog2(NUM_ROB_ENTRIES)-1:0] retire_idx_o      [RETIRE_WIDTH-1:0],
-    output logic [$clog2(NUM_PHYS_REGS)-1:0]   retire_old_dst_preg_o [RETIRE_WIDTH-1:0],
-    output logic [$clog2(NUM_PHYS_REGS)-1:0]   retire_new_dst_preg_o [RETIRE_WIDTH-1:0],
+    output logic [o3_pkg::PREG_IDX_WIDTH-1:0]   retire_old_dst_preg_o [RETIRE_WIDTH-1:0],
+    output logic [o3_pkg::PREG_IDX_WIDTH-1:0]   retire_new_dst_preg_o [RETIRE_WIDTH-1:0],
     output logic [o3_pkg::REG_ADDR_WIDTH-1:0]  retire_rd_o [RETIRE_WIDTH-1:0],
     output logic                               retire_rd_write_en_o [RETIRE_WIDTH-1:0],
     output logic                               retire_is_load_o [RETIRE_WIDTH-1:0],
@@ -89,11 +109,32 @@ module rob #(
     output logic [o3_pkg::LQ_IDX_WIDTH-1:0]     retire_lq_idx_o [RETIRE_WIDTH-1:0],
     output logic [o3_pkg::SQ_IDX_WIDTH-1:0]     retire_sq_idx_o [RETIRE_WIDTH-1:0],
     output logic [o3_pkg::INST_ID_WIDTH-1:0]   retire_instruction_id_o [RETIRE_WIDTH-1:0]
-    ,output logic [o3_pkg::FTQ_INDEX_WIDTH-1:0] retire_ftq_idx_o [RETIRE_WIDTH-1:0]
+    ,output o3_types_pkg::ftq_id_t               retire_ftq_idx_o [RETIRE_WIDTH-1:0]
     ,output logic                              retire_ftq_last_o [RETIRE_WIDTH-1:0]
 `ifdef ENABLE_RETIRE_INFO
     ,output o3_pkg::retire_info_t              retire_info_o     [RETIRE_WIDTH-1:0]
 `endif
+,
+
+    // ---------------- 目标合同（框架新增，未接入逻辑） ----------------
+    // 分配时保存：异常 cause/tval、FTQ 槽位、提交时需要的串行化类型、寄存器域
+    input  o3_types_pkg::exc_info_t    t_alloc_exc_i      [MACHINE_WIDTH-1:0],
+    input  o3_types_pkg::uop_ext_t     t_alloc_ext_i      [MACHINE_WIDTH-1:0],
+    // 执行期异常报告到原项（访存/非法 CSR 等，B06）
+    input  logic                       t_exc_valid_i,
+    input  logic [$clog2(NUM_ROB_ENTRIES)-1:0] t_exc_idx_i,
+    input  o3_types_pkg::exc_info_t    t_exc_i,
+    // FP 完成时写 fflags（B15）
+    input  logic                       t_fflags_valid_i   [COMPLETE_WIDTH-1:0],
+    input  logic [o3_isa_pkg::FFLAGS_W-1:0] t_fflags_i    [COMPLETE_WIDTH-1:0],
+    // 队头信息：串行化指令（CSR/FENCE/FENCE.I/SFENCE/AMO/MMIO/xRET/ECALL）在队头执行
+    output logic                       t_head_valid_o,
+    output o3_types_pkg::rob_commit_t  t_head_o,
+    input  logic                       t_head_serial_done_i,   // 队头串行操作已完成，可退休
+    // 每条提交指令的完整信息，送 commit_ctrl
+    output o3_types_pkg::rob_commit_t  t_commit_o         [RETIRE_WIDTH-1:0],
+    // 提交端整体清空（异常/xRET/系统重定向）：使用 committed map 恢复（未设计）
+    input  logic                       t_flush_all_i
 );
 
     localparam int ROB_IDX_WIDTH = $clog2(NUM_ROB_ENTRIES);
@@ -107,13 +148,13 @@ module rob #(
     logic [COUNT_WIDTH-1:0]   retire_count;
     logic                     alloc_fire;
 
-    localparam int PREG_IDX_WIDTH = $clog2(NUM_PHYS_REGS);
+    // preg 字段宽度统一使用 o3_pkg::PREG_IDX_WIDTH（两域共用，o3_types_pkg::PREG_W）。
 
     // 当前 ROB 存储体保存异常位、被覆盖的旧目的物理寄存器和完成位。
     logic                     entry_valid_q     [NUM_ROB_ENTRIES-1:0];
     logic                     entry_exception_q [NUM_ROB_ENTRIES-1:0];
-    logic [PREG_IDX_WIDTH-1:0] entry_old_dst_preg_q [NUM_ROB_ENTRIES-1:0];
-    logic [PREG_IDX_WIDTH-1:0] entry_new_dst_preg_q [NUM_ROB_ENTRIES-1:0];
+    logic [o3_pkg::PREG_IDX_WIDTH-1:0] entry_old_dst_preg_q [NUM_ROB_ENTRIES-1:0];
+    logic [o3_pkg::PREG_IDX_WIDTH-1:0] entry_new_dst_preg_q [NUM_ROB_ENTRIES-1:0];
     logic [o3_pkg::REG_ADDR_WIDTH-1:0] entry_rd_q [NUM_ROB_ENTRIES-1:0];
     logic entry_rd_write_en_q [NUM_ROB_ENTRIES-1:0];
     logic entry_is_load_q [NUM_ROB_ENTRIES-1:0];
@@ -121,7 +162,7 @@ module rob #(
     logic [o3_pkg::LQ_IDX_WIDTH-1:0] entry_lq_idx_q [NUM_ROB_ENTRIES-1:0];
     logic [o3_pkg::SQ_IDX_WIDTH-1:0] entry_sq_idx_q [NUM_ROB_ENTRIES-1:0];
     o3_pkg::branch_mask_t entry_branch_mask_q [NUM_ROB_ENTRIES-1:0];
-    logic [o3_pkg::FTQ_INDEX_WIDTH-1:0] entry_ftq_idx_q [NUM_ROB_ENTRIES-1:0];
+    o3_types_pkg::ftq_id_t entry_ftq_idx_q [NUM_ROB_ENTRIES-1:0];
     logic entry_ftq_last_q [NUM_ROB_ENTRIES-1:0];
     logic                      entry_complete_q  [NUM_ROB_ENTRIES-1:0];
     logic [INST_ID_WIDTH_LOCAL-1:0]  entry_instruction_id_q [NUM_ROB_ENTRIES-1:0];

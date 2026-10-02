@@ -1,64 +1,63 @@
 /**
- * O3 处理器核心类型定义包
- * 包含所有流水线阶段之间传递的数据结构
+ * O3 后端旧流水类型包
+ *
+ * 定位（2026-10-02 框架阶段）：
+ * - 保存后端现有流水载荷（decode_out_t、decoded_uop_t、renamed_uop_t、各执行级 uop 与结果）。
+ * - 本包不再写任何可调数值：原 BACKEND_* 参数全部从 o3_cfg_pkg::O3_CFG 推导，名字保留，
+ *   使现有后端 RTL 继续引用同一名字。
+ * - ISA 常量（XLEN/ILEN/REG_ADDR_WIDTH/exception cause）来自 o3_isa_pkg，并由本包重新导出。
+ * - 新机制所需字段通过 o3_types_pkg::uop_ext_t / rename_ext_t 以 `ext` 字段挂在旧结构上；
+ *   这些字段当前没有生产者和消费者，标为“框架新增”。
+ * - FTQ 身份改为 o3_types_pkg::ftq_id_t（idx + 代际），槽位在 ext.ftq_slot。
+ *
+ * 已删除：fetch_entry_t（迁入 o3_types_pkg）、FTQ_INDEX_WIDTH、ICACHE_LINE_BYTES、
+ * ITCM_*（前端改由 CFG 提供）、DEFAULT_NUM_*。
  */
 
 package o3_pkg;
-    // ========================================
-    // 基础参数定义
-    // ========================================
-    parameter int XLEN = 64;           // 数据宽度
-    parameter int ILEN = 32;           // 指令宽度
-    parameter int PC_WIDTH = 39;       // PC宽度 (sv39)
-    parameter int REG_ADDR_WIDTH = 5;  // 寄存器地址宽度
-    parameter int INST_ID_WIDTH = 64;  // 调试用指令编号宽度
-    parameter int DEFAULT_NUM_PHYS_REGS = 96;
-    parameter int DEFAULT_NUM_ROB_ENTRIES = 64;
-    parameter int PREG_IDX_WIDTH = $clog2(DEFAULT_NUM_PHYS_REGS);
-    parameter int ROB_IDX_WIDTH = $clog2(DEFAULT_NUM_ROB_ENTRIES);
-    parameter int IMM_RAW_WIDTH = 21;
-    parameter int FTQ_INDEX_WIDTH = 4;
-    parameter int ICACHE_LINE_BYTES = 64;
-
-    // 第一版统一物理地址图。Frontend只把ITCM窗口作为本地取指存储，LSU只把
-    // DTCM窗口作为本地数据存储；其他地址通过core外部存储接口交给下一级。
-    parameter logic [PC_WIDTH-1:0] ITCM_BASE_ADDR = PC_WIDTH'(32'h1000_0000);
-    parameter int ITCM_SIZE_BYTES = 64 * 1024;
-    parameter logic [XLEN-1:0] DTCM_BASE_ADDR = XLEN'(32'h1100_0000);
-    parameter int DTCM_SIZE_BYTES = 256 * 1024;
-
-    // RISC-V 同步异常 cause 编码。当前先定义前端可能产生的指令端异常，
-    // 后续增加 Load/Store、CSR 和特权架构时继续沿用同一类型扩展。
-    typedef logic [5:0] exception_cause_t;
-    localparam exception_cause_t EXCEPTION_CAUSE_INST_ADDR_MISALIGNED = exception_cause_t'(0);
-    localparam exception_cause_t EXCEPTION_CAUSE_INST_ACCESS_FAULT    = exception_cause_t'(1);
-    localparam exception_cause_t EXCEPTION_CAUSE_ILLEGAL_INSTRUCTION  = exception_cause_t'(2);
-    localparam exception_cause_t EXCEPTION_CAUSE_INST_PAGE_FAULT      = exception_cause_t'(12);
+    import o3_cfg_pkg::*;
+    import o3_isa_pkg::*;
+    import o3_types_pkg::*;
+    export o3_isa_pkg::*;
 
     // ========================================
-    // 当前 core/backend 固定配置
+    // 由 O3_CFG 推导的旧名字
     // ========================================
-    parameter int CORE_FETCH_WIDTH = 4;
-    parameter int BACKEND_MACHINE_WIDTH = CORE_FETCH_WIDTH;
-    parameter int BACKEND_NUM_PHYS_REGS = DEFAULT_NUM_PHYS_REGS;
-    parameter int BACKEND_NUM_ARCH_REGS = 32;
-    parameter int BACKEND_NUM_ROB_ENTRIES = 64;
-    // Decode Queue 的深度按单条 decoded uop 计数，不按 bundle 计数。
-    // 16 entries 在 4-wide Decode 下提供最多四拍满宽缓冲。
-    parameter int BACKEND_DECODE_QUEUE_DEPTH = 16;
-    parameter int BACKEND_DISPATCH_WIDTH = 4;
-    parameter int BACKEND_INT_ISSUE_QUEUE_DEPTH = 16;
-    parameter int BACKEND_MEM_ISSUE_QUEUE_DEPTH = 8;
-    parameter int BACKEND_BRANCH_ISSUE_QUEUE_DEPTH = 4;
-    parameter int BACKEND_NUM_INT_ALUS = 4;
-    parameter int BACKEND_NUM_BRANCH_CHECKPOINTS = 4;
-    parameter int BACKEND_LOAD_QUEUE_DEPTH = 8;
-    parameter int BACKEND_STORE_QUEUE_DEPTH = 8;
-    parameter int BACKEND_RENAME_DISPATCH_QUEUE_DEPTH = 16;
+    // PC 宽度与前端 vaddr_t 一致；目标地址检查的完整方案见 B12 第 4 条（待定）。
+    parameter int PC_WIDTH       = O3_CFG.core.vaddr_bits;
+    parameter int INST_ID_WIDTH  = 64;   // 仿真调试编号宽度，不是微架构参数
+    parameter int IMM_RAW_WIDTH  = 21;   // 由 RISC-V 立即数格式决定
 
-    parameter int BRANCH_TAG_WIDTH = $clog2(BACKEND_NUM_BRANCH_CHECKPOINTS);
-    parameter int LQ_IDX_WIDTH = $clog2(BACKEND_LOAD_QUEUE_DEPTH);
-    parameter int SQ_IDX_WIDTH = $clog2(BACKEND_STORE_QUEUE_DEPTH);
+    // 旧代码的统一 lane 数：现有 rename 前缀规划器、ROB 分配、LQ/SQ 分配按此宽度工作。
+    // 目标 rename 宽度为 O3_CFG.be.rename.width（B01 暂定 6），由 R1/R2 实现时接入。
+    parameter int BACKEND_MACHINE_WIDTH            = O3_CFG.be.rename.width;
+    parameter int BACKEND_DECODE_WIDTH             = O3_CFG.be.decode.width;
+    parameter int BACKEND_COMMIT_WIDTH             = O3_CFG.core.commit_width;
+    parameter int BACKEND_NUM_PHYS_REGS            = O3_CFG.be.rename.int_phys_regs;
+    parameter int BACKEND_NUM_FP_PHYS_REGS         = O3_CFG.be.rename.fp_phys_regs;
+    parameter int BACKEND_NUM_ARCH_REGS            = NUM_ARCH_REGS;
+    parameter int BACKEND_NUM_ROB_ENTRIES          = O3_CFG.be.rob.entries;
+    parameter int BACKEND_DECODE_QUEUE_DEPTH       = O3_CFG.be.decode.queue_depth;
+    parameter int BACKEND_DISPATCH_WIDTH           = O3_CFG.be.dispatch.width;
+    parameter int BACKEND_INT_ISSUE_QUEUE_DEPTH    = O3_CFG.be.dispatch.int_iq_depth;
+    parameter int BACKEND_MEM_ISSUE_QUEUE_DEPTH    = O3_CFG.be.dispatch.mem_iq_depth;
+    parameter int BACKEND_BRANCH_ISSUE_QUEUE_DEPTH = O3_CFG.be.dispatch.br_iq_depth;
+    parameter int BACKEND_NUM_INT_ALUS             = O3_CFG.be.exec.num_alu;
+    parameter int BACKEND_NUM_BRANCH_CHECKPOINTS   = O3_CFG.be.rename.checkpoints;
+    parameter int BACKEND_LOAD_QUEUE_DEPTH         = O3_CFG.be.lsu.lq_depth;
+    parameter int BACKEND_STORE_QUEUE_DEPTH        = O3_CFG.be.lsu.sq_depth;
+    parameter int BACKEND_RENAME_DISPATCH_QUEUE_DEPTH = O3_CFG.be.rename.rdq_depth;
+
+    parameter int PREG_IDX_WIDTH = PREG_W;      // 两域共用宽度（o3_types_pkg）
+    parameter int ROB_IDX_WIDTH  = ROB_IDX_W;
+
+    // DTCM：基线未设计，现状沿用（见 O3_CFG.be.lsu）。
+    parameter logic [XLEN-1:0] DTCM_BASE_ADDR  = XLEN'(O3_CFG.be.lsu.dtcm_base);
+    parameter int              DTCM_SIZE_BYTES = O3_CFG.be.lsu.dtcm_bytes;
+
+    parameter int BRANCH_TAG_WIDTH = BR_TAG_W;
+    parameter int LQ_IDX_WIDTH = LQ_IDX_W;
+    parameter int SQ_IDX_WIDTH = SQ_IDX_W;
     typedef logic [BACKEND_NUM_BRANCH_CHECKPOINTS-1:0] branch_mask_t;
     typedef logic [BRANCH_TAG_WIDTH-1:0] branch_tag_t;
 
@@ -66,32 +65,10 @@ package o3_pkg;
     // Frontend -> Backend 接口
     // ========================================
 
-    // Frontend 输出给 Backend 的单 lane 指令包。
-    //
-    // 该结构只表达前后端边界的架构合同：
-    // - valid=1 表示该 lane 携带一条指令或一个与该 PC 绑定的取指异常。
-    // - raw_instruction 保存前端实际取得的原始编码；RVC 使用低 16 位，高 16 位清零。
-    // - instruction 始终是供 Backend Decoder 使用的规范 32 位指令；RVC 由前端解压。
-    // - inst_len=2/4 分别表示 16/32 位指令；若取指在得到编码前失败，则允许为 0。
-    // - 对非异常 entry，is_rvc 必须与 inst_len 一致：is_rvc <=> inst_len==2。
-    // - exception_* 携带统一的精确异常元数据；取指地址异常的 tval 为故障地址，
-    //   非法 RVC 可以在 tval 低位保留原始 16 位编码。
-    //
-    // instruction_id仍由Backend分配；FTQ身份与预测下一PC从Frontend随指令传播。
-    typedef struct packed {
-        logic                     valid;
-        logic [PC_WIDTH-1:0]      pc;
-        logic [ILEN-1:0]          raw_instruction;
-        logic [ILEN-1:0]          instruction;
-        logic [2:0]               inst_len;
-        logic                     is_rvc;
-        logic                     exception_valid;
-        exception_cause_t         exception_cause;
-        logic [XLEN-1:0]          exception_tval;
-        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
-        logic                     ftq_last;
-        logic [PC_WIDTH-1:0]      predicted_next_pc;
-    } fetch_entry_t;
+    // fetch_entry_t 已于 2026-10-02 迁入 o3_types_pkg（前端框架阶段），并补充
+    // 动态 FTQ 身份（idx+代际）与槽位，PC 改用 vaddr_t。后端尚未迁移，仍引用本包
+    // 旧定义的位置（backend.sv、tb/*）在后端推进时改为 import o3_types_pkg，
+    // 当前暂时不能编译，符合 agent.md 的顺序重构约定。
 
     // ========================================
     // 解码阶段数据结构
@@ -176,6 +153,7 @@ package o3_pkg;
         branch_cond_t              branch_cond;
         logic                      needs_checkpoint;
         logic                      illegal_instruction;
+        uop_ext_t                  ext;         // 框架新增：M/A/F/D/Zicsr/SYSTEM、寄存器域、第三源（未产生）
     } decode_out_t;
 
     // 解码完成但尚未重命名的 uop。
@@ -194,7 +172,7 @@ package o3_pkg;
         logic                      exception_valid;
         exception_cause_t          exception_cause;
         logic [XLEN-1:0]           exception_tval;
-        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
+        ftq_id_t                   ftq_id;
         logic                      ftq_last;
         logic [PC_WIDTH-1:0]       predicted_next_pc;
         logic [REG_ADDR_WIDTH-1:0] rs1;
@@ -219,6 +197,7 @@ package o3_pkg;
         logic                      is_jalr;
         branch_cond_t              branch_cond;
         logic                      needs_checkpoint;
+        uop_ext_t                  ext;         // 框架新增（未接入逻辑）
     } decoded_uop_t;
 
     // 已完成重命名和 ROB 分配的 uop。
@@ -237,7 +216,7 @@ package o3_pkg;
         logic                      exception_valid;
         exception_cause_t          exception_cause;
         logic [XLEN-1:0]           exception_tval;
-        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
+        ftq_id_t                   ftq_id;
         logic                      ftq_last;
         logic [PC_WIDTH-1:0]       predicted_next_pc;
         logic [REG_ADDR_WIDTH-1:0] rs1;
@@ -271,8 +250,13 @@ package o3_pkg;
         logic [SQ_IDX_WIDTH-1:0]   sq_idx;
         branch_mask_t              branch_mask;
         branch_tag_t               branch_tag;
+        uop_ext_t                  ext;         // 框架新增（未接入逻辑）
+        rename_ext_t               rext;        // 框架新增：第三源 preg（未接入逻辑）
     } renamed_uop_t;
 
+    // 前端目标框架不再消费本结构：执行解析改为 o3_types_pkg::bru_resolve_t，
+    // 提交端系统重定向为 sys_redirect_t，由前端 redirect_arbiter 按 D24 统一仲裁。
+    // 后端迁移时替换本结构的生产端。
     // BRU 最终驱动该合同。当前 Backend 先原生接收它，使 Rename/ROB/LSQ
     // 的恢复机制不依赖具体分支执行单元的放置方式。
     typedef struct packed {
@@ -280,7 +264,7 @@ package o3_pkg;
         logic                      mispredict;
         branch_tag_t               branch_tag;
         logic [ROB_IDX_WIDTH-1:0]  branch_rob_idx;
-        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
+        ftq_id_t                   ftq_id;
         logic [PC_WIDTH-1:0]       branch_pc;
         logic                      is_branch;
         logic                      is_jal;
@@ -419,7 +403,7 @@ package o3_pkg;
         logic                      valid;
         logic [INST_ID_WIDTH-1:0]  instruction_id;
         logic [ROB_IDX_WIDTH-1:0]  rob_idx;
-        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
+        ftq_id_t                   ftq_id;
         branch_tag_t               branch_tag;
         branch_mask_t              branch_mask;
         logic [PC_WIDTH-1:0]       pc;
@@ -440,7 +424,7 @@ package o3_pkg;
         logic                      valid;
         logic [INST_ID_WIDTH-1:0]  instruction_id;
         logic [ROB_IDX_WIDTH-1:0]  rob_idx;
-        logic [FTQ_INDEX_WIDTH-1:0] ftq_idx;
+        ftq_id_t                   ftq_id;
         branch_tag_t               branch_tag;
         branch_mask_t              branch_mask;
         logic                      actual_taken;
@@ -470,5 +454,46 @@ package o3_pkg;
         logic [XLEN-1:0]           rd_wdata;
     } retire_info_t;
 `endif
+
+    // ========================================
+    // 共享辅助函数（2026-10-02 从 backend.sv 迁出，逻辑未改）
+    // ========================================
+    // 立即数按原始编码类型符号扩展。
+    function automatic logic [XLEN-1:0] expand_imm_value(
+        input imm_type_t                imm_type,
+        input logic [IMM_RAW_WIDTH-1:0] imm_raw
+    );
+        logic signed [XLEN-1:0] imm_sext;
+        begin
+            imm_sext = '0;
+            unique case (imm_type)
+                IMM_TYPE_I,
+                IMM_TYPE_S: imm_sext = XLEN'($signed({{(XLEN-12){imm_raw[11]}}, imm_raw[11:0]}));
+                IMM_TYPE_B: imm_sext = XLEN'($signed({{(XLEN-13){imm_raw[12]}}, imm_raw[12:0]}));
+                IMM_TYPE_U: imm_sext = XLEN'($signed({{(XLEN-32){imm_raw[20]}}, imm_raw[20:0], 11'b0}));
+                IMM_TYPE_J: imm_sext = XLEN'($signed({{(XLEN-21){imm_raw[20]}}, imm_raw[20:0]}));
+                default:    imm_sext = '0;
+            endcase
+            expand_imm_value = imm_sext;
+        end
+    endfunction
+
+    // 本拍误预测是否杀死依赖该分支的项。
+    function automatic logic br_killed(input branch_mask_t mask, input branch_resolution_t res);
+        br_killed = res.valid && res.mispredict && mask[res.branch_tag];
+    endfunction
+
+    // 本拍解析（正确或错误）后清除对应 branch bit。
+    function automatic branch_mask_t br_resolved_mask(input branch_mask_t mask,
+                                                      input branch_resolution_t res);
+        branch_mask_t result;
+        begin
+            result = mask;
+            if (res.valid) begin
+                result[res.branch_tag] = 1'b0;
+            end
+            br_resolved_mask = result;
+        end
+    endfunction
 
 endpackage

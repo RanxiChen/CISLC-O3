@@ -1,4 +1,21 @@
 /**
+ *
+ * 【2026-10-02 框架：目标机制与缺口】
+ * 需要补充实现（指令集范围：RV64GC/Linux，C 已由前端展开）：
+ * - M：MUL/MULH/MULHSU/MULHU/MULW、DIV/DIVU/REM/REMU 及 W 变体 → ext.fu_class=FU_MUL/FU_DIV、ext.mdu_op（B13/B21）。
+ * - A：LR/SC、AMO*.W/D，保留 aq/rl → FU_AMO、ext.amo_op/aq/rl（B09）。
+ * - F/D：FLW/FLD/FSW/FSD、算术/FMA/比较/分类/转换/FMV → ext.fp_op/fp_fmt/rm；
+ *   每个源与目的独立给出寄存器域（ext.rs*_dom/rd_dom），FMA 给第三源 rs3（B15）。
+ *   FMV.X/FCLASS/比较写整数域，FMV.F/I2F 写 FP 域，不能按 FU 推断目的域。
+ * - Zicsr：CSRRW/RS/RC 及立即数形式 → FU_CSR、ext.csr_*，ext.serialize=1。
+ *   CSR 指令 ext.block_younger=1（B22 Decode→Rename 串行阻塞）；FS Dirty/fflags 退休合并见 B40。
+ * - Zifencei / SYSTEM：FENCE、FENCE.I、SFENCE.VMA、ECALL、EBREAK、MRET、SRET、WFI → FU_SYS、ext.sys_op。
+ *   SFENCE.VMA 需保留 rs1/rs2 是否为 x0（由 rs1/rs2 编号判断，不用值，D26）。
+ *   FENCE/FENCE.I/SFENCE.VMA/WFI 置 ext.block_younger=1；FENCE 保留 ext.fence_pred/succ（B23）。
+ *   ECALL/EBREAK 异常、xRET（B27）、WFI（B38）的合法性按既有特权规则（B29 复用 Breeze）。
+ * - 现有 FENCE 作为无副作用整数 uop 完成，是单请求内存模型下的占位；目标在 ROB 队头等待
+ *   先前访存到顺序点（含已提交未 drain 的 store），具体握手随访存与 commit_ctrl 闭合。
+ * 当前缺口：只产生 RV64I 字段，ext 全部未赋值；illegal 判定只覆盖 RV64I。
  * 指令解码器 - 纯组合逻辑
  *
  * 当前已经实现的功能：

@@ -1,4 +1,14 @@
 /**
+ *
+ * 【2026-10-02 框架：目标机制与缺口】
+ * - 目标（B02）：本模块成为 R2 资源规划器。R1（rename_dep_r1）只做组内依赖预处理并经
+ *   rename_stage_buffer 暂存；R2 在同一接受边界原子检查 ROB、INT preg、FP preg、LQ、SQ、
+ *   checkpoint、RDQ，选择最老可接受连续前缀，一条指令所需资源要么全部获得要么不分配。
+ * - 需要补充：FP 目的域的 preg 计数（fp_preg_free_count）与分配请求；依赖选择改用 R1
+ *   记录的生产者槽位（不再使用 rename_map_table 的 src*_from_older_lane）。
+ * - 宽度：目标 CFG.rename.width（B01 暂定 6）；现状 WIDTH=BACKEND_MACHINE_WIDTH。
+ * - 部分接受后剩余指令保留原槽位，资源与 RDQ 输出按剩余有效指令程序顺序形成连续前缀（B02 3.3）。
+ * - recovery_block_i 现接 branch_resolution.valid：正确解析也阻止 rename（B12 缺口 1）。
  * Four-wide prefix Rename planner and uop assembler
  *
  * 本模块无状态。从Decode Queue的最老lane开始累计检查ROB、preg、LQ、SQ、
@@ -8,12 +18,14 @@
 module rename_stage
     import o3_pkg::*;
 #(
-    parameter int WIDTH = 4,
-    parameter int NUM_PHYS_REGS = BACKEND_NUM_PHYS_REGS,
-    parameter int NUM_ROB_ENTRIES = BACKEND_NUM_ROB_ENTRIES,
-    parameter int LQ_DEPTH = BACKEND_LOAD_QUEUE_DEPTH,
-    parameter int SQ_DEPTH = BACKEND_STORE_QUEUE_DEPTH,
-    parameter int RDQ_DEPTH = BACKEND_RENAME_DISPATCH_QUEUE_DEPTH
+    parameter  o3_cfg_pkg::backend_cfg_t CFG,
+    localparam int WIDTH = BACKEND_MACHINE_WIDTH,          // 目标 R2 宽度 CFG.rename.width（B01）
+    localparam int NUM_PHYS_REGS = CFG.rename.int_phys_regs,
+    localparam int NUM_FP_PHYS_REGS = CFG.rename.fp_phys_regs, // 框架新增，未接入
+    localparam int NUM_ROB_ENTRIES = CFG.rob.entries,
+    localparam int LQ_DEPTH = CFG.lsu.lq_depth,
+    localparam int SQ_DEPTH = CFG.lsu.sq_depth,
+    localparam int RDQ_DEPTH = CFG.rename.rdq_depth
 ) (
     input decoded_uop_t [WIDTH-1:0] decoded_i,
     input logic [$clog2(WIDTH+1)-1:0] visible_count_i,
@@ -28,10 +40,10 @@ module rename_stage
     input logic checkpoint_grant_i [WIDTH-1:0],
     input branch_tag_t checkpoint_tag_i [WIDTH-1:0],
 
-    input logic [$clog2(NUM_PHYS_REGS)-1:0] src1_preg_i [WIDTH-1:0],
-    input logic [$clog2(NUM_PHYS_REGS)-1:0] src2_preg_i [WIDTH-1:0],
-    input logic [$clog2(NUM_PHYS_REGS)-1:0] old_dst_preg_i [WIDTH-1:0],
-    input logic [$clog2(NUM_PHYS_REGS)-1:0] new_dst_preg_i [WIDTH-1:0],
+    input logic [PREG_IDX_WIDTH-1:0] src1_preg_i [WIDTH-1:0],
+    input logic [PREG_IDX_WIDTH-1:0] src2_preg_i [WIDTH-1:0],
+    input logic [PREG_IDX_WIDTH-1:0] old_dst_preg_i [WIDTH-1:0],
+    input logic [PREG_IDX_WIDTH-1:0] new_dst_preg_i [WIDTH-1:0],
     input logic [$clog2(NUM_ROB_ENTRIES)-1:0] rob_idx_i [WIDTH-1:0],
     input logic [$clog2(LQ_DEPTH)-1:0] lq_idx_i [WIDTH-1:0],
     input logic [$clog2(SQ_DEPTH)-1:0] sq_idx_i [WIDTH-1:0],
@@ -130,7 +142,8 @@ module rename_stage
             renamed_uop_o[lane].exception_valid = decoded_i[lane].exception_valid;
             renamed_uop_o[lane].exception_cause = decoded_i[lane].exception_cause;
             renamed_uop_o[lane].exception_tval = decoded_i[lane].exception_tval;
-            renamed_uop_o[lane].ftq_idx = decoded_i[lane].ftq_idx;
+            renamed_uop_o[lane].ftq_id = decoded_i[lane].ftq_id;
+            renamed_uop_o[lane].ext = decoded_i[lane].ext;          // 框架新增字段原样传递
             renamed_uop_o[lane].ftq_last = decoded_i[lane].ftq_last;
             renamed_uop_o[lane].predicted_next_pc = decoded_i[lane].predicted_next_pc;
             renamed_uop_o[lane].rs1 = decoded_i[lane].rs1;

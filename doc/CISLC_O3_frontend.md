@@ -1,5 +1,76 @@
 # CISLC_O3 Frontend Notes
 
+## 目标框架（2026-10-02 搭建，未实现、不能编译）
+
+本节记录按前端设计基线（D01～D28，第 16 节）搭建的模块与端口框架。框架只有端口、
+连线和注释；下面“当前边界”及之后各节描述的是 HEAD `06462b0` 的旧实现，保留作迁移参考。
+本次只做了文件修改，没有编译、仿真、综合，也没有运行任何测试。
+
+### 参数组织
+
+- `rtl/common/o3_cfg_pkg.sv`：全工程唯一写数值的位置。按子系统分组的配置结构
+  `o3_cfg_t`（当前含 `core` 与 `fe`），每个字段注明已定/暂定/待定/现状沿用及出处。
+  待定字段写 `` `O3_TBD ``（展开为空），故意使编译失败，防止占位值被误用。
+- `rtl/common/o3_types_pkg.sv`：只从 `O3_CFG` 推导位宽与跨模块合同结构（`ftq_id_t`、
+  `fetch_entry_t`、`redirect_req_t`、`fe_kill_t`、`bru_resolve_t`、`sys_redirect_t`、
+  `ptw_req_t`、`l2_req_t` 等）。
+- 模块参数 `parameter o3_cfg_pkg::frontend_cfg_t CFG` 不写默认值，由顶层传入
+  `O3_CFG.fe`；`frontend` 内用断言检查影响接口位宽的字段与 `O3_CFG.fe` 一致。
+- `fetch_entry_t` 已从 `o3_pkg` 迁入 `o3_types_pkg`，补充动态 FTQ 身份（idx+代际）与槽位。
+
+### 模块清单
+
+| 模块 | 状态 | 机制出处 |
+| --- | --- | --- |
+| `frontend` | 目标总装连线已写；旧总装被替换 | 第 1 节 |
+| `bpu` | 新增目标端口与子模块例化；保留旧顺序 32B 生成器为旧合同 | D01/D02 |
+| `ubtb` / `main_btb` / `tage` | 新增空壳 | D02/D04～D08/D22 |
+| `branch_history` / `history_snapshot_store` | 新增空壳 | D09/D22/D23 |
+| `ras` | 空壳；2026-10-02 按 D29 改为 `{top_idx,count,top_addr}` 栈顶快速修复端口，删除 undo log/log_full/commit_free | D29（第 6.2 节） |
+| `bpu_slow_check` | 新增空壳 | 第 4.1、6.3 节 |
+| `redirect_arbiter` | 新增空壳 | D24 |
+| `ftq` | 新增目标端口；保留旧三指针实现为旧合同 | 第 7 节 |
+| `fetch_return_queue` | 新增空壳 | D14～D17 |
+| `ifu_f0` / `ifu_f1` | 新增空壳 | 第 3.3、10 节 |
+| `fetch_buffer` | 保留实现；参数改由 CFG；新增 `kill_i`（未实现） | 第 10 节 |
+| `ICache` | 新增目标端口与子模块例化；保留旧阻塞实现为旧合同 | D10～D14 |
+| `itlb` / `icache_mshr` | 新增空壳 | 第 8～9 节、D19/D26～D28 |
+| `pmp_checker` / `pma_checker` | 新增空壳；2026-10-02 移到 `rtl/common/`，前后端共用 | 第 8 节、D28 |
+| `fetch_prefetcher` / `prefetch_xlate_cache` | 新增空壳 | D18/D19 |
+| `frontend_sync_ctrl` | 空壳；2026-10-02 只负责前端部分，删除 dclean 接口，由后端 commit_ctrl 编排 | D25～D28、B23/B24 |
+| `frontend_perf_events` | 新增空壳 | D21，第 12 节 |
+| `ifu` | 已删除（2026-10-02），由 `fetch_return_queue`/`ifu_f0`/`ifu_f1` 取代 | — |
+
+### 框架中明确标为“未设计”的内容
+
+- 异常/中断/xRET 主流程已定（后端 B26/B27），前端只接收已形成的系统重定向；系统入口首笔取指可与
+  历史/RAS 恢复解耦（16.4），但系统 committed 预测上下文来源、入口取指返回槽与元数据绑定仍未闭合。
+- 重定向赢家在前后端之间的归属与同一取消边界的接口。
+- D25～D28 同步握手的信号编码与拍数（归属已定：后端 commit_ctrl 编排，前端不发起 DCache clean）。
+- 跨块补半字辅助请求、后半字异常报告；非法 RVC 的 tval。
+- 训练排程与提交带宽；uBTB 训练规则。
+- PMA 地址图、不可缓存取指路径；ITCM 去留。
+- 性能计数读取 ABI。
+
+### 2026-10-02 第二轮框架补齐（D29、系统同步、L2 回收）
+
+- `o3_types_pkg::ras_ckpt_t` 改为 `{top_idx,count,top_addr}`；`O3_CFG.fe.ras.undo_log_depth` 删除。
+  `bpu`/`ftq`/`redirect_arbiter`/`frontend` 删除 `ras_commit_free_*`/`ras_free_*`/`log_full`，新增恢复
+  身份 `ras_recover_id`/`ras_done_id`；`bpu_slow_check` 删除 `ras_top_*`，改用区域保存的 `fast_ras_ckpt_i`。
+  `redirect_arbiter` 注释写明普通分支 R0～R2 目标与系统入口取指解耦边界。
+- `frontend_sync_ctrl`：删除 `dclean_req_o/dclean_done_i`；`frontend` 顶层删除 `dclean_*`。
+- L2 inclusive 回收（后端 B41）：`frontend` 新增 `l1i_recall_*`，直通 `ICache` 新增的 `recall_*` 维护入口
+  （不进入 S0 demand 路径）。`itlb` 注释按 B36 更新 A 位。
+- 全部仍为空壳或只连线；未编译、未仿真、未测试。
+
+### 已知的不一致（符合 agent.md 顺序重构约定）
+
+- 2026-10-02 后端框架阶段已把 `o3_core.sv`、`backend.sv` 改为新合同（见 `doc/CISLC_O3.md`）；
+  `tb/*` 与 `sim/o3` 仍按旧接口。
+- `sim/o3/Makefile` 未加入新文件。
+- 各模块保留的旧合同端口在目标总装中不连接，迁移完成后删除。
+
+
 ## 当前边界
 
 前端当前形成第一版顺序预测与恢复闭环：

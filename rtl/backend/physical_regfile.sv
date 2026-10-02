@@ -1,4 +1,9 @@
 /**
+ *
+ * 【2026-10-02 框架：目标机制与缺口】
+ * - 实例按 DOMAIN 取规模：RD_INT（读/写口数待定，p0 恒零）、RD_FP（64×64，无恒零寄存器，B15）。
+ *   HAS_ZERO_REG 已给出，现有实现仍硬编码 p0；FP 实例未接入。
+ * - 原始内容 64*64=4096 bit 不是 FP 多端口 PRF 的 FPGA 资源估计；读口复制、写口仲裁另计（B15）。
  * 物理寄存器文件 (Physical Register File)
  *
  * 功能：为乱序执行提供物理寄存器存储
@@ -38,23 +43,31 @@
 module physical_regfile
     import o3_pkg::*;
 #(
-    parameter int NUM_READ_PORTS  = 8,   // 读端口数量
-    parameter int NUM_WRITE_PORTS = 4,   // 写端口数量
-    parameter int NUM_ENTRIES     = 96,  // 物理寄存器数量
-    parameter int DATA_WIDTH      = 64,  // 数据宽度
-    parameter bit USE_BANK_LATEST_TAG = 1'b1, // 0: 强制bank一致, 1: bank+latest-tag
-    parameter bit USE_NO_BANK_FLAT = 1'b0 // 1: 单数组不分bank（后写端口覆盖前写端口）
+    parameter  o3_cfg_pkg::backend_cfg_t CFG,
+    parameter  o3_types_pkg::reg_domain_e DOMAIN,     // RD_INT / RD_FP，无默认值
+    localparam int NUM_READ_PORTS  = (DOMAIN == o3_types_pkg::RD_FP) ? CFG.exec.fp_prf_read_ports
+                                                                     : CFG.exec.int_prf_read_ports,
+    localparam int NUM_WRITE_PORTS = (DOMAIN == o3_types_pkg::RD_FP) ? CFG.exec.fp_prf_write_ports
+                                                                     : CFG.exec.int_prf_write_ports,
+    localparam int NUM_ENTRIES     = (DOMAIN == o3_types_pkg::RD_FP) ? CFG.rename.fp_phys_regs
+                                                                     : CFG.rename.int_phys_regs,
+    localparam int DATA_WIDTH      = XLEN,
+    // FPGA 实现选择开关，现状沿用（非微架构参数）。
+    localparam bit USE_BANK_LATEST_TAG = 1'b1, // 0: 强制bank一致, 1: bank+latest-tag
+    localparam bit USE_NO_BANK_FLAT = 1'b0,    // 1: 单数组不分bank（后写端口覆盖前写端口）
+    // 整数域 p0 读恒 0、写忽略；FP 域没有恒零寄存器（B15）。
+    localparam bit HAS_ZERO_REG = (DOMAIN == o3_types_pkg::RD_INT)
 )(
     input  logic clk,
     input  logic rst,
 
     // 读端口接口
-    input  logic [$clog2(NUM_ENTRIES)-1:0] rd_addr_i [NUM_READ_PORTS],
+    input  logic [PREG_IDX_WIDTH-1:0] rd_addr_i [NUM_READ_PORTS],
     output logic [DATA_WIDTH-1:0]          rd_data_o [NUM_READ_PORTS],
 
     // 写端口接口
     input  logic                           wr_en_i   [NUM_WRITE_PORTS],
-    input  logic [$clog2(NUM_ENTRIES)-1:0] wr_addr_i [NUM_WRITE_PORTS],
+    input  logic [PREG_IDX_WIDTH-1:0] wr_addr_i [NUM_WRITE_PORTS],
     input  logic [DATA_WIDTH-1:0]          wr_data_i [NUM_WRITE_PORTS]
 );
 

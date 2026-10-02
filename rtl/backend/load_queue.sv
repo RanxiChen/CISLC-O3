@@ -1,4 +1,15 @@
 /**
+ *
+ * 【2026-10-02 框架：目标机制与缺口】
+ * - 需要补充：replay 等待原因（bank 冲突、DMA 行保护、SQ 数据未就绪、MSHR 满、TLB miss）与唤醒，
+ *   避免每拍盲目重试；重放不重新 rename、不重新分配 ROB/LQ、不要求退回 IQ（B04）。
+ * - 事务身份：现有 1 位 generation 不能作为多事务在途的安全保证，改为 lq_tag_t（代际宽度待定）。
+ * - 未知地址旧 store（B32，2026-10-02 已定）：load 等待相关依赖条件解除（等待原因 LDW_OLDER_STORE_ADDR，
+ *   由该 store 地址写入 SQ 或被取消的事件唤醒）；不能实现成固定拍数超时后无条件越过；首版不加入
+ *   推测越过与违例恢复机制。
+ * - A/D 排序（B36）：更老 store 的 needs_D 慢路径未完成前，年轻访存不得越过（LDW_AD_ORDER）；已经执行
+ *   的年轻访问纳入重放/排序处理。
+ * - ROB 按序退休释放 LQ（保持）。目标端口（t_*）未接入。
  * Load Queue
  *
  * Rename按程序顺序分配entry；AGU按lq_idx补写有效地址，LSU发出SRAM请求时
@@ -13,9 +24,10 @@
 module load_queue
     import o3_pkg::*;
 #(
-    parameter int RENAME_WIDTH = 4,
-    parameter int DEPTH = BACKEND_LOAD_QUEUE_DEPTH,
-    parameter int NUM_ROB_ENTRIES = BACKEND_NUM_ROB_ENTRIES
+    parameter  o3_cfg_pkg::backend_cfg_t CFG,
+    localparam int RENAME_WIDTH = BACKEND_MACHINE_WIDTH,
+    localparam int DEPTH = CFG.lsu.lq_depth,
+    localparam int NUM_ROB_ENTRIES = CFG.rob.entries
 ) (
     input logic clk,
     input logic rst,
@@ -42,6 +54,25 @@ module load_queue
     input logic resolution_mispredict_i,
     input branch_tag_t resolution_tag_i,
     input logic [$clog2(DEPTH)-1:0] restore_tail_i
+,
+
+    // ---------------- 目标合同（框架新增，未接入逻辑） ----------------
+    // replay 等待记录（B04 6.2）：等待原因与唤醒；记录放 LQ 内还是独立队列未冻结
+    input  logic                       t_wait_set_valid_i,
+    input  logic [$clog2(DEPTH)-1:0]   t_wait_set_idx_i,
+    input  o3_types_pkg::dc_status_e   t_wait_reason_i,
+    input  o3_types_pkg::dc_wake_t     t_dc_wake_i,
+    input  logic                       t_tlb_wake_i,
+    output logic                       t_replay_valid_o,
+    output logic [$clog2(DEPTH)-1:0]   t_replay_idx_o,
+    input  logic                       t_replay_ready_i,
+    // 多事务身份：idx + 多位代际（现有 1 位不足，B04）
+    output o3_types_pkg::lq_tag_t      t_exec_tag_o,
+    // 访存违例检测（未知地址旧 store 的推测策略待定，B04）
+    input  logic                       t_store_addr_valid_i,
+    input  logic [XLEN-1:0]            t_store_addr_i,
+    input  logic [ROB_IDX_WIDTH-1:0]   t_store_rob_idx_i,
+    output logic                       t_violation_o
 );
     localparam int IDX_WIDTH = $clog2(DEPTH);
     localparam int COUNT_WIDTH = $clog2(DEPTH + 1);

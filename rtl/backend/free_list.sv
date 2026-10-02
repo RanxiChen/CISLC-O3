@@ -1,4 +1,10 @@
 /**
+ *
+ * 【2026-10-02 框架：目标机制与缺口】
+ * - 实例化两份：DOMAIN=RD_INT 与 DOMAIN=RD_FP（B15）。HAS_ZERO_REG 已给出，现有逻辑仍硬编码
+ *   “p0 永久保留、p0..p31 初始映射”；FP 实例需要 fp0..fp31 初始映射且没有永久保留项。
+ * - 分配宽度目标为 CFG.rename.width；释放宽度为提交宽度（core.commit_width）。
+ * - 每分支 allocation mask 的恢复合同不变：误预测一拍返还错误路径分配。
  * Rename Free List with branch allocation lists
  *
  * 职责：
@@ -20,11 +26,16 @@
 module free_list
     import o3_pkg::*;
 #(
-    parameter int MACHINE_WIDTH = 4,
-    parameter int NUM_PHYS_REGS = 96,
-    parameter int NUM_ARCH_REGS = 32,
-    parameter int RELEASE_WIDTH = 4,
-    parameter int NUM_CHECKPOINTS = BACKEND_NUM_BRANCH_CHECKPOINTS
+    parameter  o3_cfg_pkg::backend_cfg_t CFG,
+    parameter  o3_types_pkg::reg_domain_e DOMAIN,     // RD_INT / RD_FP，无默认值
+    localparam int MACHINE_WIDTH = BACKEND_MACHINE_WIDTH,
+    localparam int NUM_PHYS_REGS = (DOMAIN == o3_types_pkg::RD_FP) ? CFG.rename.fp_phys_regs
+                                                                   : CFG.rename.int_phys_regs,
+    localparam int NUM_ARCH_REGS = o3_isa_pkg::NUM_ARCH_REGS,
+    localparam int RELEASE_WIDTH = o3_cfg_pkg::O3_CFG.core.commit_width,
+    localparam int NUM_CHECKPOINTS = CFG.rename.checkpoints,
+    // 整数域 p0 永久恒零且保留；FP 域没有恒零寄存器，f0 正常可写（B15）。
+    localparam bit HAS_ZERO_REG = (DOMAIN == o3_types_pkg::RD_INT)
 ) (
     input  logic clk,
     input  logic rst,
@@ -32,11 +43,11 @@ module free_list
     input  logic                              alloc_req_i [MACHINE_WIDTH-1:0],
     input  logic                              alloc_fire_i,
     output logic                              alloc_available_o,
-    output logic [$clog2(NUM_PHYS_REGS)-1:0]  alloc_preg_o [MACHINE_WIDTH-1:0],
+    output logic [PREG_IDX_WIDTH-1:0]  alloc_preg_o [MACHINE_WIDTH-1:0],
     output logic [$clog2(NUM_PHYS_REGS+1)-1:0] free_count_o,
 
     input  logic                              release_valid_i [RELEASE_WIDTH-1:0],
-    input  logic [$clog2(NUM_PHYS_REGS)-1:0]  release_preg_i [RELEASE_WIDTH-1:0],
+    input  logic [PREG_IDX_WIDTH-1:0]  release_preg_i [RELEASE_WIDTH-1:0],
 
     input  logic                              checkpoint_create_i [MACHINE_WIDTH-1:0],
     input  branch_tag_t                       checkpoint_create_tag_i [MACHINE_WIDTH-1:0],
@@ -47,7 +58,7 @@ module free_list
     input  branch_tag_t                       resolution_tag_i
 );
 
-    localparam int PREG_IDX_WIDTH = $clog2(NUM_PHYS_REGS);
+    // preg 字段宽度统一使用 o3_pkg::PREG_IDX_WIDTH（两域共用，o3_types_pkg::PREG_W）。
     localparam int COUNT_WIDTH = $clog2(NUM_PHYS_REGS + 1);
 
     logic [NUM_PHYS_REGS-1:0] free_bitmap_q;

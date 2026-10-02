@@ -1,4 +1,10 @@
 /**
+ *
+ * 【2026-10-02 框架：目标机制与缺口】
+ * - 保留组合比较/目标计算（B12：不增加比较器内部流水级）；由 branch_unit 包装 RegRead/Result。
+ * - 需要补充：结果携带 cfi_type、ras_action（x1/x5 提示）、inst_len 与 FTQ 槽位，供 bru_resolve_t。
+ * - 已用 inst_len 计算顺序 PC/链接值，可承接 2/4 字节长度；RVC 整条集成未验证。
+ * - 目标地址宽度 PC_WIDTH=VADDR_W；完整地址检查边界见 branch_unit 注释（待定）。
  * Single Branch Execute Unit
  *
  * 已实现RV64 B型条件比较、JAL/JALR目标和链接值计算。输入来自Branch RegRead
@@ -38,7 +44,7 @@ module branch_execute_unit
         result_o.valid = uop_i.valid;
         result_o.instruction_id = uop_i.instruction_id;
         result_o.rob_idx = uop_i.rob_idx;
-        result_o.ftq_idx = uop_i.ftq_idx;
+        result_o.ftq_id = uop_i.ftq_id;
         result_o.branch_tag = uop_i.branch_tag;
         result_o.branch_mask = uop_i.branch_mask;
         result_o.branch_pc = uop_i.pc;

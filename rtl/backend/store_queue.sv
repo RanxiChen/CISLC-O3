@@ -1,4 +1,16 @@
 /**
+ *
+ * 【2026-10-02 框架：目标机制与缺口】
+ * - 保留：首版 SQ 兼任 committed store buffer，按序 drain；已提交项不被年轻恢复取消；等待 drain 的
+ *   store（含已提交）仍可转发；单 store 完整覆盖转发，部分覆盖/未知保守等待（B05/B04 6.1）。
+ * - 需要补充：drain 改接 DCache（t_dc_*）：请求接受与写完成分开，命中写完确认后释放；
+ *   miss/冲突/DMA 行保护时保留项、等事件重试，不重复发送在途请求；store 等 miss 不占 bank 流水级。
+ * - t_committed_empty_o：FENCE、AMO 较强排序、FENCE.I、DMA 交接所需的“先前 store 已到可见点”判断（B09/D25）。
+ * - needs_D（B36）：store 地址翻译命中但 D=0 时，该 SQ 项标记 needs_D（不报异常，PTW 槽位已释放）；
+ *   到 ROB 队首后由 commit_ctrl 发起 pte_ad_updater 的非推测 D 更新，完成（或错误归属本指令）后才可
+ *   提交。needs_D 未完成期间年轻访存不得越过。首版不保存完整 PTE 快照，慢路径重新遍历。
+ * - 地址未知（B32）：年轻 load 等本项地址写入/本项被取消后再判定，不以超时越过。
+ * - 现有 drain 是 store 队头排出，不等于已完成 FENCE/FENCE.I 系统同步。目标端口未接入。
  * Store Queue and committed Store Buffer
  *
  * Rename分配entry，AGU补写地址/数据/byte mask，ROB退休只把对应entry标记committed；
@@ -13,10 +25,11 @@
 module store_queue
     import o3_pkg::*;
 #(
-    parameter int RENAME_WIDTH = 4,
-    parameter int COMMIT_WIDTH = 4,
-    parameter int DEPTH = BACKEND_STORE_QUEUE_DEPTH,
-    parameter int NUM_ROB_ENTRIES = BACKEND_NUM_ROB_ENTRIES
+    parameter  o3_cfg_pkg::backend_cfg_t CFG,
+    localparam int RENAME_WIDTH = BACKEND_MACHINE_WIDTH,
+    localparam int COMMIT_WIDTH = o3_cfg_pkg::O3_CFG.core.commit_width,
+    localparam int DEPTH = CFG.lsu.sq_depth,
+    localparam int NUM_ROB_ENTRIES = CFG.rob.entries
 ) (
     input logic clk,
     input logic rst,
@@ -56,6 +69,16 @@ module store_queue
     input logic resolution_mispredict_i,
     input branch_tag_t resolution_tag_i,
     input logic [$clog2(DEPTH)-1:0] restore_tail_i
+,
+
+    // ---------------- 目标合同（框架新增，未接入逻辑） ----------------
+    // drain 到 DCache：请求接受与写完成分开（B05）
+    output logic                       t_dc_req_valid_o,
+    input  logic                       t_dc_req_ready_i,
+    output o3_types_pkg::dcache_req_t  t_dc_req_o,
+    input  o3_types_pkg::dcache_resp_t t_dc_resp_i,
+    // FENCE / AMO / FENCE.I / DMA 交接：已提交 store 是否全部 drain
+    output logic                       t_committed_empty_o
 );
     localparam int IDX_WIDTH = $clog2(DEPTH);
     localparam int COUNT_WIDTH = $clog2(DEPTH + 1);
