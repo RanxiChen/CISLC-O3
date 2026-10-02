@@ -36,7 +36,7 @@
  *   resp_valid_o 暂不输出，解除 stall 后重现一次；kill_i 立即压低 valid，
  *   并在上升沿清除在途查询。训练不受查询 stall/kill 影响。
  *
- * 本阶段不写测试代码和仿真代码。
+ * 单模块时序/功能测试见 sim/cocotb/main_btb/；本模块不嵌入仿真专用逻辑。
  */
 module main_btb
     import o3_types_pkg::*;

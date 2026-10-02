@@ -29,8 +29,13 @@ BOOM 对照源码：[`WithNMediumBooms`（v3，固定 commit）](https://github.
   kill 立即抑制并清除有效位。提交训练累积已提交条件分支位置，最近一次提交的
   taken CFI 更新唯一目标；无 taken 时保留旧目标，同拍查询/训练读旧值。
   容量、折叠 tag 和 round-robin 替换均为首版实现选择，未做预测率/资源测量。
-  使用临时静态展开顶层运行 Verilator 5.050 `--lint-only`，退出码 0；
-  未写本模块 testbench，未运行功能仿真或综合。
+  使用临时静态展开顶层运行 Verilator 5.050 `--lint-only`，退出码 0。
+  `sim/cocotb/main_btb/` 已加入独立包装顶层、周期参考模型和 cocotb 测试；
+  Alan 隔离 checkout 在 `59c35e2` 上使用 cocotb 2.1.0 / Verilator 5.050
+  运行定向合同和每种子 600 周期随机检查，种子 `1`、`0xC15C` 均为 2/2 PASS。
+  后者启用 VCD，产生 `results.xml` 和 `dump.vcd`；先前 FST 因 Alan 临时环境
+  缺少 `lz4.h` 编译失败，故首版波形改用 VCD。以上仅证明单模块测试，尚未
+  验证 BPU/FTQ 集成、预测率、综合或 FPGA 时序。
 - `branch_history` 已实现 D22 事件编码、E 阵列、六组 C 增量折叠，以及 D23 完整快照恢复。
   恢复优先于普通 push；同一上升沿可装载快照并注入一条修正事件。调用者仍负责
   D09 事件资格、停止新预测以及被替换恢复的身份过滤。
