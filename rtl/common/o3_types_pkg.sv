@@ -20,6 +20,10 @@
 package o3_types_pkg;
     import o3_cfg_pkg::*;
     import o3_isa_pkg::*;
+    // ISA 常量（XLEN/ILEN、异常 cause 编码等）随本包对外可见。
+    // 下游模块只 import o3_types_pkg::* 时也能拿到这些由规范固定的常量，
+    // 与 o3_pkg 的既有做法一致（见 o3_pkg.sv 的 export o3_isa_pkg::*）。
+    export o3_isa_pkg::*;
 
     // ============================================================
     // 推导常量
