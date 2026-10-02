@@ -10,13 +10,12 @@
  * 3) 每个字段注明状态与出处：
  *    - 已定：设计基线中已确认，改变需写明原因；
  *    - 暂定：基线接受的第一版数值，需保留测量后调整；
- *    - 待定：基线未冻结，写 `O3_TBD；
+ *    - 待定：基线未冻结；当前数值只作首版实现估算；
  *    - 现状沿用：现有 RTL/仿真使用的值，基线没有对应决定。
  *    出处 Dxx 指前端设计基线，Bxx 指后端设计基线（均暂存于 Flow
  *    docs/cross-project/，目标工程为本仓库）。
- * 4) 待定字段写 `O3_TBD。该宏展开为空，使 `O3_CFG` 赋值处故意编译失败，
- *    防止占位值被误当设计值（用户选择方案 A）。冻结一个参数时，把 `O3_TBD
- *    换成数值，同时改写状态、日期与依据。
+ * 4) 2026-10-02 起，第一版容量值均为资源预算用的暂定值，不代表已通过
+ *    综合、时序或板上验证；RTL 实测后仍可调整。O3_TBD 仅留给新增未估值字段。
  *
  * 当前范围：
  * - core 公共宽度、前端配置（2026-10-02 前端框架）、后端配置（2026-10-02 后端框架）。
@@ -26,7 +25,7 @@
  * - 2026-10-02 用 Verilator 5.050 lint 核实：unpacked struct 不能作为常量参数逐级传递
  *   （“Can't convert defparam value to constant”），因此配置结构一律使用 packed struct，
  *   数组字段用升序 packed 维 [0:N-1]，使 '{a,b,...} 中 a 对应下标 0。Vivado 尚未核实。
- * - 本阶段不写测试代码和仿真代码；本包因 `O3_TBD 故意不能编译。
+ * - 本包提供首版可编译的规模配置；功能正确性另由 RTL 测试验证。
  */
 `ifndef O3_TBD
 `define O3_TBD
@@ -270,50 +269,53 @@ package o3_cfg_pkg;
     // 当前构建使用的唯一配置。以后可并列增加例如 O3_CFG_SIM_SMALL，
     // 用宏选择；任何模块都不得另写数值。
     // ------------------------------------------------------------
+    // 首版资源预算：参考 BOOM Medium 的 32 项 FTQ/16 项 fetch buffer/64 项 ROB
+    // 量级，但本核 16B 区域与 4 条交付更宽，预测表及队列需独立测量。
+    // KCU105 XCKU040 片上 BRAM 为 21.1 Mb；本配置不是 FPGA fit 保证。
     localparam o3_cfg_t O3_CFG = '{
         core: '{
-            vaddr_bits:        `O3_TBD,
-            paddr_bits:        `O3_TBD,
-            asid_bits:         `O3_TBD,
-            xlate_epoch_bits:  `O3_TBD,
-            commit_width:      `O3_TBD,
-            pmp_entries:       `O3_TBD
+            vaddr_bits:        64,
+            paddr_bits:        56,
+            asid_bits:         16,
+            xlate_epoch_bits:  8,
+            commit_width:      4,
+            pmp_entries:       16
         },
         fe: '{
             fetch: '{
                 region_bytes:            16,
                 deliver_width:           4,
                 return_queue_depth:      8,
-                f0_slots:                `O3_TBD,
-                f1_width:                `O3_TBD,
-                ibuf_depth:              `O3_TBD,
-                ibuf_req_free_threshold: `O3_TBD
+                f0_slots:                8,
+                f1_width:                4,
+                ibuf_depth:              16,
+                ibuf_req_free_threshold: 8
             },
             ftq: '{
-                depth:             `O3_TBD,
-                gen_bits:          `O3_TBD,
-                train_queue_depth: `O3_TBD
+                depth:             32,
+                gen_bits:          8,
+                train_queue_depth: 4
             },
             ubtb: '{
-                entries:  `O3_TBD,
-                tag_bits: `O3_TBD
+                entries:  16,
+                tag_bits: 12
             },
             btb: '{
-                sets:     `O3_TBD,
-                ways:     `O3_TBD,
-                tag_bits: `O3_TBD
+                sets:     64,
+                ways:     2,
+                tag_bits: 16
             },
             tage: '{
                 event_bits:   8,
                 event_window: 128,
                 fold_shift:   2,
                 hist_len:     '{4, 8, 16, 32, 64, 128},
-                index_bits:   `O3_TBD,
-                tag_bits:     `O3_TBD,
-                base_entries: `O3_TBD,
-                ctr_bits:     `O3_TBD,
-                useful_bits:  `O3_TBD,
-                meta_bits:    `O3_TBD
+                index_bits:   '{7, 7, 7, 7, 7, 7},
+                tag_bits:     '{8, 8, 8, 8, 8, 8},
+                base_entries: 512,
+                ctr_bits:     3,
+                useful_bits:  2,
+                meta_bits:    128
             },
             ras: '{
                 depth:          16
@@ -321,101 +323,101 @@ package o3_cfg_pkg;
             icache: '{
                 line_bytes:        64,
                 banks:             2,
-                sets:              `O3_TBD,
-                ways:              `O3_TBD,
-                mshrs:             `O3_TBD,
-                refill_beat_bytes: `O3_TBD,
-                l2_txn_id_bits:    `O3_TBD,
+                sets:              64,
+                ways:              4,
+                mshrs:             4,
+                refill_beat_bytes: 16,
+                l2_txn_id_bits:    4,
                 itcm_base:         64'h0000_0000_1000_0000,
                 itcm_bytes:        64 * 1024
             },
             itlb: '{
-                entries: `O3_TBD,
-                ways:    `O3_TBD
+                entries: 32,
+                ways:    4
             },
             prefetch: '{
-                xlate_reuse_entries: `O3_TBD,
-                lead_distance:       `O3_TBD,
-                req_queue_depth:     `O3_TBD
+                xlate_reuse_entries: 4,
+                lead_distance:       2,
+                req_queue_depth:     4
             },
             perf: '{
-                counter_bits: `O3_TBD
+                counter_bits: 64
             }
         },
         be: '{
             decode: '{
                 width:       4,
-                queue_depth: `O3_TBD
+                queue_depth: 16
             },
             rename: '{
                 width:         6,
-                int_phys_regs: `O3_TBD,
+                int_phys_regs: 96,
                 fp_phys_regs:  64,
-                checkpoints:   `O3_TBD,
-                rdq_depth:     `O3_TBD
+                checkpoints:   16,
+                rdq_depth:     16
             },
             rob: '{
-                entries: `O3_TBD
+                entries: 64
             },
             dispatch: '{
-                width:        `O3_TBD,
-                int_iq_depth: `O3_TBD,
-                mem_iq_depth: `O3_TBD,
-                br_iq_depth:  `O3_TBD,
-                fp_iq_depth:  `O3_TBD
+                width:        4,
+                int_iq_depth: 16,
+                mem_iq_depth: 12,
+                br_iq_depth:  8,
+                fp_iq_depth:  12
             },
             exec: '{
-                num_alu:             `O3_TBD,
-                int_prf_read_ports:  `O3_TBD,
-                int_prf_write_ports: `O3_TBD,
-                fp_prf_read_ports:   `O3_TBD,
-                fp_prf_write_ports:  `O3_TBD,
+                num_alu:             2,
+                int_prf_read_ports:  4,
+                int_prf_write_ports: 2,
+                fp_prf_read_ports:   6,
+                fp_prf_write_ports:  2,
                 mul_stages:          3,
-                mul_result_slots:    `O3_TBD,
-                cpl_fifo_depth:      `O3_TBD,
+                mul_result_slots:    4,
+                cpl_fifo_depth:      8,
                 div_max_iters:       32,
                 num_fma:             2,
                 num_fdivsqrt:        1,
                 num_fmisc:           1,
                 num_fconv:           1,
-                fpu_inflight_slots:  `O3_TBD
+                fpu_inflight_slots:  4
             },
             lsu: '{
-                lq_depth:    `O3_TBD,
-                sq_depth:    `O3_TBD,
-                agu_pipes:   `O3_TBD,
-                lq_gen_bits: `O3_TBD,
+                lq_depth:    16,
+                sq_depth:    16,
+                agu_pipes:   2,
+                lq_gen_bits: 8,
                 dtcm_base:   64'h0000_0000_1100_0000,
                 dtcm_bytes:  256 * 1024
             },
             dcache: '{
-                line_bytes:        `O3_TBD,
-                sets:              `O3_TBD,
-                ways:              `O3_TBD,
-                banks:             `O3_TBD,
-                mshrs:             `O3_TBD,
-                wb_buffers:        `O3_TBD,
-                refill_beat_bytes: `O3_TBD
+                line_bytes:        64,
+                sets:              64,
+                ways:              4,
+                banks:             4,
+                mshrs:             4,
+                wb_buffers:        2,
+                refill_beat_bytes: 16
             },
             mmu: '{
-                dtlb_entries:       `O3_TBD,
-                dtlb_ways:          `O3_TBD,
-                walk_cache_entries: `O3_TBD,
-                ptw_slots:          `O3_TBD
+                dtlb_entries:       32,
+                dtlb_ways:          4,
+                walk_cache_entries: 8,
+                ptw_slots:          1
             },
             l2: '{
-                sets:               `O3_TBD,
-                ways:               `O3_TBD,
-                line_bytes:         `O3_TBD,
-                mshrs:              `O3_TBD,
-                recall_slots:       `O3_TBD,
-                wb_buffers:         `O3_TBD,
-                axi_id_bits:        `O3_TBD,
-                axi_data_bits:      `O3_TBD,
+                sets:               256,
+                ways:               4,
+                line_bytes:         64,
+                mshrs:              8,
+                recall_slots:       2,
+                wb_buffers:         4,
+                axi_id_bits:        4,
+                axi_data_bits:      128,
                 dma_inflight_lines: 1
             },
             perf: '{
-                counter_bits: `O3_TBD
+                counter_bits: 64
             }
         }
     };

@@ -15,7 +15,7 @@
  * DCache/PTW/DMA、CSR/trap、提交信息）。后端旧流水载荷（decoded_uop_t 等）仍在 `o3_pkg`，
  * 通过本包的 uop_ext_t / rename_ext_t 扩展字段承接新机制。
  *
- * 本阶段不写测试代码和仿真代码；由于 O3_CFG 含 `O3_TBD，本包故意不能编译。
+ * O3_CFG 已填入首版暂定规模；类型包可单独静态检查，不表示数据通路已连通。
  */
 package o3_types_pkg;
     import o3_cfg_pkg::*;

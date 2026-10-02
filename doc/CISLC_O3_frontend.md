@@ -1,16 +1,63 @@
 # CISLC_O3 Frontend Notes
 
-## 目标框架（2026-10-02 搭建，未实现、不能编译）
+## 首版规模预算（2026-10-02，暂定，未做 FPGA fit）
 
-本节记录按前端设计基线（D01～D28，第 16 节）搭建的模块与端口框架。框架只有端口、
+`O3_CFG` 现有字段已给首版数值，不再靠空 `O3_TBD` 阻止编译；这只是开始写真实
+RTL 所需的容量假设，不是设计基线冻结值。参照 BOOM Medium 的 32 项 FTQ、16 项
+fetch buffer 和 64 项 ROB 量级；本核取指区域为 16B（8 个半字槽位），最多交付 4 条，
+不能把 BOOM 的 8B fetch 直接视作相同带宽。
+BOOM 对照源码：[`WithNMediumBooms`（v3，固定 commit）](https://github.com/riscv-boom/riscv-boom/blob/54f11b85c9a670ef3dd18bc675994b9a661b06ee/src/main/scala/v3/common/config-mixins.scala#L131-L163)。
+
+| 部件 | 首版参数 | 理由/调优触发 |
+| --- | --- | --- |
+| 取指/队列 | 16B 区域，F0 8 槽、F1 4 条，FTQ 32，返回队列 8，ibuf 16，训练队列 4 | 先限制在途窗口；若 FTQ/返回队列满导致持续气泡，量化后再加深 |
+| 预测器 | uBTB 16 项；BTB 64 组×2 路；TAGE 6×128 项、8-bit tag、3-bit counter、2-bit useful，base 512 项；RAS 16 项 | 首版优先控制多槽查询端口和逻辑布线；若容量冲突率高，再提高表项数，不盲目复制端口 |
+| ICache/翻译 | ICache 16KiB（64 组×4 路×64B，2 个整行 bank）、4 MSHR、16B refill beat；ITLB 32 项×4 路 | MSHR 占用、重放、bank 冲突、时序经仿真与综合确定 |
+| 预取 | 近期翻译复用 4 项、领先 2 区域、请求队列 4 | 先限制预取挤占 demand 与 PTW |
+| 公共宽度 | VA 64、PA 56、ASID 16、翻译 epoch 8、PMP 16、commit 4 | 寄存器保留完整 RV64 地址；合法性和实际物理地址图另行实现 |
+
+每个 D22 历史快照暂为 `128×8+6×(7+2×8−1)=1156` bit；32 项约 37 kbit，
+还不含身份、RAS 与训练元数据。L1I 原始数据为 128 Kibit。KCU105 的片上 BRAM
+预算不能直接证明能布线、满足端口或时序：实现后必须分别看 LUT/FF/BRAM、SRAM
+映射、关键路径、FTQ/ICache stall 与预测命中率。`gen_bits=8` 也不能单靠位宽防止
+旧响应在回绕后撞上新身份；复用槽位前必须完成旧响应/训练的生命周期约束。
+
+## 逐模块实现进度（2026-10-02）
+
+- `main_btb` 已按现有接口实现首版 64 组×2 路、每项单目标的组相联表。
+  查询在接受边沿锁存各路，下一拍比较部分 tag 并输出；stall 保持在途结果、
+  kill 立即抑制并清除有效位。提交训练累积已提交条件分支位置，最近一次提交的
+  taken CFI 更新唯一目标；无 taken 时保留旧目标，同拍查询/训练读旧值。
+  容量、折叠 tag 和 round-robin 替换均为首版实现选择，未做预测率/资源测量。
+  使用临时静态展开顶层运行 Verilator 5.050 `--lint-only`，退出码 0；
+  未写本模块 testbench，未运行功能仿真或综合。
+- `branch_history` 已实现 D22 事件编码、E 阵列、六组 C 增量折叠，以及 D23 完整快照恢复。
+  恢复优先于普通 push；同一上升沿可装载快照并注入一条修正事件。调用者仍负责
+  D09 事件资格、停止新预测以及被替换恢复的身份过滤。
+- 对该模块运行了 Verilator 5.050 局部 `--lint-only`，使用 `-DO3_TBD=4` 临时展开
+  未冻结字段，退出码为 0。占位值使其他包类型出现无意义宽度警告；这不是功能验证。
+  未运行仿真、综合或 FPGA。
+- BPU 输入控制与恢复仲裁仍是框架；快照存储虽已单独实现，前端仍不能运行。
+- `history_snapshot_store` 已实现按动态 FTQ 身份保存完整 E/C；恢复、训练各有一拍
+  同步读口，同拍同身份写读取新值。输出按当前等待读身份门控，调用者必须在收到
+  响应前保持该身份；FTQ 分配与释放仍需保证旧训练读取完成后才复用槽位。
+- 新增 `tb/branch_history_tb.sv` 和 `tb/history_snapshot_store_tb.sv`，分别固定历史
+  推进/恢复的边沿语义，以及双读口、代际过滤、同拍写读旁路。两份 testbench 与
+  实际 `O3_CFG` 一起通过 Verilator 5.050 `--lint-only --timing`（均 exit 0）；
+  尚未运行仿真，PASS 字样只会在用户实际执行后出现。`o3_cfg_pkg`、`o3_types_pkg`
+  也已不借助占位宏通过单独 lint。现存 ASCRANGE 与 SYMRSVDWORD 警告仍需整理。
+
+## 原始目标框架记录（2026-10-02 搭建，非当前完整状态）
+
+本节记录按前端设计基线（D01～D28，第 16 节）搭建时的模块与端口框架。初始框架只有端口、
 连线和注释；下面“当前边界”及之后各节描述的是 HEAD `06462b0` 的旧实现，保留作迁移参考。
-本次只做了文件修改，没有编译、仿真、综合，也没有运行任何测试。
+该段“未编译/未测试”只指初始搭架时点；现阶段检查结果见文首逐模块进度。
 
 ### 参数组织
 
 - `rtl/common/o3_cfg_pkg.sv`：全工程唯一写数值的位置。按子系统分组的配置结构
   `o3_cfg_t`（当前含 `core` 与 `fe`），每个字段注明已定/暂定/待定/现状沿用及出处。
-  待定字段写 `` `O3_TBD ``（展开为空），故意使编译失败，防止占位值被误用。
+  初版未冻结字段已填暂定值，仅供实现和资源测量，不能当作 FPGA fit 结论。
 - `rtl/common/o3_types_pkg.sv`：只从 `O3_CFG` 推导位宽与跨模块合同结构（`ftq_id_t`、
   `fetch_entry_t`、`redirect_req_t`、`fe_kill_t`、`bru_resolve_t`、`sys_redirect_t`、
   `ptw_req_t`、`l2_req_t` 等）。
@@ -24,8 +71,9 @@
 | --- | --- | --- |
 | `frontend` | 目标总装连线已写；旧总装被替换 | 第 1 节 |
 | `bpu` | 新增目标端口与子模块例化；保留旧顺序 32B 生成器为旧合同 | D01/D02 |
-| `ubtb` / `main_btb` / `tage` | 新增空壳 | D02/D04～D08/D22 |
-| `branch_history` / `history_snapshot_store` | 新增空壳 | D09/D22/D23 |
+| `ubtb` / `tage` | 新增空壳 | D02/D04～D08/D22 |
+| `main_btb` | 单模块 RTL 已实现，尚未接入可运行慢预测路径、未做功能仿真 | D02/D05～D08 |
+| `branch_history` / `history_snapshot_store` | 两者已单独实现，尚未接成可运行预测路径 | D09/D22/D23 |
 | `ras` | 空壳；2026-10-02 按 D29 改为 `{top_idx,count,top_addr}` 栈顶快速修复端口，删除 undo log/log_full/commit_free | D29（第 6.2 节） |
 | `bpu_slow_check` | 新增空壳 | 第 4.1、6.3 节 |
 | `redirect_arbiter` | 新增空壳 | D24 |

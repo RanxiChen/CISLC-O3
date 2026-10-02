@@ -1,6 +1,17 @@
 # CISLC_O3 Long-Term Notes
 
-## 后端目标框架（2026-10-02 搭建，未实现、不能运行）
+## 首版后端资源预算（2026-10-02，暂定）
+
+为使共享 `O3_CFG` 可编译，未冻结的后端字段也给了首版估值：ROB 64，
+decode/dispatch 宽度 4、rename 6、commit 4；整数 PRF 96、浮点 PRF 64，
+LQ/SQ 各 16，DCache 16KiB/4-way/4 MSHR，inclusive L2 64KiB/4-way/8 MSHR。
+L2 原始数据为 512 Kibit，L1I/L1D 各 128 Kibit；若保留旧 ITCM 64KiB 和
+DTCM 256KiB，这些数据阵列合计约 3.4 Mibit，不含 tag、队列、ECC、端口复制
+及 SoC 资源。数值仅为开始 RTL 的估算，尚未综合、时序收敛或板上验证。
+尤其 2 ALU、PRF 端口与 6-wide rename 的吞吐匹配，需要后续结构实现和测量；
+不得据此宣称后端已经可运行。
+
+## 后端目标框架记录（2026-10-02 搭建，未实现、不能运行）
 
 本节记录按后端设计基线 B01～B15、B21 与前端第 16 节搭建的模块与端口框架。下面“当前实现状态”
 及之后各节描述的是 HEAD `06462b0` 的旧实现（仍是 backend 内实际运行的数据流），保留作迁移参考。
@@ -9,7 +20,7 @@
 ### 参数与类型分层
 
 - `rtl/common/o3_cfg_pkg.sv`：唯一写数值的位置，`O3_CFG = {core, fe, be}`。每个字段标注
-  已定/暂定/待定/现状沿用与出处；待定写 `` `O3_TBD ``（展开为空，故意编译失败）。
+  已定/暂定/待定/现状沿用与出处；未冻结规模目前填首版暂定值，之后按测量调整。
   配置结构为 packed struct（Verilator 5.050 不支持 unpacked struct 作常量参数传递，已核实）。
 - `rtl/common/o3_isa_pkg.sv`：ISA 固定常量与异常 cause。
 - `rtl/common/o3_types_pkg.sv`：从 `O3_CFG` 推导的位宽与跨模块合同（前端 + 后端新增：寄存器域、
