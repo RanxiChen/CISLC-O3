@@ -24,6 +24,22 @@ BOOM 对照源码：[`WithNMediumBooms`（v3，固定 commit）](https://github.
 
 ## 逐模块实现进度（2026-10-02）
 
+- `ras` 已按 D29 在原端口实现参数化寄存器环形栈。`top_idx` 指向非空栈顶；空栈保留
+  最后弹出位置，复位设为 `depth-1`，因此首次 push 写第 0 项。push 向下一格写，
+  满栈覆盖最旧项且 `count` 饱和；空栈 pop 保持状态，pop-push 在非空时原位替换
+  栈顶、在空栈时等价于 push。`ckpt_o` 始终是本拍操作前的索引、占用数和有效栈顶
+  地址；空栈地址为 0 且恢复时忽略。调用者负责只在成功分配时给一次 `op_valid_i`，
+  并提供按原始指令长度计算的返回地址。
+- 恢复与普通操作同拍时，恢复独占状态更新。R1 组合给出
+  `recover_done_o/recover_done_id_o`，表示本拍边沿可接受对应身份；边沿从检查点
+  装载索引/计数，非空时先修复旧栈顶，再执行 `recover_fix_i`。修正 push 与旧栈顶
+  同址时，修正地址最终胜出。R2 的组合栈顶读直接看到写后的地址。只修复保存的
+  栈顶，深层污染可留下；上游仲裁器仍须过滤旧恢复身份并冻结错误路径普通操作。
+  `perf_o` 对当拍 push/pop、空栈、满栈和恢复周期给出增量；return 命中/错误、
+  栈顶修复次数和被替换恢复次数尚无独立事件编码，也未测资源或整机恢复拍数。
+  采用临时顶层展开 `O3_CFG.fe` 的 Verilator 5.050 局部 lint 退出码为 0；仅有
+  公共包已有的 ASCRANGE/SYMRSVDWORD 警告。`ras_ckpt_t` 位宽由全局 `O3_CFG`
+  推导，实例深度必须可由该索引和占用数字段表示。
 - `tage` 已按原端口实现首版三阶段方向表：`O3_CFG.fe.tage` 控制 base 容量、
   六张 tagged 表的 index/tag 位宽与计数/useful 位宽；每行共享 tag/valid，
   八个半字槽分别保存方向和 useful。S0 算索引与 tag，S1 同步读取，S2
@@ -96,7 +112,7 @@ BOOM 对照源码：[`WithNMediumBooms`（v3，固定 commit）](https://github.
 | `ubtb` / `tage` | 两者单模块 RTL 已实现；预测总装仍未接通 | D02/D04～D08/D22 |
 | `main_btb` | 单模块 RTL 已实现，尚未接入可运行慢预测路径、未做功能仿真 | D02/D05～D08 |
 | `branch_history` / `history_snapshot_store` | 两者已单独实现，尚未接成可运行预测路径 | D09/D22/D23 |
-| `ras` | 空壳；2026-10-02 按 D29 改为 `{top_idx,count,top_addr}` 栈顶快速修复端口，删除 undo log/log_full/commit_free | D29（第 6.2 节） |
+| `ras` | D29 单模块 RTL 已实现；BPU 分配与恢复仲裁仍未接成可运行路径 | D29（第 6.2 节） |
 | `bpu_slow_check` | 新增空壳 | 第 4.1、6.3 节 |
 | `redirect_arbiter` | 新增空壳 | D24 |
 | `ftq` | 新增目标端口；保留旧三指针实现为旧合同 | 第 7 节 |
@@ -131,7 +147,7 @@ BOOM 对照源码：[`WithNMediumBooms`（v3，固定 commit）](https://github.
 - `frontend_sync_ctrl`：删除 `dclean_req_o/dclean_done_i`；`frontend` 顶层删除 `dclean_*`。
 - L2 inclusive 回收（后端 B41）：`frontend` 新增 `l1i_recall_*`，直通 `ICache` 新增的 `recall_*` 维护入口
   （不进入 S0 demand 路径）。`itlb` 注释按 B36 更新 A 位。
-- 全部仍为空壳或只连线；未编译、未仿真、未测试。
+- 该段记录的是框架补齐当时的状态；当前单模块进度见文首。
 
 ### 已知的不一致（符合 agent.md 顺序重构约定）
 

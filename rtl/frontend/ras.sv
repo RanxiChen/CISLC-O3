@@ -29,7 +29,8 @@
  * 观测（第 12.2 节）：push/pop/pop-push、underflow/overflow、return 命中/错误、栈顶修复次数、
  * 恢复周期与被替换次数。已移除 undo-log 满事件。
  *
- * 当前实现状态：空壳。只有端口与注释，没有任何逻辑，输出未驱动。
+ * 当前实现：寄存器数组与单拍正常操作/恢复；返回地址由调用者按原始指令长度提供。
+ * 尚未实现：x1/x5 类型解码、FTQ 身份仲裁、return 正误比较与深层栈精确恢复。
  *
  * 目标周期行为（普通分支恢复，从前端接受重定向起算，D29 R0～R2）：
  * - 周期 N 组合：top_o/top_valid_o 为当前推测栈顶；ckpt_o 为当前区域操作前的 ras_before。
@@ -40,7 +41,7 @@
  * - R2：BPU 从正确 PC 发起正常预测，top_o 通过旁路反映修复后的栈顶。
  * 以上为实现目标，不是已验证的时序或整核误预测惩罚。
  *
- * 本阶段不写测试代码和仿真代码。
+ * 本模块有独立 cocotb 边沿与随机事务测试；尚未验证整机集成、综合或 FPGA 时序。
  */
 module ras
     import o3_types_pkg::*;
@@ -69,5 +70,119 @@ module ras
 
     output fe_perf_t    perf_o
 );
-    // 未实现：16 项寄存器数组、top_idx/count、恢复拍双写选择与旁路。
+    localparam int DEPTH = CFG.ras.depth;
+    vaddr_t stack_q [DEPTH];
+    logic [RAS_PTR_W-1:0] top_idx_q;
+    logic [RAS_CNT_W-1:0] count_q;
+
+    logic [RAS_PTR_W-1:0] base_idx, push_idx, next_idx;
+    logic [RAS_CNT_W-1:0] base_count, next_count;
+    ras_action_e action;
+    vaddr_t push_addr;
+    logic repair_we, push_we, underflow, overflow;
+    logic do_push, do_pop;
+
+    function automatic logic [RAS_PTR_W-1:0] inc_idx(input logic [RAS_PTR_W-1:0] idx);
+        return (idx == RAS_PTR_W'(DEPTH - 1)) ? '0 : idx + 1'b1;
+    endfunction
+
+    function automatic logic [RAS_PTR_W-1:0] dec_idx(input logic [RAS_PTR_W-1:0] idx);
+        return (idx == '0) ? RAS_PTR_W'(DEPTH - 1) : idx - 1'b1;
+    endfunction
+
+    initial begin
+        assert (DEPTH >= 1 && DEPTH <= (1 << RAS_PTR_W) &&
+                DEPTH < (1 << RAS_CNT_W))
+            else $fatal(1, "RAS depth cannot be represented by ras_ckpt_t");
+    end
+
+    // top_idx 指向非空时的栈顶；空栈时保留上次弹出后的位置。
+    // 每次 push 都向下一格写，满栈饱和计数并覆盖最旧地址。
+    always_comb begin
+        top_valid_o = (count_q != '0);
+        top_o = top_valid_o ? stack_q[top_idx_q] : '0;
+        ckpt_o = '0;
+        ckpt_o.top_idx = top_idx_q;
+        ckpt_o.count = count_q;
+        ckpt_o.top_addr = top_o;
+
+        base_idx = recover_valid_i ? recover_ckpt_i.top_idx : top_idx_q;
+        base_count = recover_valid_i ? recover_ckpt_i.count : count_q;
+        action = recover_valid_i ? recover_fix_i : op_action_i;
+        push_addr = recover_valid_i ? recover_push_addr_i : op_push_addr_i;
+        next_idx = base_idx;
+        next_count = base_count;
+        push_idx = inc_idx(base_idx);
+        repair_we = recover_valid_i && (base_count != '0);
+        push_we = 1'b0;
+        underflow = 1'b0;
+        overflow = 1'b0;
+        do_push = 1'b0;
+        do_pop = 1'b0;
+
+        if (recover_valid_i || op_valid_i) begin
+            case (action)
+                RAS_PUSH: begin
+                    do_push = 1'b1;
+                    push_we = 1'b1;
+                    next_idx = push_idx;
+                    if (base_count == RAS_CNT_W'(DEPTH)) overflow = 1'b1;
+                    else next_count = base_count + 1'b1;
+                end
+                RAS_POP: begin
+                    do_pop = 1'b1;
+                    if (base_count == '0) underflow = 1'b1;
+                    else begin
+                        next_idx = dec_idx(base_idx);
+                        next_count = base_count - 1'b1;
+                    end
+                end
+                RAS_POP_PUSH: begin
+                    do_pop = 1'b1;
+                    do_push = 1'b1;
+                    push_we = 1'b1;
+                    // 非空时弹出再压入，直接替换原栈顶；空栈时等价于 push。
+                    if (base_count == '0) begin
+                        underflow = 1'b1;
+                        next_idx = push_idx;
+                        next_count = RAS_CNT_W'(1);
+                    end else begin
+                        push_idx = base_idx;
+                        next_idx = base_idx;
+                    end
+                end
+                default: ;
+            endcase
+        end
+    end
+
+    // 恢复优先。双写同位置只出现在深度为 1 或 pop-push，后写的正确地址胜出。
+    // 下一周期组合读从更新后的寄存器数组取值，覆盖写回后的栈顶无需等待另一拍。
+    always_ff @(posedge clk_i) begin
+        if (rst_i) begin
+            top_idx_q <= RAS_PTR_W'(DEPTH - 1);
+            count_q <= '0;
+            for (int i = 0; i < DEPTH; i++) stack_q[i] <= '0;
+        end else if (recover_valid_i || op_valid_i) begin
+            top_idx_q <= next_idx;
+            count_q <= next_count;
+            if (repair_we) stack_q[base_idx] <= recover_ckpt_i.top_addr;
+            if (push_we) stack_q[push_idx] <= push_addr;
+        end
+    end
+
+    assign recover_done_o = recover_valid_i && !rst_i;
+    assign recover_done_id_o = recover_done_o ? recover_id_i : '0;
+
+    // 当拍事件增量。恢复修正动作也计入 push/pop；旧恢复的筛选由仲裁器负责。
+    always_comb begin
+        perf_o = '0;
+        if (!rst_i && (recover_valid_i || op_valid_i)) begin
+            perf_o[PE_RAS_PUSH] = PERF_INC_W'(do_push);
+            perf_o[PE_RAS_POP] = PERF_INC_W'(do_pop);
+            perf_o[PE_RAS_UNDERFLOW] = PERF_INC_W'(underflow);
+            perf_o[PE_RAS_OVERFLOW] = PERF_INC_W'(overflow);
+            perf_o[PE_RECOVER_CYCLE] = PERF_INC_W'(recover_valid_i);
+        end
+    end
 endmodule
