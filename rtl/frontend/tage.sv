@@ -1,35 +1,30 @@
 /**
- * TAGE —— 三拍方向预测，一次产生 8 个槽位方向
+ * TAGE —— 三阶段、每区域 REGION_SLOTS 个条件方向位。
  *
- * 作用：
- * - 用区域地址 P = region_base >> 4 和区域入口折叠历史 C 查询 base 表与六张 tagged
- *   表，输出 8 个槽位的条件方向（D02、D04，第 4.4 节）。
- * - 只给方向，不生成目标，也不是执行结果。
+ * 首版组织：CFG.tage.base_entries 行 base，六张 2^index_bits[i] 行 tagged；
+ * 每行各槽独立 ctr/useful，tag/valid 由整行共享。base 及 tagged 的计数位宽
+ * 取 CFG.tage.ctr_bits。最长历史 tag 命中为 provider，次长命中或 base 为 alt。
+ * provider 弱计数且 useful=0 时临时采用 alt；否则采用 provider。仅方向预测，
+ * 不给目标。提交时 base 始终训练；原查询 provider 尚在表内时训练其 ctr，
+ * provider 与 alt 不同时按实际结果调整 useful；该槽原最终方向错误时，
+ * 在更长历史表中找无效/低 useful 行分配，全部被保护时先衰减最短候选行。
+ * 所有训练使用 train_i.ctx.folds，不能使用提交时的当前推测历史。
  *
- * 目标机制：
- * - 已定：8 槽位方向向量（D04）。表内可每行 8 槽位状态，SRAM 宽度另定。
- * - 暂定：六张 tagged 表窗口 4/8/16/32/64/128 次 taken 条件分支事件（D22）。
- * - 暂定：index_i = fold_n_i(P) XOR C(L_i,n_i)；
- *         tag_i = (fold_t_i(P) XOR C(L_i,t_i) XOR (C(L_i,t_i-1) << 1)) & mask（第 5.4 节）。
- * - 已定：查表使用该区域入口 E/C 上下文；被选中的 taken 条件分支不提前注入本区域查询。
- * - 已定：提交时训练，必须使用原查询上下文（train_i.ctx 与 tage_meta），
- *   不能在提交时用当前全局历史重新查询（第 6.1 节）。
+ * meta 低位按槽编码：每槽 3-bit provider（7=base），随后各一位 alt、
+ * provider 与最终方向。高位清零；它属于原预测上下文，FTQ 须原样保存。
+ * provider_hit_mask 表示该槽有 tagged provider，不表示最终使用了 provider。
+ * 部分 tag 可以碰撞，后端纠错；没有显式失效/别名计数。首版不包含 SC、
+ * loop、ITTAGE，也未优化 FPGA SRAM 映射或读口物理时序。perf_o 暂为零：
+ * 本模块不知道哪些槽实际是 BR，不能把八个方向位误算为八条条件预测。
  *
- * 细节待定：
- * - 各表行数、tag 宽度、base 表容量、计数器/useful 位宽、有效位与槽位共享方式。
- * - 分配/替换策略；三拍内 index 生成、阵列访问、tag/provider 选择的寄存边界。
+ * 周期 N：s0_valid_i 时组合算 index/tag；上升沿锁存为 S1。
+ * 周期 N+1：S1 同步读 base/tagged 各行；上升沿锁存为 S2。同拍训练
+ * 同行时读旧值，训练新值从后续读口可见。
+ * 周期 N+2：S2 组合比较 tag、选方向并输出 resp_o；stall_i 立即抑制
+ * resp_valid_o 且冻结 S1/S2，解除后重新呈现；kill_i 立即抑制 valid，
+ * 并在上升沿清除在途查询。训练独立于 stall/kill。
  *
- * 不在第一版：SC、loop predictor、ITTAGE（第 4.4 节）。
- *
- * 当前实现状态：空壳。只有端口与注释，没有任何逻辑，输出未驱动。
- *
- * 目标周期行为：
- * - 周期 N：s0_valid_i 时由 P 与 s0_folds_i 生成 index。
- * - 周期 N+1：阵列访问。
- * - 周期 N+2：tag 比较、provider 选择，resp_valid_o/resp_o 有效。
- * - stall_i 保持在途查询，kill_i 丢弃在途查询。
- *
- * 本阶段不写测试代码和仿真代码。
+ * 单模块合同测试见 sim/cocotb/tage/，不改变本模块接口。
  */
 module tage
     import o3_types_pkg::*;
@@ -54,5 +49,334 @@ module tage
 
     output fe_perf_t               perf_o
 );
-    // 未实现：base/tagged 表、index/tag 计算、provider 选择、分配与训练。
+    localparam int TABLES = o3_cfg_pkg::TAGE_TABLES;
+    localparam int BASE_ENTRIES = CFG.tage.base_entries;
+    localparam int CTR_BITS = CFG.tage.ctr_bits;
+    localparam int USEFUL_BITS = CFG.tage.useful_bits;
+    localparam int REGION_SHIFT = $clog2(CFG.fetch.region_bytes);
+    localparam int BASE_IDX_BITS = $clog2(BASE_ENTRIES);
+    localparam int META_PROVIDER_BITS = 3;
+    localparam int META_ALT_OFFSET = REGION_SLOTS * META_PROVIDER_BITS;
+    localparam int META_PROVIDER_PRED_OFFSET = META_ALT_OFFSET + REGION_SLOTS;
+    localparam int META_FINAL_OFFSET = META_PROVIDER_PRED_OFFSET + REGION_SLOTS;
+    localparam int META_USED_BITS = META_FINAL_OFFSET + REGION_SLOTS;
+    localparam logic [META_PROVIDER_BITS-1:0] BASE_CODE = '1;
+
+    function automatic int max_index_bits();
+        int result;
+        result = 1;
+        for (int table_idx = 0; table_idx < TABLES; table_idx++)
+            if (int'(CFG.tage.index_bits[table_idx]) > result)
+                result = int'(CFG.tage.index_bits[table_idx]);
+        return result;
+    endfunction
+
+    function automatic int max_tag_bits();
+        int result;
+        result = 1;
+        for (int table_idx = 0; table_idx < TABLES; table_idx++)
+            if (int'(CFG.tage.tag_bits[table_idx]) > result)
+                result = int'(CFG.tage.tag_bits[table_idx]);
+        return result;
+    endfunction
+
+    localparam int MAX_INDEX_BITS = max_index_bits();
+    localparam int MAX_TAG_BITS = max_tag_bits();
+    localparam int MAX_ENTRIES = 1 << MAX_INDEX_BITS;
+    typedef logic [BASE_IDX_BITS-1:0] base_idx_t;
+    typedef logic [MAX_INDEX_BITS-1:0] tagged_idx_t;
+    typedef logic [MAX_TAG_BITS-1:0] tag_t;
+    typedef logic [CTR_BITS-1:0] ctr_t;
+    typedef logic [USEFUL_BITS-1:0] useful_t;
+    typedef logic [REGION_SLOTS-1:0][CTR_BITS-1:0] base_row_t;
+
+    typedef struct packed {
+        logic valid;
+        tag_t tag;
+        logic [REGION_SLOTS-1:0][CTR_BITS-1:0] ctr;
+        logic [REGION_SLOTS-1:0][USEFUL_BITS-1:0] useful;
+    } tagged_row_t;
+
+    base_row_t base_q [BASE_ENTRIES];
+    tagged_row_t tagged_q [TABLES][MAX_ENTRIES];
+
+    base_idx_t s1_base_idx_q;
+    tagged_idx_t s1_idx_q [TABLES];
+    tag_t s1_tag_q [TABLES];
+    logic s1_valid_q;
+    base_row_t s2_base_q;
+    tagged_row_t s2_row_q [TABLES];
+    tag_t s2_tag_q [TABLES];
+    logic s2_valid_q;
+
+    // PC 区域号与 branch_history 的三个按表排列的 C 字段使用同一位序。
+    function automatic logic [31:0] fold_pc(input vaddr_t region_base, input int width);
+        logic [31:0] result;
+        result = '0;
+        for (int bit_idx = REGION_SHIFT; bit_idx < VADDR_W; bit_idx++)
+            result[(bit_idx - REGION_SHIFT) % width] ^= region_base[bit_idx];
+        return result;
+    endfunction
+
+    function automatic int fold_offset(input int table_idx);
+        int result;
+        result = 0;
+        for (int idx = 0; idx < table_idx; idx++)
+            result += int'(CFG.tage.index_bits[idx]) +
+                      2 * int'(CFG.tage.tag_bits[idx]) - 1;
+        return result;
+    endfunction
+
+    function automatic tagged_idx_t index_of(input vaddr_t pc,
+                                              input logic [HIST_FOLD_W-1:0] folds,
+                                              input int table_idx);
+        logic [31:0] hist;
+        int width;
+        int offset;
+        hist = '0;
+        width = int'(CFG.tage.index_bits[table_idx]);
+        offset = fold_offset(table_idx);
+        for (int bit_idx = 0; bit_idx < width; bit_idx++)
+            hist[bit_idx] = folds[offset + bit_idx];
+        return tagged_idx_t'((fold_pc(pc, width) ^ hist) & ((32'd1 << width) - 1));
+    endfunction
+
+    function automatic tag_t tag_of(input vaddr_t pc,
+                                    input logic [HIST_FOLD_W-1:0] folds,
+                                    input int table_idx);
+        logic [31:0] folded_tag;
+        logic [31:0] folded_short;
+        int width;
+        int offset;
+        folded_tag = '0;
+        folded_short = '0;
+        width = int'(CFG.tage.tag_bits[table_idx]);
+        offset = fold_offset(table_idx) + int'(CFG.tage.index_bits[table_idx]);
+        for (int bit_idx = 0; bit_idx < width; bit_idx++)
+            folded_tag[bit_idx] = folds[offset + bit_idx];
+        offset += width;
+        for (int bit_idx = 0; bit_idx < width - 1; bit_idx++)
+            folded_short[bit_idx] = folds[offset + bit_idx];
+        return tag_t'((fold_pc(pc, width) ^ folded_tag ^ (folded_short << 1)) &
+                     ((32'd1 << width) - 1));
+    endfunction
+
+    function automatic base_idx_t base_index_of(input vaddr_t pc);
+        return base_idx_t'(fold_pc(pc, BASE_IDX_BITS));
+    endfunction
+
+    function automatic ctr_t train_ctr(input ctr_t previous, input logic taken);
+        if (taken && previous != '1) return previous + ctr_t'(1);
+        if (!taken && previous != '0) return previous - ctr_t'(1);
+        return previous;
+    endfunction
+
+    function automatic useful_t train_useful(input useful_t previous, input logic up);
+        if (up && previous != '1) return previous + useful_t'(1);
+        if (!up && previous != '0) return previous - useful_t'(1);
+        return previous;
+    endfunction
+
+    assign resp_valid_o = s2_valid_q && !stall_i && !kill_i && !rst_i;
+    assign train_ready_o = !rst_i;
+    assign perf_o = '0;
+
+    // S2 选最长匹配 tagged 行；弱且无用时用 alt，但保留 provider 元数据供训练。
+    always_comb begin : select_direction
+        logic provider_pred;
+        logic alt_pred;
+        logic final_pred;
+        logic [META_PROVIDER_BITS-1:0] provider_code;
+        useful_t provider_useful;
+        ctr_t provider_ctr;
+        logic weak_ctr;
+
+        provider_code = BASE_CODE;
+        provider_pred = 1'b0;
+        alt_pred = 1'b0;
+        final_pred = 1'b0;
+        provider_useful = '0;
+        provider_ctr = '0;
+        weak_ctr = 1'b0;
+        resp_o = '0;
+        if (s2_valid_q) begin
+            for (int slot = 0; slot < REGION_SLOTS; slot++) begin
+                provider_code = BASE_CODE;
+                provider_pred = s2_base_q[slot][CTR_BITS-1];
+                alt_pred = provider_pred;
+                provider_useful = '0;
+                provider_ctr = s2_base_q[slot];
+                for (int table_idx = 0; table_idx < TABLES; table_idx++) begin
+                    if (s2_row_q[table_idx].valid &&
+                        s2_row_q[table_idx].tag == s2_tag_q[table_idx]) begin
+                        alt_pred = provider_pred;
+                        provider_pred = s2_row_q[table_idx].ctr[slot][CTR_BITS-1];
+                        provider_ctr = s2_row_q[table_idx].ctr[slot];
+                        provider_useful = s2_row_q[table_idx].useful[slot];
+                        provider_code = META_PROVIDER_BITS'(table_idx);
+                    end
+                end
+                weak_ctr = (provider_ctr == ctr_t'((1 << (CTR_BITS-1)) - 1)) ||
+                           (provider_ctr == ctr_t'(1 << (CTR_BITS-1)));
+                final_pred = provider_pred;
+                if (provider_code != BASE_CODE && provider_useful == '0 && weak_ctr)
+                    final_pred = alt_pred;
+                resp_o.taken_mask[slot] = final_pred;
+                resp_o.provider_hit_mask[slot] = (provider_code != BASE_CODE);
+                resp_o.meta[slot*META_PROVIDER_BITS +: META_PROVIDER_BITS] = provider_code;
+                resp_o.meta[META_ALT_OFFSET + slot] = alt_pred;
+                resp_o.meta[META_PROVIDER_PRED_OFFSET + slot] = provider_pred;
+                resp_o.meta[META_FINAL_OFFSET + slot] = final_pred;
+            end
+        end
+    end
+
+    always_ff @(posedge clk_i) begin : state_update
+        tagged_idx_t train_idx [TABLES];
+        tag_t train_tag [TABLES];
+        tagged_row_t updated [TABLES];
+        logic touched [TABLES];
+        base_idx_t train_base_idx;
+        int provider_idx;
+        int first_longer;
+        logic provider_still_matches;
+        logic allocated;
+        logic actual_taken;
+        logic meta_provider_pred;
+        logic meta_alt_pred;
+        logic meta_final_pred;
+
+        if (rst_i) begin
+            s1_valid_q <= 1'b0;
+            s2_valid_q <= 1'b0;
+            for (int idx = 0; idx < BASE_ENTRIES; idx++) begin
+                for (int slot = 0; slot < REGION_SLOTS; slot++)
+                    base_q[idx][slot] <= ctr_t'((1 << (CTR_BITS-1)) - 1);
+            end
+            for (int table_idx = 0; table_idx < TABLES; table_idx++) begin
+                for (int idx = 0; idx < (1 << CFG.tage.index_bits[table_idx]); idx++)
+                    tagged_q[table_idx][idx].valid <= 1'b0;
+            end
+        end else begin
+            if (kill_i) begin
+                s1_valid_q <= 1'b0;
+                s2_valid_q <= 1'b0;
+            end else if (!stall_i) begin
+                s2_valid_q <= s1_valid_q;
+                if (s1_valid_q) begin
+                    s2_base_q <= base_q[s1_base_idx_q];
+                    for (int table_idx = 0; table_idx < TABLES; table_idx++) begin
+                        s2_row_q[table_idx] <= tagged_q[table_idx][s1_idx_q[table_idx]];
+                        s2_tag_q[table_idx] <= s1_tag_q[table_idx];
+                    end
+                end
+                s1_valid_q <= s0_valid_i;
+                if (s0_valid_i) begin
+                    s1_base_idx_q <= base_index_of(s0_region_base_i);
+                    for (int table_idx = 0; table_idx < TABLES; table_idx++) begin
+                        s1_idx_q[table_idx] <= index_of(s0_region_base_i, s0_folds_i,
+                                                         table_idx);
+                        s1_tag_q[table_idx] <= tag_of(s0_region_base_i, s0_folds_i,
+                                                       table_idx);
+                    end
+                end
+            end
+
+            // 一包最多训练本区域八个条件槽；每张 tagged 表同拍只写同一行。
+            if (train_valid_i && train_ready_o && (|train_i.br_commit_mask)) begin
+                train_base_idx = base_index_of(train_i.region_base);
+                for (int table_idx = 0; table_idx < TABLES; table_idx++) begin
+                    train_idx[table_idx] = index_of(train_i.region_base,
+                                                     train_i.ctx.folds, table_idx);
+                    train_tag[table_idx] = tag_of(train_i.region_base,
+                                                   train_i.ctx.folds, table_idx);
+                    updated[table_idx] = tagged_q[table_idx][train_idx[table_idx]];
+                    touched[table_idx] = 1'b0;
+                end
+
+                for (int slot = 0; slot < REGION_SLOTS; slot++) begin
+                    if (train_i.br_commit_mask[slot]) begin
+                        actual_taken = train_i.br_taken_mask[slot];
+                        base_q[train_base_idx][slot] <=
+                            train_ctr(base_q[train_base_idx][slot], actual_taken);
+                        provider_idx = int'(train_i.tage_meta[
+                            slot*META_PROVIDER_BITS +: META_PROVIDER_BITS]);
+                        meta_alt_pred = train_i.tage_meta[META_ALT_OFFSET + slot];
+                        meta_provider_pred =
+                            train_i.tage_meta[META_PROVIDER_PRED_OFFSET + slot];
+                        meta_final_pred = train_i.tage_meta[META_FINAL_OFFSET + slot];
+                        provider_still_matches = 1'b0;
+                        if (provider_idx < TABLES)
+                            provider_still_matches =
+                                tagged_q[provider_idx][train_idx[provider_idx]].valid &&
+                                tagged_q[provider_idx][train_idx[provider_idx]].tag ==
+                                train_tag[provider_idx];
+                        if (provider_still_matches) begin
+                            updated[provider_idx].ctr[slot] =
+                                train_ctr(updated[provider_idx].ctr[slot], actual_taken);
+                            if (meta_provider_pred != meta_alt_pred)
+                                updated[provider_idx].useful[slot] = train_useful(
+                                    updated[provider_idx].useful[slot],
+                                    meta_provider_pred == actual_taken);
+                            touched[provider_idx] = 1'b1;
+                        end
+
+                        if (meta_final_pred != actual_taken) begin
+                            first_longer = (provider_idx < TABLES) ? provider_idx + 1 : 0;
+                            allocated = 1'b0;
+                            for (int table_idx = first_longer; table_idx < TABLES;
+                                 table_idx++) begin
+                                if (!allocated && (!updated[table_idx].valid ||
+                                    updated[table_idx].tag == train_tag[table_idx] ||
+                                    updated[table_idx].useful == '0)) begin
+                                    if (!updated[table_idx].valid ||
+                                        updated[table_idx].tag != train_tag[table_idx]) begin
+                                        updated[table_idx] = '0;
+                                        updated[table_idx].valid = 1'b1;
+                                        updated[table_idx].tag = train_tag[table_idx];
+                                        for (int other_slot = 0; other_slot < REGION_SLOTS;
+                                             other_slot++)
+                                            updated[table_idx].ctr[other_slot] =
+                                                ctr_t'((1 << (CTR_BITS-1)) - 1);
+                                    end
+                                    updated[table_idx].ctr[slot] =
+                                        ctr_t'((1 << (CTR_BITS-1)) - 1 + int'(actual_taken));
+                                    updated[table_idx].useful[slot] = '0;
+                                    touched[table_idx] = 1'b1;
+                                    allocated = 1'b1;
+                                end
+                            end
+                            if (!allocated && first_longer < TABLES) begin
+                                // 所有候选都仍有 useful：衰减最短候选，下次可分配。
+                                for (int other_slot = 0; other_slot < REGION_SLOTS;
+                                     other_slot++)
+                                    updated[first_longer].useful[other_slot] =
+                                        train_useful(updated[first_longer].useful[other_slot],
+                                                     1'b0);
+                                touched[first_longer] = 1'b1;
+                            end
+                        end
+                    end
+                end
+                for (int table_idx = 0; table_idx < TABLES; table_idx++)
+                    if (touched[table_idx])
+                        tagged_q[table_idx][train_idx[table_idx]] <= updated[table_idx];
+            end
+        end
+    end
+
+    initial begin
+        assert (CFG.fetch.region_bytes == REGION_BYTES);
+        assert (BASE_ENTRIES >= 2 && (BASE_ENTRIES & (BASE_ENTRIES - 1)) == 0);
+        assert (TABLES <= (1 << META_PROVIDER_BITS) - 1);
+        assert (CFG.tage.meta_bits >= META_USED_BITS);
+        assert (CTR_BITS >= 2 && CTR_BITS <= 8);
+        assert (USEFUL_BITS >= 1 && USEFUL_BITS <= 8);
+        for (int table_idx = 0; table_idx < TABLES; table_idx++) begin
+            assert (CFG.tage.index_bits[table_idx] >= 1);
+            assert (CFG.tage.index_bits[table_idx] <= 20);
+            assert (CFG.tage.tag_bits[table_idx] >= 2);
+            assert (CFG.tage.tag_bits[table_idx] <= 31);
+        end
+    end
 endmodule

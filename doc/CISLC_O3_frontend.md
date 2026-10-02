@@ -24,6 +24,15 @@ BOOM 对照源码：[`WithNMediumBooms`（v3，固定 commit）](https://github.
 
 ## 逐模块实现进度（2026-10-02）
 
+- `tage` 已按原端口实现首版三阶段方向表：`O3_CFG.fe.tage` 控制 base 容量、
+  六张 tagged 表的 index/tag 位宽与计数/useful 位宽；每行共享 tag/valid，
+  八个半字槽分别保存方向和 useful。S0 算索引与 tag，S1 同步读取，S2
+  组合比较并输出每槽方向。最长历史命中为 provider，弱且无 useful 时用
+  次长命中/base；`tage_meta` 保存各槽 provider 与原预测供提交训练。训练
+  始终使用原区域入口 `train_i.ctx.folds`，对所有已提交条件槽更新 base，
+  更新仍命中的 provider；方向错误时向更长表分配。stall 保持在途读，kill
+  清除在途有效位，提交训练独立进行。同拍 S1 读表与训练同行按旧值读。
+  这是首版组织/分配策略，尚无预测率、SRAM 映射、综合或 FPGA 时序证据。
 - `ubtb` 已按原端口实现首版组合快预测：`O3_CFG.fe.ubtb.entries` 项全相联、
   `tag_bits` 位折叠 tag，单区域保留已提交 BR/JAL mask 与最近一次 taken CFI
   的目标。条件分支 owner 用 2-bit 饱和计数器决定快方向，JAL/JALR 恒预测
@@ -84,7 +93,7 @@ BOOM 对照源码：[`WithNMediumBooms`（v3，固定 commit）](https://github.
 | --- | --- | --- |
 | `frontend` | 目标总装连线已写；旧总装被替换 | 第 1 节 |
 | `bpu` | 新增目标端口与子模块例化；保留旧顺序 32B 生成器为旧合同 | D01/D02 |
-| `ubtb` / `tage` | uBTB 单模块 RTL 已实现，TAGE 仍为空壳；预测总装未接通 | D02/D04～D08/D22 |
+| `ubtb` / `tage` | 两者单模块 RTL 已实现；预测总装仍未接通 | D02/D04～D08/D22 |
 | `main_btb` | 单模块 RTL 已实现，尚未接入可运行慢预测路径、未做功能仿真 | D02/D05～D08 |
 | `branch_history` / `history_snapshot_store` | 两者已单独实现，尚未接成可运行预测路径 | D09/D22/D23 |
 | `ras` | 空壳；2026-10-02 按 D29 改为 `{top_idx,count,top_addr}` 栈顶快速修复端口，删除 undo log/log_full/commit_free | D29（第 6.2 节） |
