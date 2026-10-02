@@ -24,6 +24,23 @@ BOOM 对照源码：[`WithNMediumBooms`（v3，固定 commit）](https://github.
 
 ## 逐模块实现进度（2026-10-02）
 
+- `ftq` 目标端口已改为 `CFG.ftq.depth` 项动态描述环。每次占用一个槽都使该槽的
+  generation 递增；完整 `ftq_id` 校验慢预测、执行解析、提交、brief 和 D29 RAS
+  检查点读口。队头、分配、demand、prefetch 四个游标分别推进；ICache 接受 demand
+  与返回队列同拍预留后只标记 issued，不释放 FTQ 容量。demand 等待 ICache ready
+  时锁住请求载荷；返回队列必须在这段等待中保持所报预留槽可用且身份稳定。
+- 慢预测写回最终摘要和 TAGE 元数据；执行解析记录条件分支实际方向、taken CFI
+  和误预测，提交各 lane 按完整身份累积已提交条件分支 mask。`region_last` 只将区域
+  标为待训练：队头依次请求原入口历史快照、等待响应、保持 `bpu_train_valid` 到 BPU
+  接受，之后才释放槽。以 FTQ 项本身保存待训练区域，因此同时提交多个区域时不会
+  被固定小训练 FIFO 溢出；BPU 反压会占住 FTQ 容量。
+- D24 kill 优先于本拍分配与 demand/prefetch 发射。部分 kill 校验边界完整身份并清除
+  更年轻项；kill-all 保留已提交但尚未交接训练的连续队头前缀。存活边界的预测 mask
+  截至指定槽位，同拍执行误预测可用 `resolve_i` 修正 target/类型。当前 `kill_i`
+  只有边界、没有预解码修正后的完整预测信息，因此预解码型边界的最终摘要还不能由
+  FTQ 独立精确改写；需后续在 F1/统一重定向接缝补齐。旧 16 项 BPU/IFU/释放端口
+  现已隔离为常量，仅 `ftq_pkg` 暂留供旧 BPU 类型引用，旧接口不可再作为数据路径。
+  generation 8 位只提供身份比较，回绕前旧请求/训练生命周期仍需系统级约束。
 - `ras` 已按 D29 在原端口实现参数化寄存器环形栈。`top_idx` 指向非空栈顶；空栈保留
   最后弹出位置，复位设为 `depth-1`，因此首次 push 写第 0 项。push 向下一格写，
   满栈覆盖最旧项且 `count` 饱和；空栈 pop 保持状态，pop-push 在非空时原位替换
@@ -115,7 +132,7 @@ BOOM 对照源码：[`WithNMediumBooms`（v3，固定 commit）](https://github.
 | `ras` | D29 单模块 RTL 已实现；BPU 分配与恢复仲裁仍未接成可运行路径 | D29（第 6.2 节） |
 | `bpu_slow_check` | 新增空壳 | 第 4.1、6.3 节 |
 | `redirect_arbiter` | 新增空壳 | D24 |
-| `ftq` | 新增目标端口；保留旧三指针实现为旧合同 | 第 7 节 |
+| `ftq` | 目标端口单模块 RTL 已实现；旧端口隔离，BPU/返回队列/重定向总装仍未形成可运行路径 | 第 7 节 |
 | `fetch_return_queue` | 新增空壳 | D14～D17 |
 | `ifu_f0` / `ifu_f1` | 新增空壳 | 第 3.3、10 节 |
 | `fetch_buffer` | 保留实现；参数改由 CFG；新增 `kill_i`（未实现） | 第 10 节 |
