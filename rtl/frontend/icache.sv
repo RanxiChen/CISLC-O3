@@ -220,7 +220,82 @@ module ICache
         .perf_o(t_perf_mshr)
     );
 
-    // 未实现：req_ready_o/resp_o/pf_*/inv_done_o/idle_o/recall_*/perf_o 的驱动。
+    // ============================================================
+    // 目标合同适配层：把旧阻塞式实现的命中/填充结果重新打包成
+    // 带身份的 icache_resp_t（D14：乱序响应按 rq_idx 写回返回队列）。
+    //
+    // 依据：本实现是阻塞式单未决（见文件头第 41 行），一次只跟踪一个
+    // demand，因此身份元数据只需要**一组**保持寄存器，不需要队列。
+    //
+    // 已接通：req_ready_o / resp_o / idle_o
+    // 未接通（明确 tie-off，不得据此外推已实现）：
+    //   - 预取 L1 查询与 pf_resp：预取只有 MSHR 侧骨架，L1 过滤器未实现
+    //   - ITLB/ptw_req：itlb.sv 仍是空壳，异常路径未接通
+    //   - PMP 派生/更新完成、SFENCE 完成、失效完成握手
+    //   - 回收（recall）入口与 perf 事件
+    // ============================================================
+
+    // S0 接受一次 demand 时锁存身份；响应拍据此回填。
+    logic         demand_ident_valid_q;
+    rq_idx_t      demand_rq_idx_q;
+    ftq_id_t      demand_ftq_id_q;
+    xlate_epoch_t demand_epoch_q;
+
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            demand_ident_valid_q <= 1'b0;
+            demand_rq_idx_q      <= '0;
+            demand_ftq_id_q      <= '0;
+            demand_epoch_q       <= '0;
+        end else if (s0_fire) begin
+            // 新 demand 优先：同拍既有响应又有新请求时，响应用旧身份（本拍组合），
+            // 新身份在边沿锁存，两者不冲突。
+            demand_ident_valid_q <= 1'b1;
+            demand_rq_idx_q      <= req_i.rq_idx;
+            demand_ftq_id_q      <= req_i.ftq_id;
+            demand_epoch_q       <= req_i.epoch;
+        end else if (out_valid) begin
+            demand_ident_valid_q <= 1'b0;
+        end
+    end
+
+    // 请求侧：旧 s0 握手直接对外，不再另接一套 req。
+    assign req_ready_o = s0_ready;
+
+    // 响应侧：旧 out_* 是最终结果，附上捕获的身份。
+    // out_data 宽度 = FETCH_BYTES*8，resp_o.data 宽度 = REGION_BYTES*8，
+    // 两者来自同一配置字段 CFG.fetch.region_bytes。
+    always_comb begin
+        resp_o.valid     = out_valid;
+        resp_o.rq_idx    = demand_rq_idx_q;
+        resp_o.ftq_id    = demand_ftq_id_q;
+        resp_o.data      = out_data;
+        resp_o.exc_valid = out_error;
+        resp_o.exc_cause = EXCEPTION_CAUSE_INST_ACCESS_FAULT;
+    end
+
+    // 空闲：WORK 状态且 S1 无在途请求。
+    assign idle_o = (state_q == ICACHE_WORK) && !s1_valid_q;
+
+    // ---- 以下目标端口尚未实现，显式 tie-off ----
+    assign pf_req_ready_o   = 1'b0;
+    assign pf_resp_o        = '0;
+    assign ptw_req_valid_o  = 1'b0;
+    assign ptw_req_o        = '0;
+    assign l2_resp_ready_o  = 1'b1;
+    assign pmp_update_done_o = 1'b0;
+    assign sfence_done_o     = 1'b0;
+    assign inv_done_o        = 1'b0;
+    assign recall_ready_o    = 1'b0;
+    assign recall_resp_o     = '0;
+    assign perf_o            = '0;
+
+    // 身份寄存器的基本一致性：有有效响应时必须有对应身份。
+    // 允许被形式验证/仿真断言检查，不作为功能正确性的完整证明。
+    always_comb begin
+        assert (!out_valid || demand_ident_valid_q)
+            else $error("ICache: resp_o.valid 但未捕获 demand 身份");
+    end
 
     // ============================================================
     // 旧合同实现（HEAD 06462b0），迁移后删除或改造。
