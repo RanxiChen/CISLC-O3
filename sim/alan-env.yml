@@ -1,0 +1,10 @@
+name: cislc-o3
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - verilator=5.050
+  - make
+  - pip
+  - pip:
+      - cocotb==2.1.0

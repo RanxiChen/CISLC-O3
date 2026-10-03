@@ -1,5 +1,33 @@
 # L1 whole-core retirement simulation
 
+## Alan test environment
+
+The persistent Alan environment is `/home/chen/miniforge3/envs/cislc-o3`.
+Recreate it from the repository if necessary:
+
+```sh
+/home/chen/miniforge3/bin/conda env create -f sim/alan-env.yml
+source /home/chen/miniforge3/etc/profile.d/conda.sh
+conda activate cislc-o3
+python3 --version
+cocotb-config --version
+verilator --version
+```
+
+The specification installs cocotb from pip. On Alan, the conda-forge package
+labelled 2.1.0 reported version 0.0.0 after installation; the pip wheel
+reports 2.1.0 and passed the tests below. The installed environment uses
+Python 3.12.14, cocotb 2.1.0, and Verilator 5.050. With the environment
+active, run the component tests and then the L1 gate below:
+
+```sh
+for module in bpu fetch_return_queue ifu_f0 ifu_f1 icache o3_sram_1r1w backend; do
+    make -C sim/cocotb/$module SIM=verilator TEST_SEED=1 || break
+done
+```
+
+The environment is independent of Alan's existing `flow` environment.
+
 This harness builds the current `o3_core` from the single RTL file list,
 `rtl/rtl.f`. The C++ loader accepts little-endian ELF64 `PT_LOAD` segments
 and word-oriented hex. Hex words load at `0x10000000` by default; `@ADDRESS`
