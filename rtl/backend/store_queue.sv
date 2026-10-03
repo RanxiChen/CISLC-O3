@@ -10,6 +10,8 @@
  *   到 ROB 队首后由 commit_ctrl 发起 pte_ad_updater 的非推测 D 更新，完成（或错误归属本指令）后才可
  *   提交。needs_D 未完成期间年轻访存不得越过。首版不保存完整 PTE 快照，慢路径重新遍历。
  * - 地址未知（B32）：年轻 load 等本项地址写入/本项被取消后再判定，不以超时越过。
+ *   已实现保守依赖查询：按 SQ 年龄选择最近的完整覆盖旧 store；较年轻的完整覆盖
+ *   可覆盖较老的部分写入，地址未知的旧 store 仍阻塞。测试：sim/cocotb/store_queue/。
  * - 现有 drain 是 store 队头排出，不等于已完成 FENCE/FENCE.I 系统同步。目标端口未接入。
  * Store Queue and committed Store Buffer
  *
@@ -127,12 +129,18 @@ module store_queue
         end
     end
 
-    // 按SQ程序顺序从老到年轻扫描。后遇到的完整覆盖Store覆盖先前转发值，
-    // 因而最终选择最年轻的匹配项；任何未知或部分重叠都保守阻塞。
+    // 按 SQ 程序顺序从老到年轻扫描。更年轻的完整覆盖写会取代先前的
+    // 部分覆盖或数据未就绪项；地址未知的旧写入按 B32 始终阻塞。
+    // 周期 N 组合阶段只产生查询结果，SQ 状态不变；load 在握手后使用
+    // 同一拍的判定，周期 N+1 可重新查询刚在上升沿写入的 store 地址。
     always_comb begin
+        logic unknown_addr_block;
+        logic covered_data_block;
         query_block_o = 1'b0;
         query_forward_valid_o = 1'b0;
         query_forward_data_o = '0;
+        unknown_addr_block = 1'b0;
+        covered_data_block = 1'b0;
         for (int offset = 0; offset < DEPTH; offset++) begin
             logic [IDX_WIDTH-1:0] idx;
             logic older;
@@ -159,17 +167,27 @@ module store_queue
             full_cover = ((covered_bytes & query_mask_i) == query_mask_i);
 
             if (query_valid_i && valid_q[idx] && older) begin
-                if (!addr_valid_q[idx] || !data_valid_q[idx]) begin
-                    query_block_o = 1'b1;
-                end else if (overlap && full_cover) begin
-                    shift_bytes = int'(query_addr_i - addr_q[idx]);
-                    query_forward_valid_o = 1'b1;
-                    query_forward_data_o = data_q[idx] >> (8 * shift_bytes);
+                if (!addr_valid_q[idx]) begin
+                    unknown_addr_block = 1'b1;
                 end else if (overlap) begin
-                    query_block_o = 1'b1;
+                    // A later full-cover store supplies every byte and makes
+                    // older known-address overlap irrelevant. A partial
+                    // overlap cannot be assembled from multiple SQ entries
+                    // in this first version.
+                    if (full_cover && data_valid_q[idx]) begin
+                        shift_bytes = int'(query_addr_i - addr_q[idx]);
+                        query_forward_valid_o = 1'b1;
+                        query_forward_data_o = data_q[idx] >> (8 * shift_bytes);
+                        covered_data_block = 1'b0;
+                    end else begin
+                        query_forward_valid_o = 1'b0;
+                        covered_data_block = 1'b1;
+                    end
                 end
             end
         end
+        query_block_o = unknown_addr_block || covered_data_block;
+        if (query_block_o) query_forward_valid_o = 1'b0;
     end
 
     always_ff @(posedge clk) begin
