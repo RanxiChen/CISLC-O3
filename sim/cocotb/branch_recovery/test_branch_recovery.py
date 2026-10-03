@@ -11,6 +11,9 @@ from branch_recovery_model import expected_redirect, is_link_register
 async def cycle(dut):
     await RisingEdge(dut.clk_i)
     await ReadOnly()
+    # Leave cocotb's read-only sampling phase before the caller drives the
+    # next-cycle inputs.  Cocotb 2.x rejects writes made directly from it.
+    await Timer(1, unit="ps")
 
 
 def clear_inputs(dut):
