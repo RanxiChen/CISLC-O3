@@ -59,13 +59,13 @@ ITCM 镜像（TB 经 itcm_init_* 预装）
 
 | 模块 | 状态 | L1 需要做什么 | 测试 |
 |---|---|---|---|
-| `frontend/bpu.sv` | **空壳**（子预测器已实现，总装未实现：预测 PC、`alloc_valid_o` 未驱动） | 闭环简化：顺序预测（每次 +16B），无慢预测、无历史/RAS 推进 | 无 |
-| `frontend/bpu_slow_check.sv` | 空壳 | 闭环简化：L1 不做慢预测，`slow_done` 恒为真的来源需明确 | 无 |
+| `frontend/bpu.sv` | **闭环简化（L1）**：目标端口顺序预测与按身份回写完成；旧 32B 合同仍保留 | 待整核确认 FTQ 分配、训练回收；L2 再接 BTB/TAGE/历史/RAS | `sim/cocotb/bpu/` 本地 2/2 PASS；Alan 未运行 |
+| `frontend/bpu_slow_check.sv` | 空壳，L1 绕过 | BPU 对每次已分配身份下一拍写回同一顺序预测；FTQ 的 `slow_done` 在返回队列读取 brief 前为真 | 无 |
 | `frontend/ftq.sv` | 目标端口单模块实现 | 确认在 L1 中能分配、发射 demand、提交回收；集成未验证 | `tb/ftq_tb.sv`（SV testbench，非 cocotb，提交 `b6d3a34`）；无 cocotb |
 | `frontend/icache.sv` | **闭环简化（L1）**：旧阻塞式逻辑 + 新端口适配层（`55038a4`） | 已完成：`req_ready_o`/`resp_o`/`idle_o`；其余目标端口 tie-off | **缺 cocotb** |
-| `frontend/fetch_return_queue.sv` | 空壳 | 闭环简化：浅 FIFO / 直通（ICache 阻塞单未决，不需要 D15/D17） | 无 |
-| `frontend/ifu_f0.sv` | 空壳 | 闭环简化：32 位指令长度识别；RVC 与跨块拼接不在 L1 | 无 |
-| `frontend/ifu_f1.sv` | 空壳 | 闭环简化：生成 `fetch_entry_t`；预解码修正不发出 | 无 |
+| `frontend/fetch_return_queue.sv` | **闭环简化（L1）**：单槽身份匹配、按序出队和第二笔回压 | 待整核确认 FTQ/ICache/brief 时序；D15/D17 待 L4 | `sim/cocotb/fetch_return_queue/` 本地 2/2 PASS；Alan 未运行 |
+| `frontend/ifu_f0.sv` | **闭环简化（L1）**：完整 32 位指令识别 | 待整核确认；RVC 与跨块拼接待 L2 | `sim/cocotb/ifu_f0/` 本地 2/2 PASS；Alan 未运行 |
+| `frontend/ifu_f1.sv` | **闭环简化（L1）**：生成 `fetch_entry_t`、`ftq_last`，修正端口无效 | 待整核确认与后端消费；预解码修正待 L2 | `sim/cocotb/ifu_f1/` 本地 2/2 PASS；Alan 未运行 |
 | `frontend/redirect_arbiter.sv` | 空壳 | L1 无重定向：输出 tie-off 为无效 | 无 |
 | `frontend/fetch_buffer.sv` | 实现 | 确认与 F1 输出、后端 `fetch_entry_i` 对接 | 无 |
 | `frontend/frontend.sv` | 总装（连线） | 按上面的简化调整连线 | — |

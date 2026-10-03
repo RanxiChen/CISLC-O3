@@ -22,14 +22,18 @@
  * - 后半字取指异常如何携带原指令 PC 与故障地址（第 3.3 节）。
  * - 非法 RVC 编码的异常 tval 内容。
  *
- * 当前实现状态：空壳。只有端口与注释，没有任何逻辑，输出未驱动。
+ * 当前实现状态：闭环简化（L1）
+ * - 为 L1 实现：只识别完整的 32 位指令，把原 PC、字节和 FTQ 身份交给 F1。
+ * - 闭环简化：RVC 与跨块拼接待 L2 后补（偏离第 3.3 节目标）；
+ *   L1 镜像只有 32 位指令。当前为组合直通，受 F1 ready 回压。
+ * - 仍未实现：RVC 展开、跨块半字暂存、异常处理和性能事件（显式 tie-off）。
+ * - 测试：sim/cocotb/ifu_f0/
  *
  * 目标周期行为：
  * - 周期 N 组合：in_valid_i 时识别本块指令，生成 out_*；跨块时不输出该指令。
  * - 周期 N 上升沿：out 握手后接受下一块；保存跨块前半字。
  * - 周期 N+1：F1 看到 F0 输出寄存（寄存边界待定）。
  *
- * 本阶段不写测试代码和仿真代码。
  */
 module ifu_f0
     import o3_types_pkg::*;
@@ -54,5 +58,35 @@ module ifu_f0
 
     output fe_perf_t        perf_o
 );
-    // 未实现：长度识别、RVC 展开、跨块半字保存与拼接。
+    assign in_ready_o = !rst_i && !kill_i.valid && !sync_clear_i && out_ready_i;
+    assign out_brief_o = in_valid_i ? in_brief_i : '0;
+    assign perf_o = '0;
+
+    // L1 has four aligned 32-bit instructions per 16B block. A halfword is
+    // an instruction start only when it is at or after entry_slot, matches
+    // the entry's 32-bit phase, and has both halfwords in this region.
+    // The low encoding bits 11 identify a 32-bit instruction.
+    always_comb begin
+        out_valid_o = '0;
+        for (int slot = 0; slot < F0_SLOTS; slot++) begin
+            out_o[slot] = '0;
+            if (!rst_i && !kill_i.valid && !sync_clear_i && in_valid_i
+                && slot >= int'(in_brief_i.pred.entry_slot)
+                && ((slot - int'(in_brief_i.pred.entry_slot)) % 2 == 0)
+                && slot + 1 < REGION_SLOTS
+                && (!in_brief_i.pred.cfi_valid
+                    || slot <= int'(in_brief_i.pred.cfi_slot))
+                && in_i.data[16*slot +: 2] == 2'b11) begin
+                out_valid_o[slot] = 1'b1;
+                out_o[slot].pc = in_i.region_base + vaddr_t'(2 * slot);
+                out_o[slot].raw_instruction = in_i.data[16*slot +: ILEN];
+                out_o[slot].instruction = in_i.data[16*slot +: ILEN];
+                out_o[slot].inst_len = 3'd4;
+                out_o[slot].is_rvc = 1'b0;
+                out_o[slot].crosses_region = 1'b0;
+                out_o[slot].ftq_id = in_i.ftq_id;
+                out_o[slot].slot = fetch_slot_t'(slot);
+            end
+        end
+    end
 endmodule

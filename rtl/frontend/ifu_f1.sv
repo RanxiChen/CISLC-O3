@@ -21,14 +21,19 @@
  * - ftq_last 的产生规则：目标为“区域内最后一条有效指令”，与 ROB 回收合同核对。
  * - 预测类型经预解码改变时 RAS 的精确修复（第 6.2 节待定）。
  *
- * 当前实现状态：空壳。只有端口与注释，没有任何逻辑，输出未驱动。
+ * 当前实现状态：闭环简化（L1）
+ * - 为 L1 实现：把 F0 的 32 位指令压紧成 fetch_entry_t，预测摘要来自
+ *   FTQ 经返回队列送来的 brief；块内最后一条标记 ftq_last。
+ * - 闭环简化：不发预解码修正，predecode_o 恒无效（偏离 D24；
+ *   预解码修正待 L2 起效）。
+ * - 仍未实现：控制流核对、RAS 修复、异常路径和性能事件（显式 tie-off）。
+ * - 测试：sim/cocotb/ifu_f1/
  *
  * 目标周期行为：
  * - 周期 N 组合：in_valid_i 时预解码并核对；需要修正时 predecode_o.valid=1。
  * - 周期 N 上升沿：out 握手后写入指令 buffer；修正请求由 redirect_arbiter 仲裁。
  * - 周期 N+1：若本请求获胜，kill_i 清除比修正位置年轻的项（包括 F0、返回队列）。
  *
- * 本阶段不写测试代码和仿真代码。
  */
 module ifu_f1
     import o3_types_pkg::*;
@@ -53,5 +58,43 @@ module ifu_f1
 
     output fe_perf_t        perf_o
 );
-    // 未实现：预解码、直接目标计算、预测核对与修正请求。
+    assign in_ready_o = !rst_i && !kill_i.valid && out_ready_i;
+    assign predecode_o = '0;
+    assign perf_o = '0;
+
+    // N: compact the valid halfword-start positions into consecutive output
+    // lanes. The fetch buffer samples them at edge N when ready. N+1: there
+    // is no retained F1 state; the next block may be presented.
+    always_comb begin
+        int unsigned count;
+        count = 0;
+        out_valid_o = '0;
+        for (int lane = 0; lane < F1_W; lane++) out_o[lane] = '0;
+        if (!rst_i && !kill_i.valid) begin
+            for (int slot = 0; slot < F0_SLOTS; slot++) begin
+                if (in_valid_i[slot] && count < F1_W) begin
+                    out_o[count].valid = 1'b1;
+                    out_o[count].pc = in_i[slot].pc;
+                    out_o[count].raw_instruction = in_i[slot].raw_instruction;
+                    out_o[count].instruction = in_i[slot].instruction;
+                    out_o[count].inst_len = in_i[slot].inst_len;
+                    out_o[count].is_rvc = in_i[slot].is_rvc;
+                    out_o[count].exception_valid = in_i[slot].exc_valid;
+                    out_o[count].exception_cause = in_i[slot].exc_cause;
+                    out_o[count].exception_tval = in_i[slot].exc_tval;
+                    out_o[count].ftq_id = in_i[slot].ftq_id;
+                    out_o[count].slot = in_i[slot].slot;
+                    out_o[count].pred_taken = in_brief_i.pred.cfi_valid
+                                           && in_brief_i.pred.raw_pred_taken
+                                           && in_i[slot].slot == in_brief_i.pred.cfi_slot;
+                    out_o[count].predicted_next_pc = out_o[count].pred_taken
+                                                   ? in_brief_i.pred.next_pc
+                                                   : in_i[slot].pc + vaddr_t'(in_i[slot].inst_len);
+                    out_valid_o[count] = 1'b1;
+                    count++;
+                end
+            end
+            if (count != 0) out_o[count-1].ftq_last = 1'b1;
+        end
+    end
 endmodule

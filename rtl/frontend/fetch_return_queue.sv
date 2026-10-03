@@ -23,7 +23,13 @@
  * - 代际身份回绕安全条件。
  * - 跨块补半字辅助请求如何占用本队列（第 3.3 节待定）。
  *
- * 当前实现状态：空壳。只有端口与注释，没有任何逻辑，输出未驱动。
+ * 当前实现状态：闭环简化（L1）
+ * - 为 L1 实现：单槽预留，按 ftq_id/rq_idx 接收阻塞 ICache 响应，
+ *   等 FTQ brief.slow_done 后按序交给 F0；第二笔 demand 被回压。
+ * - 闭环简化：ICache 单未决；D15/D17 待 L4 ICache 非阻塞后补齐
+ *   （8 项、killed 保留、代际回绕）。L1 的 kill 直接清槽，迟到响应靠身份比较丢弃。
+ * - 仍未实现：多未决乱序回填和性能事件（显式 tie-off）。
+ * - 测试：sim/cocotb/fetch_return_queue/
  *
  * 目标周期行为：
  * - 周期 N 组合：rsv_ready_o/rsv_idx_o 给出下一空槽；队头满足条件时 deq_valid_o=1。
@@ -31,7 +37,6 @@
  *   data_ready；kill_i 时把边界之后的项标记 killed；deq 握手时回收队头。
  * - 周期 N+1：可见新的占用、队头状态。
  *
- * 本阶段不写测试代码和仿真代码。
  */
 module fetch_return_queue
     import o3_types_pkg::*;
@@ -65,5 +70,64 @@ module fetch_return_queue
 
     output fe_perf_t        perf_o
 );
-    // 未实现：槽位预留、乱序写回、killed 标记与回收、队头出队条件。
+    logic occupied_q, data_ready_q;
+    ftq_id_t ftq_id_q;
+    vaddr_t region_base_q;
+    logic [REGION_BYTES*8-1:0] data_q;
+    logic exc_valid_q;
+    exception_cause_t exc_cause_q;
+    logic deq_fire;
+
+    assign rsv_ready_o = !rst_i && !kill_i.valid && !occupied_q;
+    assign rsv_idx_o = '0;
+    assign ftq_brief_rd_valid_o = occupied_q && data_ready_q;
+    assign ftq_brief_rd_id_o = ftq_id_q;
+    assign deq_valid_o = !rst_i && !kill_i.valid && occupied_q && data_ready_q
+                       && ftq_brief_i.slow_done && ftq_brief_i.ftq_id == ftq_id_q;
+    assign deq_fire = deq_valid_o && deq_ready_i;
+    assign deq_o = '{
+        ftq_id: ftq_id_q,
+        region_base: region_base_q,
+        data: data_q,
+        exc_valid: exc_valid_q,
+        exc_cause: exc_cause_q
+    };
+    assign deq_brief_o = deq_valid_o ? ftq_brief_i : '0;
+    assign perf_o = '0;
+
+    // N: reserve only with the FTQ/ICache demand handshake. A response can
+    // fill that same slot at edge N or a later edge. N+1: the stored block is
+    // visible to F0 once FTQ reports its prediction complete. The slot is
+    // available again only on the edge after F0 accepts the block.
+    always_ff @(posedge clk_i) begin
+        if (rst_i || kill_i.valid) begin
+            occupied_q <= 1'b0;
+            data_ready_q <= 1'b0;
+            ftq_id_q <= '0;
+            region_base_q <= '0;
+            data_q <= '0;
+            exc_valid_q <= 1'b0;
+            exc_cause_q <= '0;
+        end else begin
+            if (deq_fire) begin
+                occupied_q <= 1'b0;
+                data_ready_q <= 1'b0;
+            end
+            if (rsv_fire_i && rsv_ready_o) begin
+                occupied_q <= 1'b1;
+                data_ready_q <= 1'b0;
+                ftq_id_q <= rsv_req_i.ftq_id;
+                region_base_q <= rsv_req_i.region_base;
+            end
+            if (resp_i.valid && resp_i.rq_idx == rq_idx_t'(0)
+                && ((occupied_q && resp_i.ftq_id == ftq_id_q)
+                 || (rsv_fire_i && rsv_ready_o
+                     && resp_i.ftq_id == rsv_req_i.ftq_id))) begin
+                data_q <= resp_i.data;
+                exc_valid_q <= resp_i.exc_valid;
+                exc_cause_q <= resp_i.exc_cause;
+                data_ready_q <= 1'b1;
+            end
+        end
+    end
 endmodule

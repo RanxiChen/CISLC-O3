@@ -24,12 +24,14 @@
  * 细节待定：寄存边界统一口径（第 4.1 节）；各表容量见 o3_cfg_pkg。
  * 不在第一版：SC、loop predictor、ITTAGE。
  *
- * 当前实现状态：
- * - 保留 HEAD 06462b0 的顺序 32B not-taken 生成器及其旧端口（ftq_*、redirect_*、
- *   flush_i），标为“旧合同”。它不符合 D03 的 16B 区域，目标总装 frontend 不再连接
- *   这些旧端口；迁移完成后删除。
- * - 目标端口与子模块例化已列出；子模块均为空壳，本模块内的预测 PC、对齐流水、
- *   动作唯一性控制均未实现，目标输出未驱动。
+ * 当前实现状态：闭环简化（L1）
+ * - 为 L1 实现：目标端口每次 FTQ 分配产生顺序 16B 区域与身份确认；训练直接接受。
+ * - 闭环简化：不查询 uBTB/主 BTB/TAGE，不推进历史/RAS；偏离 D01/D03/D09/D23，
+ *   预测目标、快慢覆盖和恢复待 L2。每个已分配区域在下一拍向 FTQ 回写同一预测，
+ *   使所有 L1 demand 对应的 slow_done 在返回队列读取 brief 前恒为已完成；
+ *   只有 L2 启用主 BTB/TAGE 的真实多拍结果后，完成时刻才会变复杂。
+ * - 仍未实现：慢覆盖和性能事件（显式 tie-off）；旧 32B 合同保留但未连接。
+ * - 测试：sim/cocotb/bpu/
  *
  * 目标周期行为：
  * - 周期 N 组合：uBTB 用 pred_pc 给出 alloc_pred_o；alloc_valid_o=!recover_busy_i。
@@ -37,7 +39,6 @@
  *   主 BTB/TAGE 以该区域启动查询。
  * - 周期 N+2：同一区域的慢结果到达 bpu_slow_check，N+2 末写回 FTQ。
  *
- * 本阶段不写测试代码和仿真代码。
  */
 
 module bpu
@@ -105,95 +106,50 @@ module bpu
     output o3_types_pkg::fe_perf_t        perf_o
 );
 
-    // ============================================================
-    // 目标结构：子模块例化。内部信号的驱动（预测 PC、对齐流水）未实现。
-    // ============================================================
-    o3_types_pkg::vaddr_t         pred_pc;           // 未实现：预测 PC 寄存器
-    logic                         stall;             // 未实现：= !alloc_ready_i || recover_busy_i || hold_i
-    logic                         ubtb_hit;
-    o3_types_pkg::bpu_pred_t      ubtb_pred;
-    logic                         btb_resp_valid, tage_resp_valid;
-    o3_types_pkg::btb_resp_t      btb_resp;
-    o3_types_pkg::tage_resp_t     tage_resp;
-    o3_types_pkg::hist_snapshot_t hist_cur;
-    logic                         hist_push_valid;   // 未实现：taken 条件分支且目标可用（D09）
-    o3_types_pkg::vaddr_t         hist_push_branch_pc, hist_push_target_pc;
-    logic                         ras_op_valid;      // 未实现：成功分配且有 RAS 动作
-    o3_types_pkg::vaddr_t         ras_top;
-    logic                         ras_top_valid;
-    // 未实现：快预测对齐寄存，使 fast_* 与慢结果对应同一区域
-    logic                         fast_aligned_valid;
-    o3_types_pkg::ftq_id_t        fast_aligned_ftq_id;
-    o3_types_pkg::bpu_pred_t      fast_aligned_pred;
-    o3_types_pkg::ras_ckpt_t      fast_aligned_ras_ckpt;
-    logic                         slow_pipe_kill;    // 未实现：由 kill_i/慢覆盖得到
-    o3_types_pkg::fe_perf_t       perf_ubtb, perf_btb, perf_tage, perf_ras, perf_slow;
+    // L1: one sequential 16B prediction per successful FTQ allocation.
+    // The region identity is supplied by FTQ on the allocation handshake.
+    o3_types_pkg::vaddr_t pred_pc_target_q;
+    o3_types_pkg::bpu_slow_t completion_q;
+    logic alloc_fire;
 
-    ubtb #(.CFG(CFG)) u_ubtb (
-        .clk_i(clk_i), .rst_i(rst_i),
-        .lookup_valid_i(!stall), .lookup_pc_i(pred_pc), .stall_i(stall),
-        .hit_o(ubtb_hit), .pred_o(ubtb_pred),
-        .train_valid_i(train_valid_i), .train_ready_o(), .train_i(train_i),
-        .perf_o(perf_ubtb)
-    );
+    assign alloc_valid_o = !rst_i && !hold_i && !recover_busy_i && !kill_i.valid;
+    assign alloc_fire = alloc_valid_o && alloc_ready_i;
+    always_comb begin
+        alloc_pred_o = '0;
+        alloc_pred_o.region_base = pred_pc_target_q & ~o3_types_pkg::vaddr_t'(15);
+        alloc_pred_o.entry_slot = o3_types_pkg::fetch_slot_t'(pred_pc_target_q[3:1]);
+        alloc_pred_o.next_pc = alloc_pred_o.region_base + o3_types_pkg::vaddr_t'(16);
+    end
+    // No speculative branch/RAS action exists in L1. The entry snapshots are
+    // constant, and accepted training cannot hold the FTQ release pointer.
+    assign alloc_snapshot_o = '0;
+    assign alloc_ras_ckpt_o = '0;
+    assign train_ready_o = 1'b1;
+    assign hist_restore_done_o = hist_restore_valid_i;
+    assign ras_recover_done_o = ras_recover_valid_i;
+    assign ras_recover_done_id_o = ras_recover_id_i;
+    assign override_o = '0;
+    assign perf_o = '0;
+    assign slow_o = completion_q;
 
-    main_btb #(.CFG(CFG)) u_main_btb (
-        .clk_i(clk_i), .rst_i(rst_i),
-        .s0_valid_i(alloc_valid_o && alloc_ready_i), .s0_region_base_i(pred_pc),
-        .stall_i(stall), .kill_i(slow_pipe_kill),
-        .resp_valid_o(btb_resp_valid), .resp_o(btb_resp),
-        .train_valid_i(train_valid_i), .train_ready_o(), .train_i(train_i),
-        .perf_o(perf_btb)
-    );
-
-    tage #(.CFG(CFG)) u_tage (
-        .clk_i(clk_i), .rst_i(rst_i),
-        .s0_valid_i(alloc_valid_o && alloc_ready_i), .s0_region_base_i(pred_pc),
-        .s0_folds_i(hist_cur.folds),
-        .stall_i(stall), .kill_i(slow_pipe_kill),
-        .resp_valid_o(tage_resp_valid), .resp_o(tage_resp),
-        .train_valid_i(train_valid_i), .train_ready_o(), .train_i(train_i),
-        .perf_o(perf_tage)
-    );
-
-    branch_history #(.CFG(CFG)) u_branch_history (
-        .clk_i(clk_i), .rst_i(rst_i),
-        .push_valid_i(hist_push_valid),
-        .push_branch_pc_i(hist_push_branch_pc), .push_target_pc_i(hist_push_target_pc),
-        .cur_o(hist_cur),
-        .restore_valid_i(hist_restore_valid_i), .restore_snapshot_i(hist_restore_snapshot_i),
-        .restore_inject_i(hist_restore_inject_i),
-        .restore_branch_pc_i(hist_restore_branch_pc_i),
-        .restore_target_pc_i(hist_restore_target_pc_i),
-        .restore_done_o(hist_restore_done_o)
-    );
-
-    ras #(.CFG(CFG)) u_ras (
-        .clk_i(clk_i), .rst_i(rst_i),
-        .op_valid_i(ras_op_valid), .op_action_i(ubtb_pred.ras_action),
-        .op_push_addr_i(/* 未实现：选中 CFI 的 PC + 长度 */),
-        .top_o(ras_top), .top_valid_o(ras_top_valid),
-        .ckpt_o(alloc_ras_ckpt_o),
-        .recover_valid_i(ras_recover_valid_i), .recover_id_i(ras_recover_id_i),
-        .recover_ckpt_i(ras_recover_ckpt_i),
-        .recover_fix_i(ras_fix_i), .recover_push_addr_i(ras_fix_push_addr_i),
-        .recover_done_o(ras_recover_done_o), .recover_done_id_o(ras_recover_done_id_o),
-        .perf_o(perf_ras)
-    );
-
-    bpu_slow_check #(.CFG(CFG)) u_bpu_slow_check (
-        .clk_i(clk_i), .rst_i(rst_i),
-        .fast_valid_i(fast_aligned_valid), .fast_ftq_id_i(fast_aligned_ftq_id),
-        .fast_i(fast_aligned_pred), .fast_ras_ckpt_i(fast_aligned_ras_ckpt),
-        .btb_valid_i(btb_resp_valid), .btb_i(btb_resp),
-        .tage_valid_i(tage_resp_valid), .tage_i(tage_resp),
-        .kill_i(kill_i),
-        .slow_o(slow_o), .override_o(override_o),
-        .perf_o(perf_slow)
-    );
-
-    // 未实现：alloc_valid_o / alloc_pred_o / alloc_snapshot_o 由 pred_pc、ubtb_pred、
-    // hist_cur 形成；perf 合并；boot_pc_i 复位装载 pred_pc。D29 后 RAS 不再回压分配。
+    // N: FTQ accepts the prediction and records its identity. At edge N, the
+    // PC advances and the same prediction is registered as completed. N+1:
+    // FTQ consumes that completion and sets slow_done. No slow table is queried.
+    always_ff @(posedge clk_i) begin
+        if (rst_i) begin
+            pred_pc_target_q <= boot_pc_i;
+            completion_q <= '0;
+        end else begin
+            completion_q <= '0;
+            if (alloc_fire) begin
+                completion_q.valid <= 1'b1;
+                completion_q.ftq_id <= alloc_ftq_id_i;
+                completion_q.pred <= alloc_pred_o;
+            end
+            if (arb_redirect_valid_i) pred_pc_target_q <= arb_redirect_pc_i;
+            else if (alloc_fire) pred_pc_target_q <= alloc_pred_o.next_pc;
+        end
+    end
 
     // ============================================================
     // 旧合同：HEAD 06462b0 顺序 32B 生成器（占位，迁移后删除）
