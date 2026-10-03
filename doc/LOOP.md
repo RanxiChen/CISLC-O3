@@ -13,9 +13,9 @@
 
 | 级 | 目标 | 验收 | 状态 |
 |---|---|---|---|
-| L0 | RTL 可解析、`o3_core` 可展开 | `scripts/lint.sh` | ✅ 本地 PASS（`c3692d4`）；Alan 未运行 |
+| L0 | RTL 可解析、`o3_core` 可展开 | `scripts/lint.sh` | Alan PASS（`1d2caeb`，0 errors、229 warnings） |
 | L1（历史） | ITCM 中的直线整数指令按序退休 | 旧 `sim/o3` smoke | Alan 曾 PASS（`a268f16`）；ITCM 已移除，旧验收不再运行 |
-| **L4 当前** | **ICache miss → inclusive L2 → AXI RAM → 直线整数退休** | `make -C sim/o3 build && make -C sim/o3 run-smoke` | 本地 PASS（38 周期、4 条退休）；Alan 待运行 |
+| **L4 当前** | **ICache miss → inclusive L2 → AXI RAM → 直线整数退休** | `make -C sim/o3 build && make -C sim/o3 run-smoke` | Alan PASS（`1d2caeb`，38 周期、4 条退休、ICache 回填 1 次） |
 | L2 后续 | taken 分支 / JAL：BRU 解析 → 重定向 → 前端恢复 | `sim/o3` 运行 `tests/rv64i_instructions.hex` | 未开始 |
 | L3 后续 | DTCM load/store | `sim/o3` 运行 `tests/unified_memory.hex` | 未开始 |
 | L5 | 异常 / CSR / trap / xRET | ACT4 RV64I | 未开始 |
@@ -41,8 +41,8 @@ make -C sim/o3 run-smoke
 通过条件：按序退休 4 条指令，PC 依次为 `0x8000_0000/04/08/0c`，
 `x1..x4` 写回值依次为 `1/2/3/4`，至少一次 ICache 回填，无超时。
 
-本地当前输出 `icache_refills=1`、`PASS cycles=38 retired=4`、
-`RV64I_INSTRUCTION_TRACE_PASS retires=4`；Alan 尚未运行本轮改动。
+Alan 在 `1d2caeb` 上输出 `icache_refills=1`、`PASS cycles=38 retired=4`、
+`RV64I_INSTRUCTION_TRACE_PASS retires=4`。
 Alan 的持久环境和重建方法见 [`sim/alan-env.yml`](../sim/alan-env.yml) 与
 [`sim/o3/README.md`](../sim/o3/README.md)。
 
@@ -68,27 +68,27 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
 | `frontend/bpu.sv` | **闭环简化（L1）**：目标端口顺序预测与按身份回写完成；旧 32B 合同仍保留 | L2 再接 BTB/TAGE/历史/RAS；训练回收仍待后级 | `sim/cocotb/bpu/` Alan 2/2 PASS；整核 L1 PASS |
 | `frontend/bpu_slow_check.sv` | 空壳，L1 绕过 | BPU 对每次已分配身份下一拍写回同一顺序预测；FTQ 的 `slow_done` 在返回队列读取 brief 前为真 | 无 |
 | `frontend/ftq.sv` | 目标端口单模块实现 | L1 整核分配、demand 发射和提交回收已走通；后级机制仍待验证 | `tb/ftq_tb.sv`（SV testbench，非 cocotb，提交 `b6d3a34`）；整核 L1 Alan PASS |
-| `frontend/icache.sv` | **闭环简化（L4）**：整行双 bank、S0–S3、单 demand MSHR/四拍回填；按行 recall；ITCM 已移除 | ITLB/PMP/PMA、预取、多 MSHR、性能事件与综合时序待后级 | `sim/cocotb/icache/` 本地 3/3 PASS；本轮 Alan 待运行 |
-| `memory/l2_cache.sv` | **闭环简化（L4）**：256 set/4-way 配置、tree-PLRU、AXI 回填、双 L1 回收、脏行 AXI 写回 | 普通请求单未决；B03/B41 并发、DMA/维护协调与完整 L1D 数据路径未实现 | `sim/cocotb/l2_cache/` 本地 2/2 PASS；Alan 待运行 |
-| `lsu/dcache.sv` | **闭环简化（L4）**：无有效行，仅空副本 probe 确认 | L1D 数据阵列、脏行交回、普通 load/store 待后级 | `sim/cocotb/dcache/` 本地 1/1 PASS；Alan 待运行 |
+| `frontend/icache.sv` | **闭环简化（L4）**：整行双 bank、S0–S3、单 demand MSHR/四拍回填；按行 recall；ITCM 已移除 | ITLB/PMP/PMA、预取、多 MSHR、性能事件与综合时序待后级 | `sim/cocotb/icache/` Alan 3/3 PASS（`1d2caeb`） |
+| `memory/l2_cache.sv` | **闭环简化（L4）**：256 set/4-way 配置、tree-PLRU、AXI 回填、双 L1 回收、脏行 AXI 写回 | 普通请求单未决；B03/B41 并发、DMA/维护协调与完整 L1D 数据路径未实现 | `sim/cocotb/l2_cache/` Alan 2/2 PASS（`1d2caeb`） |
+| `lsu/dcache.sv` | **闭环简化（L4）**：无有效行，仅空副本 probe 确认 | L1D 数据阵列、脏行交回、普通 load/store 待后级 | `sim/cocotb/dcache/` Alan 1/1 PASS（`1d2caeb`） |
 | `frontend/fetch_return_queue.sv` | **闭环简化（L1）**：单槽身份匹配、按序出队和第二笔回压 | D15/D17 待 L4 | `sim/cocotb/fetch_return_queue/` Alan 2/2 PASS；整核 L1 PASS |
 | `frontend/ifu_f0.sv` | **闭环简化（L1）**：完整 32 位指令识别 | RVC 与跨块拼接待 L2 | `sim/cocotb/ifu_f0/` Alan 2/2 PASS；整核 L1 PASS |
 | `frontend/ifu_f1.sv` | **闭环简化（L1）**：生成 `fetch_entry_t`、`ftq_last`，修正端口无效 | 预解码修正待 L2 | `sim/cocotb/ifu_f1/` Alan 2/2 PASS；整核 L1 PASS |
 | `frontend/redirect_arbiter.sv` | 空壳 | L1 无重定向：输出 tie-off 为无效 | 无 |
 | `frontend/fetch_buffer.sv` | 实现 | L1 已将 F1 输出交给后端；选择性 kill 待后级 | `sim/o3` Alan PASS |
 | `frontend/frontend.sv` | 总装（连线） | L1 路径已接通；其余空壳仍待后级 | `sim/o3` Alan PASS |
-| `backend/backend.sv` 旧数据流 | **闭环简化（L1）**：INT/MEM/BR IQ 已实例化，四条 addi 走 ALU/ROB 退休 | 目标系统与其他执行路径待后级 | `sim/cocotb/backend/` 本轮本地 1/1 PASS；Alan 待运行 |
+| `backend/backend.sv` 旧数据流 | **闭环简化（L1）**：INT/MEM/BR IQ 已实例化，四条 addi 走 ALU/ROB 退休 | 目标系统与其他执行路径待后级 | `sim/cocotb/backend/` Alan 1/1 PASS（`1d2caeb`） |
 | `backend/rob.sv` | 实现 | `retire_info_o` 已在 `ENABLE_RETIRE_INFO` 下导出到 `o3_core` | — |
-| `core/o3_core.sv` | 总装（连线） | ICache→L2→AXI 已连接；DCache 数据路径仍为空壳 | 整核本地 smoke PASS |
-| `sim/o3/` | 使用 `rtl/rtl.f`、SV AXI RAM、缓存镜像加载与 JSONL 退休轨迹；ITCM 口已移除 | 分支与数据访存后续扩展 | 本地 `make build && make run-smoke` PASS；Alan 待运行 |
+| `core/o3_core.sv` | 总装（连线） | ICache→L2→AXI 已连接；DCache 数据路径仍为空壳 | 整核 Alan smoke PASS（`1d2caeb`） |
+| `sim/o3/` | 使用 `rtl/rtl.f`、SV AXI RAM、缓存镜像加载与 JSONL 退休轨迹；ITCM 口已移除 | 分支与数据访存后续扩展 | Alan `make build && make run-smoke` PASS（`1d2caeb`） |
 
 ## 3. 其他模块状态概览
 
-当前缓存取指路径以外的模块概况（2026-10-03，本轮未提交）：
+当前缓存取指路径以外的模块概况（2026-10-03）：
 
 - **单模块实现、有 cocotb**：`ubtb`、`main_btb`、`tage`、`ras`。
 - **本轮新增局部 cocotb**：`l2_cache`（2 项）、`dcache` 空副本维护口（1 项）；
-  `icache` recall 回归（3 项合计）、`backend` 整核缓存路径（1 项）已本地通过。
+  `icache` recall 回归（3 项合计）、`backend` 整核缓存路径（1 项）已在 Alan 通过。
 - **单模块实现、有 SV testbench**：`ftq`（`tb/ftq_tb.sv`）、`branch_history`、`history_snapshot_store`（`tb/` 下，仅记录过 lint）。
 - **单模块实现、无独立 cocotb**：`fetch_buffer`、
   部分后端旧数据流（`decoder` … `rob`）、`axi_master`、`simple_data_sram`；
