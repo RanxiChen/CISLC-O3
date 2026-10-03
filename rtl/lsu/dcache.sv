@@ -39,10 +39,12 @@
  * 端口、流水级数、BRAM 映射、MSHR 与写回缓冲数、替换策略；FENCE.I 数据侧接口的具体形式。
  * 建议配置 16KiB/4-way/64B/4 bank/8 MSHR 仅为建议（B03）。
  *
- * 当前实现状态：空壳。只有端口与注释，没有逻辑，输出未驱动。
+ * 当前实现状态：闭环简化（L4）。尚无数据阵列、普通访问或有效行；
+ * 为 inclusive L2 容量回收实现维护入口的空副本应答。后续实现有效/脏行时，
+ * probe 必须先保护目标行、交回脏数据并阻止同行旧回填安装（B41）。
  * 现有 LSU 仍访问 DTCM 与单口外部 memory（旧合同）。
  *
- * 本阶段不写测试代码和仿真代码。
+ * 测试：sim/cocotb/dcache/。
  */
 module dcache
     import o3_types_pkg::*;
@@ -124,7 +126,44 @@ module dcache
     output fatal_evt_t      fatal_o,             // B39：脏行写回 L2 失败
     output be_perf_t        perf_o
 );
-    // 未实现：tag/meta/data bank 阵列、主流水、bank 仲裁、行保护、维护队列（DMA/回收/FENCE.I
-    // 共用）、PTE 条件更新入口；内部应例化 dcache_mshr、dcache_writeback、dcache_amo_unit、
-    // lrsc_reservation。
+    dc_probe_resp_t probe_resp_q;
+    assign probe_ready_o = !rst;
+    assign probe_resp_o = probe_resp_q;
+    always_ff @(posedge clk) begin
+        if (rst) probe_resp_q <= '0;
+        else begin
+            probe_resp_q.valid <= probe_valid_i && probe_ready_o;
+            if (probe_valid_i && probe_ready_o) begin
+                probe_resp_q.kind <= probe_i.kind;
+                probe_resp_q.recall_id <= probe_i.recall_id;
+                probe_resp_q.had_dirty <= 1'b0;
+                probe_resp_q.dirty_data <= '0;
+            end
+        end
+    end
+    for (genvar port_idx = 0; port_idx < LOAD_PORTS; port_idx++) begin : g_tie_ld
+        assign ld_req_ready_o[port_idx] = 1'b0;
+        assign ld_resp_o[port_idx] = '0;
+    end
+    assign st_req_ready_o = 1'b0;
+    assign st_resp_o = '0;
+    assign amo_req_ready_o = 1'b0;
+    assign amo_resp_o = '0;
+    assign ptw_req_ready_o = 1'b0;
+    assign ptw_resp_o = '0;
+    assign pf_req_ready_o = 1'b0;
+    assign wake_o = '0;
+    assign clean_all_done_o = clean_all_req_i;
+    assign clean_all_busy_o = 1'b0;
+    assign pte_ad_req_ready_o = 1'b0;
+    assign pte_ad_resp_o = '0;
+    assign l2_req_valid_o = 1'b0;
+    assign l2_req_o = '0;
+    assign l2_resp_ready_o = 1'b0;
+    assign l2_wb_valid_o = 1'b0;
+    assign l2_wb_line_paddr_o = '0;
+    assign l2_wb_data_o = '0;
+    assign idle_o = 1'b1;
+    assign fatal_o = '0;
+    assign perf_o = '0;
 endmodule

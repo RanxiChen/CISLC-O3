@@ -35,15 +35,16 @@
  * - 异常入口、xRET、特权切换主流程已定（B26/B27）：前端只接收已形成的 sys_redirect。系统入口
  *   首笔取指可与历史/RAS 恢复解耦（16.4）；committed 预测上下文来源与入口取指元数据绑定待闭合。
  * - 性能计数读取 ABI（perf_rd_*）。
- * - ITCM（itcm_init_*）：基线未设计，现状沿用以便仿真装载，去留待定。
+ * - ITCM 已移除；取指经 ICache → L2 → AXI。
  *
  * 与旧实现的关系：
  * - HEAD 06462b0 的旧总装（顺序 BPU → 旧 FTQ → 串行 IFU → 阻塞 ICache → fetch_buffer，
  *   branch_resolution_t 直接驱动整体 kill）已被替换。各子模块保留的旧合同端口在此不连接。
- * - o3_core 仍按旧端口例化本模块，后端迁移时一起修改；当前不能编译，符合 agent.md
- *   的顺序重构约定。
+ * - o3_core 已连接本模块的 L1I/L2 端口。
  *
- * 当前实现状态：只有连线框架。子模块大多为空壳，整个前端不能编译、不能运行。
+ * 当前实现状态：闭环简化（L4）。直线整数取指经 ICache/L2/AXI 能交付后端；
+ * 分支恢复、特权翻译、预取及系统同步仍待后级。
+ * 测试：sim/cocotb/backend/；sim/o3/。
  *
  * 逐周期说明（目标，连线层面）：
  * - 周期 N 组合：redirect_arbiter 形成赢家，kill 同拍广播到 FTQ、返回队列、F0、F1、
@@ -51,7 +52,6 @@
  * - 周期 N 上升沿：各子模块按各自握手更新。
  * - 周期 N+1：恢复期间 recover_busy=1，BPU 停止新预测，直到历史与 RAS 恢复完成。
  *
- * 本阶段不写测试代码和仿真代码。
  */
 module frontend
     import o3_types_pkg::*;
@@ -103,12 +103,6 @@ module frontend
     output logic            l1i_recall_ready_o,
     input  l1_recall_req_t  l1i_recall_i,
     output l1i_recall_resp_t l1i_recall_resp_o,
-
-    // ---------------- ITCM 装载（现状沿用，基线未设计） ----------------
-    input  logic            itcm_init_valid_i,
-    input  logic [o3_pkg::PC_WIDTH-1:0] itcm_init_addr_i,
-    input  logic [63:0]     itcm_init_data_i,
-    input  logic [7:0]      itcm_init_wmask_i,
 
     // ---------------- 性能计数读取（ABI 未设计） ----------------
     input  logic            perf_rd_valid_i,
@@ -376,10 +370,6 @@ module frontend
         .clk                 (clk_i),
         .rst                 (rst_i),
         // 旧合同端口（flush、kill、s0_*、refill_*、out_*）不连接
-        .itcm_init_valid_i   (itcm_init_valid_i),
-        .itcm_init_addr_i    (itcm_init_addr_i),
-        .itcm_init_data_i    (itcm_init_data_i),
-        .itcm_init_wmask_i   (itcm_init_wmask_i),
         .req_valid_i         (demand_valid && !sync_hold),
         .req_ready_o         (demand_ready),
         .req_i               (demand_req),

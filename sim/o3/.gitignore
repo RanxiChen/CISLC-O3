@@ -1,4 +1,5 @@
 /build/
 /tandem.jsonl
+/icache_smoke.jsonl
 /rv64i_instructions.jsonl
 /unified_memory.jsonl

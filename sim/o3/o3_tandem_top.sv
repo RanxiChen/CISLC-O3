@@ -1,5 +1,6 @@
-/** L1 whole-core retirement observer. AXI RAM is always connected, even when
- * all smoke fetches hit ITCM. Retirement is exported as scalar lane fields.
+/** Whole-core retirement observer. Instruction images load into AXI RAM and
+ * fetch through the real ICache and inclusive L2. Retirement is exported as
+ * scalar lane fields.
  */
 module o3_tandem_top
     import o3_types_pkg::*;
@@ -10,10 +11,6 @@ module o3_tandem_top
 ) (
     input logic clk_i, rst_i,
     input logic [PC_WIDTH-1:0] reset_pc_i,
-    input logic itcm_init_valid_i,
-    input logic [PC_WIDTH-1:0] itcm_init_addr_i,
-    input logic [63:0] itcm_init_data_i,
-    input logic [7:0] itcm_init_wmask_i,
     input logic dtcm_init_valid_i,
     input logic [XLEN-1:0] dtcm_init_addr_i, dtcm_init_wdata_i,
     input logic [7:0] dtcm_init_wmask_i,
@@ -23,6 +20,7 @@ module o3_tandem_top
     input logic [AXI_DATA_W/8-1:0] axi_init_wmask_i,
     output logic done_o, fatal_o, inclusion_err_o,
     output logic [63:0] retired_inst_count_o,
+    output logic [31:0] icache_refill_count_o,
     output logic [o3_cfg_pkg::O3_CFG.core.commit_width-1:0] tandem_valid_o,
     output logic [o3_cfg_pkg::O3_CFG.core.commit_width-1:0] tandem_rd_write_o,
     output logic [INST_ID_WIDTH-1:0] tandem_instruction_id_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
@@ -60,14 +58,18 @@ module o3_tandem_top
         .dma_req_valid_i(1'b0), .dma_req_ready_o(), .dma_req_i('0), .dma_resp_o(),
         .irq_m_ext_i(1'b0), .irq_m_timer_i(1'b0),
         .irq_m_soft_i(1'b0), .irq_s_ext_i(1'b0),
-        .itcm_init_valid_i(itcm_init_valid_i), .itcm_init_addr_i(itcm_init_addr_i),
-        .itcm_init_data_i(itcm_init_data_i), .itcm_init_wmask_i(itcm_init_wmask_i),
         .dtcm_init_valid_i(dtcm_init_valid_i), .dtcm_init_addr_i(dtcm_init_addr_i),
         .dtcm_init_wdata_i(dtcm_init_wdata_i), .dtcm_init_wmask_i(dtcm_init_wmask_i),
         .fatal_o(fatal_o), .inclusion_err_o(inclusion_err_o),
         .done_o(done_o), .retired_inst_count_o(retired_inst_count_o),
         .retire_info_o(retire_info)
     );
+    // Count actual ICache requests accepted by the RTL L2, not test responses.
+    always_ff @(posedge clk_i) begin
+        if (rst_i) icache_refill_count_o <= '0;
+        else if (u_core.l1i_req_valid && u_core.l1i_req_ready)
+            icache_refill_count_o <= icache_refill_count_o + 1'b1;
+    end
     o3_axi_ram #(.ADDR_W(PADDR_W), .ID_W(AXI_ID_W), .DATA_W(AXI_DATA_W)) u_axi_ram (
         .clk_i(clk_i), .rst_i(rst_i),
         .init_valid_i(axi_init_valid_i), .init_addr_i(axi_init_addr_i),

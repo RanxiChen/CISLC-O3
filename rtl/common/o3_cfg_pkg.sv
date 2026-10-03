@@ -121,8 +121,6 @@ package o3_cfg_pkg;
         int unsigned mshrs;               // 待定：MSHR 数、合并 fanout、需求/预取份额（第 9.3 节）
         int unsigned refill_beat_bytes;   // 待定：回填 beat 宽度（第 9.1 节）
         int unsigned l2_txn_id_bits;      // 待定：L1I→L2 事务身份宽度（需覆盖 demand 与预取在途数）
-        logic [63:0] itcm_base;           // 现状沿用 0x1000_0000：ITCM 不在基线中，去留未设计
-        int unsigned itcm_bytes;          // 现状沿用 64KiB：同上
     } icache_cfg_t;
 
     typedef struct packed {
@@ -327,9 +325,7 @@ package o3_cfg_pkg;
                 ways:              4,
                 mshrs:             4,
                 refill_beat_bytes: 16,
-                l2_txn_id_bits:    4,
-                itcm_base:         64'h0000_0000_1000_0000,
-                itcm_bytes:        64 * 1024
+                l2_txn_id_bits:    4
             },
             itlb: '{
                 entries: 32,

@@ -16,7 +16,7 @@ VERILATOR_FLAGS := \
 	--Mdir $(BUILD_DIR) \
 	-DENABLE_RETIRE_INFO
 
-.PHONY: build run run-smoke run-rv64i-instructions run-unified-memory test clean
+.PHONY: build run run-smoke run-icache-smoke run-rv64i-instructions run-unified-memory test clean
 
 build:
 	rm -rf $(BUILD_DIR)
@@ -25,15 +25,19 @@ build:
 
 run: run-smoke
 
-run-smoke:
+run-smoke: run-icache-smoke
+
+run-icache-smoke:
 	@if [ ! -x "$(RUN_BIN)" ]; then \
 		echo "Missing binary: $(RUN_BIN)"; \
 		echo "Run: make build"; \
 		exit 1; \
 	fi
-	cd $(SIM_DIR) && $(RUN_BIN) --image tests/smoke.hex --trace tandem.jsonl \
-		--max-retires 4 --max-cycles 1000
-	cd $(SIM_DIR) && python3 check_trace.py --trace tandem.jsonl --expect tests/smoke.expected.json
+	cd $(SIM_DIR) && $(RUN_BIN) --image tests/smoke.hex --reset-pc 0x80000000 \
+		--trace icache_smoke.jsonl --max-retires 4 --max-cycles 1000 \
+		--require-icache-refill
+	cd $(SIM_DIR) && python3 check_trace.py --trace icache_smoke.jsonl \
+		--expect tests/icache_smoke.expected.json
 
 run-rv64i-instructions:
 	@if [ ! -x "$(RUN_BIN)" ]; then \
@@ -67,4 +71,4 @@ run-unified-memory:
 test: build run-smoke
 
 clean:
-	rm -rf $(BUILD_DIR) tandem.jsonl rv64i_instructions.jsonl unified_memory.jsonl
+	rm -rf $(BUILD_DIR) tandem.jsonl icache_smoke.jsonl rv64i_instructions.jsonl unified_memory.jsonl

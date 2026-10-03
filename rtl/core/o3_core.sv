@@ -8,20 +8,22 @@
  *   系统同步握手、CSR 派生状态、ITLB→共享 PTW。
  * - 连接 L1I/L1D ↔ L2、L2 ↔ DDR AXI、SD DMA 行事务入口。
  *
- * 当前实现状态与缺口：
- * - 只有连线；frontend/backend 内大量模块为空壳，L2 为空壳；整个 core 不能编译、不能运行。
+ * 当前实现状态：闭环简化（L4）。
+ * - ICache → L2 → AXI 的直线整数取指路径能经后端退休；ITCM 已移除。
+ * - L2 对当前有效的 L1I 行保持 inclusive；L1D 尚无数据阵列或有效行。
+ * - DMA、并发 L2 miss、实际 L1D 数据路径及其他系统机制仍待后级。
+ * - 测试：sim/cocotb/backend/；sim/o3/。
  * - 系统同步由后端 commit_ctrl 统一编排（2026-10-02 确认）：commit_ctrl 的 fe_sync 接前端同步入口；
  *   FENCE.I 的 SQ drain 与 L1D 脏行扫描写回由 commit_ctrl 在后端内完成，前端不再发起 dclean。
  * - L2 inclusive 回收（B41）：L2 的 L1I 定向失效接前端 ICache 维护入口；L1D 定向失效与 DMA 探测
  *   共用 l1d_probe_*。L2 写回 DDR 失败经 l2_fatal 进入后端 fatal_err_ctrl（B39）。
  * - 旧接口（ICache refill 软件响应、LSU dmem_*、flush_i、branch_resolution/ftq_release_count）
- *   已删除；sim/o3 的 C++ 驱动与 Makefile 尚未迁移（按 agent.md 顺序，统一测试阶段再改）。
- * - ITCM/DTCM 装载口沿用现状（基线未设计其去留）。
+ *   已删除；sim/o3 已迁移到当前端口。
+ *   DTCM 装载口暂沿用现状。
  * - SD 控制器本身、启动 ROM、MMIO 外设与整机地址图未设计（不在 core 内）。
  *
  * 逐周期说明：本模块无状态，周期行为见各子模块。
  *
- * 本阶段不写测试代码和仿真代码。
  */
 module o3_core
     import o3_types_pkg::*;
@@ -78,10 +80,6 @@ module o3_core
     input  logic            irq_s_ext_i,
 
     // ---------------- TCM 装载（现状沿用） ----------------
-    input  logic                         itcm_init_valid_i,
-    input  logic [o3_pkg::PC_WIDTH-1:0]  itcm_init_addr_i,
-    input  logic [63:0]                  itcm_init_data_i,
-    input  logic [7:0]                   itcm_init_wmask_i,
     input  logic                         dtcm_init_valid_i,
     input  logic [o3_isa_pkg::XLEN-1:0]  dtcm_init_addr_i,
     input  logic [o3_isa_pkg::XLEN-1:0]  dtcm_init_wdata_i,
@@ -161,8 +159,6 @@ module o3_core
         .l2_resp_i(l1i_resp), .l2_resp_ready_o(l1i_resp_ready),
         .l1i_recall_valid_i(l1i_recall_valid), .l1i_recall_ready_o(l1i_recall_ready),
         .l1i_recall_i(l1i_recall), .l1i_recall_resp_o(l1i_recall_resp),
-        .itcm_init_valid_i(itcm_init_valid_i), .itcm_init_addr_i(itcm_init_addr_i),
-        .itcm_init_data_i(itcm_init_data_i), .itcm_init_wmask_i(itcm_init_wmask_i),
         .perf_rd_valid_i(1'b0), .perf_rd_idx_i('0), .perf_rd_data_o(),
         .perf_clear_i(1'b0), .perf_snapshot_i(1'b0)
     );

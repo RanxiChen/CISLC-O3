@@ -24,11 +24,10 @@ class Harness:
         dut.l2_resp_data.value = 0
         dut.l2_resp_last.value = 0
         dut.l2_resp_error.value = 0
-        dut.itcm_init_valid.value = 0
-        dut.itcm_init_addr.value = 0
-        dut.itcm_init_data.value = 0
-        dut.itcm_init_wmask.value = 0
         dut.inv_all.value = 0
+        dut.recall_valid.value = 0
+        dut.recall_addr.value = 0
+        dut.recall_id.value = 0
 
     async def tick(self):
         self.d.clk.value = 0
@@ -41,6 +40,10 @@ class Harness:
             "l2_req_addr": int(d.l2_req_addr.value),
             "l2_resp_ready": int(d.l2_resp_ready.value),
             "idle": int(d.idle.value),
+            "recall_ready": int(d.recall_ready.value),
+            "recall_resp_valid": int(d.recall_resp_valid.value),
+            "recall_resp_id": int(d.recall_resp_id.value),
+            "recall_resp_quiesced": int(d.recall_resp_quiesced.value),
         }
         if obs["resp_valid"]:
             self.responses.append((
@@ -114,37 +117,6 @@ class Harness:
         d.l2_resp_valid.value = 0
         d.l2_resp_last.value = 0
         d.l2_resp_error.value = 0
-
-
-@cocotb.test()
-async def itcm_four_stage_pipeline(dut):
-    h = Harness(dut)
-    await h.reset()
-    assert int(dut.cfg_banks.value) == 2
-    assert int(dut.cfg_region_bytes.value) == 16
-    base = 0x10000000
-    words = [
-        bytes(((0x20 * idx + byte) & 0xff) for byte in range(16))
-        for idx in range(4)
-    ]
-    for idx, word in enumerate(words):
-        for half in range(2):
-            dut.itcm_init_valid.value = 1
-            dut.itcm_init_addr.value = base + idx*16 + half*8
-            dut.itcm_init_data.value = int.from_bytes(word[half*8:(half+1)*8], "little")
-            dut.itcm_init_wmask.value = 0xff
-            await h.tick()
-    dut.itcm_init_valid.value = 0
-    for idx in range(4):
-        stalls = await h.request(base + idx*16, idx + 1, idx)
-        assert stalls == 0, f"ITCM request {idx} stalled for {stalls} cycles"
-    await h.expect_count(4)
-    assert [(ftq, rq, data, exc) for _, ftq, rq, data, exc in h.responses] == [
-        (idx + 1, idx, int.from_bytes(words[idx], "little"), 0)
-        for idx in range(4)
-    ], f"responses={h.responses}"
-    assert [row[0] for row in h.responses] == list(range(h.responses[0][0], h.responses[0][0]+4))
-    assert [resp[0] - accept[0] for resp, accept in zip(h.responses, h.accepted)] == [3]*4
 
 
 @cocotb.test()
@@ -254,3 +226,40 @@ async def failed_refill_does_not_install_and_invalidation_clears_valid(dut):
     assert int(dut.inv_done.value) == 0
     await h.request(line, 3, 3)
     await h.accept_l2_request(line)
+
+
+@cocotb.test()
+async def inclusive_recall_invalidates_only_target_line(dut):
+    h = Harness(dut)
+    await h.reset()
+    line = 0x80000200
+    data = bytes((index * 7 + 3) & 0xff for index in range(64))
+    await h.request(line, 1, 1)
+    await h.accept_l2_request(line)
+    await h.refill(data)
+    await h.expect_count(1)
+    await h.request(line + 16, 2, 2)
+    await h.expect_count(2)
+    assert h.responses[-1][3] == int.from_bytes(data[16:32], "little")
+
+    dut.recall_valid.value = 1
+    dut.recall_addr.value = line
+    dut.recall_id.value = 1
+    for _ in range(20):
+        if (await h.tick())["recall_ready"]:
+            break
+    else:
+        assert False, "ICache did not accept inclusive recall"
+    dut.recall_valid.value = 0
+    obs = await h.tick()
+    assert obs["recall_resp_valid"] == 1
+    assert obs["recall_resp_id"] == 1
+    assert obs["recall_resp_quiesced"] == 1
+
+    await h.request(line + 32, 3, 3)
+    await h.accept_l2_request(line)
+    await h.refill(data)
+    await h.expect_count(3)
+    assert h.responses[-1][1:] == (
+        3, 3, int.from_bytes(data[32:48], "little"), 0
+    )

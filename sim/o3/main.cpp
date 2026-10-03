@@ -19,8 +19,6 @@ namespace {
 
 constexpr int kResetCycles = 5;
 constexpr int kRetireWidth = 4;
-constexpr uint64_t kItcmBase = 0x10000000ull;
-constexpr uint64_t kItcmBytes = 0x00010000ull;
 constexpr uint64_t kDtcmBase = 0x11000000ull;
 constexpr uint64_t kDtcmBytes = 0x00040000ull;
 constexpr uint64_t kAxiBase = 0x80000000ull;
@@ -31,8 +29,9 @@ struct Options {
     std::string trace_path = "tandem.jsonl";
     uint64_t max_cycles = 1000;
     uint64_t max_retires = 4;
-    uint64_t reset_pc = kItcmBase;
+    uint64_t reset_pc = kAxiBase;
     bool reset_pc_explicit = false;
+    bool require_icache_refill = false;
 };
 
 struct InitBeat {
@@ -241,6 +240,8 @@ Options parse_options(int argc, char** argv) {
         } else if (current == "--reset-pc") {
             options.reset_pc = parse_u64(take_value("--reset-pc"));
             options.reset_pc_explicit = true;
+        } else if (current == "--require-icache-refill") {
+            options.require_icache_refill = true;
         } else if (current == "--help") {
             std::cout
                 << "Usage: Vo3_tandem_top [options]\n"
@@ -249,6 +250,7 @@ Options parse_options(int argc, char** argv) {
                 << "  --max-cycles N       simulation timeout\n"
                 << "  --max-retires N      stop after N retired instructions\n"
                 << "  --reset-pc ADDRESS   reset PC and default hex load address\n"
+                << "  --require-icache-refill  fail if no ICache line refill occurs\n"
                 << "Hex files may use @ADDRESS to change the byte load address.\n";
             std::exit(0);
         } else {
@@ -259,10 +261,6 @@ Options parse_options(int argc, char** argv) {
 }
 
 void clear_tcm_init(Vo3_tandem_top& dut) {
-    dut.itcm_init_valid_i = 0;
-    dut.itcm_init_addr_i = 0;
-    dut.itcm_init_data_i = 0;
-    dut.itcm_init_wmask_i = 0;
     dut.dtcm_init_valid_i = 0;
     dut.dtcm_init_addr_i = 0;
     dut.dtcm_init_wdata_i = 0;
@@ -341,7 +339,6 @@ int main(int argc, char** argv) {
             options.reset_pc = image.entry;
         }
 
-        const std::vector<InitBeat> itcm_init = image.memory.init_beats(kItcmBase, kItcmBytes);
         const std::vector<InitBeat> dtcm_init = image.memory.init_beats(kDtcmBase, kDtcmBytes);
         const std::vector<InitBeat> axi_init = image.memory.init_beats(kAxiBase, kAxiBytes);
 
@@ -364,16 +361,9 @@ int main(int argc, char** argv) {
 
         const std::size_t init_cycles = std::max(
             static_cast<std::size_t>(kResetCycles),
-            std::max({itcm_init.size(), dtcm_init.size(), axi_init.size()}));
+            std::max(dtcm_init.size(), axi_init.size()));
         for (std::size_t init_cycle = 0; init_cycle < init_cycles; ++init_cycle) {
             clear_tcm_init(dut);
-            if (init_cycle < itcm_init.size()) {
-                const InitBeat& beat = itcm_init[init_cycle];
-                dut.itcm_init_valid_i = 1;
-                dut.itcm_init_addr_i = beat.addr;
-                dut.itcm_init_data_i = beat.data;
-                dut.itcm_init_wmask_i = beat.mask;
-            }
             if (init_cycle < dtcm_init.size()) {
                 const InitBeat& beat = dtcm_init[init_cycle];
                 dut.dtcm_init_valid_i = 1;
@@ -411,9 +401,13 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        std::cout << "[o3-memory] itcm_init_beats=" << itcm_init.size()
-                  << " dtcm_init_beats=" << dtcm_init.size()
-                  << " axi_init_beats=" << axi_init.size() << "\n";
+        if (options.require_icache_refill && dut.icache_refill_count_o == 0) {
+            throw std::runtime_error("no ICache refill observed");
+        }
+
+        std::cout << "[o3-memory] dtcm_init_beats=" << dtcm_init.size()
+                  << " axi_init_beats=" << axi_init.size()
+                  << " icache_refills=" << dut.icache_refill_count_o << "\n";
         std::cout << "[o3-tandem] PASS cycles=" << cycle
                   << " retired=" << next_order
                   << " trace=" << options.trace_path << "\n";

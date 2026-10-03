@@ -2,8 +2,8 @@
  * ICache: 64B whole-line interleaving over two banks, with an S0-S3
  * synchronous lookup pipeline (D10-D14).
  *
- * 当前实现状态：闭环简化（L1，含 cache 数据通路）
- * - S0 samples a demand and starts banked tag/data and ITCM reads. S1 holds
+ * 当前实现状态：闭环简化（L4，缓存取指闭环）
+ * - S0 samples a demand and starts banked tag/data reads. S1 holds
  *   the synchronous results; S2 registers tag comparisons; S3 selects data
  *   and returns the original FTQ/RQ identity. Uncontended hits accept one
  *   demand per cycle, including consecutive hits in the same bank.
@@ -14,10 +14,11 @@
  *   the full line, then publishes valid and responds. Independent hits can
  *   pass a pending miss (D13/D14). MSHR count/merge capacity remains below
  *   the provisional CFG count; a second miss waits in S3.
- * - The L1 physical-address/ITCM mode still bypasses ITLB, PMP and PMA.
+ * - The L1 physical-address mode still bypasses ITLB, PMP and PMA.
  *   Translation and protection must join S1-S3 before privileged execution;
  *   no claim is made that those checks are implemented. Prefetch, recall,
- *   epoch retirement and performance events are also pending.
+ *   epoch retirement and performance events are also pending. Inclusive
+ *   L2 recall drains lookup stages and invalidates the exact resident line.
  * - Tests: sim/cocotb/icache/. Whole-core closure: sim/o3/.
  *
  * Timing: N's S0 acceptance starts registered SRAM reads; N+1 S1 has their
@@ -32,9 +33,7 @@ module ICache
     parameter o3_cfg_pkg::frontend_cfg_t CFG,
     localparam int ADDR_WIDTH = o3_pkg::PC_WIDTH,
     localparam int ICACHE_BLOCK_SIZE_BYTES = CFG.icache.line_bytes,
-    localparam int FETCH_BYTES = CFG.fetch.region_bytes,
-    localparam logic [ADDR_WIDTH-1:0] ITCM_BASE = ADDR_WIDTH'(CFG.icache.itcm_base),
-    localparam int ITCM_BYTES = CFG.icache.itcm_bytes
+    localparam int FETCH_BYTES = CFG.fetch.region_bytes
 ) (
     input  logic clk,
     input  logic rst,
@@ -52,10 +51,6 @@ module ICache
     input  logic [ADDR_WIDTH-1:0] refill_resp_pc,
     input  logic refill_resp_error,
     input  logic [ICACHE_BLOCK_SIZE_BYTES*8-1:0] refill_resp_data,
-    input  logic itcm_init_valid_i,
-    input  logic [ADDR_WIDTH-1:0] itcm_init_addr_i,
-    input  logic [63:0] itcm_init_data_i,
-    input  logic [7:0] itcm_init_wmask_i,
     output logic out_valid,
     output logic out_hit,
     output logic [ADDR_WIDTH-1:0] out_pc,
@@ -113,7 +108,6 @@ module ICache
     localparam int TAG_W = PADDR_W - TAG_LSB;
     localparam int DATA_W = FETCH_BYTES * 8;
     localparam int DATA_ADDR_W = SET_W + WORD_W;
-    localparam int ITCM_WORD_W = $clog2(ITCM_BYTES / FETCH_BYTES);
 
     typedef logic [BANK_W-1:0] bank_idx_t;
     typedef logic [WAY_W-1:0] way_idx_t;
@@ -135,8 +129,6 @@ module ICache
         word_idx_t word_idx;
         tag_t tag;
         logic [WAYS-1:0] valid_bits;
-        logic itcm;
-        word_data_t itcm_data;
     } lookup_meta_t;
 
     initial begin
@@ -150,8 +142,6 @@ module ICache
             else $fatal(1, "ICache: current bank datapath requires 64B lines and 16B words/beats");
         assert (TAG_LSB <= PAGE_OFFSET_W)
             else $fatal(1, "ICache: VIPT bank/index bits escape the 4KiB page offset");
-        assert (ITCM_BYTES > 0 && ITCM_BYTES % FETCH_BYTES == 0)
-            else $fatal(1, "ICache: ITCM must contain whole fetch words");
     end
 
     // The global 64-set configuration means 32 sets in each bank:
@@ -161,7 +151,6 @@ module ICache
     set_idx_t req_set;
     word_idx_t req_word;
     tag_t req_tag;
-    logic req_itcm;
     logic s0_fire;
     logic s1_valid_q, s2_valid_q, s3_valid_q;
     logic s1_ready, s2_ready, s3_ready;
@@ -171,6 +160,7 @@ module ICache
     logic [WAYS-1:0] s3_way_hit_q;
 
     logic [BANKS-1:0][WAYS-1:0][SETS_PER_BANK-1:0] valid_q;
+    tag_t tag_shadow_q [BANKS][WAYS][SETS_PER_BANK];
     logic [TAG_W-1:0] tag_read_data [BANKS][WAYS];
     logic [DATA_W-1:0] data_read_data [BANKS][WAYS];
     logic [DATA_ADDR_W-1:0] data_read_addr, data_write_addr;
@@ -183,9 +173,6 @@ module ICache
     assign req_set = req_pa[7 +: SET_W];
     assign req_word = req_pa[4 +: WORD_W];
     assign req_tag = req_pa[PADDR_W-1:TAG_LSB];
-    assign req_itcm = (ADDR_WIDTH'(req_i.region_base) >= ITCM_BASE)
-                   && ((ADDR_WIDTH'(req_i.region_base) + ADDR_WIDTH'(FETCH_BYTES))
-                       <= ITCM_BASE + ADDR_WIDTH'(ITCM_BYTES));
     assign data_read_addr = {req_set, req_word};
     assign tag_read_addr = req_set;
 
@@ -205,10 +192,23 @@ module ICache
     paddr_t recent_line_q;
     logic [ICACHE_BLOCK_SIZE_BYTES*8-1:0] recent_data_q;
     logic inv_done_q;
+    l1i_recall_resp_t recall_resp_q;
+    logic recall_fire;
+    bank_idx_t recall_bank;
+    set_idx_t recall_set;
+    tag_t recall_tag;
 
     assign fill_write = (mstate_q == M_INSTALL);
     assign fill_last = fill_write && install_word_q == word_idx_t'(WORDS_PER_LINE - 1);
     assign data_write_addr = {m_set_q, install_word_q};
+    assign recall_bank = bank_idx_t'(recall_i.line_paddr[6]);
+    assign recall_set = set_idx_t'(recall_i.line_paddr[7 +: SET_W]);
+    assign recall_tag = tag_t'(recall_i.line_paddr[PADDR_W-1:TAG_LSB]);
+    assign recall_ready_o = !rst && !s1_valid_q && !s2_valid_q && !s3_valid_q
+        && (mstate_q == M_IDLE || m_line_q != recall_i.line_paddr)
+        && !recall_resp_q.valid;
+    assign recall_fire = recall_valid_i && recall_ready_o;
+    assign recall_resp_o = recall_resp_q;
 
     for (genvar bank = 0; bank < BANKS; bank++) begin : g_bank
         for (genvar way = 0; way < WAYS; way++) begin : g_way
@@ -219,7 +219,7 @@ module ICache
             o3_sram_1r1w #(.DATA_WIDTH(DATA_W), .ENTRIES(SETS_PER_BANK*WORDS_PER_LINE))
                 u_data (
                     .clk_i(clk),
-                    .read_en_i(s0_fire && !req_itcm && req_bank == bank_idx_t'(bank)),
+                    .read_en_i(s0_fire && req_bank == bank_idx_t'(bank)),
                     .read_addr_i(data_read_addr),
                     .read_data_o(data_read_data[bank][way]),
                     .write_en_i(data_write_en[bank][way]),
@@ -229,7 +229,7 @@ module ICache
             o3_sram_1r1w #(.DATA_WIDTH(TAG_W), .ENTRIES(SETS_PER_BANK))
                 u_tag (
                     .clk_i(clk),
-                    .read_en_i(s0_fire && !req_itcm && req_bank == bank_idx_t'(bank)),
+                    .read_en_i(s0_fire && req_bank == bank_idx_t'(bank)),
                     .read_addr_i(tag_read_addr),
                     .read_data_o(tag_read_data[bank][way]),
                     .write_en_i(tag_write_en[bank][way]),
@@ -239,42 +239,17 @@ module ICache
         end
     end
 
-    // ITCM is a 16B synchronous word store. Testbench initialization writes
-    // eight bytes at a time; normal fetches read one aligned word at S0.
-    word_data_t itcm_mem_q [0:ITCM_BYTES/FETCH_BYTES-1];
-    word_data_t itcm_read_q;
-    always_ff @(posedge clk) begin
-        if (itcm_init_valid_i) begin
-            for (int byte_idx = 0; byte_idx < 8; byte_idx++) begin
-                if (itcm_init_wmask_i[byte_idx]
-                  && itcm_init_addr_i + ADDR_WIDTH'(byte_idx) >= ITCM_BASE
-                  && itcm_init_addr_i + ADDR_WIDTH'(byte_idx) < ITCM_BASE + ADDR_WIDTH'(ITCM_BYTES)) begin
-                    itcm_mem_q[ITCM_WORD_W'(
-                        (itcm_init_addr_i + ADDR_WIDTH'(byte_idx) - ITCM_BASE) >> 4)]
-                              [7'((32'(itcm_init_addr_i[3:0]) + byte_idx) * 8) +: 8]
-                        <= itcm_init_data_i[byte_idx*8 +: 8];
-                end
-            end
-        end
-        if (s0_fire && req_itcm) begin
-            itcm_read_q <= itcm_mem_q[ITCM_WORD_W'(
-                (ADDR_WIDTH'(req_i.region_base)-ITCM_BASE) >> 4)];
-        end
-    end
-
     logic s3_recent_hit, s3_cache_hit, s3_hit, m_resp;
     word_data_t s3_selected_data;
     paddr_t s3_line;
     assign s3_line = line_addr(s3_meta_q.req.region_base);
     assign s3_recent_hit = recent_valid_q && s3_line == recent_line_q;
     assign s3_cache_hit = |s3_way_hit_q;
-    assign s3_hit = s3_meta_q.itcm || s3_cache_hit || s3_recent_hit;
+    assign s3_hit = s3_cache_hit || s3_recent_hit;
     assign m_resp = (mstate_q == M_RESP);
     always_comb begin
         s3_selected_data = '0;
-        if (s3_meta_q.itcm) begin
-            s3_selected_data = s3_meta_q.itcm_data;
-        end else if (s3_recent_hit) begin
+        if (s3_recent_hit) begin
             s3_selected_data = recent_data_q[s3_meta_q.word_idx*DATA_W +: DATA_W];
         end else begin
             for (int way = 0; way < WAYS; way++) begin
@@ -288,7 +263,7 @@ module ICache
     assign s3_ready = !s3_valid_q || (!m_resp && (s3_hit || mstate_q == M_IDLE));
     assign s2_ready = !s2_valid_q || s3_ready;
     assign s1_ready = !s1_valid_q || s2_ready;
-    assign req_ready_o = !rst && !inv_all_i && s1_ready
+    assign req_ready_o = !rst && !inv_all_i && !recall_valid_i && s1_ready
         && !(fill_write && req_bank == m_bank_q)
         && !(mstate_q != M_IDLE && {req_pa[PADDR_W-1:6], 6'b0} == m_line_q);
     assign s0_fire = req_valid_i && req_ready_o;
@@ -321,7 +296,6 @@ module ICache
                 s2_valid_q <= s1_valid_q;
                 if (s1_valid_q) begin
                     s2_meta_q <= s1_meta_q;
-                    s2_meta_q.itcm_data <= itcm_read_q;
                     for (int way = 0; way < WAYS; way++) begin
                         s2_tags_q[way] <= tag_read_data[s1_meta_q.bank][way];
                         s2_data_q[way] <= data_read_data[s1_meta_q.bank][way];
@@ -336,8 +310,6 @@ module ICache
                     s1_meta_q.set_idx <= req_set;
                     s1_meta_q.word_idx <= req_word;
                     s1_meta_q.tag <= req_tag;
-                    s1_meta_q.itcm <= req_itcm;
-                    s1_meta_q.itcm_data <= '0;
                     for (int way = 0; way < WAYS; way++) begin
                         s1_meta_q.valid_bits[way] <= valid_q[req_bank][way][req_set];
                     end
@@ -391,17 +363,31 @@ module ICache
             recent_line_q <= '0;
             recent_data_q <= '0;
             valid_q <= '0;
+            recall_resp_q <= '0;
             inv_done_q <= 1'b0;
         end else begin
             inv_done_q <= inv_all_i;
+            recall_resp_q.valid <= 1'b0;
             if (inv_all_i) begin
                 valid_q <= '0;
                 recent_valid_q <= 1'b0;
             end else if (fill_last) begin
                 valid_q[m_bank_q][m_way_q][m_set_q] <= 1'b1;
+                tag_shadow_q[m_bank_q][m_way_q][m_set_q] <= m_tag_q;
                 recent_valid_q <= 1'b1;
                 recent_line_q <= m_line_q;
                 recent_data_q <= m_data_q;
+            end
+            if (recall_fire) begin
+                for (int way = 0; way < WAYS; way++)
+                    if (valid_q[recall_bank][way][recall_set]
+                      && tag_shadow_q[recall_bank][way][recall_set] == recall_tag)
+                        valid_q[recall_bank][way][recall_set] <= 1'b0;
+                if (recent_valid_q && recent_line_q == recall_i.line_paddr)
+                    recent_valid_q <= 1'b0;
+                recall_resp_q.valid <= 1'b1;
+                recall_resp_q.recall_id <= recall_i.recall_id;
+                recall_resp_q.quiesced <= 1'b1;
             end
 
             case (mstate_q)
@@ -468,7 +454,5 @@ module ICache
     assign ptw_req_o = '0;
     assign pmp_update_done_o = 1'b0;
     assign sfence_done_o = 1'b0;
-    assign recall_ready_o = 1'b0;
-    assign recall_resp_o = '0;
     assign perf_o = '0;
 endmodule

@@ -11,7 +11,7 @@
  * - FTQ 身份改为 o3_types_pkg::ftq_id_t（idx + 代际），槽位在 ext.ftq_slot。
  *
  * 已删除：fetch_entry_t（迁入 o3_types_pkg）、FTQ_INDEX_WIDTH、ICACHE_LINE_BYTES、
- * ITCM_*（前端改由 CFG 提供）、DEFAULT_NUM_*。
+ * 旧 ITCM_* 常量与 DEFAULT_NUM_*。
  */
 
 package o3_pkg;
