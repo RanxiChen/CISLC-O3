@@ -50,6 +50,12 @@ make -C sim/cocotb/branch_recovery SIM=verilator TEST_SEED=1
 make -C sim/o3 run-rv64i-instructions
 ```
 
+Run the basic AXI-backed data gate after the same build:
+
+```sh
+make -C sim/o3 run-dcache-data
+```
+
 The branch image starts at `0x80000000`, retires a taken BEQ and a direct JAL,
 and requires both skipped wrong-path `addi` instructions to be absent from the
 retirement trace. This L2 closure retains the sequential predictor and the
