@@ -99,7 +99,7 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
 | `frontend/redirect_arbiter.sv` | **闭环简化（L2）**：执行误预测 R0 kill/重定向、R1 身份恢复、R2 重新分配 | 系统/预解码/慢预测多来源年龄仲裁待后级 | `sim/cocotb/branch_recovery/` Alan 1/1 PASS（`de9149d`） |
 | `frontend/fetch_buffer.sv` | **闭环简化（L2）**：执行重定向整体清空未交付项 | 预解码修正需要按 FTQ 身份/槽位选择性保留 | `sim/cocotb/branch_recovery/` Alan 1/1 PASS；整核 L2 PASS（`de9149d`） |
 | `frontend/frontend.sv` | 总装（连线） | L1 路径已接通；其余空壳仍待后级 | `sim/o3` Alan PASS |
-| `backend/backend.sv` 旧数据流 | **闭环简化（L2）**：INT/MEM/BR IQ、BRU 完整执行解析、checkpoint 恢复；taken branch/JAL 接前端重定向 | 正确解析仍保守暂停一拍；JALR/RVC、目标系统与其他执行路径待后级 | `sim/cocotb/branch_recovery/` 1/1、整核分支门禁 PASS（`de9149d`）；旧缓存路径 1/1 PASS（`1d2caeb`） |
+| `backend/backend.sv` 旧数据流 | **闭环简化（L3）**：INT/MEM/BR IQ、BRU 恢复、SQ/LSU→DCache；Memory IQ 可越过未就绪队头并受 replay 槽控制 | 正确解析仍保守暂停一拍；JALR/RVC、目标系统与其他执行路径待后级 | Alan `sim/cocotb/backend/` 1/1 PASS（`b15b4bc`），整核 smoke/分支/数据/replay 门禁 PASS（`7d59822`） |
 | `backend/rob.sv` | 实现 | `retire_info_o` 已在 `ENABLE_RETIRE_INFO` 下导出到 `o3_core` | — |
 | `core/o3_core.sv` | 总装（连线） | ICache/L2/AXI、直接控制流恢复及基础 DCache 数据路径已接通 | 整核 Alan smoke、分支及基础数据门禁 PASS（`6b4c540`） |
 | `sim/o3/` | 使用 `rtl/rtl.f`、SV AXI RAM、缓存镜像加载与 JSONL 退休轨迹；taken BEQ/JAL 与 DCache 数据门禁 | JALR/RVC、LQ replay、异常及并发访存后续扩展 | Alan smoke、分支及基础数据门禁 PASS（`6b4c540`） |
