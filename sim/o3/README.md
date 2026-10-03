@@ -54,6 +54,7 @@ Run the basic AXI-backed data gate after the same build:
 
 ```sh
 make -C sim/o3 run-dcache-data
+make -C sim/o3 run-dcache-replay
 ```
 
 The branch image starts at `0x80000000`, retires a taken BEQ and a direct JAL,
@@ -99,5 +100,8 @@ DMA, concurrent L2 misses, synthesis timing, or general ISA compliance.
 `run-dcache-data` separately checks one AXI-backed data line's load/store
 retirement through SQ, DCache and L2. It does not establish LQ replay,
 cross-line exceptions, FENCE.I, or multi-MSHR behavior.
+`run-dcache-replay` checks the separate single-slot conservative dependency
+replay gate; it does not imply multiple outstanding loads or speculation past
+an unknown-address older store.
 `tests/unified_memory.hex` remains a legacy software-memory image, not this
 AXI-backed data-path gate.

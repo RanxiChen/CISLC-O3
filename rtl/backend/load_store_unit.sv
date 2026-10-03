@@ -16,8 +16,10 @@
  * - 总原则（2026-10-02）：常规 load/store 流水不为一致性/A/D/LR/SC/回收增加流水级或组合检查，
  *   慢路径都在旁侧。
  * 待定：AGU 管线条数与 load/store 组合。
- * 当前缺口：只有单发射、单 Load 在途；DTCM + 单口外部 memory（旧合同）；无 DTLB/DCache/MSHR/异常；
- * 目标端口（t_*）均未驱动；内部尚未例化 dtlb、data_prefetcher 训练逻辑。
+ * 当前实现状态：闭环简化（L3）。单发射、单 Load 在途；DTCM 或已接线 DCache，
+ * SQ 查询命中完整覆盖时转发；一个依赖等待 replay 槽让 blocked load 让出执行级，
+ * SQ 变化后重查。尚无 DTLB/PMP/PMA、精确异常、多 load pending、MMIO/AMO。
+ * 测试：sim/cocotb/load_store_unit/；整核 sim/o3/。
  * Single-issue Load/Store execution unit with DTCM and external memory
  *
  * 输入已经完成PRF读取；组合AGU产生字节地址。Store把地址/数据/mask写入SQ并
@@ -70,6 +72,9 @@ module load_store_unit
     input logic [XLEN-1:0] sq_drain_addr_i,
     input logic [XLEN-1:0] sq_drain_data_i,
     input logic [7:0] sq_drain_mask_i,
+    input logic sq_change_i,  // SQ execute/drain/recovery changes dependency result
+    output logic replay_busy_o,
+    output logic replay_capture_o,
 
     output logic store_complete_valid_o,
     output logic [ROB_IDX_WIDTH-1:0] store_complete_rob_idx_o,
@@ -152,6 +157,9 @@ module load_store_unit
     logic [XLEN-1:0] memory_rsp_rdata;
     logic dcache_load_req;
     logic dcache_load_rsp;
+    mem_execute_uop_t replay_uop_q;
+    mem_execute_uop_t work_uop;
+    logic replay_valid_q, replay_check_q, replay_service;
 
     logic pending_valid_q;
     logic [INST_ID_WIDTH-1:0] pending_instruction_id_q;
@@ -229,16 +237,23 @@ module load_store_unit
         end
     endfunction
 
-    assign effective_addr = mem_uop_i.base_value + mem_uop_i.imm_value;
-    assign access_mask = size_mask(mem_uop_i.mem_size);
+    assign replay_service = replay_valid_q && replay_check_q && !mem_uop_i.valid;
+    assign work_uop = replay_service ? replay_uop_q : mem_uop_i;
+    assign replay_busy_o = replay_valid_q;
+    assign replay_capture_o = !replay_valid_q && mem_uop_i.valid
+                            && mem_uop_i.is_load && sq_query_block_i
+                            && !killed(mem_uop_i.branch_mask);
+    assign effective_addr = work_uop.base_value + work_uop.imm_value;
+    assign access_mask = size_mask(work_uop.mem_size);
     assign load_result_o = load_result_q;
 
-    assign lq_execute_valid_o = mem_uop_i.valid && mem_uop_i.is_load
-                              && !killed(mem_uop_i.branch_mask);
-    assign lq_execute_idx_o = mem_uop_i.lq_idx;
+    assign lq_execute_valid_o = work_uop.valid && work_uop.is_load
+                              && !killed(work_uop.branch_mask)
+                              && (!replay_valid_q || replay_service);
+    assign lq_execute_idx_o = work_uop.lq_idx;
     assign lq_execute_addr_o = effective_addr;
     assign sq_query_valid_o = lq_execute_valid_o;
-    assign sq_query_rob_idx_o = mem_uop_i.rob_idx;
+    assign sq_query_rob_idx_o = work_uop.rob_idx;
     assign sq_query_addr_o = effective_addr;
     assign sq_query_mask_o = access_mask;
 
@@ -257,7 +272,7 @@ module load_store_unit
     assign sram_req_addr = sq_drain_valid_i ? sq_drain_addr_i : effective_addr;
     assign sram_req_wdata = sq_drain_valid_i ? sq_drain_data_i : '0;
     assign sram_req_wmask = sq_drain_valid_i ? sq_drain_mask_i : access_mask;
-    assign sram_req_tag = {lq_execute_generation_i, mem_uop_i.lq_idx};
+    assign sram_req_tag = {lq_execute_generation_i, work_uop.lq_idx};
     assign memory_req_targets_dtcm = access_in_dtcm(sram_req_addr, sram_req_wmask);
     assign sram_req_valid = memory_req_valid && memory_req_targets_dtcm;
     assign sram_req_write = memory_req_write;
@@ -270,8 +285,8 @@ module load_store_unit
                 t_dc_ld_req_o[port] = '0;
                 t_dc_ld_req_o[port].src = o3_types_pkg::DC_SRC_LOAD;
                 t_dc_ld_req_o[port].paddr = o3_types_pkg::paddr_t'(effective_addr);
-                t_dc_ld_req_o[port].size = 2'(mem_uop_i.mem_size);
-                t_dc_ld_req_o[port].lq_tag.idx = o3_types_pkg::lq_idx_t'(mem_uop_i.lq_idx);
+                t_dc_ld_req_o[port].size = 2'(work_uop.mem_size);
+                t_dc_ld_req_o[port].lq_tag.idx = o3_types_pkg::lq_idx_t'(work_uop.lq_idx);
                 t_dc_ld_req_o[port].lq_tag.gen = o3_types_pkg::LQ_GEN_W'(lq_execute_generation_i);
             end
         end else begin : g_inactive
@@ -288,19 +303,20 @@ module load_store_unit
     assign sq_drain_ready_o = sq_drain_valid_i && memory_req_ready;
     assign load_request_fire = load_can_request && !sq_drain_valid_i && memory_req_ready;
     assign lq_request_fire_o = load_request_fire;
-    assign lq_request_idx_o = mem_uop_i.lq_idx;
+    assign lq_request_idx_o = work_uop.lq_idx;
 
     // Store在SQ成功接收AGU结果后即可离开；Load在转发或目标memory请求握手后离开。
     assign mem_ready_o = !mem_uop_i.valid
                        || (mem_uop_i.is_store && !killed(mem_uop_i.branch_mask))
-                       || load_forward_fire || load_request_fire
+                       || (!replay_valid_q && (replay_capture_o
+                           || load_forward_fire || load_request_fire))
                        || killed(mem_uop_i.branch_mask);
     assign sq_execute_valid_o = mem_uop_i.valid && mem_uop_i.is_store
                               && mem_ready_o && !killed(mem_uop_i.branch_mask);
     assign sq_execute_idx_o = mem_uop_i.sq_idx;
-    assign sq_execute_addr_o = effective_addr;
+    assign sq_execute_addr_o = mem_uop_i.base_value + mem_uop_i.imm_value;
     assign sq_execute_data_o = mem_uop_i.store_value;
-    assign sq_execute_mask_o = access_mask;
+    assign sq_execute_mask_o = size_mask(mem_uop_i.mem_size);
     assign store_complete_valid_o = sq_execute_valid_o;
     assign store_complete_rob_idx_o = mem_uop_i.rob_idx;
 
@@ -343,6 +359,9 @@ module load_store_unit
 
     always_ff @(posedge clk) begin
         if (rst) begin
+            replay_valid_q <= 1'b0;
+            replay_check_q <= 1'b0;
+            replay_uop_q <= '0;
             pending_valid_q <= 1'b0;
             pending_instruction_id_q <= '0;
 `ifdef O3_SIM
@@ -358,6 +377,31 @@ module load_store_unit
             pending_response_tag_q <= '0;
             load_result_q <= '0;
         end else begin
+            // A blocked load leaves the single execution register, preserving
+            // its renamed identity in one replay slot. SQ state changes (not
+            // a fixed timeout) enable the next dependency recheck. Stores may
+            // keep issuing while the load sleeps, so an older unknown-address
+            // store can execute and release the dependency.
+            if (replay_capture_o) begin
+                replay_valid_q <= 1'b1;
+                replay_check_q <= 1'b1;
+                replay_uop_q <= mem_uop_i;
+                replay_uop_q.branch_mask <= resolved_mask(mem_uop_i.branch_mask);
+            end else if (replay_valid_q) begin
+                if (killed(replay_uop_q.branch_mask)
+                 || (replay_service && (load_forward_fire || load_request_fire))) begin
+                    replay_valid_q <= 1'b0;
+                    replay_check_q <= 1'b0;
+                end else if (replay_service) begin
+                    // Dependency wait is event-driven; once cleared, cache/
+                    // result-slot backpressure is checked until acceptance.
+                    replay_check_q <= !sq_query_block_i || sq_change_i;
+                end else if (sq_change_i) begin
+                    replay_check_q <= 1'b1;
+                end
+                if (resolution_valid_i)
+                    replay_uop_q.branch_mask[resolution_tag_i] <= 1'b0;
+            end
             if (load_result_q.valid && load_result_ready_i) begin
                 load_result_q.valid <= 1'b0;
             end
@@ -372,16 +416,16 @@ module load_store_unit
 
             if (load_request_fire) begin
                 pending_valid_q <= 1'b1;
-                pending_instruction_id_q <= mem_uop_i.instruction_id;
+                pending_instruction_id_q <= work_uop.instruction_id;
 `ifdef O3_SIM
-                pending_kanata_id_q <= mem_uop_i.kanata_id;
+                pending_kanata_id_q <= work_uop.kanata_id;
 `endif
-                pending_rob_idx_q <= mem_uop_i.rob_idx;
-                pending_lq_idx_q <= mem_uop_i.lq_idx;
-                pending_dst_preg_q <= mem_uop_i.dst_preg;
-                pending_mem_size_q <= mem_uop_i.mem_size;
-                pending_mem_unsigned_q <= mem_uop_i.mem_unsigned;
-                pending_branch_mask_q <= resolved_mask(mem_uop_i.branch_mask);
+                pending_rob_idx_q <= work_uop.rob_idx;
+                pending_lq_idx_q <= work_uop.lq_idx;
+                pending_dst_preg_q <= work_uop.dst_preg;
+                pending_mem_size_q <= work_uop.mem_size;
+                pending_mem_unsigned_q <= work_uop.mem_unsigned;
+                pending_branch_mask_q <= resolved_mask(work_uop.branch_mask);
                 pending_external_q <= !memory_req_targets_dtcm;
                 pending_response_tag_q <= sram_req_tag;
             end
@@ -407,17 +451,35 @@ module load_store_unit
 
             if (load_forward_fire) begin
                 load_result_q.valid <= 1'b1;
-                load_result_q.instruction_id <= mem_uop_i.instruction_id;
+                load_result_q.instruction_id <= work_uop.instruction_id;
 `ifdef O3_SIM
-                load_result_q.kanata_id <= mem_uop_i.kanata_id;
+                load_result_q.kanata_id <= work_uop.kanata_id;
 `endif
-                load_result_q.rob_idx <= mem_uop_i.rob_idx;
-                load_result_q.lq_idx <= mem_uop_i.lq_idx;
-                load_result_q.dst_preg <= mem_uop_i.dst_preg;
+                load_result_q.rob_idx <= work_uop.rob_idx;
+                load_result_q.lq_idx <= work_uop.lq_idx;
+                load_result_q.dst_preg <= work_uop.dst_preg;
                 load_result_q.result <= format_load(
-                    sq_query_forward_data_i, mem_uop_i.mem_size, mem_uop_i.mem_unsigned);
-                load_result_q.branch_mask <= resolved_mask(mem_uop_i.branch_mask);
+                    sq_query_forward_data_i, work_uop.mem_size, work_uop.mem_unsigned);
+                load_result_q.branch_mask <= resolved_mask(work_uop.branch_mask);
             end
         end
     end
+
+    // L3 scope: maintenance, translation, AMO, precise exceptions and
+    // prefetch training are not routed through this single-load LSU yet.
+    assign t_ptw_req_valid_o = 1'b0;
+    assign t_ptw_req_o = '0;
+    assign t_sfence_done_o = 1'b0;
+    assign t_dc_st_req_valid_o = 1'b0; // committed stores enter DCache from SQ
+    assign t_dc_st_req_o = '0;
+    assign t_dc_amo_req_valid_o = 1'b0;
+    assign t_dc_amo_req_o = '0;
+    assign t_exc_valid_o = 1'b0;
+    assign t_exc_rob_idx_o = '0;
+    assign t_exc_o = '0;
+    assign t_pf_train_valid_o = 1'b0;
+    assign t_pf_train_pc_o = '0;
+    assign t_pf_train_paddr_o = '0;
+    assign t_pf_train_miss_o = 1'b0;
+    assign t_perf_o = '0;
 endmodule

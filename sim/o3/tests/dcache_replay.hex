@@ -1,0 +1,12 @@
+# Younger load is SQ-blocked until an older store receives data from a miss.
+@0x80000000
+00000097 # auipc x1,0
+10008093 # addi  x1,x1,256
+0000b383 # ld    x7,0(x1)     cache miss produces store data
+0070b423 # sd    x7,8(x1)     older store waits for x7
+0080b603 # ld    x12,8(x1)    younger load waits on unknown store address
+00160693 # addi  x13,x12,1
+
+@0x80000100
+44332211
+88776655

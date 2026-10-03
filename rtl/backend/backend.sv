@@ -353,6 +353,7 @@ module backend
     logic store_complete_valid;
     logic [BACKEND_ROB_IDX_WIDTH-1:0] store_complete_rob_idx;
     logic mem_execute_ready;
+    logic mem_replay_busy, mem_replay_capture;
 
 `ifdef O3_SIM
     logic [63:0] sim_cycle_q;
@@ -917,7 +918,7 @@ module backend
     backend_issue_queue #(.CFG(CFG), .KIND(o3_types_pkg::IQ_INT)) u_int_issue_queue (
         .clk(clk), .rst(rst), .enq_uop_i(int_iq_enq_uop),
         .enq_fire_i(dispatch_accept_count != '0), .free_count_o(int_iq_free_count),
-        .preg_ready_i(preg_ready_q), .wakeup_valid_i(prf_wr_en),
+        .preg_ready_i(preg_ready_q), .allow_load_i(1'b1), .wakeup_valid_i(prf_wr_en),
         .wakeup_preg_i(prf_wr_addr), .issue_uop_o(int_iq_issue_uop),
         .issue_valid_o(int_iq_issue_valid), .issue_ready_i(int_iq_issue_ready),
         .resolution_valid_i(branch_resolution_i.valid),
@@ -928,7 +929,9 @@ module backend
     backend_issue_queue #(.CFG(CFG), .KIND(o3_types_pkg::IQ_MEM)) u_mem_issue_queue (
         .clk(clk), .rst(rst), .enq_uop_i(mem_iq_enq_uop),
         .enq_fire_i(dispatch_accept_count != '0), .free_count_o(mem_iq_free_count),
-        .preg_ready_i(preg_ready_q), .wakeup_valid_i(prf_wr_en),
+        .preg_ready_i(preg_ready_q),
+        .allow_load_i(!mem_replay_busy && !mem_replay_capture),
+        .wakeup_valid_i(prf_wr_en),
         .wakeup_preg_i(prf_wr_addr), .issue_uop_o(mem_iq_issue_uop),
         .issue_valid_o(mem_iq_issue_valid), .issue_ready_i(mem_iq_issue_ready),
         .resolution_valid_i(branch_resolution_i.valid),
@@ -939,7 +942,7 @@ module backend
     backend_issue_queue #(.CFG(CFG), .KIND(o3_types_pkg::IQ_BR)) u_branch_issue_queue (
         .clk(clk), .rst(rst), .enq_uop_i(br_iq_enq_uop),
         .enq_fire_i(dispatch_accept_count != '0), .free_count_o(br_iq_free_count),
-        .preg_ready_i(preg_ready_q), .wakeup_valid_i(prf_wr_en),
+        .preg_ready_i(preg_ready_q), .allow_load_i(1'b1), .wakeup_valid_i(prf_wr_en),
         .wakeup_preg_i(prf_wr_addr), .issue_uop_o(br_iq_issue_uop),
         .issue_valid_o(br_iq_issue_valid), .issue_ready_i(br_iq_issue_ready),
         .resolution_valid_i(branch_resolution_i.valid),
@@ -965,6 +968,9 @@ module backend
         .sq_drain_valid_i(sq_drain_valid), .sq_drain_ready_o(sq_drain_ready),
         .sq_drain_addr_i(sq_drain_addr), .sq_drain_data_i(sq_drain_data),
         .sq_drain_mask_i(sq_drain_mask),
+        .sq_change_i(sq_execute_valid || (sq_drain_valid && sq_drain_ready)
+                   || t_sq_dc_resp.valid || branch_resolution_i.valid),
+        .replay_busy_o(mem_replay_busy), .replay_capture_o(mem_replay_capture),
         .store_complete_valid_o(store_complete_valid),
         .store_complete_rob_idx_o(store_complete_rob_idx),
         .load_result_o(load_result), .load_result_ready_i(load_result_consume),
@@ -1687,7 +1693,8 @@ module backend
     preg_ready_table   #(.CFG(CFG), .DOMAIN(o3_types_pkg::RD_FP)) u_fp_preg_ready_table (.clk(clk), .rst(rst));
     physical_regfile   #(.CFG(CFG), .DOMAIN(o3_types_pkg::RD_FP)) u_fp_physical_regfile (.clk(clk), .rst(rst));
     // FP IQ 组织未定（B14/B15），先放一个总队列实例。
-    backend_issue_queue #(.CFG(CFG), .KIND(o3_types_pkg::IQ_FP)) u_fp_issue_queue (.clk(clk), .rst(rst));
+    backend_issue_queue #(.CFG(CFG), .KIND(o3_types_pkg::IQ_FP)) u_fp_issue_queue (
+        .clk(clk), .rst(rst), .allow_load_i(1'b1));
 
     // ---------------- 整数 M FU（B21）+ 完成 FIFO / 提前唤醒（B33）+ 融合（B34） ----------------
     // 完成 FIFO 在 FU 包装内部例化（fu_completion_fifo）；FU 输出 FIFO 头、bypass 源与唤醒承诺。

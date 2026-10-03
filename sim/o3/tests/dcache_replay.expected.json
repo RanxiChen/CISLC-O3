@@ -1,0 +1,8 @@
+[
+  {"pc":"0x0080000000","instruction":"0x00000097","rd":1,"rd_write":true,"rd_wdata":"0x0000000080000000"},
+  {"pc":"0x0080000004","instruction":"0x10008093","rd":1,"rd_write":true,"rd_wdata":"0x0000000080000100"},
+  {"pc":"0x0080000008","instruction":"0x0000b383","rd":7,"rd_write":true,"rd_wdata":"0x8877665544332211"},
+  {"pc":"0x008000000c","instruction":"0x0070b423","rd":8,"rd_write":false,"rd_wdata":"0x0000000000000000"},
+  {"pc":"0x0080000010","instruction":"0x0080b603","rd":12,"rd_write":true,"rd_wdata":"0x8877665544332211"},
+  {"pc":"0x0080000014","instruction":"0x00160693","rd":13,"rd_write":true,"rd_wdata":"0x8877665544332212"}
+]

@@ -5,8 +5,8 @@
  * - 需要补充：第三源（FMA）ready；源寄存器域（INT/FP 两套 ready 表与唤醒广播）；
  *   多个写回域的 wakeup 输入；M FU 与 FP FU 的发射/占用约束（DIV 单请求迭代时不能连续发射，
  *   乘法完成端容量预留或可停顿流水的选择待讨论，B21）。
- * - OLDEST_ONLY：现状 Memory 实例只发射物理队头，规避单请求 LSU 死锁；B04 要求
- *   “已知无关的旧访存不应成为固定的队头阻塞原因”，replay 与未知地址策略落实后撤销。
+ * - L3 Memory 实例允许越过源未就绪的队头；LSU 的单项保守依赖 replay 槽占用时
+ *   暂停新 load 选择，但仍允许 store 发射解除依赖。没有推测越过未知 store 地址。
  * - 现有选择：最老 ready 优先，没有同拍 wakeup-select 旁路（保持）。
  * Generic backend Issue Queue
  *
@@ -23,8 +23,10 @@
  * - 不做写回同拍旁路、年龄矩阵、端口亲和性和多周期FU占用仲裁。
  * - 是否真正发射完全由每个实例的issue_ready_i决定；Integer实例接四路ALU，
  *   Integer/Memory/Branch实例均由共享读口和对应FU可用性回送ready。
- * - OLDEST_ONLY=1时只允许物理队头成为候选；当前Memory实例用它避免年轻Load
- *   占住唯一执行寄存器后等待尚未执行的老Store形成死锁。
+ * - OLDEST_ONLY=1时只允许物理队头成为候选；L3 Memory 实例设为 0，并由
+ *   allow_load_i 配合 LSU 单项 replay 槽避免年轻 Load 占住执行寄存器的死锁。
+ * 当前实现状态：闭环简化（L3）。Memory 单发射，可越过源未就绪队头；
+ * replay 槽占用时只选 store。测试：sim/cocotb/backend_issue_queue/。
  *
  * 周期N组合阶段更新ready视图、选择候选并计算压缩后的next状态；
  * 周期N上升沿原子删除已握手候选、追加Dispatch输入或执行恢复；
@@ -43,8 +45,7 @@ module backend_issue_queue
                          : (KIND == o3_types_pkg::IQ_BR)  ? CFG.dispatch.br_iq_depth
                          : CFG.dispatch.fp_iq_depth,
     localparam int NUM_PHYS_REGS = (KIND == o3_types_pkg::IQ_FP) ? CFG.rename.fp_phys_regs : CFG.rename.int_phys_regs,
-    // 现状：Memory IQ 只发射物理队头，规避单请求 LSU 死锁；B04 replay 落实后撤销。
-    localparam bit OLDEST_ONLY = (KIND == o3_types_pkg::IQ_MEM)
+    localparam bit OLDEST_ONLY = 1'b0
 ) (
     input  logic clk,
     input  logic rst,
@@ -53,6 +54,7 @@ module backend_issue_queue
     output logic [$clog2(DEPTH+1)-1:0] free_count_o,
 
     input  logic preg_ready_i [NUM_PHYS_REGS-1:0],
+    input  logic allow_load_i,  // Memory replay 槽已占用/将占用时仍可选 store
     input  logic wakeup_valid_i [WAKEUP_WIDTH-1:0],
     input  logic [PREG_IDX_WIDTH-1:0] wakeup_preg_i [WAKEUP_WIDTH-1:0],
     output renamed_uop_t [ISSUE_WIDTH-1:0] issue_uop_o,
@@ -107,6 +109,7 @@ module backend_issue_queue
             for (int idx = 0; idx < DEPTH; idx++) begin
                 if (!resolution_valid_i && (chosen < 0) && queue_q[idx].valid && !selected[idx]
                  && (!OLDEST_ONLY || (idx == 0))
+                 && (KIND != o3_types_pkg::IQ_MEM || !queue_q[idx].is_load || allow_load_i)
                  && (!queue_q[idx].rs1_read_en || src1_ready_q[idx])
                  && (!queue_q[idx].rs2_read_en || src2_ready_q[idx])) begin
                     chosen = idx;
