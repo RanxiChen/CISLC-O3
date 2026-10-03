@@ -1,54 +1,40 @@
-# CISLC-O3 Tandem trace simulation
+# L1 whole-core retirement simulation
 
-This is the new whole-core Verilator simulation entry. It drives the real
-frontend and backend through `o3_core`, loads a unified software memory from
-ELF64 or a word-oriented hex image, initializes local ITCM/DTCM windows, services
-out-of-range instruction/data requests, and writes retirement records to JSONL.
+This harness builds the current `o3_core` from the single RTL file list,
+`rtl/rtl.f`. The C++ loader accepts little-endian ELF64 `PT_LOAD` segments
+and word-oriented hex. Hex words load at `0x10000000` by default; `@ADDRESS`
+changes the byte address. While reset is asserted, the harness writes image
+bytes into ITCM/DTCM through their initialization ports and into the
+SystemVerilog AXI backing RAM at `0x80000000`–`0x800fffff`.
 
-The current step is a Tandem **trace producer only**. It does not launch Spike,
-compare architectural state with Spike, or emit Kanata events.
+Run the L1 gate:
 
-Run:
-
-```bash
-cd sim/o3
-make test
+```sh
+make -C sim/o3 build
+make -C sim/o3 run-smoke
 ```
 
-The default smoke image retires four independent RV64I instructions and writes
-`tandem.jsonl`. The same `make test` invocation also runs a 14-retirement
-directed program covering `LUI/AUIPC`, all nine RV64 word ALU instructions,
-taken `BEQ/JAL`, wrong-path removal, and JAL link writeback. Its stable fields
-are checked against `tests/rv64i_instructions.expected.json`. A third directed
-program starts from the 64 KiB ITCM at `0x10000000`, reads initialized data from
-the 256 KiB DTCM at `0x11000000`, and exercises external software-memory Load
-and Store at `0x12000000`. Exact route counters and retirement values are checked.
+`run-smoke` loads `tests/smoke.hex`, retires four independent `addi`
+instructions, writes `sim/o3/tandem.jsonl`, and compares its architectural
+fields with `tests/smoke.expected.json`. The required PCs are
+`0x10000000/04/08/0c`; writes to `x1..x4` must be `1/2/3/4`.
+The runner fails on timeout or a core fatal signal. Set `--max-cycles` when
+invoking the binary directly to adjust the timeout.
 
-The simulator also supports a self-checking software-memory mailbox through
-`--tohost-address ADDRESS`. A nonzero 64-bit value at that address stops the run;
-`1` returns success and any other value returns failure. The ACT4 integration in
-`verification/act4` uses this mode to run all generated unprivileged RV64I-I
-ELFs through the whole core. See `verification/act4/README.md` for its pinned
-toolchain, address map, and commands.
+Each JSONL retirement record keeps the v1 schema used by the existing
+`check_trace.py` and `*.expected.json`: `cycle`, `order`, `slot`,
+`instruction_id`, `rob_idx`, `pc`, `instruction`, `rd`, `rd_write`,
+and `rd_wdata`. Only actual ROB retirements are recorded.
 
-The loader accepts little-endian ELF64 `PT_LOAD` segments and uses the ELF entry
-point unless `--reset-pc` is given. Legacy hex remains supported; words are
-little-endian and `@0xADDRESS` changes the absolute byte load address. All image
-bytes remain in one sparse C++ backing memory. Bytes in ITCM/DTCM ranges are also
-written into RTL through initialization ports while reset is asserted.
+The AXI4 slave is written in SystemVerilog in `o3_tandem_top.sv`. It has
+one outstanding read and one outstanding write, byte strobes, bursts,
+parameterized read latency, and valid/ready backpressure. L1 smoke should
+hit ITCM and therefore does not validate the L2/AXI miss path.
 
-Every `retire` record is architectural and ordered: `order=0`
-is the oldest retired instruction. A cycle may contain up to four consecutive
-records in increasing slot order.
-
-The stable v1 fields are:
-
-- `cycle`, `order`, and retirement `slot`
-- internal diagnostic `instruction_id` and `rob_idx`
-- `pc` and raw `instruction`
-- `rd`, `rd_write`, and `rd_wdata`
-
-The retirement trace is not yet sufficient for full ISA differential testing.
-Memory addresses/effects are not yet present in the retirement record. Exceptions,
-CSRs, privilege state, and architectural next-PC will be added with their RTL
-retirement contracts.
+A passing smoke run proves only that the current straight-line ITCM
+instruction path reaches ordered retirement for these four instructions.
+It does not prove branch recovery, RVC, exceptions, DTCM or external memory,
+cache misses, or general ISA compliance. The old
+`tests/rv64i_instructions.hex`, `tests/unified_memory.hex`, expected JSON,
+and `check_trace.py` remain available for later L2/L3 migration; their
+Makefile targets are not L1 acceptance gates.

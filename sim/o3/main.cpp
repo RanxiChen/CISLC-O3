@@ -5,7 +5,6 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
-#include <deque>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -19,36 +18,21 @@
 namespace {
 
 constexpr int kResetCycles = 5;
-constexpr int kMemoryLatency = 2;
-constexpr int kLineBytes = 64;
-constexpr int kInstsPerLine = kLineBytes / 4;
 constexpr int kRetireWidth = 4;
 constexpr uint64_t kItcmBase = 0x10000000ull;
 constexpr uint64_t kItcmBytes = 0x00010000ull;
 constexpr uint64_t kDtcmBase = 0x11000000ull;
 constexpr uint64_t kDtcmBytes = 0x00040000ull;
+constexpr uint64_t kAxiBase = 0x80000000ull;
+constexpr uint64_t kAxiBytes = 0x00100000ull;
 
 struct Options {
     std::string image_path = "tests/smoke.hex";
     std::string trace_path = "tandem.jsonl";
     uint64_t max_cycles = 1000;
     uint64_t max_retires = 4;
-    uint64_t reset_pc = 0;
+    uint64_t reset_pc = kItcmBase;
     bool reset_pc_explicit = false;
-    bool check_memory_stats = false;
-    bool watch_tohost = false;
-    uint64_t tohost_address = 0;
-    std::array<uint64_t, 5> expected_memory_stats{};
-};
-
-struct PendingRefill {
-    uint64_t line_pc;
-    uint64_t ready_cycle;
-};
-
-struct PendingDataRead {
-    uint64_t addr;
-    uint64_t ready_cycle;
 };
 
 struct InitBeat {
@@ -131,22 +115,6 @@ uint64_t parse_u64(const std::string& text) {
         throw std::runtime_error("invalid integer: " + text);
     }
     return value;
-}
-
-std::array<uint64_t, 5> parse_memory_stats(const std::string& text) {
-    std::array<uint64_t, 5> values{};
-    std::istringstream parser(text);
-    std::string field;
-    for (std::size_t index = 0; index < values.size(); ++index) {
-        if (!std::getline(parser, field, ',')) {
-            throw std::runtime_error("memory stats require five comma-separated values");
-        }
-        values[index] = parse_u64(field);
-    }
-    if (std::getline(parser, field, ',')) {
-        throw std::runtime_error("memory stats require exactly five values");
-    }
-    return values;
 }
 
 uint64_t read_le(const std::vector<uint8_t>& data, std::size_t offset, int bytes) {
@@ -252,6 +220,9 @@ Options parse_options(int argc, char** argv) {
     Options options;
     for (int arg = 1; arg < argc; ++arg) {
         const std::string current = argv[arg];
+        if (!current.empty() && current.front() == '+') {
+            continue;  // Verilator plusargs, such as +L1_DEBUG.
+        }
         auto take_value = [&](const char* name) -> std::string {
             if (arg + 1 >= argc) {
                 throw std::runtime_error(std::string("missing value for ") + name);
@@ -270,13 +241,6 @@ Options parse_options(int argc, char** argv) {
         } else if (current == "--reset-pc") {
             options.reset_pc = parse_u64(take_value("--reset-pc"));
             options.reset_pc_explicit = true;
-        } else if (current == "--expect-memory-stats") {
-            options.expected_memory_stats = parse_memory_stats(
-                take_value("--expect-memory-stats"));
-            options.check_memory_stats = true;
-        } else if (current == "--tohost-address") {
-            options.tohost_address = parse_u64(take_value("--tohost-address"));
-            options.watch_tohost = true;
         } else if (current == "--help") {
             std::cout
                 << "Usage: Vo3_tandem_top [options]\n"
@@ -285,9 +249,6 @@ Options parse_options(int argc, char** argv) {
                 << "  --max-cycles N       simulation timeout\n"
                 << "  --max-retires N      stop after N retired instructions\n"
                 << "  --reset-pc ADDRESS   reset PC and default hex load address\n"
-                << "  --expect-memory-stats I,D,F,R,W\n"
-                << "                       require exact ITCM/DTCM init beats and external counts\n"
-                << "  --tohost-address A   stop on a nonzero software-memory write at A\n"
                 << "Hex files may use @ADDRESS to change the byte load address.\n";
             std::exit(0);
         } else {
@@ -295,27 +256,6 @@ Options parse_options(int argc, char** argv) {
         }
     }
     return options;
-}
-
-void clear_refill_response(Vo3_tandem_top& dut) {
-    dut.refill_resp_valid_i = 0;
-    dut.refill_resp_pc_i = 0;
-    dut.refill_resp_error_i = 0;
-    for (int word = 0; word < kInstsPerLine; ++word) {
-        dut.refill_resp_data_i[word] = 0;
-    }
-}
-
-void drive_refill_response(Vo3_tandem_top& dut,
-                           const SparseMemory& memory,
-                           uint64_t line_pc) {
-    dut.refill_resp_valid_i = 1;
-    dut.refill_resp_pc_i = line_pc;
-    dut.refill_resp_error_i = 0;
-    for (int word = 0; word < kInstsPerLine; ++word) {
-        dut.refill_resp_data_i[word] =
-            memory.read_instruction(line_pc + static_cast<uint64_t>(word * 4));
-    }
 }
 
 void clear_tcm_init(Vo3_tandem_top& dut) {
@@ -327,12 +267,20 @@ void clear_tcm_init(Vo3_tandem_top& dut) {
     dut.dtcm_init_addr_i = 0;
     dut.dtcm_init_wdata_i = 0;
     dut.dtcm_init_wmask_i = 0;
+    dut.axi_init_valid_i = 0;
+    dut.axi_init_addr_i = 0;
+    dut.axi_init_wmask_i = 0;
+    for (int word = 0; word < 4; ++word) dut.axi_init_data_i[word] = 0;
 }
 
-void clear_data_response(Vo3_tandem_top& dut) {
-    dut.dmem_rsp_valid_i = 0;
-    dut.dmem_rsp_rdata_i = 0;
-    dut.dmem_rsp_error_i = 0;
+void drive_axi_init(Vo3_tandem_top& dut, const InitBeat& beat) {
+    const unsigned byte_offset = static_cast<unsigned>(beat.addr & 0xfu);
+    dut.axi_init_valid_i = 1;
+    dut.axi_init_addr_i = beat.addr & ~uint64_t{0xf};
+    dut.axi_init_wmask_i = static_cast<uint16_t>(beat.mask) << byte_offset;
+    const unsigned word_offset = byte_offset / 4;
+    dut.axi_init_data_i[word_offset] = static_cast<uint32_t>(beat.data);
+    dut.axi_init_data_i[word_offset + 1] = static_cast<uint32_t>(beat.data >> 32);
 }
 
 void eval_low(Vo3_tandem_top& dut) {
@@ -395,6 +343,7 @@ int main(int argc, char** argv) {
 
         const std::vector<InitBeat> itcm_init = image.memory.init_beats(kItcmBase, kItcmBytes);
         const std::vector<InitBeat> dtcm_init = image.memory.init_beats(kDtcmBase, kDtcmBytes);
+        const std::vector<InitBeat> axi_init = image.memory.init_beats(kAxiBase, kAxiBytes);
 
         std::ofstream trace(options.trace_path, std::ios::trunc);
         if (!trace) {
@@ -404,27 +353,18 @@ int main(int argc, char** argv) {
               << "\"version\":1,\"xlen\":64,\"retire_width\":" << kRetireWidth << "}\n";
 
         Vo3_tandem_top dut;
-        std::deque<PendingRefill> pending_refills;
-        std::deque<PendingDataRead> pending_data_reads;
         uint64_t cycle = 0;
         uint64_t next_order = 0;
-        uint64_t external_ifetches = 0;
-        uint64_t external_data_reads = 0;
-        uint64_t external_data_writes = 0;
-        uint64_t tohost_value = 0;
 
         dut.clk_i = 0;
         dut.rst_i = 1;
-        dut.flush_i = 0;
         dut.reset_pc_i = options.reset_pc;
-        dut.dmem_req_ready_i = 1;
-        clear_refill_response(dut);
-        clear_data_response(dut);
         clear_tcm_init(dut);
         eval_low(dut);
 
         const std::size_t init_cycles = std::max(
-            static_cast<std::size_t>(kResetCycles), std::max(itcm_init.size(), dtcm_init.size()));
+            static_cast<std::size_t>(kResetCycles),
+            std::max({itcm_init.size(), dtcm_init.size(), axi_init.size()}));
         for (std::size_t init_cycle = 0; init_cycle < init_cycles; ++init_cycle) {
             clear_tcm_init(dut);
             if (init_cycle < itcm_init.size()) {
@@ -441,107 +381,39 @@ int main(int argc, char** argv) {
                 dut.dtcm_init_wdata_i = beat.data;
                 dut.dtcm_init_wmask_i = beat.mask;
             }
+            if (init_cycle < axi_init.size()) {
+                drive_axi_init(dut, axi_init[init_cycle]);
+            }
             rising_edge(dut);
         }
         clear_tcm_init(dut);
         dut.rst_i = 0;
 
-        while (cycle < options.max_cycles && next_order < options.max_retires
-            && tohost_value == 0) {
-            clear_refill_response(dut);
-            clear_data_response(dut);
-
-            if (!pending_refills.empty() && pending_refills.front().ready_cycle <= cycle) {
-                drive_refill_response(dut, image.memory, pending_refills.front().line_pc);
-                pending_refills.pop_front();
-            }
-            if (!pending_data_reads.empty()
-             && pending_data_reads.front().ready_cycle <= cycle) {
-                dut.dmem_rsp_valid_i = 1;
-                dut.dmem_rsp_rdata_i = image.memory.read64(pending_data_reads.front().addr);
-            }
-
+        while (cycle < options.max_cycles && next_order < options.max_retires) {
             eval_low(dut);
             emit_tandem_records(dut, trace, cycle, next_order);
-
-            if (dut.refill_req_valid_o) {
-                pending_refills.push_back(PendingRefill{
-                    .line_pc = dut.refill_req_pc_o,
-                    .ready_cycle = cycle + kMemoryLatency,
-                });
-                ++external_ifetches;
+            if (dut.fatal_o || dut.inclusion_err_o) {
+                throw std::runtime_error("core fatal/inclusion error at cycle "
+                                         + std::to_string(cycle));
             }
-
-            if (dut.dmem_req_valid_o && dut.dmem_req_ready_i) {
-                if (dut.dmem_req_write_o) {
-                    image.memory.write64(dut.dmem_req_addr_o,
-                                         dut.dmem_req_wdata_o,
-                                         static_cast<uint8_t>(dut.dmem_req_wmask_o));
-                    ++external_data_writes;
-                    if (options.watch_tohost
-                     && dut.dmem_req_addr_o <= options.tohost_address
-                     && options.tohost_address < dut.dmem_req_addr_o + 8) {
-                        tohost_value = image.memory.read64(options.tohost_address);
-                    }
-                } else {
-                    pending_data_reads.push_back(PendingDataRead{
-                        .addr = dut.dmem_req_addr_o,
-                        .ready_cycle = cycle + kMemoryLatency,
-                    });
-                    ++external_data_reads;
-                }
-            }
-
-            const bool data_response_fire = dut.dmem_rsp_valid_i && dut.dmem_rsp_ready_o;
             rising_edge(dut);
-            if (data_response_fire) {
-                pending_data_reads.pop_front();
-            }
             ++cycle;
         }
 
         dut.final();
         trace.flush();
 
-        if (options.watch_tohost && tohost_value != 0) {
-            std::cout << "[o3-tohost] value=0x" << std::hex << tohost_value << std::dec
-                      << " status=" << (tohost_value == 1 ? "PASS" : "FAIL") << "\n";
-            if (tohost_value != 1) {
-                return 1;
-            }
-        } else if (next_order < options.max_retires) {
+        if (next_order < options.max_retires) {
             std::cerr << "[o3-tandem] timeout: cycles=" << cycle
                       << " retired=" << next_order
-                      << " expected=" << options.max_retires
-                      << " external_ifetches=" << external_ifetches
-                      << " external_data_reads=" << external_data_reads
-                      << " external_data_writes=" << external_data_writes;
-            if (options.watch_tohost) {
-                std::cerr << " tohost=0x0";
-            }
+                      << " expected=" << options.max_retires;
             std::cerr << "\n";
-            return 1;
-        }
-
-        const std::array<uint64_t, 5> memory_stats{
-            itcm_init.size(), dtcm_init.size(), external_ifetches,
-            external_data_reads, external_data_writes};
-        if (options.check_memory_stats && memory_stats != options.expected_memory_stats) {
-            std::cerr << "[o3-memory] stats mismatch actual="
-                      << memory_stats[0] << ',' << memory_stats[1] << ',' << memory_stats[2]
-                      << ',' << memory_stats[3] << ',' << memory_stats[4] << " expected="
-                      << options.expected_memory_stats[0] << ',' << options.expected_memory_stats[1]
-                      << ',' << options.expected_memory_stats[2] << ','
-                      << options.expected_memory_stats[3] << ','
-                      << options.expected_memory_stats[4] << "\n";
             return 1;
         }
 
         std::cout << "[o3-memory] itcm_init_beats=" << itcm_init.size()
                   << " dtcm_init_beats=" << dtcm_init.size()
-                  << " external_ifetches=" << external_ifetches
-                  << " external_data_reads=" << external_data_reads
-                  << " external_data_writes=" << external_data_writes << "\n";
+                  << " axi_init_beats=" << axi_init.size() << "\n";
         std::cout << "[o3-tandem] PASS cycles=" << cycle
                   << " retired=" << next_order
                   << " trace=" << options.trace_path << "\n";

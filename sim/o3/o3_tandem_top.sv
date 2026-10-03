@@ -1,113 +1,269 @@
-/**
- * CISLC-O3 Verilator Tandem trace top
- *
- * 当前已经实现：
- * - 实例化完整o3_core，并透传时钟、复位、TCM初始化与软件memory接口。
- * - 将core已有的packed retire_info拆成每个退休lane独立的基础类型端口，
- *   避免C++仿真器依赖SystemVerilog packed struct的位布局。
- * - 输出只描述已经从ROB队头按序退休的体系结构结果，不暴露推测状态。
- *
- * 当前没有实现：
- * - 不运行Spike或其他参考模型，不在RTL内判断执行结果是否正确。
- * - 不输出Load/Store地址、异常、CSR或特权级信息。
- * - 不输出Kanata或任何微架构阶段事件。
- *
- * 逐周期说明：
- * - 周期N组合阶段，core的ROB给出本拍可以退休的连续前缀，本模块将其展开。
- * - 周期N上升沿，ROB真正释放这些表项；外部驱动必须在上升沿前采样本拍记录。
- * - 周期N+1，输出对应新的ROB队头，旧记录不会再次出现。
+/** L1 whole-core retirement observer. AXI RAM is always connected, even when
+ * all smoke fetches hit ITCM. Retirement is exported as scalar lane fields.
  */
 module o3_tandem_top
+    import o3_types_pkg::*;
     import o3_pkg::*;
-(
-    input  logic clk_i,
-    input  logic rst_i,
-    input  logic flush_i,
-    input  logic [PC_WIDTH-1:0] reset_pc_i,
-
-    output logic [PC_WIDTH-1:0] refill_req_pc_o,
-    output logic                refill_req_valid_o,
-    input  logic                refill_resp_valid_i,
-    input  logic [PC_WIDTH-1:0] refill_resp_pc_i,
-    input  logic                refill_resp_error_i,
-    input  logic [ICACHE_LINE_BYTES*8-1:0] refill_resp_data_i,
-
-    input  logic                         itcm_init_valid_i,
-    input  logic [PC_WIDTH-1:0]          itcm_init_addr_i,
-    input  logic [63:0]                  itcm_init_data_i,
-    input  logic [7:0]                   itcm_init_wmask_i,
-    input  logic                         dtcm_init_valid_i,
-    input  logic [XLEN-1:0]              dtcm_init_addr_i,
-    input  logic [XLEN-1:0]              dtcm_init_wdata_i,
-    input  logic [7:0]                   dtcm_init_wmask_i,
-
-    output logic                         dmem_req_valid_o,
-    input  logic                         dmem_req_ready_i,
-    output logic                         dmem_req_write_o,
-    output logic [XLEN-1:0]              dmem_req_addr_o,
-    output logic [XLEN-1:0]              dmem_req_wdata_o,
-    output logic [7:0]                   dmem_req_wmask_o,
-    input  logic                         dmem_rsp_valid_i,
-    output logic                         dmem_rsp_ready_o,
-    input  logic [XLEN-1:0]              dmem_rsp_rdata_i,
-    input  logic                         dmem_rsp_error_i,
-
-    output logic done_o,
+#(
+    localparam int AXI_ID_W = o3_cfg_pkg::O3_CFG.be.l2.axi_id_bits,
+    localparam int AXI_DATA_W = o3_cfg_pkg::O3_CFG.be.l2.axi_data_bits
+) (
+    input logic clk_i, rst_i,
+    input logic [PC_WIDTH-1:0] reset_pc_i,
+    input logic itcm_init_valid_i,
+    input logic [PC_WIDTH-1:0] itcm_init_addr_i,
+    input logic [63:0] itcm_init_data_i,
+    input logic [7:0] itcm_init_wmask_i,
+    input logic dtcm_init_valid_i,
+    input logic [XLEN-1:0] dtcm_init_addr_i, dtcm_init_wdata_i,
+    input logic [7:0] dtcm_init_wmask_i,
+    input logic axi_init_valid_i,
+    input logic [PADDR_W-1:0] axi_init_addr_i,
+    input logic [AXI_DATA_W-1:0] axi_init_data_i,
+    input logic [AXI_DATA_W/8-1:0] axi_init_wmask_i,
+    output logic done_o, fatal_o, inclusion_err_o,
     output logic [63:0] retired_inst_count_o,
-
-    output logic [BACKEND_NUM_INT_ALUS-1:0] tandem_valid_o,
-    output logic [BACKEND_NUM_INT_ALUS-1:0] tandem_rd_write_o,
-    output logic [INST_ID_WIDTH-1:0] tandem_instruction_id_o [BACKEND_NUM_INT_ALUS-1:0],
-    output logic [ROB_IDX_WIDTH-1:0] tandem_rob_idx_o [BACKEND_NUM_INT_ALUS-1:0],
-    output logic [PC_WIDTH-1:0] tandem_pc_o [BACKEND_NUM_INT_ALUS-1:0],
-    output logic [ILEN-1:0] tandem_instruction_o [BACKEND_NUM_INT_ALUS-1:0],
-    output logic [REG_ADDR_WIDTH-1:0] tandem_rd_o [BACKEND_NUM_INT_ALUS-1:0],
-    output logic [XLEN-1:0] tandem_rd_wdata_o [BACKEND_NUM_INT_ALUS-1:0]
+    output logic [o3_cfg_pkg::O3_CFG.core.commit_width-1:0] tandem_valid_o,
+    output logic [o3_cfg_pkg::O3_CFG.core.commit_width-1:0] tandem_rd_write_o,
+    output logic [INST_ID_WIDTH-1:0] tandem_instruction_id_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
+    output logic [ROB_IDX_WIDTH-1:0] tandem_rob_idx_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
+    output logic [PC_WIDTH-1:0] tandem_pc_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
+    output logic [ILEN-1:0] tandem_instruction_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
+    output logic [REG_ADDR_WIDTH-1:0] tandem_rd_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
+    output logic [XLEN-1:0] tandem_rd_wdata_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0]
 );
-    retire_info_t retire_info [BACKEND_NUM_INT_ALUS-1:0];
+    localparam int RETIRE_W = o3_cfg_pkg::O3_CFG.core.commit_width;
+    retire_info_t retire_info [RETIRE_W-1:0];
+    logic awvalid, awready, wvalid, wready, bvalid, bready;
+    logic arvalid, arready, rvalid, rready, wlast, rlast;
+    logic [AXI_ID_W-1:0] awid, bid, arid, rid;
+    logic [PADDR_W-1:0] awaddr, araddr;
+    logic [7:0] awlen, arlen;
+    logic [2:0] awsize, arsize;
+    logic [1:0] awburst, arburst, bresp, rresp;
+    logic [AXI_DATA_W-1:0] wdata, rdata;
+    logic [AXI_DATA_W/8-1:0] wstrb;
 
     o3_core u_core (
-        .clk_i                (clk_i),
-        .rst_i                (rst_i),
-        .flush_i              (flush_i),
-        .reset_pc_i           (reset_pc_i),
-        .refill_req_pc_o      (refill_req_pc_o),
-        .refill_req_valid_o   (refill_req_valid_o),
-        .refill_resp_valid_i  (refill_resp_valid_i),
-        .refill_resp_pc_i     (refill_resp_pc_i),
-        .refill_resp_error_i  (refill_resp_error_i),
-        .refill_resp_data_i   (refill_resp_data_i),
-        .itcm_init_valid_i    (itcm_init_valid_i),
-        .itcm_init_addr_i     (itcm_init_addr_i),
-        .itcm_init_data_i     (itcm_init_data_i),
-        .itcm_init_wmask_i    (itcm_init_wmask_i),
-        .dtcm_init_valid_i    (dtcm_init_valid_i),
-        .dtcm_init_addr_i     (dtcm_init_addr_i),
-        .dtcm_init_wdata_i    (dtcm_init_wdata_i),
-        .dtcm_init_wmask_i    (dtcm_init_wmask_i),
-        .dmem_req_valid_o     (dmem_req_valid_o),
-        .dmem_req_ready_i     (dmem_req_ready_i),
-        .dmem_req_write_o     (dmem_req_write_o),
-        .dmem_req_addr_o      (dmem_req_addr_o),
-        .dmem_req_wdata_o     (dmem_req_wdata_o),
-        .dmem_req_wmask_o     (dmem_req_wmask_o),
-        .dmem_rsp_valid_i     (dmem_rsp_valid_i),
-        .dmem_rsp_ready_o     (dmem_rsp_ready_o),
-        .dmem_rsp_rdata_i     (dmem_rsp_rdata_i),
-        .dmem_rsp_error_i     (dmem_rsp_error_i),
-        .done_o               (done_o),
-        .retired_inst_count_o (retired_inst_count_o),
-        .retire_info_o        (retire_info)
+        .clk_i(clk_i), .rst_i(rst_i), .reset_pc_i(reset_pc_i),
+        .m_axi_awvalid(awvalid), .m_axi_awready(awready), .m_axi_awid(awid),
+        .m_axi_awaddr(awaddr), .m_axi_awlen(awlen), .m_axi_awsize(awsize),
+        .m_axi_awburst(awburst),
+        .m_axi_wvalid(wvalid), .m_axi_wready(wready), .m_axi_wdata(wdata),
+        .m_axi_wstrb(wstrb), .m_axi_wlast(wlast),
+        .m_axi_bvalid(bvalid), .m_axi_bready(bready), .m_axi_bid(bid), .m_axi_bresp(bresp),
+        .m_axi_arvalid(arvalid), .m_axi_arready(arready), .m_axi_arid(arid),
+        .m_axi_araddr(araddr), .m_axi_arlen(arlen), .m_axi_arsize(arsize),
+        .m_axi_arburst(arburst),
+        .m_axi_rvalid(rvalid), .m_axi_rready(rready), .m_axi_rid(rid),
+        .m_axi_rdata(rdata), .m_axi_rresp(rresp), .m_axi_rlast(rlast),
+        .dma_req_valid_i(1'b0), .dma_req_ready_o(), .dma_req_i('0), .dma_resp_o(),
+        .irq_m_ext_i(1'b0), .irq_m_timer_i(1'b0),
+        .irq_m_soft_i(1'b0), .irq_s_ext_i(1'b0),
+        .itcm_init_valid_i(itcm_init_valid_i), .itcm_init_addr_i(itcm_init_addr_i),
+        .itcm_init_data_i(itcm_init_data_i), .itcm_init_wmask_i(itcm_init_wmask_i),
+        .dtcm_init_valid_i(dtcm_init_valid_i), .dtcm_init_addr_i(dtcm_init_addr_i),
+        .dtcm_init_wdata_i(dtcm_init_wdata_i), .dtcm_init_wmask_i(dtcm_init_wmask_i),
+        .fatal_o(fatal_o), .inclusion_err_o(inclusion_err_o),
+        .done_o(done_o), .retired_inst_count_o(retired_inst_count_o),
+        .retire_info_o(retire_info)
     );
-
-    for (genvar lane = 0; lane < BACKEND_NUM_INT_ALUS; lane++) begin : gen_tandem_retire
-        assign tandem_valid_o[lane]          = retire_info[lane].valid;
-        assign tandem_rd_write_o[lane]       = retire_info[lane].rd_write_en;
+    o3_axi_ram #(.ADDR_W(PADDR_W), .ID_W(AXI_ID_W), .DATA_W(AXI_DATA_W)) u_axi_ram (
+        .clk_i(clk_i), .rst_i(rst_i),
+        .init_valid_i(axi_init_valid_i), .init_addr_i(axi_init_addr_i),
+        .init_data_i(axi_init_data_i), .init_wmask_i(axi_init_wmask_i),
+        .awvalid_i(awvalid), .awready_o(awready), .awid_i(awid),
+        .awaddr_i(awaddr), .awlen_i(awlen), .awsize_i(awsize), .awburst_i(awburst),
+        .wvalid_i(wvalid), .wready_o(wready), .wdata_i(wdata), .wstrb_i(wstrb), .wlast_i(wlast),
+        .bvalid_o(bvalid), .bready_i(bready), .bid_o(bid), .bresp_o(bresp),
+        .arvalid_i(arvalid), .arready_o(arready), .arid_i(arid),
+        .araddr_i(araddr), .arlen_i(arlen), .arsize_i(arsize), .arburst_i(arburst),
+        .rvalid_o(rvalid), .rready_i(rready), .rid_o(rid), .rdata_o(rdata),
+        .rresp_o(rresp), .rlast_o(rlast)
+    );
+    for (genvar lane = 0; lane < RETIRE_W; lane++) begin : gen_retire
+        assign tandem_valid_o[lane] = retire_info[lane].valid;
+        assign tandem_rd_write_o[lane] = retire_info[lane].rd_write_en;
         assign tandem_instruction_id_o[lane] = retire_info[lane].instruction_id;
-        assign tandem_rob_idx_o[lane]        = retire_info[lane].rob_idx;
-        assign tandem_pc_o[lane]             = retire_info[lane].pc;
-        assign tandem_instruction_o[lane]    = retire_info[lane].instruction;
-        assign tandem_rd_o[lane]             = retire_info[lane].rd;
-        assign tandem_rd_wdata_o[lane]       = retire_info[lane].rd_wdata;
+        assign tandem_rob_idx_o[lane] = retire_info[lane].rob_idx;
+        assign tandem_pc_o[lane] = retire_info[lane].pc;
+        assign tandem_instruction_o[lane] = retire_info[lane].instruction;
+        assign tandem_rd_o[lane] = retire_info[lane].rd;
+        assign tandem_rd_wdata_o[lane] = retire_info[lane].rd_wdata;
+    end
+
+    int unsigned debug_cycle_q;
+    always_ff @(posedge clk_i) begin
+        if (rst_i) debug_cycle_q <= 0;
+        else begin
+            if ($test$plusargs("L1_DEBUG") && debug_cycle_q < 40)
+                $display("[l1-fe] cycle=%0d alloc=%b/%b hold=%b recover=%b kill=%b demand=%b/%b rq=%b resp=%b deq=%b f0=%h f1=%h ibuf=%b be_ready=%b retired=%0d",
+                    debug_cycle_q,
+                    u_core.u_frontend.alloc_valid, u_core.u_frontend.alloc_ready,
+                    u_core.u_frontend.sync_hold, u_core.u_frontend.recover_busy,
+                    u_core.u_frontend.fe_kill.valid,
+                    u_core.u_frontend.demand_valid, u_core.u_frontend.demand_ready,
+                    u_core.u_frontend.rq_rsv_ready,
+                    u_core.u_frontend.icache_resp.valid,
+                    u_core.u_frontend.rq_deq_valid,
+                    u_core.u_frontend.f0_valid, u_core.u_frontend.f1_valid,
+                    u_core.fe_deliver_valid, u_core.be_fetch_ready,
+                    retired_inst_count_o);
+            debug_cycle_q <= debug_cycle_q + 1;
+        end
+    end
+endmodule
+
+/** Single outstanding AXI4 read and write transaction, backed by 1 MiB RAM.
+ * READ_LATENCY and READY_STALL_PERIOD provide deterministic delay/backpressure.
+ * R and B payloads remain stable until the master accepts them.
+ */
+module o3_axi_ram #(
+    parameter int ADDR_W = 40, ID_W = 4, DATA_W = 128,
+    parameter int RAM_BYTES = 1 << 20,
+    parameter int READ_LATENCY = 2,
+    parameter int READY_STALL_PERIOD = 0
+) (
+    input logic clk_i, rst_i,
+    input logic init_valid_i,
+    input logic [ADDR_W-1:0] init_addr_i,
+    input logic [DATA_W-1:0] init_data_i,
+    input logic [DATA_W/8-1:0] init_wmask_i,
+    input logic awvalid_i,
+    output logic awready_o,
+    input logic [ID_W-1:0] awid_i,
+    input logic [ADDR_W-1:0] awaddr_i,
+    input logic [7:0] awlen_i,
+    input logic [2:0] awsize_i,
+    input logic [1:0] awburst_i,
+    input logic wvalid_i,
+    output logic wready_o,
+    input logic [DATA_W-1:0] wdata_i,
+    input logic [DATA_W/8-1:0] wstrb_i,
+    input logic wlast_i,
+    output logic bvalid_o,
+    input logic bready_i,
+    output logic [ID_W-1:0] bid_o,
+    output logic [1:0] bresp_o,
+    input logic arvalid_i,
+    output logic arready_o,
+    input logic [ID_W-1:0] arid_i,
+    input logic [ADDR_W-1:0] araddr_i,
+    input logic [7:0] arlen_i,
+    input logic [2:0] arsize_i,
+    input logic [1:0] arburst_i,
+    output logic rvalid_o,
+    input logic rready_i,
+    output logic [ID_W-1:0] rid_o,
+    output logic [DATA_W-1:0] rdata_o,
+    output logic [1:0] rresp_o,
+    output logic rlast_o
+);
+    localparam int BEAT_BYTES = DATA_W / 8;
+    localparam int RAM_WORDS = RAM_BYTES / BEAT_BYTES;
+    localparam logic [ADDR_W-1:0] RAM_BASE = ADDR_W'(32'h8000_0000);
+    localparam int PHASE_W = (READY_STALL_PERIOD < 2) ? 1 : $clog2(READY_STALL_PERIOD);
+    logic [DATA_W-1:0] ram [RAM_WORDS];
+    logic [PHASE_W-1:0] ready_phase_q;
+    logic accept_window;
+    logic write_active_q, read_active_q;
+    logic [ADDR_W-1:0] write_addr_q, read_addr_q;
+    logic [7:0] write_left_q, read_left_q;
+    logic [2:0] write_size_q, read_size_q;
+    logic [ID_W-1:0] write_id_q, read_id_q;
+    logic write_error_q, read_error_q;
+    int unsigned read_delay_q;
+
+    function automatic logic in_range(input logic [ADDR_W-1:0] addr);
+        return addr >= RAM_BASE && addr < RAM_BASE + ADDR_W'(RAM_BYTES);
+    endfunction
+    function automatic int unsigned word_index(input logic [ADDR_W-1:0] addr);
+        return int'((addr - RAM_BASE) / ADDR_W'(BEAT_BYTES));
+    endfunction
+    assign accept_window = (READY_STALL_PERIOD <= 1) || (ready_phase_q != '0);
+    assign awready_o = !write_active_q && !bvalid_o && accept_window;
+    assign wready_o = write_active_q && !bvalid_o && accept_window;
+    assign arready_o = !read_active_q && accept_window;
+    assign rvalid_o = read_active_q && (read_delay_q == 0);
+    assign rlast_o = rvalid_o && (read_left_q == 0);
+    assign rid_o = read_id_q;
+    assign rresp_o = (read_error_q || !in_range(read_addr_q)) ? 2'b10 : 2'b00;
+    assign rdata_o = in_range(read_addr_q) ? ram[word_index(read_addr_q)] : '0;
+
+    always_ff @(posedge clk_i) begin
+        if (rst_i) begin
+            ready_phase_q <= '0;
+            write_active_q <= 1'b0;
+            read_active_q <= 1'b0;
+            write_addr_q <= '0;
+            read_addr_q <= '0;
+            write_left_q <= '0;
+            read_left_q <= '0;
+            write_size_q <= '0;
+            read_size_q <= '0;
+            write_id_q <= '0;
+            read_id_q <= '0;
+            write_error_q <= 1'b0;
+            read_error_q <= 1'b0;
+            read_delay_q <= 0;
+            bvalid_o <= 1'b0;
+            bid_o <= '0;
+            bresp_o <= 2'b00;
+        end else begin
+            if (READY_STALL_PERIOD > 0)
+                ready_phase_q <= (ready_phase_q == PHASE_W'(READY_STALL_PERIOD - 1))
+                               ? '0 : ready_phase_q + 1'b1;
+            if (awvalid_i && awready_o) begin
+                write_active_q <= 1'b1;
+                write_addr_q <= awaddr_i;
+                write_left_q <= awlen_i;
+                write_size_q <= awsize_i;
+                write_id_q <= awid_i;
+                write_error_q <= (awburst_i != 2'b01);
+            end
+            if (wvalid_i && wready_o) begin
+                if (in_range(write_addr_q)) begin
+                    for (int byte_idx = 0; byte_idx < BEAT_BYTES; byte_idx++)
+                        if (wstrb_i[byte_idx])
+                            ram[word_index(write_addr_q)][8*byte_idx +: 8]
+                                <= wdata_i[8*byte_idx +: 8];
+                end else write_error_q <= 1'b1;
+                if (write_left_q == 0 || wlast_i) begin
+                    write_active_q <= 1'b0;
+                    bvalid_o <= 1'b1;
+                    bid_o <= write_id_q;
+                    bresp_o <= (write_error_q || !in_range(write_addr_q)
+                             || (wlast_i != (write_left_q == 0))) ? 2'b10 : 2'b00;
+                end else begin
+                    write_left_q <= write_left_q - 1'b1;
+                    write_addr_q <= write_addr_q + (ADDR_W'(1) << write_size_q);
+                end
+            end
+            if (bvalid_o && bready_i) bvalid_o <= 1'b0;
+            if (arvalid_i && arready_o) begin
+                read_active_q <= 1'b1;
+                read_addr_q <= araddr_i;
+                read_left_q <= arlen_i;
+                read_size_q <= arsize_i;
+                read_id_q <= arid_i;
+                read_error_q <= (arburst_i != 2'b01);
+                read_delay_q <= READ_LATENCY;
+            end else if (read_active_q) begin
+                if (read_delay_q != 0) read_delay_q <= read_delay_q - 1;
+                else if (rvalid_o && rready_i) begin
+                    if (read_left_q == 0) read_active_q <= 1'b0;
+                    else begin
+                        read_left_q <= read_left_q - 1'b1;
+                        read_addr_q <= read_addr_q + (ADDR_W'(1) << read_size_q);
+                        read_delay_q <= READ_LATENCY;
+                    end
+                end
+            end
+        end
+        if (init_valid_i && in_range(init_addr_i))
+            for (int byte_idx = 0; byte_idx < BEAT_BYTES; byte_idx++)
+                if (init_wmask_i[byte_idx])
+                    ram[word_index(init_addr_i)][8*byte_idx +: 8]
+                        <= init_data_i[8*byte_idx +: 8];
     end
 endmodule
