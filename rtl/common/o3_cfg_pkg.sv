@@ -347,7 +347,7 @@ package o3_cfg_pkg;
         be: '{
             decode: '{
                 width:       4,
-                queue_depth: 16
+                queue_depth: 18
             },
             rename: '{
                 width:         6,
