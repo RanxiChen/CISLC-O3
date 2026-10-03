@@ -2,4 +2,6 @@
 /tandem.jsonl
 /icache_smoke.jsonl
 /rv64i_instructions.jsonl
+/dcache_data.jsonl
+/dcache_replay.jsonl
 /unified_memory.jsonl
