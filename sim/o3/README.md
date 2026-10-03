@@ -43,6 +43,19 @@ make -C sim/o3 build
 make -C sim/o3 run-smoke
 ```
 
+Run the direct-control recovery gate after the same build:
+
+```sh
+make -C sim/cocotb/branch_recovery SIM=verilator TEST_SEED=1
+make -C sim/o3 run-rv64i-instructions
+```
+
+The branch image starts at `0x80000000`, retires a taken BEQ and a direct JAL,
+and requires both skipped wrong-path `addi` instructions to be absent from the
+retirement trace. This L2 closure retains the sequential predictor and the
+existing conservative one-cycle pause on every resolution. JALR/RVC and
+predecode/slow/system redirect arbitration remain outside the gate.
+
 `run-smoke` loads `tests/smoke.hex`, retires four independent `addi`
 instructions, writes `sim/o3/icache_smoke.jsonl`, and compares its architectural
 fields with `tests/icache_smoke.expected.json`. The required PCs are

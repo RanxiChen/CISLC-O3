@@ -9,12 +9,8 @@
  * - 结果未取得写口时保持并反压 RegRead（regread_ready_o=0）。
  * - 分支解析时清除对应 branch bit；误预测时进入 Result 的年轻结果被丢弃。
  *
- * 当前缺口（B12 缺口 2，仅静态审查发现，尚未仿真复现）：
- * - 当 Result 槽的旧结果未取得写口（regread_ready_o=0）时，若本拍发生误预测，
- *   RegRead 槽中的年轻 uop 只被清 branch bit，valid 没有独立清除。之后旧结果被消费时，
- *   这条年轻指令可能已失去取消标记而进入 Result。写回仲裁对 Result 的 kill 不能替代
- *   RegRead 的 kill。需要补“RegRead 槽按 br_killed 清 valid”，并用定向用例验证
- *   “较老结果背压 + 年轻 RegRead + 分支误预测”组合。本次只标注，不修改行为。
+ * B12 恢复补充：Result 背压期间若发生误预测，RegRead 槽按原 branch mask 先判断 kill；
+ * 被杀项清 valid，不能只清 mask 后在旧 Result 消费时重新进入执行。
  *
  * 逐周期说明：
  * - 周期 N 组合：int_execute_unit 用 RegRead 槽操作数产生结果；regread_ready_o 反映
@@ -23,7 +19,7 @@
  *   装入新 grant 的 uop（无 grant 时 valid=0）。
  * - 周期 N+1：写回仲裁看到新的 Result 槽。
  *
- * 本阶段不写测试代码和仿真代码。
+ * 测试：sim/cocotb/branch_recovery/ 覆盖 Result 背压下的年轻 RegRead kill。
  */
 module alu_pipe
     import o3_pkg::*;
@@ -95,7 +91,9 @@ module alu_pipe
             end
 
             // 读口grant与IQ删除原子发生；组合PRF读值直接锁存到RegRead槽。
-            if (regread_ready_o) begin
+            if (br_killed(alu_regread_q.branch_mask, resolution_i)) begin
+                alu_regread_q.valid <= 1'b0;
+            end else if (regread_ready_o) begin
                 alu_regread_q.valid <= read_grant_i;
                 alu_regread_q.instruction_id <= issue_uop_i.instruction_id;
 `ifdef O3_SIM
@@ -118,7 +116,6 @@ module alu_pipe
                 alu_regread_q.is_word_op <= issue_uop_i.is_word_op;
                 alu_regread_q.branch_mask <= br_resolved_mask(issue_uop_i.branch_mask, resolution_i);
             end else if (resolution_i.valid) begin
-                // B12 缺口 2：此处只清 branch bit，没有在误预测时清除年轻 RegRead 的 valid。
                 alu_regread_q.branch_mask <= br_resolved_mask(alu_regread_q.branch_mask, resolution_i);
             end
         end

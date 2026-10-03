@@ -19,9 +19,9 @@
  * 1) 解析造成全局暂停：resolution_o.valid（包括预测正确）被 backend 用来阻止 IQ 选择、
  *    读口授予、rename/dispatch 和 ROB 退休。这是保守控制，不是前端合同要求；
  *    是否在正确解析时取消暂停未确认。
- * 2) resolve_o（o3_types_pkg::bru_resolve_t）：需携带完整动态 FTQ 身份（idx+代际）与槽位、
- *    cfi_type、ras_action、inst_len，送前端 FTQ 记录实际结果并由 redirect_arbiter
- *    按 D24 仲裁。当前未驱动；旧 resolution_o 仍是后端恢复的驱动源。
+ * 2) resolve_o（o3_types_pkg::bru_resolve_t）已由 Result 槽组装，携带完整动态 FTQ 身份、
+ *    槽位、cfi_type、ras_action 与 inst_len，送前端 FTQ 和 redirect_arbiter。L2 闭环只启用
+ *    执行纠错来源；旧 resolution_o 仍同步驱动后端 checkpoint 恢复。
  * 3) 后端恢复与前端 D24 赢家需使用同一取消边界，接口归属未设计。
  * 4) 目标地址：现以 PC_WIDTH(=VADDR_W) 计算；RV64GC 下 IALIGN=16，JALR 清 bit0 后目标不会
  *    出现指令地址不对齐，因此 BRU 可能不需要异常输出；非规范/不可访问目标由前端取指时报告。
@@ -33,7 +33,7 @@
  * - 周期 N+2：Result 有效且未发过则 resolution_o.valid=1；链接值同时竞争写口，
  *   取得写口（result_consume_i）后离开。
  *
- * 本阶段不写测试代码和仿真代码。
+ * 测试：sim/cocotb/branch_recovery/；整核门禁为 sim/o3/run-rv64i-instructions。
  */
 module branch_unit
     import o3_pkg::*;
@@ -81,6 +81,20 @@ module branch_unit
     assign resolution_o.redirect_pc    = branch_result_q.actual_next_pc;
     assign resolution_o.completes_rob  = !branch_result_q.dst_write_en;
 
+    // 解析广播与目标前端合同来自同一个 Result 槽，并共享 sent one-shot。
+    // 正确解析也送 FTQ 记录实际结果；redirect_arbiter 只对 mispredict 形成重定向。
+    assign resolve_o.valid         = resolution_o.valid;
+    assign resolve_o.mispredict    = branch_result_q.mispredict;
+    assign resolve_o.ftq_id        = branch_result_q.ftq_id;
+    assign resolve_o.slot          = branch_result_q.ftq_slot;
+    assign resolve_o.branch_pc     = branch_result_q.branch_pc;
+    assign resolve_o.inst_len      = branch_result_q.inst_len;
+    assign resolve_o.cfi_type      = branch_result_q.cfi_type;
+    assign resolve_o.ras_action    = branch_result_q.ras_action;
+    assign resolve_o.actual_taken  = branch_result_q.actual_taken;
+    assign resolve_o.actual_target = branch_result_q.actual_target;
+    assign resolve_o.redirect_pc   = branch_result_q.actual_next_pc;
+
     branch_execute_unit u_branch_execute_unit (
         .uop_i(branch_regread_q),
         .result_o(branch_execute_result)
@@ -114,11 +128,22 @@ module branch_unit
                 branch_regread_q.instruction_id <= issue_uop_i.instruction_id;
                 branch_regread_q.rob_idx <= issue_uop_i.rob_idx;
                 branch_regread_q.ftq_id <= issue_uop_i.ftq_id;
+                branch_regread_q.ftq_slot <= issue_uop_i.ext.ftq_slot;
                 branch_regread_q.branch_tag <= issue_uop_i.branch_tag;
                 branch_regread_q.branch_mask <= br_resolved_mask(issue_uop_i.branch_mask, resolution_o);
                 branch_regread_q.pc <= issue_uop_i.pc;
                 branch_regread_q.inst_len <= issue_uop_i.inst_len;
                 branch_regread_q.predicted_next_pc <= issue_uop_i.predicted_next_pc;
+                branch_regread_q.cfi_type <= issue_uop_i.is_branch ? o3_types_pkg::CFI_BR
+                                              : (issue_uop_i.is_jal ? o3_types_pkg::CFI_JAL
+                                                                    : o3_types_pkg::CFI_JALR);
+                // 本闭环只验收直接 JAL；为后续训练仍按 RISC-V link-register hint
+                // 记录 JAL push。JALR 的完整 pop/pop-push 分类留到其单独闭环。
+                branch_regread_q.ras_action <= issue_uop_i.is_jal
+                                             && ((issue_uop_i.rd == 5'd1)
+                                              || (issue_uop_i.rd == 5'd5))
+                                              ? o3_types_pkg::RAS_PUSH
+                                              : o3_types_pkg::RAS_NONE;
                 branch_regread_q.is_branch <= issue_uop_i.is_branch;
                 branch_regread_q.is_jal <= issue_uop_i.is_jal;
                 branch_regread_q.is_jalr <= issue_uop_i.is_jalr;
@@ -134,7 +159,5 @@ module branch_unit
             end
         end
     end
-
-    // 未实现：resolve_o 由 branch_result_q 与 issue 时保存的 ftq 槽位、cfi/ras 类型组装。
 
 endmodule

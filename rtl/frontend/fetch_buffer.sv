@@ -14,8 +14,10 @@
  *
  * 细节待定：深度（CFG.fetch.ibuf_depth）；入队宽度 = F1 每拍输出数（CFG.fetch.f1_width）。
  *
- * 当前实现缺口：
- * - flush_i 整体清空，尚未实现 kill_i 选择性失效；kill_i、perf_o 未接入逻辑。
+ * 当前实现状态：闭环简化（L2 执行重定向）。
+ * - flush_i 或 kill_i.valid 整体清空。对已经执行的分支，buffer 中未交付项都比它年轻，
+ *   因而整体清空满足本级合同。
+ * - 预解码修正所需的按 ftq_id+slot 选择性保留仍未实现；该来源本级保持无效。
  * - icache_req_allowed_o 是旧串行 IFU 的节流合同；目标路径由返回队列预留控制取指，
  *   目标总装不再连接该端口，迁移后删除。
  * - 参数已改为由 CFG 推导，模块不再有默认值；entry 类型改为 o3_types_pkg::fetch_entry_t。
@@ -41,8 +43,7 @@
  * - 后续可增加 redirect/flush metadata，实现错误路径条目的精确清除。
  * - 后续增加更丰富预测元数据时继续通过公共entry合同迁移。
  *
- * 当前阶段说明：
- * - 当前阶段只实现 RTL 主体，不写测试代码，不写仿真代码。
+ * 测试：sim/cocotb/branch_recovery/ 覆盖执行重定向整体清空；原顺序交付由整核门禁覆盖。
  *
  * 逐周期说明：
  * - 周期 N 组合阶段：
@@ -146,7 +147,7 @@ module fetch_buffer
     end
 
     always_ff @(posedge clk_i) begin
-        if (rst_i || flush_i) begin
+        if (rst_i || flush_i || kill_i.valid) begin
             head_q  <= '0;
             tail_q  <= '0;
             count_q <= '0;

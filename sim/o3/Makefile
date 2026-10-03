@@ -47,6 +47,7 @@ run-rv64i-instructions:
 	fi
 	cd $(SIM_DIR) && $(RUN_BIN) \
 		--image tests/rv64i_instructions.hex \
+		--reset-pc 0x80000000 \
 		--trace rv64i_instructions.jsonl \
 		--max-cycles 5000 --max-retires 14
 	cd $(SIM_DIR) && python3 check_trace.py \

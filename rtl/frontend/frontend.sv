@@ -238,9 +238,8 @@ module frontend
         .hist_restore_branch_pc_i(arb_winner.hist_branch_pc),
         .hist_restore_target_pc_i(arb_winner.hist_target_pc),
         .hist_restore_done_o     (hist_restore_done),
-        // D29：R1 拍装载 ras_before 并执行修正动作；有效拍由 redirect_arbiter 的恢复序列给出
-        // （当前直接借用赢家有效脉冲，R0/R1 分拍未实现）。
-        .ras_recover_valid_i     (arb_bpu_redirect_valid),
+        // D29：快照响应所在的 R1 拍同时装载 ras_before 并执行修正动作。
+        .ras_recover_valid_i     (snap_recover_valid),
         .ras_recover_id_i        (arb_ras_recover_id),
         .ras_recover_ckpt_i      (arb_ras_recover_ckpt),
         .ras_fix_i               (arb_winner.ras_fix),
@@ -457,7 +456,8 @@ module frontend
     fetch_buffer #(.CFG(CFG)) u_fetch_buffer (
         .clk_i               (clk_i),
         .rst_i               (rst_i),
-        // 旧合同：flush_i 与 icache_req_allowed_o 不连接；kill_i 选择性失效未实现
+        // L2 执行重定向：未交付项均年轻，kill 整体清空；预解码选择性保留待后级。
+        .flush_i             (1'b0),
         .enq_entry_i         (f1_out),
         .enq_valid_i         (f1_valid),
         .enq_ready_o         (f1_ready),
@@ -465,7 +465,8 @@ module frontend
         .deq_valid_o         (deliver_valid_o),
         .deq_ready_i         (deliver_ready_i),
         .kill_i              (fe_kill),
-        .perf_o              (perf_ibuf)
+        .perf_o              (perf_ibuf),
+        .icache_req_allowed_o()
     );
 
     always_comb begin

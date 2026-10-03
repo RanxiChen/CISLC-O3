@@ -10,7 +10,8 @@
  * 已实现RV64 B型条件比较、JAL/JALR目标和链接值计算。输入来自Branch RegRead
  * 寄存器，组合结果在Backend上升沿进入Branch Result保持寄存器。
  * 不负责IQ选择、PRF端口仲裁、checkpoint恢复、写回仲裁或预测器训练。
- * 当前不处理目标地址异常和RVC；本阶段不新增测试。
+ * 当前不处理目标地址异常和 RVC；L2 执行重定向合同测试见
+ * sim/cocotb/branch_recovery/。
  */
 module branch_execute_unit
     import o3_pkg::*;
@@ -45,9 +46,13 @@ module branch_execute_unit
         result_o.instruction_id = uop_i.instruction_id;
         result_o.rob_idx = uop_i.rob_idx;
         result_o.ftq_id = uop_i.ftq_id;
+        result_o.ftq_slot = uop_i.ftq_slot;
         result_o.branch_tag = uop_i.branch_tag;
         result_o.branch_mask = uop_i.branch_mask;
         result_o.branch_pc = uop_i.pc;
+        result_o.inst_len = uop_i.inst_len;
+        result_o.cfi_type = uop_i.cfi_type;
+        result_o.ras_action = uop_i.ras_action;
         result_o.is_branch = uop_i.is_branch;
         result_o.is_jal = uop_i.is_jal;
         result_o.is_jalr = uop_i.is_jalr;

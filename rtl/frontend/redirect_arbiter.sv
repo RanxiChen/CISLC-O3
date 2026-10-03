@@ -44,7 +44,11 @@
  *   这里的前端恢复如何保持同一取消边界，接口归属未设计（redirect_o 先作为后端观测口）。
  * - 系统重定向的入口 PC 由后端 trap_ctrl/csr_file 计算（B26/B27），这里只接收已形成的请求。
  *
- * 当前实现状态：空壳。只有端口与注释，没有任何逻辑，输出未驱动。
+ * 当前实现状态：闭环简化（L2 执行重定向）。
+ * - 本级只接受 exec_i 的误预测；sys/predecode/slow 来源保持未实现。
+ * - R0 同拍广播 kill、重定向 PC 并发起快照读取；锁存整份请求。
+ * - R1 等待匹配身份的 history/RAS 完成；R2 解除 recover_busy，BPU 从目标继续分配。
+ * - 单 BRU 下恢复 busy 期间的年轻执行结果由后端 branch-mask 恢复删除，不替换当前恢复。
  *
  * 目标周期行为：
  * - 周期 N 组合：比较所有有效请求，形成独热赢家；kill_o 与 bpu_redirect_* 有效。
@@ -53,7 +57,7 @@
  *   且 done 身份匹配当前赢家时，上升沿清除 busy。
  * - 周期 N+2（R2）：BPU 从 target_pc 恢复正常预测。
  *
- * 本阶段不写测试代码和仿真代码。
+ * 测试：sim/cocotb/branch_recovery/；多来源年龄仲裁不在本级测试范围。
  */
 module redirect_arbiter
     import o3_types_pkg::*;
@@ -94,5 +98,59 @@ module redirect_arbiter
 
     output fe_perf_t       perf_o
 );
-    // 未实现：有效性过滤、年龄比较、独热选择、恢复锁存与替换。
+    redirect_req_t recover_q;
+    logic          recover_busy_q;
+    logic          accept_exec;
+    redirect_req_t exec_req;
+
+    assign accept_exec = !rst_i && !recover_busy_q && exec_i.valid && exec_i.mispredict;
+
+    always_comb begin
+        exec_req = '0;
+        exec_req.valid = accept_exec;
+        exec_req.src = REDIR_EXEC;
+        exec_req.ftq_id = exec_i.ftq_id;
+        exec_req.slot = exec_i.slot;
+        exec_req.kill_self = 1'b0;
+        exec_req.target_pc = exec_i.redirect_pc;
+        exec_req.hist_inject = (exec_i.cfi_type == CFI_BR) && exec_i.actual_taken;
+        exec_req.hist_branch_pc = exec_i.branch_pc;
+        exec_req.hist_target_pc = exec_i.actual_target;
+        exec_req.ras_fix = exec_i.ras_action;
+        exec_req.ras_push_addr = exec_i.branch_pc + vaddr_t'(exec_i.inst_len);
+    end
+
+    // R0 uses the combinational request so cancellation and the new PC take
+    // effect at the same edge that captures the recovery identity. During R1
+    // winner_o remains the captured whole request for history/RAS correction.
+    assign winner_o = accept_exec ? exec_req : recover_q;
+    assign redirect_o = accept_exec ? exec_req : '0;
+    assign kill_o = '{valid:accept_exec, all:1'b0,
+                      ftq_id:exec_i.ftq_id, slot:exec_i.slot,
+                      kill_self:1'b0};
+    assign bpu_redirect_valid_o = accept_exec;
+    assign bpu_redirect_pc_o = exec_i.redirect_pc;
+    assign snap_rd_req_o = accept_exec;
+    assign snap_rd_ftq_id_o = accept_exec ? exec_i.ftq_id : recover_q.ftq_id;
+    assign recover_busy_o = recover_busy_q;
+    assign ras_recover_ckpt_o = ftq_ras_ckpt_i;
+    assign ras_recover_id_o = recover_q.ftq_id;
+    assign perf_o = '0;
+
+    always_ff @(posedge clk_i) begin
+        if (rst_i) begin
+            recover_q <= '0;
+            recover_busy_q <= 1'b0;
+        end else begin
+            if (accept_exec) begin
+                recover_q <= exec_req;
+                recover_busy_q <= 1'b1;
+            end else if (recover_busy_q && history_done_i && ras_done_i
+                      && ras_done_id_i == recover_q.ftq_id) begin
+                recover_q <= '0;
+                recover_busy_q <= 1'b0;
+            end
+        end
+    end
+
 endmodule
