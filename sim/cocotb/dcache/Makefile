@@ -8,6 +8,7 @@ VERILOG_SOURCES := \
   $(REPO_ROOT)/rtl/common/o3_cfg_pkg.sv \
   $(REPO_ROOT)/rtl/common/o3_types_pkg.sv \
   $(REPO_ROOT)/rtl/common/o3_pkg.sv \
+  $(REPO_ROOT)/rtl/common/o3_sram_1r1w.sv \
   $(REPO_ROOT)/rtl/lsu/dcache.sv \
   $(REPO_ROOT)/sim/cocotb/dcache/dcache_tb_top.sv
 SIM_BUILD := $(CURDIR)/sim_build/$(if $(filter 1,$(WAVES)),waves,plain)

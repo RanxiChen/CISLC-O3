@@ -17,7 +17,7 @@
 | L1（历史） | ITCM 中的直线整数指令按序退休 | 旧 `sim/o3` smoke | Alan 曾 PASS（`a268f16`）；ITCM 已移除，旧验收不再运行 |
 | **L4 当前** | **ICache miss → inclusive L2 → AXI RAM → 直线整数退休** | `make -C sim/o3 build && make -C sim/o3 run-smoke` | Alan 回归 PASS（`de9149d`，38 周期、4 条退休、ICache 回填 1 次） |
 | **L2 当前** | **taken 分支 / JAL：BRU 解析 → 重定向 → 前端恢复** | `make -C sim/cocotb/branch_recovery SIM=verilator TEST_SEED=1 && make -C sim/o3 run-rv64i-instructions` | Alan PASS（`de9149d`；局部 1/1；整核 76 周期、14 条退休、ICache 回填 2 次） |
-| L3 进行中 | SQ 依赖/转发 → 流水化 DCache → inclusive L2 → AXI 数据访存与退休 | `sim/cocotb/store_queue/`、`sim/cocotb/dcache/`、`sim/o3` 数据访存轨迹 | SQ 最近完整覆盖旧 store 查询已补 RTL/测试；待 Alan；DCache 数据路径未开始 |
+| L3 进行中 | SQ 依赖/转发 → 流水化 DCache → inclusive L2 → AXI 数据访存与退休 | `sim/cocotb/store_queue/`、`sim/cocotb/dcache/`、`sim/o3` 数据访存轨迹 | SQ 查询 Alan 1/1 PASS（`d1577ae`）；SQ 完成握手与 DCache 数据 RTL/测试已写，待 Alan；整核数据路径未接通 |
 | L5 | 异常 / CSR / trap / xRET | ACT4 RV64I | 未开始 |
 | L6+ | DCache 数据路径、PTW/TLB、M/F/D、A、L2 并发/DMA、Linux | 待定 | 未开始 |
 
@@ -89,8 +89,8 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
 | `frontend/ftq.sv` | 目标端口单模块实现 | L1 整核分配、demand 发射和提交回收已走通；后级机制仍待验证 | `tb/ftq_tb.sv`（SV testbench，非 cocotb，提交 `b6d3a34`）；整核 L1 Alan PASS |
 | `frontend/icache.sv` | **闭环简化（L4）**：整行双 bank、S0–S3、单 demand MSHR/四拍回填；按行 recall；ITCM 已移除 | ITLB/PMP/PMA、预取、多 MSHR、性能事件与综合时序待后级 | `sim/cocotb/icache/` Alan 3/3 PASS（`1d2caeb`） |
 | `memory/l2_cache.sv` | **闭环简化（L4）**：256 set/4-way 配置、tree-PLRU、AXI 回填、双 L1 回收、脏行 AXI 写回 | 普通请求单未决；B03/B41 并发、DMA/维护协调与完整 L1D 数据路径未实现 | `sim/cocotb/l2_cache/` Alan 2/2 PASS（`1d2caeb`） |
-| `lsu/dcache.sv` | **闭环简化（L4）**：无有效行，仅空副本 probe 确认 | L1D 数据阵列、脏行交回、普通 load/store 待后级 | `sim/cocotb/dcache/` Alan 1/1 PASS（`1d2caeb`） |
-| `backend/store_queue.sv` | **闭环简化（L3，进行中）**：SQ 年龄顺序查询、最近完整覆盖旧 store 转发；未知地址与部分覆盖保守等待 | 提交后 DCache 写完成再释放、等待事件与整核数据访存闭环 | `sim/cocotb/store_queue/` 待 Alan |
+| `lsu/dcache.sv` | **闭环简化（L3，进行中）**：4 个 16B word bank、整行 tag/valid/dirty、两级查询、单行 miss、脏行交回、L2 回填、probe RTL 已写 | 多 MSHR、同 line 合并、PTW/AMO/预取、DMA 行保护、整核接线待后级 | 空副本 probe Alan 1/1 PASS（`1d2caeb`）；新增数据路径测试待 Alan |
+| `backend/store_queue.sv` | **闭环简化（L3，进行中）**：SQ 年龄顺序查询、最近完整覆盖旧 store 转发；未知地址与部分覆盖保守等待；DCache 完成后释放接口已写 | 后端切换到 DCache、等待事件与整核数据访存闭环 | 查询 `sim/cocotb/store_queue/` Alan 1/1 PASS（`d1577ae`）；完成握手测试待 Alan |
 | `frontend/fetch_return_queue.sv` | **闭环简化（L1）**：单槽身份匹配、按序出队和第二笔回压 | D15/D17 待 L4 | `sim/cocotb/fetch_return_queue/` Alan 2/2 PASS；整核 L1 PASS |
 | `frontend/ifu_f0.sv` | **闭环简化（L1）**：完整 32 位指令识别 | RVC 与跨块拼接待 L2 | `sim/cocotb/ifu_f0/` Alan 2/2 PASS；整核 L1 PASS |
 | `frontend/ifu_f1.sv` | **闭环简化（L1）**：生成 `fetch_entry_t`、`ftq_last`，修正端口无效 | 预解码修正待 L2 | `sim/cocotb/ifu_f1/` Alan 2/2 PASS；整核 L1 PASS |

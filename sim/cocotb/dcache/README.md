@@ -1,6 +1,7 @@
-# Empty L1D inclusive probe endpoint
+# DCache word-bank data and inclusive probe endpoint
 
 Run `make -C sim/cocotb/dcache SIM=verilator TEST_SEED=1` on Alan.
-The test checks reset, back-to-back recall probe identities, and empty-line
-acknowledgements. Normal load/store, DMA, dirty data, and DCache arrays are
-not implemented by this L4 integration slice.
+The tests check reset, back-to-back empty recall identities, L2 line refill,
+resident hit while an unrelated miss waits, a same-line unaligned store across
+two banks, dirty recall handoff, and miss after recall. Dirty victim writeback,
+DMA line protection, and whole-core retirement still need separate gates.

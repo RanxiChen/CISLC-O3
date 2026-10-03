@@ -39,10 +39,10 @@
  * 端口、流水级数、BRAM 映射、MSHR 与写回缓冲数、替换策略；FENCE.I 数据侧接口的具体形式。
  * 建议配置 16KiB/4-way/64B/4 bank/8 MSHR 仅为建议（B03）。
  *
- * 当前实现状态：闭环简化（L4）。尚无数据阵列、普通访问或有效行；
- * 为 inclusive L2 容量回收实现维护入口的空副本应答。后续实现有效/脏行时，
- * probe 必须先保护目标行、交回脏数据并阻止同行旧回填安装（B41）。
- * 现有 LSU 仍访问 DTCM 与单口外部 memory（旧合同）。
+ * 当前实现状态：闭环简化（L3，进行中）。四个 16B word bank、整行 tag/valid/dirty、
+ * 两级 demand 查询、单个 demand 行事务、命中穿越 miss、脏 victim 交回、四拍 L2
+ * 回填与 inclusive probe 已写入 RTL。多 MSHR、同 line 合并、PTW/AMO/预取与
+ * DMA 保护尚未实现；普通 LSU 接线与 Alan 验证状态见 doc/LOOP.md。
  *
  * 测试：sim/cocotb/dcache/。
  */
@@ -126,44 +126,387 @@ module dcache
     output fatal_evt_t      fatal_o,             // B39：脏行写回 L2 失败
     output be_perf_t        perf_o
 );
-    dc_probe_resp_t probe_resp_q;
-    assign probe_ready_o = !rst;
-    assign probe_resp_o = probe_resp_q;
-    always_ff @(posedge clk) begin
-        if (rst) probe_resp_q <= '0;
-        else begin
-            probe_resp_q.valid <= probe_valid_i && probe_ready_o;
-            if (probe_valid_i && probe_ready_o) begin
-                probe_resp_q.kind <= probe_i.kind;
-                probe_resp_q.recall_id <= probe_i.recall_id;
-                probe_resp_q.had_dirty <= 1'b0;
-                probe_resp_q.dirty_data <= '0;
+    localparam int SETS = CFG.dcache.sets;
+    localparam int WAYS = CFG.dcache.ways;
+    localparam int BANKS = CFG.dcache.banks;
+    localparam int SET_W = $clog2(SETS);
+    localparam int WAY_W = $clog2(WAYS);
+    localparam int TAG_W = PADDR_W - 6 - SET_W;
+    localparam int BEAT_W = $clog2(DC_LINE_BYTES / L2_BEAT_BYTES);
+    typedef logic [SET_W-1:0] set_t;
+    typedef logic [WAY_W-1:0] way_t;
+    typedef logic [TAG_W-1:0] tag_t;
+    typedef logic [BEAT_W-1:0] beat_t;
+    typedef logic [DC_LINE_BYTES*8-1:0] line_t;
+    typedef enum logic [2:0] {M_IDLE, M_WB, M_SEND, M_RECV, M_INSTALL, M_FAULT} mstate_t;
+
+    // 16B word interleaving: each 64B line occupies the same set/way in all
+    // four banks. A same-line unaligned scalar access may touch two banks.
+    logic valid_q [SETS][WAYS];
+    logic dirty_q [SETS][WAYS];
+    tag_t tag_q [SETS][WAYS];
+    logic [127:0] bank_read [BANKS][WAYS];
+    logic [BANKS-1:0][WAYS-1:0] bank_write_en;
+    logic [127:0] bank_write_data [BANKS][WAYS];
+    set_t bank_read_set, bank_write_set;
+    logic bank_read_en;
+    logic [WAY_W-1:0] victim_rr_q;
+
+    dcache_req_t stage_req_q;
+    logic stage_valid_q, stage_store_q;
+    set_t stage_set_q;
+    tag_t stage_tag_q;
+    logic [WAYS-1:0] stage_hits_q;
+    logic stage_hit;
+    way_t stage_way;
+    way_t stage_victim_way;
+    line_t stage_line, stage_store_line, stage_victim_line;
+    logic stage_fire, stage_consume, stage_store_hit;
+    logic input_hit, input_line_pending, stage_crossline;
+    logic accept_window, accept_store, accept_load;
+    dcache_req_t input_req;
+    set_t input_set;
+    tag_t input_tag;
+
+    mstate_t mstate_q;
+    dcache_req_t m_req_q;
+    logic m_store_q;
+    paddr_t m_line_q, m_victim_line_q;
+    set_t m_set_q;
+    tag_t m_tag_q;
+    way_t m_way_q;
+    beat_t m_beat_q;
+    line_t m_data_q, m_victim_data_q;
+    logic m_error_q;
+    fatal_evt_t fatal_q;
+
+    logic probe_fire, probe_pending_q, probe_had_dirty_q;
+    way_t probe_way_q;
+    dc_probe_resp_t probe_meta_q;
+    logic [WAYS-1:0] probe_hits;
+    way_t probe_way;
+    set_t probe_set;
+    tag_t probe_tag;
+    line_t probe_line_data;
+    dcache_resp_t ld_resp_q, st_resp_q;
+    dc_wake_t wake_q;
+
+    initial begin
+        assert (BANKS == 4 && WAYS == 4 && SETS == 64 && DC_LINE_BYTES == 64
+             && L2_BEAT_BYTES == 16 && LOAD_PORTS > 0)
+            else $fatal(1, "DCache: current word-bank datapath requires 4x16B banks, 4 ways, 64 sets");
+    end
+
+    function automatic line_t merge_store(input line_t old_line,
+                                           input dcache_req_t req);
+        line_t result;
+        int unsigned byte_offset;
+        result = old_line;
+        byte_offset = int'(req.paddr[5:0]);
+        for (int byte_idx = 0; byte_idx < 8; byte_idx++)
+            if (req.wmask[byte_idx] && byte_offset + byte_idx < DC_LINE_BYTES)
+                result[(byte_offset + byte_idx)*8 +: 8] = req.wdata[byte_idx*8 +: 8];
+        return result;
+    endfunction
+
+    function automatic logic [XLEN-1:0] extract_load(input line_t data,
+                                                       input dcache_req_t req);
+        return XLEN'(data >> (int'(req.paddr[5:0]) * 8));
+    endfunction
+
+    assign input_req = st_req_valid_i ? st_req_i : ld_req_i[0];
+    assign input_set = set_t'(input_req.paddr[6 +: SET_W]);
+    assign input_tag = tag_t'(input_req.paddr[PADDR_W-1:6+SET_W]);
+    assign input_line_pending = mstate_q != M_IDLE
+        && {input_req.paddr[PADDR_W-1:6], 6'b0} == m_line_q;
+    assign stage_crossline = (int'(stage_req_q.paddr[5:0])
+                            + (1 << stage_req_q.size)) > DC_LINE_BYTES;
+    always_comb begin
+        input_hit = 1'b0;
+        for (int way = 0; way < WAYS; way++)
+            if (valid_q[input_set][way] && tag_q[input_set][way] == input_tag)
+                input_hit = 1'b1;
+    end
+
+    always_comb begin
+        stage_hit = |stage_hits_q;
+        stage_way = '0;
+        stage_line = '0;
+        stage_victim_way = victim_rr_q;
+        stage_victim_line = '0;
+        for (int way = 0; way < WAYS; way++)
+            if (stage_hits_q[way]) stage_way = way_t'(way);
+        for (int way = WAYS-1; way >= 0; way--)
+            if (!valid_q[stage_set_q][way]) stage_victim_way = way_t'(way);
+        for (int bank = 0; bank < BANKS; bank++)
+            stage_line[bank*128 +: 128] = bank_read[bank][stage_way];
+        for (int bank = 0; bank < BANKS; bank++)
+            stage_victim_line[bank*128 +: 128] = bank_read[bank][stage_victim_way];
+        stage_store_line = merge_store(stage_line, stage_req_q);
+    end
+    assign stage_store_hit = stage_valid_q && stage_hit && stage_store_q
+                           && !stage_crossline && mstate_q != M_INSTALL;
+    assign stage_consume = stage_valid_q && (stage_crossline
+                         || (stage_hit && !(stage_store_q && mstate_q == M_INSTALL))
+                         || (!stage_hit && mstate_q == M_IDLE));
+    // A busy MSHR admits known resident hits. A second miss waits before S0,
+    // so an L2 recall can always acquire the bank read port and make progress.
+    assign accept_window = !rst && !probe_valid_i && !probe_pending_q
+        && mstate_q != M_WB && mstate_q != M_INSTALL && mstate_q != M_FAULT
+        && (!stage_valid_q || stage_consume)
+        && !stage_store_hit && !(stage_valid_q && !stage_hit)
+        && !input_line_pending && (mstate_q == M_IDLE || input_hit);
+    assign st_req_ready_o = accept_window;
+    for (genvar port = 0; port < LOAD_PORTS; port++) begin : g_load_port
+        assign ld_req_ready_o[port] = (port == 0) && accept_window && !st_req_valid_i;
+        assign ld_resp_o[port] = (port == 0) ? ld_resp_q : '0;
+    end
+    assign accept_store = st_req_valid_i && st_req_ready_o;
+    assign accept_load = ld_req_valid_i[0] && ld_req_ready_o[0];
+    assign stage_fire = accept_store || accept_load;
+    assign bank_read_en = stage_fire || probe_fire;
+    assign bank_read_set = probe_fire ? probe_set : input_set;
+
+    assign probe_set = set_t'(probe_i.line_paddr[6 +: SET_W]);
+    assign probe_tag = tag_t'(probe_i.line_paddr[PADDR_W-1:6+SET_W]);
+    always_comb begin
+        probe_hits = '0;
+        probe_way = '0;
+        for (int way = 0; way < WAYS; way++)
+            if (valid_q[probe_set][way] && tag_q[probe_set][way] == probe_tag) begin
+                probe_hits[way] = 1'b1;
+                probe_way = way_t'(way);
             end
+    end
+    // Probe is prioritized over new demand reads. It can be accepted during
+    // an unrelated L2 miss; it never waits for a free demand MSHR.
+    assign probe_ready_o = !rst && !stage_valid_q && mstate_q != M_INSTALL
+        && !(mstate_q != M_IDLE && probe_i.line_paddr == m_line_q);
+    assign probe_fire = probe_valid_i && probe_ready_o;
+    always_comb begin
+        probe_line_data = '0;
+        for (int bank = 0; bank < BANKS; bank++)
+            probe_line_data[bank*128 +: 128] = bank_read[bank][probe_way_q];
+        probe_resp_o = probe_meta_q;
+        probe_resp_o.valid = probe_pending_q;
+        probe_resp_o.dirty_data = probe_had_dirty_q ? probe_line_data : '0;
+    end
+
+    assign bank_write_set = mstate_q == M_INSTALL ? m_set_q : stage_set_q;
+    always_comb begin
+        bank_write_en = '0;
+        for (int bank = 0; bank < BANKS; bank++)
+            for (int way = 0; way < WAYS; way++) begin
+                bank_write_data[bank][way] = '0;
+                if (mstate_q == M_INSTALL && way == int'(m_way_q)) begin
+                    bank_write_en[bank][way] = 1'b1;
+                    bank_write_data[bank][way] = m_store_q
+                        ? merge_store(m_data_q, m_req_q)[bank*128 +: 128]
+                        : m_data_q[bank*128 +: 128];
+                end else if (stage_store_hit && stage_consume
+                         && way == int'(stage_way)) begin
+                    bank_write_en[bank][way] = 1'b1;
+                    bank_write_data[bank][way] = stage_store_line[bank*128 +: 128];
+                end
+            end
+    end
+    for (genvar bank = 0; bank < BANKS; bank++) begin : g_bank
+        for (genvar way = 0; way < WAYS; way++) begin : g_way
+            o3_sram_1r1w #(.DATA_WIDTH(128), .ENTRIES(SETS)) u_data (
+                .clk_i(clk), .read_en_i(bank_read_en), .read_addr_i(bank_read_set),
+                .read_data_o(bank_read[bank][way]),
+                .write_en_i(bank_write_en[bank][way]), .write_addr_i(bank_write_set),
+                .write_data_i(bank_write_data[bank][way])
+            );
         end
     end
-    for (genvar port_idx = 0; port_idx < LOAD_PORTS; port_idx++) begin : g_tie_ld
-        assign ld_req_ready_o[port_idx] = 1'b0;
-        assign ld_resp_o[port_idx] = '0;
+
+    assign l2_req_valid_o = (mstate_q == M_SEND);
+    assign l2_req_o = '{line_paddr:m_line_q, kind:L2_DEMAND, txn_id:'0};
+    assign l2_resp_ready_o = (mstate_q == M_RECV);
+    assign l2_wb_valid_o = (mstate_q == M_WB)
+        && !(probe_valid_i && probe_ready_o && probe_i.line_paddr == m_victim_line_q);
+    assign l2_wb_line_paddr_o = m_victim_line_q;
+    assign l2_wb_data_o = m_victim_data_q;
+    assign idle_o = mstate_q == M_IDLE && !stage_valid_q && !probe_pending_q;
+    assign fatal_o = fatal_q;
+    assign st_resp_o = st_resp_q;
+    assign wake_o = wake_q;
+
+    // S0 reads four word banks and captures tag metadata. N+1 compares tags,
+    // returns a hit or allocates the one line transaction. Hit loads can
+    // overlap an unrelated L2 miss; stores insert a read/write bubble.
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            stage_valid_q <= 1'b0;
+            stage_store_q <= 1'b0;
+            stage_req_q <= '0;
+            stage_set_q <= '0;
+            stage_tag_q <= '0;
+            stage_hits_q <= '0;
+            mstate_q <= M_IDLE;
+            m_req_q <= '0;
+            m_store_q <= 1'b0;
+            m_line_q <= '0;
+            m_victim_line_q <= '0;
+            m_set_q <= '0;
+            m_tag_q <= '0;
+            m_way_q <= '0;
+            m_beat_q <= '0;
+            m_data_q <= '0;
+            m_victim_data_q <= '0;
+            m_error_q <= 1'b0;
+            victim_rr_q <= '0;
+            probe_pending_q <= 1'b0;
+            probe_had_dirty_q <= 1'b0;
+            probe_way_q <= '0;
+            probe_meta_q <= '0;
+            ld_resp_q <= '0;
+            st_resp_q <= '0;
+            wake_q <= '0;
+            fatal_q <= '0;
+            for (int set_idx = 0; set_idx < SETS; set_idx++)
+                for (int way = 0; way < WAYS; way++) begin
+                    valid_q[set_idx][way] <= 1'b0;
+                    dirty_q[set_idx][way] <= 1'b0;
+                end
+        end else begin
+            ld_resp_q.valid <= 1'b0;
+            st_resp_q.valid <= 1'b0;
+            wake_q.valid <= 1'b0;
+            probe_pending_q <= probe_fire;
+            if (probe_fire) begin
+                probe_pending_q <= 1'b1;
+                probe_way_q <= probe_way;
+                probe_had_dirty_q <= |probe_hits && dirty_q[probe_set][probe_way];
+                probe_meta_q.kind <= probe_i.kind;
+                probe_meta_q.recall_id <= probe_i.recall_id;
+                probe_meta_q.had_dirty <= |probe_hits && dirty_q[probe_set][probe_way];
+                if (|probe_hits) begin
+                    valid_q[probe_set][probe_way] <= 1'b0;
+                    dirty_q[probe_set][probe_way] <= 1'b0;
+                end
+                if (mstate_q == M_WB && probe_i.line_paddr == m_victim_line_q)
+                    mstate_q <= M_SEND;
+            end
+
+            if (!stage_valid_q || stage_consume) begin
+                stage_valid_q <= stage_fire;
+                if (stage_fire) begin
+                    stage_req_q <= input_req;
+                    stage_store_q <= accept_store;
+                    stage_set_q <= input_set;
+                    stage_tag_q <= input_tag;
+                    for (int way = 0; way < WAYS; way++)
+                        stage_hits_q[way] <= valid_q[input_set][way]
+                            && tag_q[input_set][way] == input_tag;
+                end
+            end
+            if (stage_valid_q && stage_consume) begin
+                if (stage_crossline) begin
+                    if (stage_store_q) begin
+                        fatal_q <= '{valid:1'b1, src:FATAL_MAINT,
+                                     line_paddr:{stage_req_q.paddr[PADDR_W-1:6], 6'b0}};
+                        mstate_q <= M_FAULT;
+                    end else begin
+                        ld_resp_q <= '{valid:1'b1, src:DC_SRC_LOAD,
+                            status:DC_ERROR, lq_tag:stage_req_q.lq_tag, sq_idx:'0,
+                            rdata:'0, sc_fail:1'b0};
+                    end
+                end else if (stage_hit) begin
+                    if (stage_store_q) begin
+                        dirty_q[stage_set_q][stage_way] <= 1'b1;
+                        st_resp_q <= '{valid:1'b1, src:DC_SRC_STORE_DRAIN,
+                            status:DC_OK, lq_tag:'0, sq_idx:stage_req_q.sq_idx,
+                            rdata:'0, sc_fail:1'b0};
+                    end else begin
+                        ld_resp_q <= '{valid:1'b1, src:DC_SRC_LOAD,
+                            status:DC_OK, lq_tag:stage_req_q.lq_tag, sq_idx:'0,
+                            rdata:extract_load(stage_line, stage_req_q), sc_fail:1'b0};
+                    end
+                end else if (mstate_q == M_IDLE) begin
+                    m_req_q <= stage_req_q;
+                    m_store_q <= stage_store_q;
+                    m_line_q <= {stage_req_q.paddr[PADDR_W-1:6], 6'b0};
+                    m_set_q <= stage_set_q;
+                    m_tag_q <= stage_tag_q;
+                    m_way_q <= stage_victim_way;
+                    m_victim_line_q <= {tag_q[stage_set_q][stage_victim_way], stage_set_q, 6'b0};
+                    m_victim_data_q <= stage_victim_line;
+                    m_beat_q <= '0;
+                    m_data_q <= '0;
+                    m_error_q <= 1'b0;
+                    victim_rr_q <= victim_rr_q + way_t'(1);
+                    mstate_q <= valid_q[stage_set_q][stage_victim_way]
+                             && dirty_q[stage_set_q][stage_victim_way] ? M_WB : M_SEND;
+                    if (valid_q[stage_set_q][stage_victim_way]
+                     && !dirty_q[stage_set_q][stage_victim_way])
+                        valid_q[stage_set_q][stage_victim_way] <= 1'b0;
+                end
+            end
+            case (mstate_q)
+                M_WB: if (l2_wb_valid_o && l2_wb_ready_i) begin
+                    if (l2_wb_error_i) begin
+                        fatal_q <= '{valid:1'b1, src:FATAL_L1D_WB,
+                                     line_paddr:m_victim_line_q};
+                        mstate_q <= M_FAULT;
+                    end else begin
+                        valid_q[m_set_q][m_way_q] <= 1'b0;
+                        dirty_q[m_set_q][m_way_q] <= 1'b0;
+                        mstate_q <= M_SEND;
+                    end
+                end
+                M_SEND: if (l2_req_ready_i) mstate_q <= M_RECV;
+                M_RECV: if (l2_resp_i.valid) begin
+                    assert (l2_resp_i.txn_id == '0
+                         && l2_resp_i.last == (m_beat_q == beat_t'(3)))
+                        else $fatal(1, "DCache: L2 beat/id mismatch");
+                    m_data_q[m_beat_q*128 +: 128] <= l2_resp_i.data;
+                    m_error_q <= m_error_q || l2_resp_i.error;
+                    if (l2_resp_i.last) begin
+                        if (m_error_q || l2_resp_i.error) begin
+                            if (m_store_q) begin
+                                fatal_q <= '{valid:1'b1, src:FATAL_MAINT,
+                                             line_paddr:m_line_q};
+                                mstate_q <= M_FAULT;
+                            end else begin
+                                ld_resp_q <= '{valid:1'b1, src:DC_SRC_LOAD,
+                                    status:DC_ERROR, lq_tag:m_req_q.lq_tag, sq_idx:'0,
+                                    rdata:'0, sc_fail:1'b0};
+                                mstate_q <= M_IDLE;
+                            end
+                        end else mstate_q <= M_INSTALL;
+                    end else m_beat_q <= m_beat_q + beat_t'(1);
+                end
+                M_INSTALL: begin
+                    tag_q[m_set_q][m_way_q] <= m_tag_q;
+                    valid_q[m_set_q][m_way_q] <= 1'b1;
+                    dirty_q[m_set_q][m_way_q] <= m_store_q;
+                    wake_q <= '{valid:1'b1, line_paddr:m_line_q};
+                    if (m_store_q) begin
+                        st_resp_q <= '{valid:1'b1, src:DC_SRC_STORE_DRAIN,
+                            status:DC_OK, lq_tag:'0, sq_idx:m_req_q.sq_idx,
+                            rdata:'0, sc_fail:1'b0};
+                    end else begin
+                        ld_resp_q <= '{valid:1'b1, src:DC_SRC_LOAD,
+                            status:DC_OK, lq_tag:m_req_q.lq_tag, sq_idx:'0,
+                            rdata:extract_load(m_data_q, m_req_q), sc_fail:1'b0};
+                    end
+                    mstate_q <= M_IDLE;
+                end
+                default: ;
+            endcase
+        end
     end
-    assign st_req_ready_o = 1'b0;
-    assign st_resp_o = '0;
+
     assign amo_req_ready_o = 1'b0;
     assign amo_resp_o = '0;
     assign ptw_req_ready_o = 1'b0;
     assign ptw_resp_o = '0;
     assign pf_req_ready_o = 1'b0;
-    assign wake_o = '0;
     assign clean_all_done_o = clean_all_req_i;
     assign clean_all_busy_o = 1'b0;
     assign pte_ad_req_ready_o = 1'b0;
     assign pte_ad_resp_o = '0;
-    assign l2_req_valid_o = 1'b0;
-    assign l2_req_o = '0;
-    assign l2_resp_ready_o = 1'b0;
-    assign l2_wb_valid_o = 1'b0;
-    assign l2_wb_line_paddr_o = '0;
-    assign l2_wb_data_o = '0;
-    assign idle_o = 1'b1;
-    assign fatal_o = '0;
     assign perf_o = '0;
 endmodule

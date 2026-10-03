@@ -17,6 +17,11 @@ async def youngest_complete_store_and_unknown_address(d):
     d.query_rob.value = 0
     d.query_addr.value = 0
     d.query_mask.value = 0
+    d.commit_valid.value = 0
+    d.commit_idx.value = 0
+    d.dc_req_ready.value = 0
+    d.dc_resp_valid.value = 0
+    d.dc_resp_idx.value = 0
 
     async def tick():
         d.clk.value = 0
@@ -69,3 +74,54 @@ async def youngest_complete_store_and_unknown_address(d):
     assert (await query(6, 0x100, 0x0F))[:2] == (1, 0)
     # The same store is younger than ROB 4 and must not affect its load.
     assert await query(4, 0x100, 0x0F) == (0, 1, 0x44332211)
+
+
+@cocotb.test()
+async def committed_store_waits_for_dcache_completion(d):
+    for name in ("clk", "alloc_valid", "alloc_rob", "execute_valid", "execute_idx",
+                 "execute_addr", "execute_data", "execute_mask", "query_valid",
+                 "query_rob", "query_addr", "query_mask", "commit_valid",
+                 "commit_idx", "dc_req_ready", "dc_resp_valid", "dc_resp_idx"):
+        getattr(d, name).value = 0
+    d.rst.value = 1
+
+    async def tick():
+        d.clk.value = 0
+        await Timer(5, unit="ns")
+        obs = (int(d.dc_req_valid.value), int(d.dc_req_idx.value),
+               int(d.dc_req_addr.value), int(d.committed_empty.value))
+        d.clk.value = 1
+        await Timer(5, unit="ns")
+        return obs
+
+    await tick()
+    d.rst.value = 0
+    d.alloc_valid.value = 1
+    d.alloc_rob.value = 1
+    idx = int(d.alloc_idx.value)
+    await tick()
+    d.alloc_valid.value = 0
+    d.execute_valid.value = 1
+    d.execute_idx.value = idx
+    d.execute_addr.value = 0x80000204
+    d.execute_data.value = 0x11223344
+    d.execute_mask.value = 0x0F
+    await tick()
+    d.execute_valid.value = 0
+    d.commit_valid.value = 1
+    d.commit_idx.value = idx
+    await tick()
+    d.commit_valid.value = 0
+    assert (await tick()) == (1, idx, 0x80000204, 0)
+    d.dc_req_ready.value = 1
+    assert (await tick())[0] == 1
+    d.dc_req_ready.value = 0
+    assert (await tick())[0] == 0  # no duplicate while accepted request is outstanding
+    d.dc_resp_valid.value = 1
+    d.dc_resp_idx.value = idx + 1
+    await tick()
+    assert (await tick())[3] == 0  # wrong identity cannot release the SQ head
+    d.dc_resp_idx.value = idx
+    await tick()
+    d.dc_resp_valid.value = 0
+    assert (await tick())[3] == 1
