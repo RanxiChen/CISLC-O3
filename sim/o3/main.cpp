@@ -32,6 +32,7 @@ struct Options {
     uint64_t reset_pc = kAxiBase;
     bool reset_pc_explicit = false;
     bool require_icache_refill = false;
+    bool require_load_replay = false;
 };
 
 struct InitBeat {
@@ -242,6 +243,8 @@ Options parse_options(int argc, char** argv) {
             options.reset_pc_explicit = true;
         } else if (current == "--require-icache-refill") {
             options.require_icache_refill = true;
+        } else if (current == "--require-load-replay") {
+            options.require_load_replay = true;
         } else if (current == "--help") {
             std::cout
                 << "Usage: Vo3_tandem_top [options]\n"
@@ -251,6 +254,7 @@ Options parse_options(int argc, char** argv) {
                 << "  --max-retires N      stop after N retired instructions\n"
                 << "  --reset-pc ADDRESS   reset PC and default hex load address\n"
                 << "  --require-icache-refill  fail if no ICache line refill occurs\n"
+                << "  --require-load-replay   fail if no SQ-blocked load replay occurs\n"
                 << "Hex files may use @ADDRESS to change the byte load address.\n";
             std::exit(0);
         } else {
@@ -404,10 +408,14 @@ int main(int argc, char** argv) {
         if (options.require_icache_refill && dut.icache_refill_count_o == 0) {
             throw std::runtime_error("no ICache refill observed");
         }
+        if (options.require_load_replay && dut.load_replay_count_o == 0) {
+            throw std::runtime_error("no SQ-blocked load replay observed");
+        }
 
         std::cout << "[o3-memory] dtcm_init_beats=" << dtcm_init.size()
                   << " axi_init_beats=" << axi_init.size()
                   << " icache_refills=" << dut.icache_refill_count_o << "\n";
+        std::cout << "[o3-lsq] load_replays=" << dut.load_replay_count_o << "\n";
         std::cout << "[o3-tandem] PASS cycles=" << cycle
                   << " retired=" << next_order
                   << " trace=" << options.trace_path << "\n";

@@ -79,7 +79,7 @@ run-dcache-replay:
 		--image tests/dcache_replay.hex \
 		--reset-pc 0x80000000 \
 		--trace dcache_replay.jsonl \
-		--max-cycles 5000 --max-retires 6
+		--max-cycles 5000 --max-retires 6 --require-load-replay
 	cd $(SIM_DIR) && python3 check_trace.py \
 		--trace dcache_replay.jsonl \
 		--expect tests/dcache_replay.expected.json
