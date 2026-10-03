@@ -102,6 +102,19 @@ module store_queue
     branch_mask_t branch_mask_q [DEPTH-1:0];
     logic dc_inflight_q;
     logic dc_drain_fire;
+    logic head_dtcm;
+    logic head_ready;
+
+    function automatic logic in_dtcm(input logic [XLEN-1:0] addr,
+                                      input logic [7:0] mask);
+        logic local_bytes;
+        local_bytes = 1'b1;
+        for (int byte_idx = 0; byte_idx < 8; byte_idx++)
+            if (mask[byte_idx] && !((addr + XLEN'(byte_idx) >= XLEN'(CFG.lsu.dtcm_base))
+              && (addr + XLEN'(byte_idx) < XLEN'(CFG.lsu.dtcm_base + CFG.lsu.dtcm_bytes))))
+                local_bytes = 1'b0;
+        return local_bytes;
+    endfunction
 
     function automatic logic [IDX_WIDTH-1:0] add_idx(
         input logic [IDX_WIDTH-1:0] base, input int unsigned offset
@@ -118,14 +131,15 @@ module store_queue
 
     assign free_count_o = COUNT_WIDTH'(DEPTH) - count_q;
     assign tail_o = tail_q;
-    assign drain_valid_o = !DCACHE_DRAIN && valid_q[head_q] && committed_q[head_q]
-                         && addr_valid_q[head_q] && data_valid_q[head_q];
+    assign head_ready = valid_q[head_q] && committed_q[head_q]
+                     && addr_valid_q[head_q] && data_valid_q[head_q];
+    assign head_dtcm = in_dtcm(addr_q[head_q], mask_q[head_q]);
+    assign drain_valid_o = head_ready && (!DCACHE_DRAIN || head_dtcm);
     assign drain_addr_o = addr_q[head_q];
     assign drain_data_o = data_q[head_q];
     assign drain_mask_o = mask_q[head_q];
-    assign t_dc_req_valid_o = DCACHE_DRAIN && valid_q[head_q]
-                           && committed_q[head_q] && addr_valid_q[head_q]
-                           && data_valid_q[head_q] && !dc_inflight_q;
+    assign t_dc_req_valid_o = DCACHE_DRAIN && head_ready && !head_dtcm
+                           && !dc_inflight_q;
     always_comb begin
         t_dc_req_o = '0;
         t_dc_req_o.src = o3_types_pkg::DC_SRC_STORE_DRAIN;
@@ -240,7 +254,7 @@ module store_queue
             int unsigned kept;
             logic drain_fire;
             kept = 0;
-            drain_fire = DCACHE_DRAIN ? dc_drain_fire : (drain_valid_o && drain_ready_i);
+            drain_fire = dc_drain_fire || (drain_valid_o && drain_ready_i);
             if (DCACHE_DRAIN && t_dc_req_valid_o && t_dc_req_ready_i)
                 dc_inflight_q <= 1'b1;
             if (dc_drain_fire) dc_inflight_q <= 1'b0;
@@ -286,7 +300,7 @@ module store_queue
             int unsigned alloc_count;
             logic drain_fire;
             alloc_count = 0;
-            drain_fire = DCACHE_DRAIN ? dc_drain_fire : (drain_valid_o && drain_ready_i);
+            drain_fire = dc_drain_fire || (drain_valid_o && drain_ready_i);
             if (DCACHE_DRAIN && t_dc_req_valid_o && t_dc_req_ready_i)
                 dc_inflight_q <= 1'b1;
             if (dc_drain_fire) dc_inflight_q <= 1'b0;

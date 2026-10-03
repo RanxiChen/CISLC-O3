@@ -17,7 +17,7 @@
 | L1（历史） | ITCM 中的直线整数指令按序退休 | 旧 `sim/o3` smoke | Alan 曾 PASS（`a268f16`）；ITCM 已移除，旧验收不再运行 |
 | **L4 当前** | **ICache miss → inclusive L2 → AXI RAM → 直线整数退休** | `make -C sim/o3 build && make -C sim/o3 run-smoke` | Alan 回归 PASS（`de9149d`，38 周期、4 条退休、ICache 回填 1 次） |
 | **L2 当前** | **taken 分支 / JAL：BRU 解析 → 重定向 → 前端恢复** | `make -C sim/cocotb/branch_recovery SIM=verilator TEST_SEED=1 && make -C sim/o3 run-rv64i-instructions` | Alan PASS（`de9149d`；局部 1/1；整核 76 周期、14 条退休、ICache 回填 2 次） |
-| L3 进行中 | SQ 依赖/转发 → 流水化 DCache → inclusive L2 → AXI 数据访存与退休 | `sim/cocotb/store_queue/`、`sim/cocotb/dcache/`、`sim/o3` 数据访存轨迹 | SQ 查询 Alan 1/1 PASS（`d1577ae`）；SQ 完成握手与 DCache 数据 RTL/测试已写，待 Alan；整核数据路径未接通 |
+| L3 进行中 | SQ 依赖/转发 → 流水化 DCache → inclusive L2 → AXI 数据访存与退休 | `sim/cocotb/store_queue/`、`sim/cocotb/dcache/`、`sim/o3` 数据访存轨迹 | `db69cf5` Alan SQ 2/2、DCache 2/2 PASS；LSU/SQ→DCache 整核接线已写，待 Alan 整核验证。脏 victim、恢复、FENCE.I 尚未闭合 |
 | L5 | 异常 / CSR / trap / xRET | ACT4 RV64I | 未开始 |
 | L6+ | DCache 数据路径、PTW/TLB、M/F/D、A、L2 并发/DMA、Linux | 待定 | 未开始 |
 

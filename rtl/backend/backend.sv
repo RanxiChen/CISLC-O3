@@ -866,7 +866,7 @@ module backend
         .resolution_tag_i(branch_resolution_i.branch_tag), .restore_tail_i(restore_lq_tail)
     );
 
-    store_queue #(.CFG(CFG)) u_store_queue (
+    store_queue #(.CFG(CFG), .DCACHE_DRAIN(1'b1)) u_store_queue (
         .clk(clk), .rst(rst), .alloc_req_i(sq_alloc_req), .alloc_fire_i(rename_fire),
         .alloc_rob_idx_i(rob_idx), .alloc_branch_mask_i(rename_branch_mask),
         .alloc_idx_o(sq_idx), .free_count_o(sq_free_count), .tail_o(sq_tail),
@@ -881,6 +881,9 @@ module backend
         .drain_valid_o(sq_drain_valid), .drain_ready_i(sq_drain_ready),
         .drain_addr_o(sq_drain_addr), .drain_data_o(sq_drain_data),
         .drain_mask_o(sq_drain_mask),
+        .t_dc_req_valid_o(t_sq_dc_req_valid), .t_dc_req_ready_i(t_sq_dc_req_ready),
+        .t_dc_req_o(t_sq_dc_req), .t_dc_resp_i(t_sq_dc_resp),
+        .t_committed_empty_o(t_sq_committed_empty),
         .resolution_valid_i(branch_resolution_i.valid),
         .resolution_mispredict_i(branch_resolution_i.mispredict),
         .resolution_tag_i(branch_resolution_i.branch_tag), .restore_tail_i(restore_sq_tail)
@@ -945,7 +948,7 @@ module backend
     );
 
     // LSU拥有单发射Memory流水、LQ/SQ依赖查询后的统一memory请求以及可保持的Load结果。
-    load_store_unit #(.CFG(CFG)) u_load_store_unit (
+    load_store_unit #(.CFG(CFG), .USE_DCACHE(1'b1)) u_load_store_unit (
         .clk(clk), .rst(rst), .mem_uop_i(mem_execute_q), .mem_ready_o(mem_execute_ready),
         .lq_execute_valid_o(lq_execute_valid), .lq_execute_idx_o(lq_execute_idx),
         .lq_execute_addr_o(lq_execute_addr), .lq_execute_generation_i(lq_execute_generation),
@@ -974,7 +977,9 @@ module backend
         // 目标合同（t_*）：只连接共享 PTW，其余未接入。
         .t_ptw_req_valid_o(t_dtlb_ptw_req_valid), .t_ptw_req_ready_i(t_dtlb_ptw_req_ready),
         .t_ptw_req_o(t_dtlb_ptw_req), .t_ptw_resp_i(t_ptw_resp),
-        .t_csr_i(t_dmmu_csr), .t_pmp_i(t_pmp), .t_sfence_i(t_sfence)
+        .t_csr_i(t_dmmu_csr), .t_pmp_i(t_pmp), .t_sfence_i(t_sfence),
+        .t_dc_ld_req_valid_o(t_dc_ld_req_valid), .t_dc_ld_req_ready_i(t_dc_ld_req_ready),
+        .t_dc_ld_req_o(t_dc_ld_req), .t_dc_ld_resp_i(t_dc_ld_resp)
     );
 
     // 分支单元（原样迁出到 branch_unit；内部例化 branch_execute_unit）。
@@ -1735,6 +1740,13 @@ module backend
     o3_types_pkg::sfence_req_t  t_sfence;
     logic                       t_sfence_done_ptw;
     logic                       t_dc_clean_all_req, t_dc_clean_all_done, t_dc_clean_all_busy;
+    logic                       t_dc_ld_req_valid [CFG.lsu.agu_pipes];
+    logic                       t_dc_ld_req_ready [CFG.lsu.agu_pipes];
+    o3_types_pkg::dcache_req_t  t_dc_ld_req [CFG.lsu.agu_pipes];
+    o3_types_pkg::dcache_resp_t t_dc_ld_resp [CFG.lsu.agu_pipes];
+    logic                       t_sq_dc_req_valid, t_sq_dc_req_ready, t_sq_committed_empty;
+    o3_types_pkg::dcache_req_t  t_sq_dc_req;
+    o3_types_pkg::dcache_resp_t t_sq_dc_resp;
     // A/D
     logic                       t_a_upd_req_valid, t_a_upd_req_ready;
     o3_types_pkg::pte_ad_req_t  t_a_upd_req;
@@ -1789,7 +1801,10 @@ module backend
 
     dcache #(.CFG(CFG)) u_dcache (
         .clk(clk), .rst(rst),
-        // load / store / AMO 端口由 LSU 目标端口连接（未接入）
+        .ld_req_valid_i(t_dc_ld_req_valid), .ld_req_ready_o(t_dc_ld_req_ready),
+        .ld_req_i(t_dc_ld_req), .ld_resp_o(t_dc_ld_resp),
+        .st_req_valid_i(t_sq_dc_req_valid), .st_req_ready_o(t_sq_dc_req_ready),
+        .st_req_i(t_sq_dc_req), .st_resp_o(t_sq_dc_resp),
         .ptw_req_valid_i(t_ptw_mem_req_valid), .ptw_req_ready_o(t_ptw_mem_req_ready),
         .ptw_req_i(t_ptw_mem_req), .ptw_resp_o(t_ptw_mem_resp),
         .pf_req_valid_i(t_pf_req_valid), .pf_req_ready_o(t_pf_req_ready), .pf_req_i(t_pf_req),

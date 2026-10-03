@@ -34,6 +34,7 @@ module load_store_unit
     import o3_pkg::*;
 #(
     parameter  o3_cfg_pkg::backend_cfg_t CFG,
+    parameter bit USE_DCACHE = 1'b0,
     localparam int DATA_SRAM_BYTES = CFG.lsu.dtcm_bytes,                 // DTCM：现状沿用，去留未设计
     localparam logic [XLEN-1:0] DATA_SRAM_BASE = XLEN'(CFG.lsu.dtcm_base)
 ) (
@@ -149,6 +150,8 @@ module load_store_unit
     logic memory_req_ready;
     logic memory_rsp_valid, memory_rsp_ready, memory_rsp_error;
     logic [XLEN-1:0] memory_rsp_rdata;
+    logic dcache_load_req;
+    logic dcache_load_rsp;
 
     logic pending_valid_q;
     logic [INST_ID_WIDTH-1:0] pending_instruction_id_q;
@@ -239,11 +242,12 @@ module load_store_unit
     assign sq_query_addr_o = effective_addr;
     assign sq_query_mask_o = access_mask;
 
-    assign load_can_forward = lq_execute_valid_o && !sq_query_block_i
+    assign load_can_forward = lq_execute_valid_o && !pending_valid_q && !sq_query_block_i
                             && sq_query_forward_valid_i
                             && (!load_result_q.valid || load_result_ready_i);
     assign load_can_request = lq_execute_valid_o && !sq_query_block_i
-                            && !sq_query_forward_valid_i && !pending_valid_q;
+                            && !sq_query_forward_valid_i && !pending_valid_q
+                            && (!load_result_q.valid || load_result_ready_i);
     assign load_forward_fire = load_can_forward;
 
     // committed Store永远优先占用本拍统一请求口；完整落在DTCM窗口内才访问本地
@@ -257,12 +261,30 @@ module load_store_unit
     assign memory_req_targets_dtcm = access_in_dtcm(sram_req_addr, sram_req_wmask);
     assign sram_req_valid = memory_req_valid && memory_req_targets_dtcm;
     assign sram_req_write = memory_req_write;
-    assign ext_req_valid_o = memory_req_valid && !memory_req_targets_dtcm;
+    assign dcache_load_req = USE_DCACHE && load_can_request
+                          && !sq_drain_valid_i && !memory_req_targets_dtcm;
+    for (genvar port = 0; port < CFG.lsu.agu_pipes; port++) begin : g_dcache_load
+        assign t_dc_ld_req_valid_o[port] = (port == 0) && dcache_load_req;
+        if (port == 0) begin : g_active
+            always_comb begin
+                t_dc_ld_req_o[port] = '0;
+                t_dc_ld_req_o[port].src = o3_types_pkg::DC_SRC_LOAD;
+                t_dc_ld_req_o[port].paddr = o3_types_pkg::paddr_t'(effective_addr);
+                t_dc_ld_req_o[port].size = 2'(mem_uop_i.mem_size);
+                t_dc_ld_req_o[port].lq_tag.idx = o3_types_pkg::lq_idx_t'(mem_uop_i.lq_idx);
+                t_dc_ld_req_o[port].lq_tag.gen = o3_types_pkg::LQ_GEN_W'(lq_execute_generation_i);
+            end
+        end else begin : g_inactive
+            assign t_dc_ld_req_o[port] = '0;
+        end
+    end
+    assign ext_req_valid_o = !USE_DCACHE && memory_req_valid && !memory_req_targets_dtcm;
     assign ext_req_write_o = memory_req_write;
     assign ext_req_addr_o = sram_req_addr;
     assign ext_req_wdata_o = sram_req_wdata;
     assign ext_req_wmask_o = sram_req_wmask;
-    assign memory_req_ready = memory_req_targets_dtcm ? sram_req_ready : ext_req_ready_i;
+    assign memory_req_ready = memory_req_targets_dtcm ? sram_req_ready
+                            : USE_DCACHE ? t_dc_ld_req_ready_i[0] : ext_req_ready_i;
     assign sq_drain_ready_o = sq_drain_valid_i && memory_req_ready;
     assign load_request_fire = load_can_request && !sq_drain_valid_i && memory_req_ready;
     assign lq_request_fire_o = load_request_fire;
@@ -282,15 +304,25 @@ module load_store_unit
     assign store_complete_valid_o = sq_execute_valid_o;
     assign store_complete_rob_idx_o = mem_uop_i.rob_idx;
 
-    assign memory_rsp_valid = pending_external_q ? ext_rsp_valid_i : sram_rsp_valid;
-    assign memory_rsp_rdata = pending_external_q ? ext_rsp_rdata_i : sram_rsp_rdata;
-    assign memory_rsp_error = pending_external_q && ext_rsp_error_i;
+    assign dcache_load_rsp = USE_DCACHE && pending_external_q
+                           && t_dc_ld_resp_i[0].valid
+                           && t_dc_ld_resp_i[0].src == o3_types_pkg::DC_SRC_LOAD;
+    assign memory_rsp_valid = pending_external_q
+                            ? (USE_DCACHE ? dcache_load_rsp : ext_rsp_valid_i)
+                            : sram_rsp_valid;
+    assign memory_rsp_rdata = pending_external_q
+                            ? (USE_DCACHE ? t_dc_ld_resp_i[0].rdata : ext_rsp_rdata_i)
+                            : sram_rsp_rdata;
+    assign memory_rsp_error = pending_external_q
+                            && (USE_DCACHE
+                                ? t_dc_ld_resp_i[0].status == o3_types_pkg::DC_ERROR
+                                : ext_rsp_error_i);
     assign memory_rsp_ready = !memory_rsp_valid || !lq_response_live_i
                             || killed(pending_branch_mask_q)
                             || !load_result_q.valid || load_result_ready_i;
     assign sram_rsp_ready = !pending_external_q && memory_rsp_ready;
-    assign ext_rsp_ready_o = pending_external_q && memory_rsp_ready;
-    assign lq_response_valid_o = memory_rsp_valid;
+    assign ext_rsp_ready_o = !USE_DCACHE && pending_external_q && memory_rsp_ready;
+    assign lq_response_valid_o = memory_rsp_valid && memory_rsp_ready;
     assign lq_response_tag_o = pending_response_tag_q;
 
     simple_data_sram #(

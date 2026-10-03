@@ -35,9 +35,7 @@
  *   虚假完成。
  * - TLB 命中、权限与 A/D 均满足时 load/store 照常走原流水；store 遇 D=0 由 LSU 标记 needs_D（B36）。
  *
- * 细节待定（不能当作已决定）：容量、路数、line 大小、bank 数与映射（整行或行内 word 交错）、
- * 端口、流水级数、BRAM 映射、MSHR 与写回缓冲数、替换策略；FENCE.I 数据侧接口的具体形式。
- * 建议配置 16KiB/4-way/64B/4 bank/8 MSHR 仅为建议（B03）。
+ * 首版映射已选 16B word 交错；多 MSHR、BRAM 时序与完整维护队列仍待实现。
  *
  * 当前实现状态：闭环简化（L3，进行中）。四个 16B word bank、整行 tag/valid/dirty、
  * 两级 demand 查询、单个 demand 行事务、命中穿越 miss、脏 victim 交回、四拍 L2
@@ -504,8 +502,10 @@ module dcache
     assign ptw_req_ready_o = 1'b0;
     assign ptw_resp_o = '0;
     assign pf_req_ready_o = 1'b0;
-    assign clean_all_done_o = clean_all_req_i;
-    assign clean_all_busy_o = 1'b0;
+    // A dirty DCache must never claim that FENCE.I cleaned it. The maintenance
+    // sequencer is a separate pending closure; a request remains unacknowledged.
+    assign clean_all_done_o = 1'b0;
+    assign clean_all_busy_o = clean_all_req_i;
     assign pte_ad_req_ready_o = 1'b0;
     assign pte_ad_resp_o = '0;
     assign perf_o = '0;
