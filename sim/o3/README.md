@@ -31,6 +31,13 @@ one outstanding read and one outstanding write, byte strobes, bursts,
 parameterized read latency, and valid/ready backpressure. L1 smoke should
 hit ITCM and therefore does not validate the L2/AXI miss path.
 
+The ICache now has a two-bank, four-stage lookup and a single demand MSHR.
+`sim/cocotb/icache/` tests real cache hits and four-beat refill with a
+synthetic L2 responder. The current `l2_cache.sv` is still a shell, so an
+external-memory instruction fetch cannot yet complete through `o3_core`.
+Pass `+L1_DEBUG` to the simulation binary for a bounded frontend/backend
+handshake trace.
+
 A passing smoke run proves only that the current straight-line ITCM
 instruction path reaches ordered retirement for these four instructions.
 It does not prove branch recovery, RVC, exceptions, DTCM or external memory,

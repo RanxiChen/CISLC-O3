@@ -1,780 +1,474 @@
 /**
- * ICache —— 四级流水、两 bank、非阻塞指令缓存（目标），含 ITLB/PMP/PMA
+ * ICache: 64B whole-line interleaving over two banks, with an S0-S3
+ * synchronous lookup pipeline (D10-D14).
  *
- * 作用（目标，第 8～9 节）：
- * - 正常命中、无资源冲突时每拍接受一个 demand 请求，四拍返回（D10）。
- *     S0：并行启动 ITLB 与 tag/data 阵列访问；
- *     S1：ITLB 命中比较、PPN/权限选择；
- *     S2：way tag 比较、PMP 范围匹配、PMA 属性判定；
- *     S3：PMP 优先级/权限汇总、数据选择，形成响应或 miss 请求。
- * - 响应按 rq_idx 写回返回队列，允许 hit under miss（D14）；异常也完成队列项。
- * - 接受 FTQ 预取请求：查询 L1/在途，必要时由 MSHR 向 L2 预取（D18、第 11.3 节）。
+ * 当前实现状态：闭环简化（L1，含 cache 数据通路）
+ * - S0 samples a demand and starts banked tag/data and ITCM reads. S1 holds
+ *   the synchronous results; S2 registers tag comparisons; S3 selects data
+ *   and returns the original FTQ/RQ identity. Uncontended hits accept one
+ *   demand per cycle, including consecutive hits in the same bank.
+ * - Each 64B line belongs entirely to address[6]'s bank. Each bank has one
+ *   synchronous read and one write address per way. Four 16B words are data
+ *   addresses within a line, not four cache banks (D11/D12).
+ * - One demand MSHR accepts a line miss, receives four 16B L2 beats, installs
+ *   the full line, then publishes valid and responds. Independent hits can
+ *   pass a pending miss (D13/D14). MSHR count/merge capacity remains below
+ *   the provisional CFG count; a second miss waits in S3.
+ * - The L1 physical-address/ITCM mode still bypasses ITLB, PMP and PMA.
+ *   Translation and protection must join S1-S3 before privileged execution;
+ *   no claim is made that those checks are implemented. Prefetch, recall,
+ *   epoch retirement and performance events are also pending.
+ * - Tests: sim/cocotb/icache/. Whole-core closure: sim/o3/.
  *
- * 需要补充实现的机制（基线已定）：
- * 1) D11/D12：64B line 整条交错到 2 个 bank，bank = addr[6]；每 bank 一读口一写口；
- *    16B 内不再分 bank。tag/status 阵列端口也要核对。
- * 2) VIPT 思路：4KiB 页下 index 与 bank 位必须落在页内偏移，或另行处理同义地址（第 8 节）。
- * 3) 翻译/权限/PMP 未完成时不能把数据交给指令流；TLB miss 不是错误物理地址的 hit。
- * 4) D13：回填冲突等待，优先在 S0 用 ready=0 阻止已知危险访问；已进流水的请求遇到
- *    必须等待的条件时保持所在阶段并正确回压，不靠取消重发。
- * 5) 未完整安装的 line 不参与命中；完整可用后才发布 valid；read-during-write 显式定义。
- * 6) refill 必须能前进，不被等待它的 demand 反向堵死。
- * 7) D17：错误路径已接受请求照常完成，由返回队列丢弃；本模块无需按年龄 kill。
- * 8) D27：请求携带 epoch，旧 epoch 结果被隔离；D28：命中仍按当前 PMP 检查。
- * 9) D25：inv_all_i 使整个 ICache 失效（清 valid，不写零 data）；调用前由
- *    frontend_sync_ctrl 保证在途结束（idle_o）。
- * 10) 预取与 demand 不同 bank 时可并行查 tag；同 bank 两读竞争读口（第 11.3 节）。
- * 11) B41 L2 inclusive 回收（2026-10-02 确认）：recall_* 收到 L2 定向失效某物理行时，
- *     经本模块自己的维护入口（与回填写口仲裁，不进入 S0 demand 查询路径，不增加普通命中
- *     的流水级）清该行 valid；若同行回填仍在 MSHR 中，标记为不可安装，旧响应不得在失效后
- *     重新装回；完成后回复 quiesced。L1I 无脏数据。回收应答不得依赖普通 miss 的空闲 MSHR，
- *     也不能被等待中的 demand 反向堵死。
- *
- * 细节待定：容量、路数、替换、ITLB 组织、MSHR 数、refill beat 宽度、冲突等待粒度
- * （第 13 节第 5 条）；预取查询仲裁与公平性。
- *
- * 未设计：
- * - ITCM：不在设计基线中，去留未定。当前实现及 itcm_init_* 端口沿用现状。
- * - 不可缓存取指路径（与 pma_checker 一同未设计）。
- *
- * 当前实现状态与缺口：
- * - 保留 HEAD 06462b0 的阻塞式实现：固定地址 ITCM、组相联 Cache、64B line、16B 窗口、
- *   单 miss refill 状态机；flush 失效 Cache line；kill 清查找/replay 并丢弃迟到 refill。
- *   对应端口（s0_*、refill_*、out_*、flush、kill）标为“旧合同”，目标总装不再连接。
- * - 旧实现缺口：只有一个 miss；没有 S0～S3 流水；没有请求身份；内部“bank”是行内按 16B
- *   切分（NUM_BANKS=line/fetch），不符合 D11 的整行交错两 bank；无 ITLB/PMP/PMA；
- *   refill 一次返回整条 line；PC 当作物理地址使用。
- * - 参数已改为由 CFG 推导，模块不再有默认值。目标端口与子模块例化已列出，均未驱动。
- *
- * 旧实现逐周期说明：
- * 周期N组合产生ready与范围判断，周期N上升沿锁存ITCM数据或推进Cache miss状态，
- * 周期N+1可见ITCM/Cache命中返回、等待状态或refill完成数据。
- *
- * 目标周期行为：
- * - 周期 N：req 握手进入 S0；N+1 S1；N+2 S2；N+3 S3 产生 resp_o 或 miss 分配 MSHR。
- * - miss 请求在 MSHR 安装完成后重新查询（或由 MSHR 数据直接响应，方式待定）。
- *
- * 本阶段不写测试代码和仿真代码。
+ * Timing: N's S0 acceptance starts registered SRAM reads; N+1 S1 has their
+ * outputs; N+2 S2 has per-way hit candidates; N+3 S3 forms a response or
+ * allocates the MSHR. Stalled stages retain data and identity. Same-bank
+ * refill writes block new S0 reads; the other bank remains available.
+ * Read-during-write on one address is forbidden at the SRAM boundary.
  */
-
 module ICache
     import o3_types_pkg::*;
 #(
-    parameter  o3_cfg_pkg::frontend_cfg_t CFG,
-    // 旧实现使用的名称，全部由 CFG 推导，不再有默认值。
-    localparam int ADDR_WIDTH = o3_pkg::PC_WIDTH,              // 旧合同：未区分 VA/PA
-    localparam int ICACHE_WAYS = CFG.icache.ways,
+    parameter o3_cfg_pkg::frontend_cfg_t CFG,
+    localparam int ADDR_WIDTH = o3_pkg::PC_WIDTH,
     localparam int ICACHE_BLOCK_SIZE_BYTES = CFG.icache.line_bytes,
     localparam int FETCH_BYTES = CFG.fetch.region_bytes,
-    localparam int NUM_SETS = CFG.icache.sets,
     localparam logic [ADDR_WIDTH-1:0] ITCM_BASE = ADDR_WIDTH'(CFG.icache.itcm_base),
     localparam int ITCM_BYTES = CFG.icache.itcm_bytes
 ) (
+    input  logic clk,
+    input  logic rst,
 
-    input  logic                      clk,
-    input  logic                      rst,
-
-    // ---------------- 旧合同（迁移后删除；itcm_init_* 去留未设计） ----------------
-    input  logic                      flush,
-    input  logic                      kill,
-    input  logic                      s0_valid,
-    output logic                      s0_ready,
-    input  logic [ADDR_WIDTH-1:0]     s0_pc,
-    output logic                      refill_req_valid,
-    output logic [ADDR_WIDTH-1:0]     refill_req_pc,
-    input  logic                      refill_resp_valid,
-    input  logic [ADDR_WIDTH-1:0]     refill_resp_pc,
-    input  logic                      refill_resp_error,
+    // Legacy ports are retained only for source compatibility; no old
+    // request path is active. The frontend uses req_* and resp_o below.
+    input  logic flush,
+    input  logic kill,
+    input  logic s0_valid,
+    output logic s0_ready,
+    input  logic [ADDR_WIDTH-1:0] s0_pc,
+    output logic refill_req_valid,
+    output logic [ADDR_WIDTH-1:0] refill_req_pc,
+    input  logic refill_resp_valid,
+    input  logic [ADDR_WIDTH-1:0] refill_resp_pc,
+    input  logic refill_resp_error,
     input  logic [ICACHE_BLOCK_SIZE_BYTES*8-1:0] refill_resp_data,
-    input  logic                      itcm_init_valid_i,
-    input  logic [ADDR_WIDTH-1:0]     itcm_init_addr_i,
-    input  logic [63:0]               itcm_init_data_i,
-    input  logic [7:0]                itcm_init_wmask_i,
-    output logic                      out_valid,
-    output logic                      out_hit,
-    output logic [ADDR_WIDTH-1:0]     out_pc,
-    output logic [FETCH_BYTES*8-1:0]  out_data,
-    output logic                      out_error,
+    input  logic itcm_init_valid_i,
+    input  logic [ADDR_WIDTH-1:0] itcm_init_addr_i,
+    input  logic [63:0] itcm_init_data_i,
+    input  logic [7:0] itcm_init_wmask_i,
+    output logic out_valid,
+    output logic out_hit,
+    output logic [ADDR_WIDTH-1:0] out_pc,
+    output logic [FETCH_BYTES*8-1:0] out_data,
+    output logic out_error,
 
-    // ---------------- 目标合同 ----------------
-    // demand：FTQ → S0；响应按 rq_idx 写回返回队列
-    input  logic                      req_valid_i,
-    output logic                      req_ready_o,
-    input  icache_req_t               req_i,
-    output icache_resp_t              resp_o,
+    input  logic req_valid_i,
+    output logic req_ready_o,
+    input  icache_req_t req_i,
+    output icache_resp_t resp_o,
 
-    // 预取查询（已翻译或需翻译）
-    input  logic                      pf_req_valid_i,
-    output logic                      pf_req_ready_o,
-    input  pf_req_t                   pf_req_i,
-    output pf_resp_t                  pf_resp_o,
+    input  logic pf_req_valid_i,
+    output logic pf_req_ready_o,
+    input  pf_req_t pf_req_i,
+    output pf_resp_t pf_resp_o,
 
-    // 共享 PTW（经 ITLB）
-    output logic                      ptw_req_valid_o,
-    input  logic                      ptw_req_ready_i,
-    output ptw_req_t                  ptw_req_o,
-    input  ptw_resp_t                 ptw_resp_i,
+    output logic ptw_req_valid_o,
+    input  logic ptw_req_ready_i,
+    output ptw_req_t ptw_req_o,
+    input  ptw_resp_t ptw_resp_i,
 
-    // L2
-    output logic                      l2_req_valid_o,
-    input  logic                      l2_req_ready_i,
-    output l2_req_t                   l2_req_o,
-    input  l2_resp_t                  l2_resp_i,
-    output logic                      l2_resp_ready_o,
+    output logic l2_req_valid_o,
+    input  logic l2_req_ready_i,
+    output l2_req_t l2_req_o,
+    input  l2_resp_t l2_resp_i,
+    output logic l2_resp_ready_o,
 
-    // CSR 派生状态与系统同步
-    input  fe_csr_t                   csr_i,
-    input  pmp_state_t                pmp_i,
-    output logic                      pmp_update_done_o,
-    input  sfence_req_t               sfence_i,
-    output logic                      sfence_done_o,
-    input  logic                      inv_all_i,
-    output logic                      inv_done_o,
-    output logic                      idle_o,
+    input  fe_csr_t csr_i,
+    input  pmp_state_t pmp_i,
+    output logic pmp_update_done_o,
+    input  sfence_req_t sfence_i,
+    output logic sfence_done_o,
+    input  logic inv_all_i,
+    output logic inv_done_o,
+    output logic idle_o,
 
-    // L2 inclusive 回收的定向失效（B41）
-    input  logic                      recall_valid_i,
-    output logic                      recall_ready_o,
-    input  l1_recall_req_t            recall_i,
-    output l1i_recall_resp_t          recall_resp_o,
+    input  logic recall_valid_i,
+    output logic recall_ready_o,
+    input  l1_recall_req_t recall_i,
+    output l1i_recall_resp_t recall_resp_o,
 
-    output fe_perf_t                  perf_o
-`ifdef O3_ICACHE_DEBUG
-    ,
-    output logic                      dbg_s0_fire,
-    output logic                      dbg_s1_valid,
-    output logic [ADDR_WIDTH-1:0]     dbg_s1_pc,
-    output logic [$clog2(NUM_SETS)-1:0] dbg_s1_set_idx,
-    output logic [$clog2(ICACHE_BLOCK_SIZE_BYTES / FETCH_BYTES)-1:0] dbg_s1_bank_idx,
-    output logic [ADDR_WIDTH - (2 + $clog2(FETCH_BYTES / 4) + $clog2(ICACHE_BLOCK_SIZE_BYTES / FETCH_BYTES) + $clog2(NUM_SETS)) - 1:0] dbg_s1_tag,
-    output logic [ICACHE_WAYS-1:0]    dbg_s1_way_hit,
-    output logic                      dbg_out_valid,
-    output logic                      dbg_out_hit,
-    output logic [1:0]                dbg_state,
-    output logic [FETCH_BYTES*8-1:0]  dbg_done_data,
-    output logic [ADDR_WIDTH-1:0]     dbg_miss_pc,
-    output logic [ADDR_WIDTH-1:0]     dbg_miss_refill_pc
-`endif
+    output fe_perf_t perf_o
 );
+    localparam int BANKS = CFG.icache.banks;
+    localparam int WAYS = CFG.icache.ways;
+    localparam int SETS_PER_BANK = CFG.icache.sets / BANKS;
+    localparam int WORDS_PER_LINE = ICACHE_BLOCK_SIZE_BYTES / FETCH_BYTES;
+    localparam int BEATS_PER_LINE = ICACHE_BLOCK_SIZE_BYTES / CFG.icache.refill_beat_bytes;
+    localparam int BANK_W = $clog2(BANKS);
+    localparam int WAY_W = $clog2(WAYS);
+    localparam int SET_W = $clog2(SETS_PER_BANK);
+    localparam int WORD_W = $clog2(WORDS_PER_LINE);
+    localparam int BEAT_W = $clog2(BEATS_PER_LINE);
+    localparam int TAG_LSB = 6 + BANK_W + SET_W;
+    localparam int TAG_W = PADDR_W - TAG_LSB;
+    localparam int DATA_W = FETCH_BYTES * 8;
+    localparam int DATA_ADDR_W = SET_W + WORD_W;
+    localparam int ITCM_WORD_W = $clog2(ITCM_BYTES / FETCH_BYTES);
 
-    // ============================================================
-    // 目标结构：子模块例化。S0～S3 流水、阵列 bank 化、仲裁均未实现。
-    // ============================================================
-    logic             t_itlb_s0_valid;          // 未实现：S0 demand/预取仲裁结果
-    vaddr_t           t_itlb_s0_vaddr;
-    logic             t_itlb_s1_valid, t_itlb_s1_hit, t_itlb_s1_miss;
-    logic [PPN_W-1:0] t_itlb_s1_ppn;
-    logic [1:0]       t_itlb_s1_level;
-    logic             t_itlb_s1_pf, t_itlb_s1_af;
-    paddr_t           t_s2_paddr;               // 未实现：S2 物理地址寄存
-    logic             t_s2_valid, t_stall;
-    logic             t_pmp_s3_valid, t_pmp_s3_allow, t_pmp_s3_fault;
-    logic             t_pma_exec_ok, t_pma_cacheable, t_pma_exists;
-    logic             t_mshr_alloc_valid, t_mshr_alloc_ready, t_mshr_alloc_merged;
-    paddr_t           t_mshr_alloc_paddr, t_mshr_probe_paddr;
-    l2_req_kind_e     t_mshr_alloc_kind;
-    logic             t_mshr_probe_inflight;
-    logic             t_fill_wr_valid, t_fill_wr_ready, t_fill_wr_error, t_fill_done;
-    paddr_t           t_fill_wr_paddr, t_fill_done_paddr;
-    logic [ICACHE_LINE_BYTES*8-1:0] t_fill_wr_data;
-    logic             t_mshr_idle;
-    fe_perf_t         t_perf_itlb, t_perf_mshr;
+    typedef logic [BANK_W-1:0] bank_idx_t;
+    typedef logic [WAY_W-1:0] way_idx_t;
+    typedef logic [SET_W-1:0] set_idx_t;
+    typedef logic [WORD_W-1:0] word_idx_t;
+    typedef logic [TAG_W-1:0] tag_t;
+    typedef logic [DATA_W-1:0] word_data_t;
 
-    itlb #(.CFG(CFG)) u_itlb (
-        .clk_i(clk), .rst_i(rst),
-        .s0_valid_i(t_itlb_s0_valid), .s0_vaddr_i(t_itlb_s0_vaddr),
-        .s1_valid_o(t_itlb_s1_valid), .s1_hit_o(t_itlb_s1_hit), .s1_miss_o(t_itlb_s1_miss),
-        .s1_ppn_o(t_itlb_s1_ppn), .s1_level_o(t_itlb_s1_level),
-        .s1_page_fault_o(t_itlb_s1_pf), .s1_access_fault_o(t_itlb_s1_af),
-        .ptw_req_valid_o(ptw_req_valid_o), .ptw_req_ready_i(ptw_req_ready_i),
-        .ptw_req_o(ptw_req_o), .ptw_resp_i(ptw_resp_i),
-        .csr_i(csr_i), .sfence_i(sfence_i), .sfence_done_o(sfence_done_o),
-        .perf_o(t_perf_itlb)
-    );
-
-    pmp_checker #(.CFG(CFG)) u_pmp_checker (
-        .clk_i(clk), .rst_i(rst),
-        .s2_valid_i(t_s2_valid), .s2_paddr_i(t_s2_paddr), .stall_i(t_stall),
-        .s3_valid_o(t_pmp_s3_valid), .s3_allow_o(t_pmp_s3_allow), .s3_fault_o(t_pmp_s3_fault),
-        .cfg_i(pmp_i), .priv_i(csr_i.priv), .cfg_update_done_o(pmp_update_done_o)
-    );
-
-    pma_checker #(.CFG(CFG)) u_pma_checker (
-        .paddr_i(t_s2_paddr),
-        .exec_ok_o(t_pma_exec_ok), .cacheable_o(t_pma_cacheable), .exists_o(t_pma_exists)
-    );
-
-    icache_mshr #(.CFG(CFG)) u_icache_mshr (
-        .clk_i(clk), .rst_i(rst),
-        .alloc_valid_i(t_mshr_alloc_valid), .alloc_ready_o(t_mshr_alloc_ready),
-        .alloc_line_paddr_i(t_mshr_alloc_paddr), .alloc_kind_i(t_mshr_alloc_kind),
-        .alloc_merged_o(t_mshr_alloc_merged),
-        .probe_line_paddr_i(t_mshr_probe_paddr), .probe_inflight_o(t_mshr_probe_inflight),
-        .l2_req_valid_o(l2_req_valid_o), .l2_req_ready_i(l2_req_ready_i), .l2_req_o(l2_req_o),
-        .l2_resp_i(l2_resp_i), .l2_resp_ready_o(l2_resp_ready_o),
-        .fill_wr_valid_o(t_fill_wr_valid), .fill_wr_ready_i(t_fill_wr_ready),
-        .fill_wr_line_paddr_o(t_fill_wr_paddr), .fill_wr_data_o(t_fill_wr_data),
-        .fill_wr_error_o(t_fill_wr_error),
-        .fill_done_o(t_fill_done), .fill_done_line_paddr_o(t_fill_done_paddr),
-        .idle_o(t_mshr_idle),
-        .perf_o(t_perf_mshr)
-    );
-
-    // ============================================================
-    // 目标合同适配层：把旧阻塞式实现的命中/填充结果重新打包成
-    // 带身份的 icache_resp_t（D14：乱序响应按 rq_idx 写回返回队列）。
-    //
-    // 依据：本实现是阻塞式单未决（见文件头第 41 行），一次只跟踪一个
-    // demand，因此身份元数据只需要**一组**保持寄存器，不需要队列。
-    //
-    // 已接通：req_ready_o / resp_o / idle_o
-    // 未接通（明确 tie-off，不得据此外推已实现）：
-    //   - 预取 L1 查询与 pf_resp：预取只有 MSHR 侧骨架，L1 过滤器未实现
-    //   - ITLB/ptw_req：itlb.sv 仍是空壳，异常路径未接通
-    //   - PMP 派生/更新完成、SFENCE 完成、失效完成握手
-    //   - 回收（recall）入口与 perf 事件
-    // ============================================================
-
-    // S0 接受一次 demand 时锁存身份；响应拍据此回填。
-    logic         demand_ident_valid_q;
-    rq_idx_t      demand_rq_idx_q;
-    ftq_id_t      demand_ftq_id_q;
-    xlate_epoch_t demand_epoch_q;
-
-    always_ff @(posedge clk) begin
-        if (rst) begin
-            demand_ident_valid_q <= 1'b0;
-            demand_rq_idx_q      <= '0;
-            demand_ftq_id_q      <= '0;
-            demand_epoch_q       <= '0;
-        end else if (s0_fire) begin
-            // 新 demand 优先：同拍既有响应又有新请求时，响应用旧身份（本拍组合），
-            // 新身份在边沿锁存，两者不冲突。
-            demand_ident_valid_q <= 1'b1;
-            demand_rq_idx_q      <= req_i.rq_idx;
-            demand_ftq_id_q      <= req_i.ftq_id;
-            demand_epoch_q       <= req_i.epoch;
-        end else if (out_valid) begin
-            demand_ident_valid_q <= 1'b0;
-        end
-    end
-
-    // 请求侧：旧 s0 握手直接对外，不再另接一套 req。
-    assign req_ready_o = s0_ready;
-
-    // 响应侧：旧 out_* 是最终结果，附上捕获的身份。
-    // out_data 宽度 = FETCH_BYTES*8，resp_o.data 宽度 = REGION_BYTES*8，
-    // 两者来自同一配置字段 CFG.fetch.region_bytes。
-    always_comb begin
-        resp_o.valid     = out_valid;
-        resp_o.rq_idx    = demand_rq_idx_q;
-        resp_o.ftq_id    = demand_ftq_id_q;
-        resp_o.data      = out_data;
-        resp_o.exc_valid = out_error;
-        resp_o.exc_cause = EXCEPTION_CAUSE_INST_ACCESS_FAULT;
-    end
-
-    // 空闲：WORK 状态且 S1 无在途请求。
-    assign idle_o = (state_q == ICACHE_WORK) && !s1_valid_q;
-
-    // ---- 以下目标端口尚未实现，显式 tie-off ----
-    assign pf_req_ready_o   = 1'b0;
-    assign pf_resp_o        = '0;
-    assign ptw_req_valid_o  = 1'b0;
-    assign ptw_req_o        = '0;
-    assign l2_resp_ready_o  = 1'b1;
-    assign pmp_update_done_o = 1'b0;
-    assign sfence_done_o     = 1'b0;
-    assign inv_done_o        = 1'b0;
-    assign recall_ready_o    = 1'b0;
-    assign recall_resp_o     = '0;
-    assign perf_o            = '0;
-
-    // 身份寄存器的基本一致性：有有效响应时必须有对应身份。
-    // 允许被形式验证/仿真断言检查，不作为功能正确性的完整证明。
-    always_comb begin
-        assert (!out_valid || demand_ident_valid_q)
-            else $error("ICache: resp_o.valid 但未捕获 demand 身份");
-    end
-
-    // ============================================================
-    // 旧合同实现（HEAD 06462b0），迁移后删除或改造。
-    // 注意：下面的 NUM_BANKS 是行内 16B 切分数，不是 D11 的两 bank。
-    // ============================================================
-
-    // 一条 cache line 按 FETCH_BYTES 横向切分得到的 bank 数
-    localparam int NUM_BANKS = ICACHE_BLOCK_SIZE_BYTES / FETCH_BYTES;
-    localparam int DATA_BANK_WIDTH = FETCH_BYTES * 8;
-    localparam int BYTE_OFFSET_BITS = 2;
-    localparam int WORD_INDEX_BITS = $clog2(FETCH_BYTES / 4);
-    localparam int BANK_INDEX_BITS = $clog2(NUM_BANKS);
-    localparam int SET_INDEX_BITS = $clog2(NUM_SETS);
-    localparam int BANK_INDEX_LSB = BYTE_OFFSET_BITS + WORD_INDEX_BITS;
-    localparam int SET_INDEX_LSB = BANK_INDEX_LSB + BANK_INDEX_BITS;
-    localparam int TAG_LSB = SET_INDEX_LSB + SET_INDEX_BITS;
-    localparam int TAG_WIDTH = ADDR_WIDTH - TAG_LSB;
-    localparam int TAG_ARRAY_WIDTH = TAG_WIDTH;
-    localparam int WAY_INDEX_BITS = (ICACHE_WAYS > 1) ? $clog2(ICACHE_WAYS) : 1;
-
-    typedef enum logic [1:0] {
-        ICACHE_WORK,
-        ICACHE_REQ,
-        ICACHE_WAIT,
-        ICACHE_DONE
-    } icache_state_e;
-
-    logic                               data_bank_we   [ICACHE_WAYS][NUM_BANKS];
-    logic [$clog2(NUM_SETS)-1:0]        data_bank_addr [ICACHE_WAYS][NUM_BANKS];
-    logic [DATA_BANK_WIDTH-1:0]         data_bank_wdata[ICACHE_WAYS][NUM_BANKS];
-    logic [DATA_BANK_WIDTH-1:0]         data_bank_rdata[ICACHE_WAYS][NUM_BANKS];
-    logic                               tag_array_we   [ICACHE_WAYS];
-    logic [$clog2(NUM_SETS)-1:0]        tag_array_addr [ICACHE_WAYS];
-    logic [TAG_ARRAY_WIDTH-1:0]         tag_array_wdata[ICACHE_WAYS];
-    logic [TAG_ARRAY_WIDTH-1:0]         tag_array_rdata[ICACHE_WAYS];
-    logic                               valid_array_q  [ICACHE_WAYS][NUM_SETS];
-    logic                               valid_array_d  [ICACHE_WAYS][NUM_SETS];
-    logic                               s0_fire;
-    logic                               s1_valid_q;
-    logic [ADDR_WIDTH-1:0]              s1_pc_q;
-    logic [SET_INDEX_BITS-1:0]          s1_set_idx_q;
-    logic [BANK_INDEX_BITS-1:0]         s1_bank_idx_q;
-    logic [TAG_WIDTH-1:0]               s1_tag_q;
-    logic [ICACHE_WAYS-1:0]             s1_way_hit;
-    logic [ICACHE_WAYS-1:0]             s1_way_valid;
-    logic [DATA_BANK_WIDTH-1:0]         s1_way_data [ICACHE_WAYS];
-    logic [DATA_BANK_WIDTH-1:0]         s1_selected_data;
-    logic                               s1_hit;
-    logic                               work_miss;
-    logic                               replay_fire;
-    logic                               lookup_fire;
-    logic [ADDR_WIDTH-1:0]              lookup_pc;
-    logic [SET_INDEX_BITS-1:0]          lookup_set_idx;
-    logic [BANK_INDEX_BITS-1:0]         lookup_bank_idx;
-    logic [TAG_WIDTH-1:0]               lookup_tag;
-    icache_state_e                      state_q;
-    logic [ADDR_WIDTH-1:0]              miss_pc_q;
-    logic [ADDR_WIDTH-1:0]              miss_refill_pc_q;
-    logic [SET_INDEX_BITS-1:0]          miss_set_idx_q;
-    logic [BANK_INDEX_BITS-1:0]         miss_bank_idx_q;
-    logic [TAG_WIDTH-1:0]               miss_tag_q;
-    logic [WAY_INDEX_BITS-1:0]          miss_victim_way_q;
-    logic                               refill_discard_q;
-    logic [DATA_BANK_WIDTH-1:0]         done_data_q;
-    logic                               done_error_q;
-    logic                               replay_valid_q;
-    logic [ADDR_WIDTH-1:0]              replay_pc_q;
-    logic [WAY_INDEX_BITS-1:0]          selected_victim_way;
-    logic [15:0]                        lfsr_out;
-    logic                               lfsr_enable;
-    logic [7:0]                         itcm_mem_q [0:ITCM_BYTES-1];
-    logic                               s1_itcm_q;
-    logic [DATA_BANK_WIDTH-1:0]         s1_itcm_data_q;
-
-    function automatic logic access_in_itcm(input logic [ADDR_WIDTH-1:0] pc);
-        logic [ADDR_WIDTH:0] access_end;
-        begin
-            access_end = {1'b0, pc} + (ADDR_WIDTH + 1)'(FETCH_BYTES - 1);
-            access_in_itcm = (pc >= ITCM_BASE)
-                          && (access_end < ({1'b0, ITCM_BASE}
-                              + (ADDR_WIDTH + 1)'(ITCM_BYTES)));
-        end
+    function automatic paddr_t line_addr(input vaddr_t addr);
+        paddr_t pa;
+        pa = paddr_t'(addr);
+        return {pa[PADDR_W-1:6], 6'b0};
     endfunction
 
-    function automatic logic [SET_INDEX_BITS-1:0] get_set_index(input logic [ADDR_WIDTH-1:0] pc);
-        return pc[SET_INDEX_LSB +: SET_INDEX_BITS];
-    endfunction
+    typedef struct packed {
+        icache_req_t req;
+        bank_idx_t bank;
+        set_idx_t set_idx;
+        word_idx_t word_idx;
+        tag_t tag;
+        logic [WAYS-1:0] valid_bits;
+        logic itcm;
+        word_data_t itcm_data;
+    } lookup_meta_t;
 
-    function automatic logic [BANK_INDEX_BITS-1:0] get_bank_index(input logic [ADDR_WIDTH-1:0] pc);
-        return pc[BANK_INDEX_LSB +: BANK_INDEX_BITS];
-    endfunction
-
-    function automatic logic [TAG_WIDTH-1:0] get_tag(input logic [ADDR_WIDTH-1:0] pc);
-        return pc[TAG_LSB +: TAG_WIDTH];
-    endfunction
-
-    function automatic logic [ADDR_WIDTH-1:0] get_line_pc(input logic [ADDR_WIDTH-1:0] pc);
-        return {pc[ADDR_WIDTH-1:SET_INDEX_LSB], {SET_INDEX_LSB{1'b0}}};
-    endfunction
-
-    function automatic logic [DATA_BANK_WIDTH-1:0] get_refill_bank(
-        input logic [ICACHE_BLOCK_SIZE_BYTES*8-1:0] line,
-        input logic [BANK_INDEX_BITS-1:0] bank_idx
-    );
-        return line[bank_idx * DATA_BANK_WIDTH +: DATA_BANK_WIDTH];
-    endfunction
-
-    // ---- 参数合法性检查 ----
     initial begin
-        assert (ICACHE_BLOCK_SIZE_BYTES % FETCH_BYTES == 0)
-            else $fatal(1, "ICache: ICACHE_BLOCK_SIZE_BYTES (%0d) must be an integer multiple of FETCH_BYTES (%0d)",
-                        ICACHE_BLOCK_SIZE_BYTES, FETCH_BYTES);
-
-        assert ((FETCH_BYTES & (FETCH_BYTES - 1)) == 0)
-            else $fatal(1, "ICache: FETCH_BYTES (%0d) must be a power of 2", FETCH_BYTES);
-
-        assert ((ICACHE_BLOCK_SIZE_BYTES & (ICACHE_BLOCK_SIZE_BYTES - 1)) == 0)
-            else $fatal(1, "ICache: ICACHE_BLOCK_SIZE_BYTES (%0d) must be a power of 2", ICACHE_BLOCK_SIZE_BYTES);
-
-        assert ((NUM_SETS & (NUM_SETS - 1)) == 0)
-            else $fatal(1, "ICache: NUM_SETS (%0d) must be a power of 2", NUM_SETS);
-
-        assert (ICACHE_WAYS > 0)
-            else $fatal(1, "ICache: ICACHE_WAYS (%0d) must be greater than 0", ICACHE_WAYS);
-
-        // 当前实现仅支持每周期取 4 条指令（4 * 4B = 16B），详见 doc/icache.md
-        assert (FETCH_BYTES == 16)
-            else $fatal(1, "ICache: only FETCH_BYTES == 16 (4 instructions per fetch) is supported, got %0d", FETCH_BYTES);
-
-        assert (ITCM_BYTES > 0)
-            else $fatal(1, "ICache: ITCM_BYTES must be greater than 0");
+        assert (BANKS == 2 && WAYS > 1 && SETS_PER_BANK > 1)
+            else $fatal(1, "ICache: expected two whole-line banks, multiple ways and sets");
+        assert (CFG.icache.sets % BANKS == 0
+             && (SETS_PER_BANK & (SETS_PER_BANK - 1)) == 0)
+            else $fatal(1, "ICache: global sets must split into power-of-two bank sets");
+        assert (FETCH_BYTES == 16 && ICACHE_BLOCK_SIZE_BYTES == 64
+             && CFG.icache.refill_beat_bytes == 16)
+            else $fatal(1, "ICache: current bank datapath requires 64B lines and 16B words/beats");
+        assert (TAG_LSB <= PAGE_OFFSET_W)
+            else $fatal(1, "ICache: VIPT bank/index bits escape the 4KiB page offset");
+        assert (ITCM_BYTES > 0 && ITCM_BYTES % FETCH_BYTES == 0)
+            else $fatal(1, "ICache: ITCM must contain whole fetch words");
     end
 
-    assign s0_ready = (state_q == ICACHE_WORK);
-    assign s0_fire = s0_valid && s0_ready;
-    assign replay_fire = (state_q == ICACHE_DONE) && replay_valid_q && !flush && !kill;
-    assign lookup_fire = s0_fire || replay_fire;
-    assign lookup_pc = replay_fire ? replay_pc_q : s0_pc;
-    assign lookup_set_idx = get_set_index(lookup_pc);
-    assign lookup_bank_idx = get_bank_index(lookup_pc);
-    assign lookup_tag = get_tag(lookup_pc);
+    // The global 64-set configuration means 32 sets in each bank:
+    // address[5:4] word, [6] bank, [11:7] set and [PADDR_W-1:12] tag.
+    paddr_t req_pa;
+    bank_idx_t req_bank;
+    set_idx_t req_set;
+    word_idx_t req_word;
+    tag_t req_tag;
+    logic req_itcm;
+    logic s0_fire;
+    logic s1_valid_q, s2_valid_q, s3_valid_q;
+    logic s1_ready, s2_ready, s3_ready;
+    lookup_meta_t s1_meta_q, s2_meta_q, s3_meta_q;
+    logic [WAYS-1:0][TAG_W-1:0] s2_tags_q;
+    logic [WAYS-1:0][DATA_W-1:0] s2_data_q, s3_data_q;
+    logic [WAYS-1:0] s3_way_hit_q;
 
-    assign refill_req_valid = (state_q == ICACHE_REQ) && !refill_discard_q;
-    assign refill_req_pc = miss_refill_pc_q;
+    logic [BANKS-1:0][WAYS-1:0][SETS_PER_BANK-1:0] valid_q;
+    logic [TAG_W-1:0] tag_read_data [BANKS][WAYS];
+    logic [DATA_W-1:0] data_read_data [BANKS][WAYS];
+    logic [DATA_ADDR_W-1:0] data_read_addr, data_write_addr;
+    logic [SET_W-1:0] tag_read_addr;
+    logic fill_write, fill_last;
+    logic [BANKS-1:0][WAYS-1:0] tag_write_en, data_write_en;
 
-    assign out_hit = (state_q == ICACHE_WORK) && s1_hit;
-    assign out_valid = ((state_q == ICACHE_WORK) && s1_valid_q && s1_hit && !flush && !kill) ||
-                       ((state_q == ICACHE_DONE) && !refill_discard_q && !flush && !kill);
-    assign out_pc = (state_q == ICACHE_DONE) ? miss_pc_q : s1_pc_q;
-    assign out_data = (state_q == ICACHE_DONE) ? done_data_q
-                                               : (s1_itcm_q ? s1_itcm_data_q : s1_selected_data);
-    assign out_error = (state_q == ICACHE_DONE) ? done_error_q : 1'b0;
-    assign work_miss = (state_q == ICACHE_WORK) && s1_valid_q && !s1_hit && !flush && !kill;
-    assign lfsr_enable = (state_q == ICACHE_DONE);
-`ifdef O3_ICACHE_DEBUG
-    assign dbg_s0_fire = s0_fire;
-    assign dbg_s1_valid = s1_valid_q;
-    assign dbg_s1_pc = s1_pc_q;
-    assign dbg_s1_set_idx = s1_set_idx_q;
-    assign dbg_s1_bank_idx = s1_bank_idx_q;
-    assign dbg_s1_tag = s1_tag_q;
-    assign dbg_s1_way_hit = s1_way_hit;
-    assign dbg_out_valid = out_valid;
-    assign dbg_out_hit = out_hit;
-    assign dbg_state = state_q;
-    assign dbg_done_data = done_data_q;
-    assign dbg_miss_pc = miss_pc_q;
-    assign dbg_miss_refill_pc = miss_refill_pc_q;
-`endif
+    assign req_pa = paddr_t'(req_i.region_base);
+    assign req_bank = bank_idx_t'(req_pa[6]);
+    assign req_set = req_pa[7 +: SET_W];
+    assign req_word = req_pa[4 +: WORD_W];
+    assign req_tag = req_pa[PADDR_W-1:TAG_LSB];
+    assign req_itcm = (ADDR_WIDTH'(req_i.region_base) >= ITCM_BASE)
+                   && ((ADDR_WIDTH'(req_i.region_base) + ADDR_WIDTH'(FETCH_BYTES))
+                       <= ITCM_BASE + ADDR_WIDTH'(ITCM_BYTES));
+    assign data_read_addr = {req_set, req_word};
+    assign tag_read_addr = req_set;
 
-    always_comb begin
-        selected_victim_way = WAY_INDEX_BITS'(int'(lfsr_out) % ICACHE_WAYS);
+    typedef enum logic [2:0] {M_IDLE, M_SEND, M_RECV, M_INSTALL, M_RESP} mstate_t;
+    mstate_t mstate_q;
+    icache_req_t m_req_q;
+    paddr_t m_line_q;
+    bank_idx_t m_bank_q;
+    set_idx_t m_set_q;
+    tag_t m_tag_q;
+    way_idx_t m_way_q, victim_rr_q;
+    logic [ICACHE_BLOCK_SIZE_BYTES*8-1:0] m_data_q;
+    logic m_error_q;
+    logic [BEAT_W-1:0] beat_q;
+    word_idx_t install_word_q;
+    logic recent_valid_q;
+    paddr_t recent_line_q;
+    logic [ICACHE_BLOCK_SIZE_BYTES*8-1:0] recent_data_q;
+    logic inv_done_q;
 
-        for (int way = 0; way < ICACHE_WAYS; way++) begin
-            for (int bank = 0; bank < NUM_BANKS; bank++) begin
-                data_bank_we[way][bank]    = 1'b0;
-                data_bank_addr[way][bank]  = lookup_set_idx;
-                data_bank_wdata[way][bank] = '0;
-            end
+    assign fill_write = (mstate_q == M_INSTALL);
+    assign fill_last = fill_write && install_word_q == word_idx_t'(WORDS_PER_LINE - 1);
+    assign data_write_addr = {m_set_q, install_word_q};
 
-            tag_array_we[way]    = 1'b0;
-            tag_array_addr[way]  = lookup_set_idx;
-            tag_array_wdata[way] = '0;
-
-            for (int set = 0; set < NUM_SETS; set++) begin
-                valid_array_d[way][set] = valid_array_q[way][set];
-            end
-        end
-
-        for (int way = 0; way < ICACHE_WAYS; way++) begin
-            s1_way_valid[way] = valid_array_q[way][s1_set_idx_q];
-            s1_way_hit[way] = s1_valid_q && s1_way_valid[way] && (tag_array_rdata[way] == s1_tag_q);
-            s1_way_data[way] = data_bank_rdata[way][s1_bank_idx_q];
-        end
-
-        s1_selected_data = '0;
-        for (int way = 0; way < ICACHE_WAYS; way++) begin
-            if (s1_way_hit[way]) begin
-                s1_selected_data = s1_way_data[way];
-            end
-        end
-
-        for (int way = ICACHE_WAYS - 1; way >= 0; way--) begin
-            if (!valid_array_q[way][s1_set_idx_q]) begin
-                selected_victim_way = WAY_INDEX_BITS'(way);
-            end
-        end
-
-        if ((state_q == ICACHE_WAIT) && refill_resp_valid && !refill_resp_error && !refill_discard_q) begin
-            for (int bank = 0; bank < NUM_BANKS; bank++) begin
-                data_bank_we[miss_victim_way_q][bank]    = 1'b1;
-                data_bank_addr[miss_victim_way_q][bank]  = miss_set_idx_q;
-                data_bank_wdata[miss_victim_way_q][bank] = get_refill_bank(refill_resp_data, bank[BANK_INDEX_BITS-1:0]);
-            end
-
-            tag_array_we[miss_victim_way_q]    = 1'b1;
-            tag_array_addr[miss_victim_way_q]  = miss_set_idx_q;
-            tag_array_wdata[miss_victim_way_q] = miss_tag_q;
-            valid_array_d[miss_victim_way_q][miss_set_idx_q] = 1'b1;
+    for (genvar bank = 0; bank < BANKS; bank++) begin : g_bank
+        for (genvar way = 0; way < WAYS; way++) begin : g_way
+            assign data_write_en[bank][way] =
+                fill_write && m_bank_q == bank_idx_t'(bank) && m_way_q == way_idx_t'(way);
+            assign tag_write_en[bank][way] = fill_last
+                && m_bank_q == bank_idx_t'(bank) && m_way_q == way_idx_t'(way);
+            o3_sram_1r1w #(.DATA_WIDTH(DATA_W), .ENTRIES(SETS_PER_BANK*WORDS_PER_LINE))
+                u_data (
+                    .clk_i(clk),
+                    .read_en_i(s0_fire && !req_itcm && req_bank == bank_idx_t'(bank)),
+                    .read_addr_i(data_read_addr),
+                    .read_data_o(data_read_data[bank][way]),
+                    .write_en_i(data_write_en[bank][way]),
+                    .write_addr_i(data_write_addr),
+                    .write_data_i(m_data_q[install_word_q*DATA_W +: DATA_W])
+                );
+            o3_sram_1r1w #(.DATA_WIDTH(TAG_W), .ENTRIES(SETS_PER_BANK))
+                u_tag (
+                    .clk_i(clk),
+                    .read_en_i(s0_fire && !req_itcm && req_bank == bank_idx_t'(bank)),
+                    .read_addr_i(tag_read_addr),
+                    .read_data_o(tag_read_data[bank][way]),
+                    .write_en_i(tag_write_en[bank][way]),
+                    .write_addr_i(m_set_q),
+                    .write_data_i(m_tag_q)
+                );
         end
     end
 
-    assign s1_hit = s1_itcm_q || |s1_way_hit;
-
-    // 仿真/调试初始化口使用绝对物理地址。初始化不依赖reset状态，因此testbench
-    // 可以在保持核心reset时逐拍装入ELF的ITCM字节。
+    // ITCM is a 16B synchronous word store. Testbench initialization writes
+    // eight bytes at a time; normal fetches read one aligned word at S0.
+    word_data_t itcm_mem_q [0:ITCM_BYTES/FETCH_BYTES-1];
+    word_data_t itcm_read_q;
     always_ff @(posedge clk) begin
         if (itcm_init_valid_i) begin
             for (int byte_idx = 0; byte_idx < 8; byte_idx++) begin
                 if (itcm_init_wmask_i[byte_idx]
-                 && ((itcm_init_addr_i + ADDR_WIDTH'(byte_idx)) >= ITCM_BASE)
-                 && ((itcm_init_addr_i + ADDR_WIDTH'(byte_idx))
-                     < (ITCM_BASE + ADDR_WIDTH'(ITCM_BYTES)))) begin
-                    itcm_mem_q[$clog2(ITCM_BYTES)'(
-                        itcm_init_addr_i + ADDR_WIDTH'(byte_idx) - ITCM_BASE)]
-                        <= itcm_init_data_i[(8*byte_idx) +: 8];
+                  && itcm_init_addr_i + ADDR_WIDTH'(byte_idx) >= ITCM_BASE
+                  && itcm_init_addr_i + ADDR_WIDTH'(byte_idx) < ITCM_BASE + ADDR_WIDTH'(ITCM_BYTES)) begin
+                    itcm_mem_q[ITCM_WORD_W'(
+                        (itcm_init_addr_i + ADDR_WIDTH'(byte_idx) - ITCM_BASE) >> 4)]
+                              [7'((32'(itcm_init_addr_i[3:0]) + byte_idx) * 8) +: 8]
+                        <= itcm_init_data_i[byte_idx*8 +: 8];
+                end
+            end
+        end
+        if (s0_fire && req_itcm) begin
+            itcm_read_q <= itcm_mem_q[ITCM_WORD_W'(
+                (ADDR_WIDTH'(req_i.region_base)-ITCM_BASE) >> 4)];
+        end
+    end
+
+    logic s3_recent_hit, s3_cache_hit, s3_hit, m_resp;
+    word_data_t s3_selected_data;
+    paddr_t s3_line;
+    assign s3_line = line_addr(s3_meta_q.req.region_base);
+    assign s3_recent_hit = recent_valid_q && s3_line == recent_line_q;
+    assign s3_cache_hit = |s3_way_hit_q;
+    assign s3_hit = s3_meta_q.itcm || s3_cache_hit || s3_recent_hit;
+    assign m_resp = (mstate_q == M_RESP);
+    always_comb begin
+        s3_selected_data = '0;
+        if (s3_meta_q.itcm) begin
+            s3_selected_data = s3_meta_q.itcm_data;
+        end else if (s3_recent_hit) begin
+            s3_selected_data = recent_data_q[s3_meta_q.word_idx*DATA_W +: DATA_W];
+        end else begin
+            for (int way = 0; way < WAYS; way++) begin
+                if (s3_way_hit_q[way]) s3_selected_data = s3_data_q[way];
+            end
+        end
+    end
+
+    // An active miss does not occupy the lookup pipeline. A later miss waits
+    // at S3 if the single MSHR is busy, propagating backpressure losslessly.
+    assign s3_ready = !s3_valid_q || (!m_resp && (s3_hit || mstate_q == M_IDLE));
+    assign s2_ready = !s2_valid_q || s3_ready;
+    assign s1_ready = !s1_valid_q || s2_ready;
+    assign req_ready_o = !rst && !inv_all_i && s1_ready
+        && !(fill_write && req_bank == m_bank_q)
+        && !(mstate_q != M_IDLE && {req_pa[PADDR_W-1:6], 6'b0} == m_line_q);
+    assign s0_fire = req_valid_i && req_ready_o;
+
+    always_ff @(posedge clk) begin
+        if (rst || inv_all_i) begin
+            s1_valid_q <= 1'b0;
+            s2_valid_q <= 1'b0;
+            s3_valid_q <= 1'b0;
+            s1_meta_q <= '0;
+            s2_meta_q <= '0;
+            s3_meta_q <= '0;
+            s2_tags_q <= '0;
+            s2_data_q <= '0;
+            s3_data_q <= '0;
+            s3_way_hit_q <= '0;
+        end else begin
+            if (s3_ready) begin
+                s3_valid_q <= s2_valid_q;
+                if (s2_valid_q) begin
+                    s3_meta_q <= s2_meta_q;
+                    s3_data_q <= s2_data_q;
+                    for (int way = 0; way < WAYS; way++) begin
+                        s3_way_hit_q[way] <= s2_meta_q.valid_bits[way]
+                            && s2_tags_q[way] == s2_meta_q.tag;
+                    end
+                end
+            end
+            if (s2_ready) begin
+                s2_valid_q <= s1_valid_q;
+                if (s1_valid_q) begin
+                    s2_meta_q <= s1_meta_q;
+                    s2_meta_q.itcm_data <= itcm_read_q;
+                    for (int way = 0; way < WAYS; way++) begin
+                        s2_tags_q[way] <= tag_read_data[s1_meta_q.bank][way];
+                        s2_data_q[way] <= data_read_data[s1_meta_q.bank][way];
+                    end
+                end
+            end
+            if (s1_ready) begin
+                s1_valid_q <= s0_fire;
+                if (s0_fire) begin
+                    s1_meta_q.req <= req_i;
+                    s1_meta_q.bank <= req_bank;
+                    s1_meta_q.set_idx <= req_set;
+                    s1_meta_q.word_idx <= req_word;
+                    s1_meta_q.tag <= req_tag;
+                    s1_meta_q.itcm <= req_itcm;
+                    s1_meta_q.itcm_data <= '0;
+                    for (int way = 0; way < WAYS; way++) begin
+                        s1_meta_q.valid_bits[way] <= valid_q[req_bank][way][req_set];
+                    end
                 end
             end
         end
     end
+
+    always_comb begin
+        resp_o = '0;
+        if (m_resp) begin
+            resp_o.valid = 1'b1;
+            resp_o.rq_idx = m_req_q.rq_idx;
+            resp_o.ftq_id = m_req_q.ftq_id;
+            resp_o.data = m_data_q[m_req_q.region_base[5:4]*DATA_W +: DATA_W];
+            resp_o.exc_valid = m_error_q;
+            resp_o.exc_cause = EXCEPTION_CAUSE_INST_ACCESS_FAULT;
+        end else if (s3_valid_q && s3_hit) begin
+            resp_o.valid = 1'b1;
+            resp_o.rq_idx = s3_meta_q.req.rq_idx;
+            resp_o.ftq_id = s3_meta_q.req.ftq_id;
+            resp_o.data = s3_selected_data;
+        end
+    end
+
+    always_comb begin
+        l2_req_o = '0;
+        l2_req_o.line_paddr = m_line_q;
+        l2_req_o.kind = L2_DEMAND;
+    end
+    assign l2_req_valid_o = (mstate_q == M_SEND);
+    assign l2_resp_ready_o = (mstate_q == M_RECV);
+    assign idle_o = (mstate_q == M_IDLE) && !s1_valid_q && !s2_valid_q && !s3_valid_q;
+    assign inv_done_o = inv_done_q;
 
     always_ff @(posedge clk) begin
         if (rst) begin
-            state_q <= ICACHE_WORK;
-            s1_valid_q <= 1'b0;
-            s1_pc_q <= '0;
-            s1_set_idx_q <= '0;
-            s1_bank_idx_q <= '0;
-            s1_tag_q <= '0;
-            miss_pc_q <= '0;
-            miss_refill_pc_q <= '0;
-            miss_set_idx_q <= '0;
-            miss_bank_idx_q <= '0;
-            miss_tag_q <= '0;
-            miss_victim_way_q <= '0;
-            refill_discard_q <= 1'b0;
-            done_data_q <= '0;
-            done_error_q <= 1'b0;
-            replay_valid_q <= 1'b0;
-            replay_pc_q <= '0;
-            s1_itcm_q <= 1'b0;
-            s1_itcm_data_q <= '0;
-
-            for (int way = 0; way < ICACHE_WAYS; way++) begin
-                for (int set = 0; set < NUM_SETS; set++) begin
-                    `ifdef O3_ICACHE_WAY0_VALID
-                    valid_array_q[way][set] <= (way == 0) ? valid_array_q[way][set] : 1'b0;
-                    `else
-                    valid_array_q[way][set] <= 1'b0;
-                    `endif
-                end
-            end
-        end else if (flush || kill) begin
-            s1_valid_q <= 1'b0;
-            s1_pc_q <= '0;
-            s1_set_idx_q <= '0;
-            s1_bank_idx_q <= '0;
-            s1_tag_q <= '0;
-            replay_valid_q <= 1'b0;
-            replay_pc_q <= '0;
-            s1_itcm_q <= 1'b0;
-
-            unique case (state_q)
-                ICACHE_REQ: begin
-                    state_q <= ICACHE_WAIT;
-                    refill_discard_q <= 1'b1;
-                end
-                ICACHE_WAIT: begin
-                    state_q <= refill_resp_valid ? ICACHE_WORK : ICACHE_WAIT;
-                    refill_discard_q <= refill_resp_valid ? 1'b0 : 1'b1;
-                end
-                default: begin
-                    state_q <= ICACHE_WORK;
-                    refill_discard_q <= 1'b0;
-                end
-            endcase
-
-            if (flush) begin
-                for (int way = 0; way < ICACHE_WAYS; way++) begin
-                    for (int set = 0; set < NUM_SETS; set++) begin
-                        `ifdef O3_ICACHE_WAY0_VALID
-                        valid_array_q[way][set] <= (way == 0) ? valid_array_q[way][set] : 1'b0;
-                        `else
-                        valid_array_q[way][set] <= 1'b0;
-                        `endif
-                    end
-                end
-            end
+            mstate_q <= M_IDLE;
+            m_req_q <= '0;
+            m_line_q <= '0;
+            m_bank_q <= '0;
+            m_set_q <= '0;
+            m_tag_q <= '0;
+            m_way_q <= '0;
+            victim_rr_q <= '0;
+            m_data_q <= '0;
+            m_error_q <= 1'b0;
+            beat_q <= '0;
+            install_word_q <= '0;
+            recent_valid_q <= 1'b0;
+            recent_line_q <= '0;
+            recent_data_q <= '0;
+            valid_q <= '0;
+            inv_done_q <= 1'b0;
         end else begin
-            s1_valid_q <= 1'b0;
-
-            unique case (state_q)
-                ICACHE_WORK: begin
-                    if (work_miss) begin
-                        state_q <= ICACHE_REQ;
-                        miss_pc_q <= s1_pc_q;
-                        miss_refill_pc_q <= get_line_pc(s1_pc_q);
-                        miss_set_idx_q <= s1_set_idx_q;
-                        miss_bank_idx_q <= s1_bank_idx_q;
-                        miss_tag_q <= s1_tag_q;
-                        miss_victim_way_q <= selected_victim_way;
-                        refill_discard_q <= 1'b0;
-                        replay_valid_q <= s0_fire;
-                        if (s0_fire) begin
-                            replay_pc_q <= s0_pc;
-                        end
-                    end else begin
-                        state_q <= ICACHE_WORK;
-                        s1_valid_q <= lookup_fire;
-                        s1_itcm_q <= lookup_fire && access_in_itcm(lookup_pc);
-                        if (lookup_fire) begin
-                            s1_pc_q <= lookup_pc;
-                            s1_set_idx_q <= lookup_set_idx;
-                            s1_bank_idx_q <= lookup_bank_idx;
-                            s1_tag_q <= lookup_tag;
-                            if (access_in_itcm(lookup_pc)) begin
-                                for (int byte_idx = 0; byte_idx < FETCH_BYTES; byte_idx++) begin
-                                    s1_itcm_data_q[(8*byte_idx) +: 8]
-                                        <= itcm_mem_q[$clog2(ITCM_BYTES)'(
-                                            lookup_pc + ADDR_WIDTH'(byte_idx) - ITCM_BASE)];
-                                end
-                            end
-                        end
-                    end
-                end
-
-                ICACHE_REQ: begin
-                    state_q <= ICACHE_WAIT;
-                end
-
-                ICACHE_WAIT: begin
-                    if (refill_resp_valid) begin
-                        assert (refill_resp_pc == miss_refill_pc_q)
-                            else $fatal(1, "ICache: refill response PC mismatch");
-                        if (refill_discard_q) begin
-                            state_q <= ICACHE_WORK;
-                            refill_discard_q <= 1'b0;
-                        end else begin
-                            state_q <= ICACHE_DONE;
-                            done_error_q <= refill_resp_error;
-                            done_data_q <= refill_resp_error ?
-                                           {DATA_BANK_WIDTH{1'b1}} :
-                                           get_refill_bank(refill_resp_data, miss_bank_idx_q);
-                        end
-                    end
-                end
-
-                ICACHE_DONE: begin
-                    state_q <= ICACHE_WORK;
-                    refill_discard_q <= 1'b0;
-                    replay_valid_q <= 1'b0;
-                    s1_valid_q <= replay_fire;
-                    s1_itcm_q <= replay_fire && access_in_itcm(lookup_pc);
-                    if (replay_fire) begin
-                        s1_pc_q <= lookup_pc;
-                        s1_set_idx_q <= lookup_set_idx;
-                        s1_bank_idx_q <= lookup_bank_idx;
-                        s1_tag_q <= lookup_tag;
-                    end
-                end
-
-                default: begin
-                    state_q <= ICACHE_WORK;
-                end
-            endcase
-
-            for (int way = 0; way < ICACHE_WAYS; way++) begin
-                for (int set = 0; set < NUM_SETS; set++) begin
-                    valid_array_q[way][set] <= valid_array_d[way][set];
-                end
+            inv_done_q <= inv_all_i;
+            if (inv_all_i) begin
+                valid_q <= '0;
+                recent_valid_q <= 1'b0;
+            end else if (fill_last) begin
+                valid_q[m_bank_q][m_way_q][m_set_q] <= 1'b1;
+                recent_valid_q <= 1'b1;
+                recent_line_q <= m_line_q;
+                recent_data_q <= m_data_q;
             end
+
+            case (mstate_q)
+                M_IDLE: begin
+                    if (s3_valid_q && !s3_hit && s3_ready && !inv_all_i) begin
+                        m_req_q <= s3_meta_q.req;
+                        m_line_q <= line_addr(s3_meta_q.req.region_base);
+                        m_bank_q <= s3_meta_q.bank;
+                        m_set_q <= s3_meta_q.set_idx;
+                        m_tag_q <= s3_meta_q.tag;
+                        m_way_q <= victim_rr_q;
+                        for (int way = WAYS-1; way >= 0; way--) begin
+                            if (!valid_q[s3_meta_q.bank][way][s3_meta_q.set_idx])
+                                m_way_q <= way_idx_t'(way);
+                        end
+                        victim_rr_q <= victim_rr_q + way_idx_t'(1);
+                        beat_q <= '0;
+                        m_error_q <= 1'b0;
+                        mstate_q <= M_SEND;
+                    end
+                end
+                M_SEND: begin
+                    if (l2_req_ready_i) mstate_q <= M_RECV;
+                end
+                M_RECV: begin
+                    if (l2_resp_i.valid && l2_resp_ready_o) begin
+                        assert (l2_resp_i.txn_id == '0
+                             && l2_resp_i.last == (beat_q == BEAT_W'(BEATS_PER_LINE-1)))
+                            else $fatal(1, "ICache: L2 refill beat/id mismatch");
+                        m_data_q[beat_q*L2_BEAT_BYTES*8 +: L2_BEAT_BYTES*8] <= l2_resp_i.data;
+                        m_error_q <= m_error_q || l2_resp_i.error;
+                        if (l2_resp_i.last) begin
+                            install_word_q <= '0;
+                            mstate_q <= (m_error_q || l2_resp_i.error) ? M_RESP : M_INSTALL;
+                        end else begin
+                            beat_q <= beat_q + BEAT_W'(1);
+                        end
+                    end
+                end
+                M_INSTALL: begin
+                    if (fill_last) mstate_q <= M_RESP;
+                    else install_word_q <= install_word_q + word_idx_t'(1);
+                end
+                M_RESP: mstate_q <= M_IDLE;
+                default: mstate_q <= M_IDLE;
+            endcase
+            assert (!(inv_all_i && !idle_o))
+                else $error("ICache: inv_all requires an idle lookup and refill path");
         end
     end
 
-    lfsr u_replacement_lfsr (
-        .clk      (clk),
-        .rst      (rst),
-        .enable   (lfsr_enable),
-        .lfsr_out (lfsr_out)
-    );
-
-    for (genvar way = 0; way < ICACHE_WAYS; way++) begin : gen_data_way
-        for (genvar bank = 0; bank < NUM_BANKS; bank++) begin : gen_data_bank
-            `ifdef O3_SIM
-            o3_sram #(
-                .DATA_WIDTH(DATA_BANK_WIDTH),
-                .SRAM_ENTRIES(NUM_SETS),
-                `ifdef O3_ICACHE_WAY0_VALID
-                .INIT_FILE(
-                    (way == 0 && bank == 0) ? "hex/data_way0_bank0.hex" :
-                    (way == 0 && bank == 1) ? "hex/data_way0_bank1.hex" :
-                    (way == 0 && bank == 2) ? "hex/data_way0_bank2.hex" :
-                    (way == 0 && bank == 3) ? "hex/data_way0_bank3.hex" :
-                    ""
-                )
-                `else
-                .INIT_FILE("")
-                `endif
-            ) u_data_sram (
-                .clk_i  (clk),
-                .rst_i  (rst),
-                .we_i   (data_bank_we[way][bank]),
-                .data_o (data_bank_rdata[way][bank]),
-                .data_i (data_bank_wdata[way][bank]),
-                .addr_i (data_bank_addr[way][bank])
-            );
-            `else
-            o3_sram #(
-                .DATA_WIDTH(DATA_BANK_WIDTH),
-                .SRAM_ENTRIES(NUM_SETS)
-            ) u_data_sram (
-                .clk_i  (clk),
-                .rst_i  (rst),
-                .we_i   (data_bank_we[way][bank]),
-                .data_o (data_bank_rdata[way][bank]),
-                .data_i (data_bank_wdata[way][bank]),
-                .addr_i (data_bank_addr[way][bank])
-            );
-            `endif
-        end
-
-        `ifdef O3_SIM
-        o3_sram #(
-            .DATA_WIDTH(TAG_ARRAY_WIDTH),
-            .SRAM_ENTRIES(NUM_SETS),
-            `ifdef O3_ICACHE_WAY0_VALID
-            .INIT_FILE((way == 0) ? "hex/tag_way0.hex" : "")
-            `else
-            .INIT_FILE("")
-            `endif
-        ) u_tag_sram (
-            .clk_i  (clk),
-            .rst_i  (rst),
-            .we_i   (tag_array_we[way]),
-            .data_o (tag_array_rdata[way]),
-            .data_i (tag_array_wdata[way]),
-            .addr_i (tag_array_addr[way])
-        );
-        `else
-        o3_sram #(
-            .DATA_WIDTH(TAG_ARRAY_WIDTH),
-            .SRAM_ENTRIES(NUM_SETS)
-        ) u_tag_sram (
-            .clk_i  (clk),
-            .rst_i  (rst),
-            .we_i   (tag_array_we[way]),
-            .data_o (tag_array_rdata[way]),
-            .data_i (tag_array_wdata[way]),
-            .addr_i (tag_array_addr[way])
-        );
-        `endif
-    end
-
-    `ifdef O3_ICACHE_WAY0_VALID
-    initial begin
-        for (int s = 0; s < NUM_SETS; s++) begin
-            valid_array_q[0][s] = 1'b1;
-        end
-    end
-    `endif
-
+    // Legacy contract and not-yet-connected target mechanisms.
+    assign s0_ready = 1'b0;
+    assign refill_req_valid = 1'b0;
+    assign refill_req_pc = '0;
+    assign out_valid = 1'b0;
+    assign out_hit = 1'b0;
+    assign out_pc = '0;
+    assign out_data = '0;
+    assign out_error = 1'b0;
+    assign pf_req_ready_o = 1'b0;
+    assign pf_resp_o = '0;
+    assign ptw_req_valid_o = 1'b0;
+    assign ptw_req_o = '0;
+    assign pmp_update_done_o = 1'b0;
+    assign sfence_done_o = 1'b0;
+    assign recall_ready_o = 1'b0;
+    assign recall_resp_o = '0;
+    assign perf_o = '0;
 endmodule

@@ -16,7 +16,7 @@
  *     → csr_file / trap_ctrl（CSR、精确异常入口、xRET、特权切换、中断：未设计）
  *   共享：ptw（ITLB+DTLB，经 DCache 物理入口）；dcache ↔ L2（在 o3_core）；SD DMA 经 L2 探测 L1D。
  *
- * 当前实现状态（如实）：
+ * 当前实现状态：闭环简化（L1）
  * - 仍在运行的是 HEAD 06462b0 的旧数据流：4 宽 Decode → Decode Queue → 前缀 rename
  *   （组内旁路在 rename_map_table 内）→ RDQ → Dispatch → INT/MEM/BR IQ → ALU/LSU/BRU →
  *   写回 → ROB 退休。2026-10-02 只做了结构调整：
@@ -25,8 +25,9 @@
  *   2) 参数全部改由 CFG 推导（O3_CFG.be），模块不再有默认值；
  *   3) 端口改为目标合同；旧的 branch_resolution_o / ftq_release_count_o / redirect_* /
  *      dmem_* 端口删除。旧 LSU 外部 memory 口在此不再连接。
- * - “目标结构”一节的新模块均为空壳，只连了模块之间的端口，没有接入旧数据流。
- * - 整个后端不能编译（O3_CFG 含 `O3_TBD，且多处宽度尚未统一），也没有运行任何测试。
+ * - INT/MEM/BR issue queue 已在旧数据流实例化；此前 INT/MEM 队列缺席，导致
+ *   L1 指令在 rename 后无法 dispatch。目标系统/FP/非阻塞访存仍是空壳。
+ * - 测试：sim/cocotb/backend/；整核退休：sim/o3/run-smoke。
  *
  * 已知缺口（B12，保留原行为，只标注）：
  * - 缺口 1：任何 branch_resolution.valid（含预测正确）都阻止 Decode/rename/dispatch、
@@ -53,7 +54,6 @@
  *   退休指令归还 old_dst_preg；fetch_fire 时接收新 fetch 组。
  * - 周期 N+1：可见新的队列、ready、ROB 与日志状态。
  *
- * 本阶段不写测试代码和仿真代码。
  */
 
 `ifdef O3_SIM
@@ -907,6 +907,30 @@ module backend
         .mem_lane_o(dispatch_mem_lane),
         .br_lane_o(dispatch_br_lane),
         .accept_count_o(dispatch_accept_count)
+    );
+
+    // L1 integer instructions must enter a live IQ after dispatch. These
+    // candidates drive the existing PRF read arbiter and ALU pipelines.
+    backend_issue_queue #(.CFG(CFG), .KIND(o3_types_pkg::IQ_INT)) u_int_issue_queue (
+        .clk(clk), .rst(rst), .enq_uop_i(int_iq_enq_uop),
+        .enq_fire_i(dispatch_accept_count != '0), .free_count_o(int_iq_free_count),
+        .preg_ready_i(preg_ready_q), .wakeup_valid_i(prf_wr_en),
+        .wakeup_preg_i(prf_wr_addr), .issue_uop_o(int_iq_issue_uop),
+        .issue_valid_o(int_iq_issue_valid), .issue_ready_i(int_iq_issue_ready),
+        .resolution_valid_i(branch_resolution_i.valid),
+        .resolution_mispredict_i(branch_resolution_i.mispredict),
+        .resolution_tag_i(branch_resolution_i.branch_tag)
+    );
+
+    backend_issue_queue #(.CFG(CFG), .KIND(o3_types_pkg::IQ_MEM)) u_mem_issue_queue (
+        .clk(clk), .rst(rst), .enq_uop_i(mem_iq_enq_uop),
+        .enq_fire_i(dispatch_accept_count != '0), .free_count_o(mem_iq_free_count),
+        .preg_ready_i(preg_ready_q), .wakeup_valid_i(prf_wr_en),
+        .wakeup_preg_i(prf_wr_addr), .issue_uop_o(mem_iq_issue_uop),
+        .issue_valid_o(mem_iq_issue_valid), .issue_ready_i(mem_iq_issue_ready),
+        .resolution_valid_i(branch_resolution_i.valid),
+        .resolution_mispredict_i(branch_resolution_i.mispredict),
+        .resolution_tag_i(branch_resolution_i.branch_tag)
     );
 
     backend_issue_queue #(.CFG(CFG), .KIND(o3_types_pkg::IQ_BR)) u_branch_issue_queue (

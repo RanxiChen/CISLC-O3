@@ -50,6 +50,7 @@ rtl/frontend/frontend.sv
 // ---------- 3. 公共基础模块 ----------
 rtl/common/lfsr.sv
 rtl/common/o3_sram.sv
+rtl/common/o3_sram_1r1w.sv
 rtl/common/pmp_checker.sv
 rtl/common/pma_checker.sv
 

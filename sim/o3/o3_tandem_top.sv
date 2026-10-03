@@ -96,7 +96,7 @@ module o3_tandem_top
     always_ff @(posedge clk_i) begin
         if (rst_i) debug_cycle_q <= 0;
         else begin
-            if ($test$plusargs("L1_DEBUG") && debug_cycle_q < 40)
+            if ($test$plusargs("L1_DEBUG") && debug_cycle_q < 40) begin
                 $display("[l1-fe] cycle=%0d alloc=%b/%b hold=%b recover=%b kill=%b demand=%b/%b rq=%b resp=%b deq=%b f0=%h f1=%h ibuf=%b be_ready=%b retired=%0d",
                     debug_cycle_q,
                     u_core.u_frontend.alloc_valid, u_core.u_frontend.alloc_ready,
@@ -109,6 +109,16 @@ module o3_tandem_top
                     u_core.u_frontend.f0_valid, u_core.u_frontend.f1_valid,
                     u_core.fe_deliver_valid, u_core.be_fetch_ready,
                     retired_inst_count_o);
+                $display("[l1-be] cycle=%0d pc=%h inst=%h fetch=%b decode=%b q=%0d rename=%0d issue=%b wb=%b rob=%b",
+                    debug_cycle_q,
+                    u_core.fe_deliver[0].pc, u_core.fe_deliver[0].instruction,
+                    u_core.u_backend.fetch_fire, u_core.u_backend.decode_fire,
+                    u_core.u_backend.uopq_deq_count,
+                    u_core.u_backend.rename_accept_count,
+                    u_core.u_backend.issueq_issue_valid,
+                    u_core.u_backend.alu_result_q[0].valid,
+                    u_core.u_backend.rob_retire_valid[0]);
+            end
             debug_cycle_q <= debug_cycle_q + 1;
         end
     end
