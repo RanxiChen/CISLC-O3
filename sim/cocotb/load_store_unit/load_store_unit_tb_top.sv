@@ -9,7 +9,10 @@ module load_store_unit_tb_top
     input logic [LQ_IDX_WIDTH-1:0] mem_lq,
     input logic [SQ_IDX_WIDTH-1:0] mem_sq,
     input logic [XLEN-1:0] mem_base, mem_store_data,
+    input branch_mask_t mem_branch_mask,
     input logic sq_block, sq_forward, sq_change,
+    input logic resolution_valid, resolution_mispredict,
+    input branch_tag_t resolution_tag,
     input logic [XLEN-1:0] sq_forward_data,
     output logic mem_ready, replay_busy, replay_capture,
     output logic query_valid, store_execute,
@@ -39,6 +42,7 @@ module load_store_unit_tb_top
         mem_uop.mem_size = MEM_SIZE_8B;
         mem_uop.base_value = mem_base;
         mem_uop.store_value = mem_store_data;
+        mem_uop.branch_mask = mem_branch_mask;
     end
     assign result_valid = result.valid;
     assign result_id = result.instruction_id;
@@ -60,8 +64,9 @@ module load_store_unit_tb_top
         .replay_capture_o(replay_capture),
         .store_complete_valid_o(), .store_complete_rob_idx_o(),
         .load_result_o(result), .load_result_ready_i(1'b0),
-        .resolution_valid_i(1'b0), .resolution_mispredict_i(1'b0),
-        .resolution_tag_i('0),
+        .resolution_valid_i(resolution_valid),
+        .resolution_mispredict_i(resolution_mispredict),
+        .resolution_tag_i(resolution_tag),
         .dtcm_init_valid_i(1'b0), .dtcm_init_addr_i('0),
         .dtcm_init_wdata_i('0), .dtcm_init_wmask_i('0),
         .ext_req_valid_o(), .ext_req_ready_i(1'b0), .ext_req_write_o(),

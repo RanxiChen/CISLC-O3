@@ -6,7 +6,9 @@ from cocotb.triggers import Timer
 async def blocked_load_replays_after_older_store_executes(d):
     for name in ("clk", "mem_valid", "mem_load", "mem_store", "mem_id",
                  "mem_rob", "mem_lq", "mem_sq", "mem_base", "mem_store_data",
-                 "sq_block", "sq_forward", "sq_change", "sq_forward_data"):
+                 "mem_branch_mask", "sq_block", "sq_forward", "sq_change",
+                 "sq_forward_data", "resolution_valid", "resolution_mispredict",
+                 "resolution_tag"):
         getattr(d, name).value = 0
     d.rst.value = 1
 
@@ -56,3 +58,47 @@ async def blocked_load_replays_after_older_store_executes(d):
     obs = await tick()
     assert obs["replay_busy"] == 0 and obs["result_valid"] == 1, obs
     assert obs["result_id"] == 42 and obs["result_data"] == 0x1122334455667788, obs
+
+
+@cocotb.test()
+async def wrong_path_replay_is_cancelled(d):
+    for name in ("clk", "mem_valid", "mem_load", "mem_store", "mem_id",
+                 "mem_rob", "mem_lq", "mem_sq", "mem_base", "mem_store_data",
+                 "mem_branch_mask", "sq_block", "sq_forward", "sq_change",
+                 "sq_forward_data", "resolution_valid", "resolution_mispredict",
+                 "resolution_tag"):
+        getattr(d, name).value = 0
+    d.rst.value = 1
+
+    async def tick():
+        d.clk.value = 0
+        await Timer(5, unit="ns")
+        obs = (int(d.replay_busy.value), int(d.replay_capture.value),
+               int(d.query_valid.value), int(d.result_valid.value))
+        d.clk.value = 1
+        await Timer(5, unit="ns")
+        return obs
+
+    await tick()
+    d.rst.value = 0
+    d.mem_valid.value = 1
+    d.mem_load.value = 1
+    d.mem_branch_mask.value = 1
+    d.mem_id.value = 5
+    d.mem_base.value = 0x80000100
+    d.sq_block.value = 1
+    assert (await tick())[1] == 1
+    d.mem_valid.value = 0
+    d.mem_load.value = 0
+    d.resolution_valid.value = 1
+    d.resolution_mispredict.value = 1
+    d.resolution_tag.value = 0
+    await tick()
+    d.resolution_valid.value = 0
+    d.resolution_mispredict.value = 0
+    d.sq_change.value = 1
+    d.sq_block.value = 0
+    d.sq_forward.value = 1
+    d.sq_forward_data.value = 0x55
+    for _ in range(5):
+        assert await tick() == (0, 0, 0, 0)
