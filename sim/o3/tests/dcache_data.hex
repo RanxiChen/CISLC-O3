@@ -1,0 +1,13 @@
+# Code and data share AXI RAM but occupy different 64B lines.
+@0x80000000
+00000097 # auipc x1,0          AXI RAM base
+10008093 # addi  x1,x1,256    data line
+05500393 # addi  x7,x0,0x55
+0070b423 # sd    x7,8(x1)     committed SQ -> DCache
+0000b103 # ld    x2,0(x1)     AXI/L2/DCache refill
+0080b603 # ld    x12,8(x1)    forwarding or dirty DCache hit
+00160693 # addi  x13,x12,1
+
+@0x80000100
+44332211
+88776655
