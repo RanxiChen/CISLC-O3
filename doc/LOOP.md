@@ -13,10 +13,10 @@
 
 | 级 | 目标 | 验收 | 状态 |
 |---|---|---|---|
-| L0 | RTL 可解析、`o3_core` 可展开 | `scripts/lint.sh` | Alan PASS（`1d2caeb`，0 errors、229 warnings） |
+| L0 | RTL 可解析、`o3_core` 可展开 | `scripts/lint.sh` | Alan PASS（`de9149d`，0 errors、227 warnings） |
 | L1（历史） | ITCM 中的直线整数指令按序退休 | 旧 `sim/o3` smoke | Alan 曾 PASS（`a268f16`）；ITCM 已移除，旧验收不再运行 |
-| **L4 当前** | **ICache miss → inclusive L2 → AXI RAM → 直线整数退休** | `make -C sim/o3 build && make -C sim/o3 run-smoke` | Alan PASS（`1d2caeb`，38 周期、4 条退休、ICache 回填 1 次） |
-| **L2 当前** | **taken 分支 / JAL：BRU 解析 → 重定向 → 前端恢复** | `make -C sim/o3 run-rv64i-instructions` | RTL 与测试已写；待 Alan 验证 |
+| **L4 当前** | **ICache miss → inclusive L2 → AXI RAM → 直线整数退休** | `make -C sim/o3 build && make -C sim/o3 run-smoke` | Alan 回归 PASS（`de9149d`，38 周期、4 条退休、ICache 回填 1 次） |
+| **L2 当前** | **taken 分支 / JAL：BRU 解析 → 重定向 → 前端恢复** | `make -C sim/cocotb/branch_recovery SIM=verilator TEST_SEED=1 && make -C sim/o3 run-rv64i-instructions` | Alan PASS（`de9149d`；局部 1/1；整核 76 周期、14 条退休、ICache 回填 2 次） |
 | L3 后续 | DTCM load/store | `sim/o3` 运行 `tests/unified_memory.hex` | 未开始 |
 | L5 | 异常 / CSR / trap / xRET | ACT4 RV64I | 未开始 |
 | L6+ | DCache 数据路径、PTW/TLB、M/F/D、A、L2 并发/DMA、Linux | 待定 | 未开始 |
@@ -43,10 +43,29 @@ make -C sim/o3 run-smoke
 
 Alan 在 `1d2caeb` 上输出 `icache_refills=1`、`PASS cycles=38 retired=4`、
 `RV64I_INSTRUCTION_TRACE_PASS retires=4`。
+Alan 在 `de9149d` 上重建并回归得到相同的 38 周期、4 条退休和 1 次回填。
 Alan 的持久环境和重建方法见 [`sim/alan-env.yml`](../sim/alan-env.yml) 与
 [`sim/o3/README.md`](../sim/o3/README.md)。
 
-### 2.3 缓存取指路径与模块状态
+### 2.3 L2 直接控制流恢复验收
+
+顺序预测器下，taken BEQ 和 direct JAL 由 BRU 产生带 FTQ 身份的解析结果；
+重定向器在 R0 杀掉年轻项并改写取指 PC，在 R1 等待历史/RAS 的同身份恢复完成，
+再允许 R2 重新分配。执行重定向会清空尚未交付的 fetch buffer 项；已经发出的
+错路缓存请求可完成，但其返回不会进入退休轨迹。
+
+```sh
+make -C sim/cocotb/branch_recovery SIM=verilator TEST_SEED=1
+make -C sim/o3 run-rv64i-instructions
+```
+
+Alan 在 `de9149d` 上局部测试 1/1 PASS（150 ns）；整核输出
+`icache_refills=2`、`PASS cycles=76 retired=14`、
+`RV64I_INSTRUCTION_TRACE_PASS retires=14`。退休轨迹包含 taken BEQ 与 direct JAL，
+并排除两条错路 `addi`。这仍采用顺序预测与每次分支解析保守暂停一拍；
+JALR、RVC 和 predecode/slow/system 多来源重定向不在本级范围。
+
+### 2.4 缓存取指路径与模块状态
 
 信号流向：
 
@@ -74,20 +93,20 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
 | `frontend/fetch_return_queue.sv` | **闭环简化（L1）**：单槽身份匹配、按序出队和第二笔回压 | D15/D17 待 L4 | `sim/cocotb/fetch_return_queue/` Alan 2/2 PASS；整核 L1 PASS |
 | `frontend/ifu_f0.sv` | **闭环简化（L1）**：完整 32 位指令识别 | RVC 与跨块拼接待 L2 | `sim/cocotb/ifu_f0/` Alan 2/2 PASS；整核 L1 PASS |
 | `frontend/ifu_f1.sv` | **闭环简化（L1）**：生成 `fetch_entry_t`、`ftq_last`，修正端口无效 | 预解码修正待 L2 | `sim/cocotb/ifu_f1/` Alan 2/2 PASS；整核 L1 PASS |
-| `frontend/redirect_arbiter.sv` | **闭环简化（L2）**：执行误预测 R0 kill/重定向、R1 身份恢复、R2 重新分配 | 系统/预解码/慢预测多来源年龄仲裁待后级 | `sim/cocotb/branch_recovery/` 待 Alan |
-| `frontend/fetch_buffer.sv` | **闭环简化（L2）**：执行重定向整体清空未交付项 | 预解码修正需要按 FTQ 身份/槽位选择性保留 | `sim/cocotb/branch_recovery/` 待 Alan；顺序路径整核 L4 PASS |
+| `frontend/redirect_arbiter.sv` | **闭环简化（L2）**：执行误预测 R0 kill/重定向、R1 身份恢复、R2 重新分配 | 系统/预解码/慢预测多来源年龄仲裁待后级 | `sim/cocotb/branch_recovery/` Alan 1/1 PASS（`de9149d`） |
+| `frontend/fetch_buffer.sv` | **闭环简化（L2）**：执行重定向整体清空未交付项 | 预解码修正需要按 FTQ 身份/槽位选择性保留 | `sim/cocotb/branch_recovery/` Alan 1/1 PASS；整核 L2 PASS（`de9149d`） |
 | `frontend/frontend.sv` | 总装（连线） | L1 路径已接通；其余空壳仍待后级 | `sim/o3` Alan PASS |
-| `backend/backend.sv` 旧数据流 | **闭环简化（L2）**：INT/MEM/BR IQ、BRU 完整执行解析、checkpoint 恢复；taken branch/JAL 接前端重定向 | 正确解析仍保守暂停一拍；JALR/RVC、目标系统与其他执行路径待后级 | `sim/cocotb/branch_recovery/`、整核分支门禁待 Alan；旧缓存路径 1/1 PASS（`1d2caeb`） |
+| `backend/backend.sv` 旧数据流 | **闭环简化（L2）**：INT/MEM/BR IQ、BRU 完整执行解析、checkpoint 恢复；taken branch/JAL 接前端重定向 | 正确解析仍保守暂停一拍；JALR/RVC、目标系统与其他执行路径待后级 | `sim/cocotb/branch_recovery/` 1/1、整核分支门禁 PASS（`de9149d`）；旧缓存路径 1/1 PASS（`1d2caeb`） |
 | `backend/rob.sv` | 实现 | `retire_info_o` 已在 `ENABLE_RETIRE_INFO` 下导出到 `o3_core` | — |
-| `core/o3_core.sv` | 总装（连线） | ICache→L2→AXI 已连接；DCache 数据路径仍为空壳 | 整核 Alan smoke PASS（`1d2caeb`） |
-| `sim/o3/` | 使用 `rtl/rtl.f`、SV AXI RAM、缓存镜像加载与 JSONL 退休轨迹；新增 taken BEQ/JAL 错路零退休门禁 | JALR/RVC 与数据访存后续扩展 | 缓存 smoke Alan PASS（`1d2caeb`）；分支门禁待 Alan |
+| `core/o3_core.sv` | 总装（连线） | ICache→L2→AXI 与直接控制流恢复已连接；DCache 数据路径仍为空壳 | 整核 Alan 缓存 smoke 与分支门禁 PASS（`de9149d`） |
+| `sim/o3/` | 使用 `rtl/rtl.f`、SV AXI RAM、缓存镜像加载与 JSONL 退休轨迹；taken BEQ/JAL 错路零退休门禁 | JALR/RVC 与数据访存后续扩展 | 缓存 smoke 与分支门禁 Alan PASS（`de9149d`） |
 
 ## 3. 其他模块状态概览
 
 当前缓存取指路径以外的模块概况（2026-10-03）：
 
 - **单模块实现、有 cocotb**：`ubtb`、`main_btb`、`tage`、`ras`。
-- **本轮新增局部 cocotb**：`branch_recovery`（BRU/重定向/fetch buffer/ALU kill）、
+- **本轮新增局部 cocotb**：`branch_recovery`（BRU/重定向/fetch buffer/ALU kill，Alan 1/1 PASS，`de9149d`）、
   `l2_cache`（2 项）、`dcache` 空副本维护口（1 项）；
   `icache` recall 回归（3 项合计）、`backend` 整核缓存路径（1 项）已在 Alan 通过。
 - **单模块实现、有 SV testbench**：`ftq`（`tb/ftq_tb.sv`）、`branch_history`、`history_snapshot_store`（`tb/` 下，仅记录过 lint）。

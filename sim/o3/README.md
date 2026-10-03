@@ -84,10 +84,9 @@ contains no valid lines and only acknowledges empty-line probes.
 Pass `+L1_DEBUG` to the simulation binary for a bounded frontend/backend
 handshake trace.
 
-A passing smoke run proves that this straight-line instruction image crosses
-ICache, L2, AXI RAM and reaches ordered retirement. It does not prove branch
-recovery, RVC, exceptions, data loads/stores, DMA, concurrent L2 misses,
-synthesis timing, or general ISA compliance. The old
-`tests/rv64i_instructions.hex`, `tests/unified_memory.hex`, expected JSON,
-and `check_trace.py` remain available for later instruction and data-path regressions; their
-Makefile targets are not this cache gate.
+A passing smoke run proves only that the straight-line image crosses ICache,
+L2, AXI RAM and reaches ordered retirement. The separate
+`run-rv64i-instructions` gate adds taken BEQ/direct-JAL execution recovery and
+wrong-path retirement exclusion. Neither gate proves JALR, RVC, exceptions,
+data loads/stores, DMA, concurrent L2 misses, synthesis timing, or general ISA
+compliance. `tests/unified_memory.hex` remains for a later data-path gate.
