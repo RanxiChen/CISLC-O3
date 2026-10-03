@@ -24,6 +24,8 @@ module store_queue_tb_top
     output logic [XLEN-1:0] dc_req_addr,
     input logic dc_resp_valid,
     input logic [SQ_IDX_WIDTH-1:0] dc_resp_idx,
+    output logic local_drain_valid,
+    input logic local_drain_ready,
     output logic committed_empty
 );
     localparam int RENAME_WIDTH = BACKEND_MACHINE_WIDTH;
@@ -65,7 +67,7 @@ module store_queue_tb_top
         .query_mask_i(query_mask), .query_block_o(query_block),
         .query_forward_valid_o(query_forward_valid),
         .query_forward_data_o(query_forward_data),
-        .drain_valid_o(), .drain_ready_i(1'b0),
+        .drain_valid_o(local_drain_valid), .drain_ready_i(local_drain_ready),
         .drain_addr_o(), .drain_data_o(), .drain_mask_o(),
         .resolution_valid_i(1'b0), .resolution_mispredict_i(1'b0),
         .resolution_tag_i('0), .restore_tail_i('0),

@@ -79,8 +79,9 @@ The ICache now has a two-bank, four-stage lookup and a single demand MSHR.
 `sim/cocotb/l2_cache/` tests L2 read hits, AXI misses, capacity recall of
 both L1s, dirty data handoff, and writeback before replacement. The current
 L2 handles one ordinary transaction at a time; DMA, multiple MSHRs, and
-independent hits during a miss remain to be implemented. The current L1D
-contains no valid lines and only acknowledges empty-line probes.
+independent hits during a miss remain to be implemented. The current L1D has
+four 16-byte word banks, one line miss transaction, resident-line hit-under-miss,
+dirty victim writeback and inclusive probe handoff.
 Pass `+L1_DEBUG` to the simulation binary for a bounded frontend/backend
 handshake trace.
 
@@ -88,5 +89,9 @@ A passing smoke run proves only that the straight-line image crosses ICache,
 L2, AXI RAM and reaches ordered retirement. The separate
 `run-rv64i-instructions` gate adds taken BEQ/direct-JAL execution recovery and
 wrong-path retirement exclusion. Neither gate proves JALR, RVC, exceptions,
-data loads/stores, DMA, concurrent L2 misses, synthesis timing, or general ISA
-compliance. `tests/unified_memory.hex` remains for a later data-path gate.
+DMA, concurrent L2 misses, synthesis timing, or general ISA compliance.
+`run-dcache-data` separately checks one AXI-backed data line's load/store
+retirement through SQ, DCache and L2. It does not establish LQ replay,
+cross-line exceptions, FENCE.I, or multi-MSHR behavior.
+`tests/unified_memory.hex` remains a legacy software-memory image, not this
+AXI-backed data-path gate.

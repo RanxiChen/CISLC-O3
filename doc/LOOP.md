@@ -17,9 +17,9 @@
 | L1（历史） | ITCM 中的直线整数指令按序退休 | 旧 `sim/o3` smoke | Alan 曾 PASS（`a268f16`）；ITCM 已移除，旧验收不再运行 |
 | **L4 当前** | **ICache miss → inclusive L2 → AXI RAM → 直线整数退休** | `make -C sim/o3 build && make -C sim/o3 run-smoke` | Alan 回归 PASS（`de9149d`，38 周期、4 条退休、ICache 回填 1 次） |
 | **L2 当前** | **taken 分支 / JAL：BRU 解析 → 重定向 → 前端恢复** | `make -C sim/cocotb/branch_recovery SIM=verilator TEST_SEED=1 && make -C sim/o3 run-rv64i-instructions` | Alan PASS（`de9149d`；局部 1/1；整核 76 周期、14 条退休、ICache 回填 2 次） |
-| L3 进行中 | SQ 依赖/转发 → 流水化 DCache → inclusive L2 → AXI 数据访存与退休 | `sim/cocotb/store_queue/`、`sim/cocotb/dcache/`、`sim/o3` 数据访存轨迹 | `db69cf5` Alan SQ 2/2、DCache 2/2 PASS；LSU/SQ→DCache 整核接线已写，待 Alan 整核验证。脏 victim、恢复、FENCE.I 尚未闭合 |
+| L3 部分闭合 | SQ 依赖/转发 → 流水化 DCache → inclusive L2 → AXI 数据访存与退休 | `make -C sim/cocotb/store_queue SIM=verilator`、`make -C sim/cocotb/dcache SIM=verilator`、`make -C sim/o3 run-dcache-data` | Alan `022f90c`：SQ 2/2、DCache 3/3；整核 `6b4c540` 数据门禁 69 周期退休 7 条且轨迹 PASS。仍缺多 MSHR、LQ replay、跨行异常、FENCE.I、PTW/AMO/DMA；不是完整 B03～B05 |
 | L5 | 异常 / CSR / trap / xRET | ACT4 RV64I | 未开始 |
-| L6+ | DCache 数据路径、PTW/TLB、M/F/D、A、L2 并发/DMA、Linux | 待定 | 未开始 |
+| L6+ | DCache 多 MSHR、PTW/TLB、M/F/D、A、L2 并发/DMA、Linux | 待定 | 未开始 |
 
 ## 2. 当前目标：L4 缓存取指闭环
 
@@ -89,8 +89,8 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
 | `frontend/ftq.sv` | 目标端口单模块实现 | L1 整核分配、demand 发射和提交回收已走通；后级机制仍待验证 | `tb/ftq_tb.sv`（SV testbench，非 cocotb，提交 `b6d3a34`）；整核 L1 Alan PASS |
 | `frontend/icache.sv` | **闭环简化（L4）**：整行双 bank、S0–S3、单 demand MSHR/四拍回填；按行 recall；ITCM 已移除 | ITLB/PMP/PMA、预取、多 MSHR、性能事件与综合时序待后级 | `sim/cocotb/icache/` Alan 3/3 PASS（`1d2caeb`） |
 | `memory/l2_cache.sv` | **闭环简化（L4）**：256 set/4-way 配置、tree-PLRU、AXI 回填、双 L1 回收、脏行 AXI 写回 | 普通请求单未决；B03/B41 并发、DMA/维护协调与完整 L1D 数据路径未实现 | `sim/cocotb/l2_cache/` Alan 2/2 PASS（`1d2caeb`） |
-| `lsu/dcache.sv` | **闭环简化（L3，进行中）**：4 个 16B word bank、整行 tag/valid/dirty、两级查询、单行 miss、脏行交回、L2 回填、probe RTL 已写 | 多 MSHR、同 line 合并、PTW/AMO/预取、DMA 行保护、整核接线待后级 | 空副本 probe Alan 1/1 PASS（`1d2caeb`）；新增数据路径测试待 Alan |
-| `backend/store_queue.sv` | **闭环简化（L3，进行中）**：SQ 年龄顺序查询、最近完整覆盖旧 store 转发；未知地址与部分覆盖保守等待；DCache 完成后释放接口已写 | 后端切换到 DCache、等待事件与整核数据访存闭环 | 查询 `sim/cocotb/store_queue/` Alan 1/1 PASS（`d1577ae`）；完成握手测试待 Alan |
+| `lsu/dcache.sv` | **闭环简化（L3）**：4 个 16B word bank、整行 tag/valid/dirty、两级查询、单行 miss、hit-under-miss、脏 victim 写回、L2 回填、probe | 多 MSHR/同 line 合并、PTW/AMO/预取、DMA 行保护；clean_all 不会虚假确认但尚未执行 | Alan 3/3 PASS（`022f90c`）；整核基本数据门禁 PASS |
+| `backend/store_queue.sv` | **闭环简化（L3）**：SQ 年龄顺序查询、最近完整覆盖旧 store 转发；未知地址与部分覆盖保守等待；DCache 完成后释放，DTCM 保留本地 drain | LQ replay、依赖等待事件、跨行异常与整核冲突覆盖 | Alan 2/2 PASS（`022f90c`）；整核基本数据门禁 PASS |
 | `frontend/fetch_return_queue.sv` | **闭环简化（L1）**：单槽身份匹配、按序出队和第二笔回压 | D15/D17 待 L4 | `sim/cocotb/fetch_return_queue/` Alan 2/2 PASS；整核 L1 PASS |
 | `frontend/ifu_f0.sv` | **闭环简化（L1）**：完整 32 位指令识别 | RVC 与跨块拼接待 L2 | `sim/cocotb/ifu_f0/` Alan 2/2 PASS；整核 L1 PASS |
 | `frontend/ifu_f1.sv` | **闭环简化（L1）**：生成 `fetch_entry_t`、`ftq_last`，修正端口无效 | 预解码修正待 L2 | `sim/cocotb/ifu_f1/` Alan 2/2 PASS；整核 L1 PASS |
@@ -99,8 +99,8 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
 | `frontend/frontend.sv` | 总装（连线） | L1 路径已接通；其余空壳仍待后级 | `sim/o3` Alan PASS |
 | `backend/backend.sv` 旧数据流 | **闭环简化（L2）**：INT/MEM/BR IQ、BRU 完整执行解析、checkpoint 恢复；taken branch/JAL 接前端重定向 | 正确解析仍保守暂停一拍；JALR/RVC、目标系统与其他执行路径待后级 | `sim/cocotb/branch_recovery/` 1/1、整核分支门禁 PASS（`de9149d`）；旧缓存路径 1/1 PASS（`1d2caeb`） |
 | `backend/rob.sv` | 实现 | `retire_info_o` 已在 `ENABLE_RETIRE_INFO` 下导出到 `o3_core` | — |
-| `core/o3_core.sv` | 总装（连线） | ICache→L2→AXI 与直接控制流恢复已连接；DCache 数据路径仍为空壳 | 整核 Alan 缓存 smoke 与分支门禁 PASS（`de9149d`） |
-| `sim/o3/` | 使用 `rtl/rtl.f`、SV AXI RAM、缓存镜像加载与 JSONL 退休轨迹；taken BEQ/JAL 错路零退休门禁 | JALR/RVC 与数据访存后续扩展 | 缓存 smoke 与分支门禁 Alan PASS（`de9149d`） |
+| `core/o3_core.sv` | 总装（连线） | ICache/L2/AXI、直接控制流恢复及基础 DCache 数据路径已接通 | 整核 Alan smoke、分支及基础数据门禁 PASS（`6b4c540`） |
+| `sim/o3/` | 使用 `rtl/rtl.f`、SV AXI RAM、缓存镜像加载与 JSONL 退休轨迹；taken BEQ/JAL 与 DCache 数据门禁 | JALR/RVC、LQ replay、异常及并发访存后续扩展 | Alan smoke、分支及基础数据门禁 PASS（`6b4c540`） |
 
 ## 3. 其他模块状态概览
 
