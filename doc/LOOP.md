@@ -176,3 +176,6 @@ RAT/free list 从提交态恢复；SQ 只取消未提交项；LSU 保留已发�
 存储访问在退休前通过只读 DCache 探测确认；probe 不修改数据，成功才 complete Store。
 FENCE.I 只排空 SQ + 失效 ICache，完整数据 clean 待 L8。Spike 增加 CSR/trap 事件。
 本地 lint 待提交前检查，Alan 功能未验证，不能宣称 L5 通过。
+
+O3-T03 首版发现 PRF/ROB unpacked array lane 方向不一致；修正并追加三条静态
+指令的固定 Spike 门禁，详情 O3-T03 报告 Bug 1。修复后 Alan 验证待运行。

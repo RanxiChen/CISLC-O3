@@ -68,7 +68,7 @@ module commit_ctrl
     input  logic            rst,
     input  vaddr_t          boot_pc_i,           // committed_next_pc 复位值
 
-    input  rob_commit_t     commit_i [COMMIT_WIDTH],
+    input  rob_commit_t     commit_i [COMMIT_WIDTH-1:0],
     input  logic            head_valid_i,
     input  rob_commit_t     head_i,
     output logic            head_serial_done_o,

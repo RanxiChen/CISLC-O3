@@ -151,13 +151,13 @@ module backend
 );
 
     logic global_flush, backend_block, rob_commit_block, head_valid, head_serial_done;
-    o3_types_pkg::rob_commit_t rob_head_info, rob_commit [RETIRE_WIDTH];
-    o3_types_pkg::exc_info_t rob_alloc_exc [MACHINE_WIDTH], lsu_exc, rob_exec_exc;
-    o3_types_pkg::uop_ext_t rob_alloc_ext [MACHINE_WIDTH];
-    logic [PC_WIDTH-1:0] rob_meta_pc [MACHINE_WIDTH];
-    logic [31:0] rob_meta_instruction [MACHINE_WIDTH];
-    o3_types_pkg::preg_t rob_meta_src1 [MACHINE_WIDTH];
-    logic [4:0] rob_meta_rs1 [MACHINE_WIDTH];
+    o3_types_pkg::rob_commit_t rob_head_info, rob_commit [RETIRE_WIDTH-1:0];
+    o3_types_pkg::exc_info_t rob_alloc_exc [MACHINE_WIDTH-1:0], lsu_exc, rob_exec_exc;
+    o3_types_pkg::uop_ext_t rob_alloc_ext [MACHINE_WIDTH-1:0];
+    logic [PC_WIDTH-1:0] rob_meta_pc [MACHINE_WIDTH-1:0];
+    logic [31:0] rob_meta_instruction [MACHINE_WIDTH-1:0];
+    o3_types_pkg::preg_t rob_meta_src1 [MACHINE_WIDTH-1:0];
+    logic [4:0] rob_meta_rs1 [MACHINE_WIDTH-1:0];
     logic rob_exc_valid, lsu_exc_valid;
     logic [ROB_IDX_WIDTH-1:0] rob_exc_idx, lsu_exc_idx;
     logic csr_req_valid, csr_write_fire, trap_update_valid, trap_done, trap_redirect_valid;
@@ -171,10 +171,10 @@ module backend
 `ifdef ENABLE_RETIRE_INFO
     o3_pkg::retire_info_t csr_observe_q [NUM_ROB_ENTRIES];
 `endif
-    logic [PREG_IDX_WIDTH-1:0] arb_rd_addr [PRF_READ_PORTS];
-    logic arb_wr_en [PRF_WRITE_PORTS];
-    logic [PREG_IDX_WIDTH-1:0] arb_wr_addr [PRF_WRITE_PORTS];
-    logic [XLEN-1:0] arb_wr_data [PRF_WRITE_PORTS];
+    logic [PREG_IDX_WIDTH-1:0] arb_rd_addr [PRF_READ_PORTS-1:0];
+    logic arb_wr_en [PRF_WRITE_PORTS-1:0];
+    logic [PREG_IDX_WIDTH-1:0] arb_wr_addr [PRF_WRITE_PORTS-1:0];
+    logic [XLEN-1:0] arb_wr_data [PRF_WRITE_PORTS-1:0];
     assign backend_block = branch_mispredict || global_flush || sys_redirect_o.valid;
     assign csr_write_fire = csr_req_valid && csr_resp.valid && !csr_resp.illegal;
     always_comb begin

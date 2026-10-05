@@ -22,3 +22,15 @@ L5 顺序 BPU 对已知系统目标直接恢复取指，不发分支预测快照
 
 本次没有改变 Dxx/Bxx 决策，没有删除或放宽现有测试、断言或期望。
 验收命令、SHA、日志与后续 bug 记录在实测后追加。
+
+## Bug 1：PRF/ROB 载荷的 unpacked array 方向不匹配
+
+首版 `8cd9fa9` 在 Alan 既有 rv64i 固定门禁 order=2 首差异 rd_wdata：
+ADDIW x3,x1,1 的 DUT=1、Spike=0xffffffff80000001。日志
+`/home/chen/FUN/CISLC-O3-runs/20261006-o3t03/trial-8cd9fa9/fixed.log`。
+根因是新中间 PRF 数组声明为 [N]（升序），原模块端口为 [N-1:0]（降序），
+SV 在整个 unpacked array 连接时按位置映射，使 scalar 下标读取的读写口颠倒。
+新 ROB 元信息数组有相同问题。修正两端方向，commit_i 对齐 ROB 的 lane 方向。
+缩减到三条静态指令 `tests/prf_lane_order.hex` 并加入 run-spike-all 的独立门禁；
+没有改既有 rv64i 期望值。属于本次实现引入的 bug，不是 O3-T02 基线缺陷。
+提交后 Alan 对照/回归继续，当前修复后功能未验证。

@@ -125,7 +125,7 @@ run-l3-branch-dense:
 .PHONY: run-spike-all run-spike-branch-loop run-spike-random run-spike-selftest run-spike-act4
 run-spike-all:
 	$(MAKE) run-smoke run-rv64i-instructions run-dcache-data run-dcache-replay run-l3-branch-dense SPIKE_ARGS=--spike
-	$(MAKE) run-spike-branch-loop
+	$(MAKE) run-spike-branch-loop run-spike-prf-lane-order
 
 # Twelve static instructions; two loop iterations must retire before tohost.
 # Spike supplies the independent dynamic oracle, including any younger lane
@@ -143,3 +143,8 @@ run-spike-selftest:
 
 run-spike-act4:
 	$(MAKE) -C $(REPO_ROOT)/verification/act4 run OUT_DIR=$(SPIKE_OUT)/act4
+
+.PHONY: run-spike-prf-lane-order
+run-spike-prf-lane-order:
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) --spike --image tests/prf_lane_order.hex \
+		--reset-pc 0x80000000 --trace prf_lane_order.jsonl --max-retires 3 --max-cycles 1000
