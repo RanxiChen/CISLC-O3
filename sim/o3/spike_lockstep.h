@@ -72,6 +72,10 @@ class SpikeLockstep {
         cpu_->get_state()->pc=pc;
         cpu_->set_pmp_num(0);
         cpu_->put_csr(0x305,0x200); // L5 platform reset mtvec, matches Breeze M-only reset.
+        // Platform identity, not instruction semantics: the task specifies zero
+        // vendor/architecture/implementation IDs rather than Spike's marchid=5.
+        for (unsigned addr : {0xf11u, 0xf12u, 0xf13u})
+            cpu_->get_state()->csrmap[addr]=std::make_shared<const_csr_t>(cpu_,addr,0);
     }
     void init(uint64_t offset, unsigned bytes, uint64_t value) {
         uint8_t b[8]; for(unsigned i=0;i<bytes;++i) b[i]=value>>(8*i);

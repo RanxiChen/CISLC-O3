@@ -78,3 +78,11 @@ exc_valid/cause 同样未传给 F1。本次按 L5 RV64I 的 IALIGN=32 输出每�
 访问错误的定向/固定种子随机检查。原 L1 “跳过短编码”期望已过时，明确
 替换为 L5 精确异常要求，并保留正常位置、身份、回压、复位/kill/sync 检查。
 本地 lint PASS（0 errors / 90 warnings），Alan 对照与最终结果待补。
+
+## 平台参考配置修正：身份 CSR
+
+`mi-ddb85a3/mcsr.log` order 16：DUT marchid=0，Spike 默认为 5。
+任务书规定 mvendorid/marchid/mimpid=0；以官方 `const_csr_t` 对三个平台
+只读身份 CSR 配置常数 0，保留官方权限检查与指令执行。没有为时序或恢复
+行为改造 Spike；WFI 使用官方 cfg.wfi_as_nop=true。增加三条身份读取固定
+门禁 `platform_ids.hex`，mcsr 原测试体及所有期望不变。

@@ -123,7 +123,7 @@ run-l3-branch-dense:
 		--expect tests/l3_branch_dense.expected.json
 
 .PHONY: run-spike-all run-spike-branch-loop run-spike-random run-spike-selftest run-spike-act4
-run-spike-all: run-spike-head-ready run-spike-illegal-zero
+run-spike-all: run-spike-head-ready run-spike-illegal-zero run-spike-platform-ids
 	$(MAKE) run-smoke run-rv64i-instructions run-dcache-data run-dcache-replay run-l3-branch-dense SPIKE_ARGS=--spike
 	$(MAKE) run-spike-branch-loop run-spike-prf-lane-order
 
@@ -163,3 +163,7 @@ run-spike-head-ready:
 .PHONY: run-spike-illegal-zero
 run-spike-illegal-zero:
 	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) --spike --image tests/illegal_zero.hex --trace illegal_zero.jsonl --max-retires 1 --max-cycles 1000
+
+.PHONY: run-spike-platform-ids
+run-spike-platform-ids:
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) --spike --image tests/platform_ids.hex --trace platform_ids.jsonl --max-retires 3 --max-cycles 1000
