@@ -48,7 +48,8 @@
  * - 本级只接受 exec_i 的误预测；sys/predecode/slow 来源保持未实现。
  * - R0 同拍广播 kill、重定向 PC 并发起快照读取；锁存整份请求。
  * - R1 等待匹配身份的 history/RAS 完成；R2 解除 recover_busy，BPU 从目标继续分配。
- * - 单 BRU 下恢复 busy 期间的年轻执行结果由后端 branch-mask 恢复删除，不替换当前恢复。
+ * - busy 期间仍有效且更老的执行纠错按 FTQ 环形年龄/块内槽位替换恢复（D24）；
+ *   单 BRU 的解析顺序可能因操作数等待而乱序，不能据此丢弃更老解析。
  *
  * 目标周期行为：
  * - 周期 N 组合：比较所有有效请求，形成独热赢家；kill_o 与 bpu_redirect_* 有效。
@@ -101,9 +102,27 @@ module redirect_arbiter
     redirect_req_t recover_q;
     logic          recover_busy_q;
     logic          accept_exec;
+    logic          exec_older;
+    int unsigned   exec_age, recover_age;
     redirect_req_t exec_req;
 
-    assign accept_exec = !rst_i && !recover_busy_q && exec_i.valid && exec_i.mispredict;
+    // Live FTQ entries are ordered relative to the current head, including
+    // wraparound. Generation is part of identity, never an age counter.
+    // Within a region, use its slot; a repeated resolution cannot replace
+    // itself. The backend filters resolutions killed by older branches.
+    always_comb begin
+        exec_age = int'(exec_i.ftq_id.idx) >= int'(ftq_head_i.idx)
+                 ? int'(exec_i.ftq_id.idx) - int'(ftq_head_i.idx)
+                 : int'(exec_i.ftq_id.idx) + CFG.ftq.depth - int'(ftq_head_i.idx);
+        recover_age = int'(recover_q.ftq_id.idx) >= int'(ftq_head_i.idx)
+                    ? int'(recover_q.ftq_id.idx) - int'(ftq_head_i.idx)
+                    : int'(recover_q.ftq_id.idx) + CFG.ftq.depth - int'(ftq_head_i.idx);
+        exec_older = (exec_age < recover_age)
+                  || ((exec_i.ftq_id == recover_q.ftq_id)
+                      && (exec_i.slot < recover_q.slot));
+    end
+    assign accept_exec = !rst_i && exec_i.valid && exec_i.mispredict
+                       && (!recover_busy_q || exec_older);
 
     always_comb begin
         exec_req = '0;

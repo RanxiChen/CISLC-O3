@@ -1,0 +1,18 @@
+# O3-T02-fix regression: a two-iteration backward BNE.
+# 12 static words. Expected next retirement after 0x8000001c is 0x80000014.
+@0x80000000
+00100097 # auipc x1,0x100 (data base)
+00110197 # auipc x3,0x110
+ff418193 # addi x3,x3,-12 (tohost 0x8010fff8)
+00000013 # nop: puts loop body at fetch slot 1
+00200113 # addi x2,x0,2
+00120213 # addi x4,x4,1
+fff10113 # addi x2,x2,-1
+fe011ce3 # bne x2,x0,-8
+00120293 # addi x5,x4,1
+00100113 # addi x2,x0,1
+0021b023 # sd x2,0(x3)
+0000006f # jal x0,0
+@0x8010fff8
+00000000
+00000000

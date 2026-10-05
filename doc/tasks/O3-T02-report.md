@@ -292,3 +292,32 @@ Q1–Q10 未改变；原任务书“发现真 bug 停下”已由本轮用户明
 按 2026-10-06 用户指令，收尾复验结束后直接执行 O3-T02-fix，无阶段一：逐 bug
 缩减、定位模块/拍/条件、对照 Dxx/Bxx、补固定门禁和 cocotb、每 bug 单独提交，
 最终同 SHA 全量复验；只有必须改变设计决策时才停。
+
+## 6. 修复记录（O3-T02-fix）
+
+### 6.1 Bug 1：busy 恢复丢弃更老执行重定向
+
+根因模块 `rtl/frontend/redirect_arbiter.sv`，原 `accept_exec` 无条件要求
+`!recover_busy_q`。单 BRU 可因操作数等待而先解析年轻 JAL，再解析更老 BNE；
+因此单 BRU 不保证解析按程序顺序。复现为 `sim/o3/tests/branch_loop.hex` 的
+12 条静态指令（阶段二原件仍在 repros/，不删除证据）。
+
+原 RTL 周期 45：JAL PC=0x8000002c 在 Result，触发恢复到自身；BNE
+PC=0x8000001c 在 RegRead，x2=1，正确目标 0x80000014。周期 46：BNE
+Result 有效且 mispredict=1，backend 接受更老 checkpoint 恢复；前端 busy=1
+却拒绝该请求。周期 47 继续从 JAL 目标分配，周期 60 的 order=8 退休
+PC=0x8000002c，Spike 要求 PC=0x80000014、x4=2。逐拍日志保留在 Alan
+`/home/chen/FUN/CISLC-O3-runs/20261006-o3t02-fix/loop-before.log`。
+
+D24 已明确规定恢复期间更老有效请求应替换当前恢复，并防止旧完成覆盖新状态；
+本次无需改变 Dxx/Bxx。修改仅在此模块按相对 FTQ head 的环形年龄、同一动态
+FTQ 身份内的 slot 判断更老，接受后整份请求替换，重新发起快照读取和 kill；
+保持替换优先于当拍旧 done，及原有 RAS done 身份校验。
+
+新增 cocotb `older_exec_replaces_busy_recovery` 覆盖跨块、同块、环形回绕、
+旧 done 同拍/后拍及年轻请求拒绝。原 RTL `fff0cd3` 加新测试在 21ns 必然
+FAIL：older redirect valid=0；相同测试及全部原有分支恢复测试在独立临时修复
+构建中 4/4 PASS。日志 `arbiter-before.log`、`arbiter-after-trial.log`；此为
+对照证据，不能替代提交 SHA 上的最终验收。新增 `run-spike-branch-loop`
+并纳入 `run-spike-all`，保留五个既有固定程序及其期望/checker/断言不变。
+本地 lint 0 errors / 101 warnings，PASS；提交后继续 ACT4/随机全量迭代。

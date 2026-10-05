@@ -104,7 +104,7 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
 | `frontend/fetch_return_queue.sv` | **闭环简化（L1）**：单槽身份匹配、按序出队和第二笔回压 | D15/D17 待 L4 | `sim/cocotb/fetch_return_queue/` Alan 2/2 PASS；整核 L1 PASS |
 | `frontend/ifu_f0.sv` | **闭环简化（L1）**：完整 32 位指令识别 | RVC 与跨块拼接待 L2 | `sim/cocotb/ifu_f0/` Alan 2/2 PASS；整核 L1 PASS |
 | `frontend/ifu_f1.sv` | **闭环简化（L1）**：生成 `fetch_entry_t`、`ftq_last`，修正端口无效 | 预解码修正待 L2 | `sim/cocotb/ifu_f1/` Alan 2/2 PASS；整核 L1 PASS |
-| `frontend/redirect_arbiter.sv` | **闭环简化（L2）**：执行误预测 R0 kill/重定向、R1 身份恢复、R2 重新分配 | 系统/预解码/慢预测多来源年龄仲裁待后级 | `sim/cocotb/branch_recovery/` Alan 1/1 PASS（`de9149d`） |
+| `frontend/redirect_arbiter.sv` | **闭环简化（L2）**：执行误预测 R0 kill/重定向、R1 身份恢复、R2 重新分配；D24 busy 期间更老执行请求按 FTQ 环形年龄/槽位替换 | 系统/预解码/慢预测多来源年龄仲裁待后级 | O3-T02-fix：新增定向测试在原 RTL FAIL，临时修复对照 4/4 PASS；提交后全量复验待跑 |
 | `frontend/fetch_buffer.sv` | **闭环简化（L2）**：执行重定向整体清空未交付项 | 预解码修正需要按 FTQ 身份/槽位选择性保留 | `sim/cocotb/branch_recovery/` Alan 1/1 PASS；整核 L2 PASS（`de9149d`） |
 | `frontend/frontend.sv` | 总装（连线） | L1 路径已接通；其余空壳仍待后级 | `sim/o3` Alan PASS |
 | `backend/backend.sv` 旧数据流 | **闭环简化（L3）**：INT/MEM/BR IQ、BRU 恢复、SQ/LSU→DCache；Memory IQ 可越过未就绪队头并受 replay 槽控制 | 四宽/16 项；U3 退休 FTQ 通知、U4 M/Bare/PMP update=0；正确解析正常推进，M 保留恢复边界；JALR/RVC 待后级 | Alan backend 2/2 与 backend_control 同拍合同 PASS（`ac2aed1`）；smoke/分支/数据/replay/dense 门禁 PASS；最终提交复验见报告 |

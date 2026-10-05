@@ -146,7 +146,10 @@ make -C sim/o3 run-spike-selftest
 `BUILD_DIR`, `SPIKE_PREFIX`, `SPIKE_OUT`, `RETIRE_TARGET` and ACT4 `ELF_DIR`
 can be overridden. `SEEDS` accepts ranges and comma-separated seed lists.
 The five existing fixed gates retain their independent expected-record
-checker. `unified_memory` is a historical pre-AXI gate, excluded by frozen Q7;
+checker. `run-spike-all` also runs the twelve-instruction `tests/branch_loop.hex`
+regression with Spike through retired tohost: a younger JAL must not suppress
+an older taken BNE while frontend recovery is busy (D24). Run it separately
+with `make -C sim/o3 run-spike-branch-loop`. `unified_memory` is a historical pre-AXI gate, excluded by frozen Q7;
 its original command/checker are retained.
 
 The reference shares only initial loader bytes with the DUT; runtime RAM is

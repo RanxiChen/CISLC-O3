@@ -18,6 +18,7 @@ async def cycle(dut):
 
 def clear_inputs(dut):
     for name in (
+        "head_idx_i", "head_gen_i",
         "exec_valid_i", "exec_mispredict_i", "exec_ftq_idx_i", "exec_ftq_gen_i",
         "exec_slot_i", "exec_branch_pc_i", "exec_inst_len_i", "exec_cfi_type_i",
         "exec_ras_action_i", "exec_actual_taken_i", "exec_actual_target_i",
@@ -42,6 +43,66 @@ async def reset(dut):
     await cycle(dut)
     dut.rst_i.value = 0
     await Timer(1, unit="ns")
+
+
+@cocotb.test()
+async def older_exec_replaces_busy_recovery(dut):
+    """D24: a late older branch replaces a younger recovery, including wrap.
+
+    Old completion coincides with replacement and arrives again afterwards;
+    neither may clear the new recovery. PC values deliberately reverse age.
+    """
+    cocotb.start_soon(Clock(dut.clk_i, 10, unit="ns").start())
+    depth = int(dut.ftq_depth_o.value)
+    cases = [(0, (2, 1, 6), (1, 1, 6)),
+             (0, (2, 1, 6), (2, 1, 3)),
+             (depth - 2, (0, 2, 1), (depth - 1, 1, 6))]
+    for head, younger, older in cases:
+        await reset(dut)
+        dut.head_idx_i.value = head
+        dut.exec_valid_i.value = dut.exec_mispredict_i.value = 1
+        dut.exec_inst_len_i.value = 4
+        dut.exec_cfi_type_i.value = 1
+        dut.exec_actual_taken_i.value = 1
+        dut.exec_ftq_idx_i.value, dut.exec_ftq_gen_i.value, dut.exec_slot_i.value = younger
+        dut.exec_redirect_pc_i.value = dut.exec_actual_target_i.value = 0x100
+        await cycle(dut)
+        assert int(dut.recover_busy_o.value) == 1
+
+        dut.exec_ftq_idx_i.value, dut.exec_ftq_gen_i.value, dut.exec_slot_i.value = older
+        dut.exec_redirect_pc_i.value = dut.exec_actual_target_i.value = 0x900
+        dut.history_done_i.value = dut.ras_done_i.value = 1
+        dut.ras_done_idx_i.value, dut.ras_done_gen_i.value = younger[:2]
+        await Timer(1, unit="ns")
+        assert int(dut.bpu_redirect_valid_o.value) == 1, (head, younger, older)
+        assert int(dut.kill_valid_o.value) == int(dut.snap_req_o.value) == 1
+        assert int(dut.kill_slot_o.value) == older[2]
+        assert int(dut.bpu_redirect_pc_o.value) == int(dut.winner_target_o.value) == 0x900
+        assert (int(dut.snap_idx_o.value), int(dut.snap_gen_o.value)) == older[:2]
+        await cycle(dut)
+        dut.exec_valid_i.value = 0
+        assert int(dut.recover_busy_o.value) == 1
+        assert (int(dut.recover_idx_o.value), int(dut.recover_gen_o.value)) == older[:2]
+        # Same FTQ region has one snapshot identity: deassert the old pulse
+        # before testing completion in that case. Snapshot-store response
+        # gating is covered by the integrated loop/lockstep gate.
+        if younger[:2] == older[:2]:
+            dut.history_done_i.value = dut.ras_done_i.value = 0
+        await cycle(dut)
+        assert int(dut.recover_busy_o.value) == 1
+        assert int(dut.winner_target_o.value) == 0x900
+
+        # A younger request is never allowed to replace the captured older one.
+        dut.exec_valid_i.value = 1
+        dut.exec_ftq_idx_i.value, dut.exec_ftq_gen_i.value, dut.exec_slot_i.value = younger
+        await Timer(1, unit="ns")
+        assert int(dut.bpu_redirect_valid_o.value) == int(dut.snap_req_o.value) == 0
+        await cycle(dut)
+        dut.exec_valid_i.value = 0
+        dut.history_done_i.value = dut.ras_done_i.value = 1
+        dut.ras_done_idx_i.value, dut.ras_done_gen_i.value = older[:2]
+        await cycle(dut)
+        assert int(dut.recover_busy_o.value) == 0
 
 
 @cocotb.test()

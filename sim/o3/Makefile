@@ -122,9 +122,18 @@ run-l3-branch-dense:
 	cd $(SIM_DIR) && python3 check_trace.py --trace l3_branch_dense.jsonl \
 		--expect tests/l3_branch_dense.expected.json
 
-.PHONY: run-spike-all run-spike-random run-spike-selftest run-spike-act4
+.PHONY: run-spike-all run-spike-branch-loop run-spike-random run-spike-selftest run-spike-act4
 run-spike-all:
 	$(MAKE) run-smoke run-rv64i-instructions run-dcache-data run-dcache-replay run-l3-branch-dense SPIKE_ARGS=--spike
+	$(MAKE) run-spike-branch-loop
+
+# Twelve static instructions; two loop iterations must retire before tohost.
+# Spike supplies the independent dynamic oracle, including any younger lane
+# in the mailbox retirement cycle (Q9). Existing fixed checkers stay intact.
+run-spike-branch-loop:
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) --spike --image tests/branch_loop.hex \
+		--reset-pc 0x80000000 --trace branch_loop.jsonl \
+		--tohost-address 0x8010fff8 --max-retires 1000 --max-cycles 5000
 
 run-spike-random:
 	cd $(SIM_DIR) && env -u O3_INJECT python3 run_spike.py random --sim $(RUN_BIN) --seeds $(SEEDS) --target $(RETIRE_TARGET) --output $(SPIKE_OUT)/random

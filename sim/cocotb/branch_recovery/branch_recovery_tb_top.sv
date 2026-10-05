@@ -5,6 +5,10 @@ module branch_recovery_tb_top
     input  logic clk_i,
     input  logic rst_i,
 
+    input  logic [FTQ_IDX_W-1:0] head_idx_i,
+    input  logic [FTQ_GEN_W-1:0] head_gen_i,
+    output int ftq_depth_o,
+
     input  logic exec_valid_i,
     input  logic exec_mispredict_i,
     input  logic [FTQ_IDX_W-1:0] exec_ftq_idx_i,
@@ -28,6 +32,9 @@ module branch_recovery_tb_top
     output logic recover_busy_o,
     output logic [VADDR_W-1:0] winner_target_o,
     output logic winner_hist_inject_o,
+    output logic [FTQ_IDX_W-1:0] snap_idx_o, recover_idx_o,
+    output logic [FTQ_GEN_W-1:0] snap_gen_o, recover_gen_o,
+    output logic [2:0] kill_slot_o,
 
     input  logic bu_issue_valid_i,
     input  logic bu_read_grant_i,
@@ -98,7 +105,8 @@ module branch_recovery_tb_top
 
     redirect_arbiter #(.CFG(o3_cfg_pkg::O3_CFG.fe)) u_redirect (
         .clk_i(clk_i), .rst_i(rst_i),
-        .sys_i('0), .exec_i(exec), .predecode_i('0), .slow_i('0), .ftq_head_i('0),
+        .sys_i('0), .exec_i(exec), .predecode_i('0), .slow_i('0),
+        .ftq_head_i('{gen:head_gen_i, idx:head_idx_i}),
         .winner_o(winner), .kill_o(kill),
         .bpu_redirect_valid_o(bpu_redirect_valid_o), .bpu_redirect_pc_o(bpu_redirect_pc_o),
         .snap_rd_req_o(snap_req_o), .snap_rd_ftq_id_o(snap_id_unused),
@@ -111,6 +119,12 @@ module branch_recovery_tb_top
     assign kill_valid_o = kill.valid;
     assign winner_target_o = winner.target_pc;
     assign winner_hist_inject_o = winner.hist_inject;
+    assign ftq_depth_o = FTQ_DEPTH;
+    assign snap_idx_o = snap_id_unused.idx;
+    assign snap_gen_o = snap_id_unused.gen;
+    assign recover_idx_o = ras_id_unused.idx;
+    assign recover_gen_o = ras_id_unused.gen;
+    assign kill_slot_o = kill.slot;
 
     renamed_uop_t bu_issue;
     branch_result_t bu_result_unused;
