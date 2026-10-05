@@ -118,8 +118,14 @@ git log -1 --format='%H %s' -- doc/tasks/O3-T01-report.md
 | `git log origin/feat/L1-closure..HEAD --oneline` | 通过，退出码 0；两个指定提交尚未在本地跟踪的远端分支中 | `audit.log` |
 | `nl -ba rtl/common/pmp_checker.sv` | 通过，退出码 0；确认没有实现 | `audit.log` |
 | `rg -n 'pmp_checker' rtl sim/cocotb` | 通过，退出码 0；只有声明和 filelist，未发现实例／测试 | `audit.log` |
-| `rg -n 's3_valid_o\|s3_allow_o\|s3_fault_o\|cfg_update_done_o' rtl/common/pmp_checker.sv` | 通过，退出码 0；只有注释／输出声明 | `audit.log`（表中竖线仅为 Markdown 转义，准确命令见日志） |
+| 输出驱动检索（准确命令见下） | 通过，退出码 0；只有注释／输出声明 | `audit.log` |
 | `scripts/lint.sh`（本地、本次文档提交前） | 通过，退出码 0；Verilator 5.050，0 errors、211 warnings | `lint.log` |
+
+输出驱动检索命令：
+
+```sh
+rg -n 's3_valid_o|s3_allow_o|s3_fault_o|cfg_update_done_o' rtl/common/pmp_checker.sv
+```
 
 原始 lint 输出：
 
@@ -154,3 +160,17 @@ git log -1 --format='%H %s' -- doc/tasks/O3-T01-report.md
 ### 与 spec 的偏离
 
 无实现偏离：未修改 RTL／测试／filelist／冻结 spec，按停止条款报告问题。阶段二**未完成**，四宽、空壳清理、缺口 1、U3/U4、缺口 2 测试和分支密集门禁均未交付。相关模块未发生改动，模块头注释未更改；LOOP 已记录停止状态。提交与 push 的执行结果另由本次交付命令日志记录。
+
+
+### 交付结果
+
+停止报告／LOOP 提交：`76601b93e5d9e2d86039d6b5b68bec4d5703c059`。以下执行成功，日志为 `/tmp/o3-t01-phase2-stop-20261005/delivery.log`；本节的后续文档提交 SHA 用本节前述 `git log` 命令查询。
+
+| 命令 | 结果 |
+| --- | --- |
+| `git diff --check` | 通过，退出码 0 |
+| `git add doc/LOOP.md doc/tasks/O3-T01-report.md` | 通过，退出码 0；按沙箱权限提升执行 |
+| `git commit -m 'docs(o3): record O3-T01 phase-two stop on missing U4 PMP implementation' -m '<详细提交说明见 delivery.log>'` | 通过，退出码 0；生成 `76601b9`；仅两份文档 |
+| `git push origin feat/L1-closure` | 通过，退出码 0；远端 `9161516..76601b9`，包含指定的两个冻结／审阅提交 |
+| `git rev-parse HEAD`、`git status --short`、`git diff b48ddf3 --name-only` | 通过，退出码 0；HEAD 为 `76601b9`、工作区干净、仅本报告与 LOOP 不同 |
+| `scripts/lint.sh`（交付结果记录提交前） | 通过，退出码 0；0 errors、211 warnings；`/tmp/o3-t01-phase2-stop-20261005/delivery-record-lint.log` |
