@@ -4,7 +4,7 @@ $schema: config_schema.json#
 kind: architecture configuration
 type: fully configured
 name: cislc-o3-rv64i
-description: CISLC-O3 RV64I unprivileged ACT4 target with split code, DTCM data, and external tohost
+description: CISLC-O3 RV64I unprivileged ACT4 target with AXI RAM code, data, and image-resident SD tohost
 implemented_extensions:
   - { name: I, version: "= 2.1" }
   - { name: Sm, version: "= 1.12.0" }

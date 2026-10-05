@@ -337,11 +337,11 @@
       {
         "base": {
           "len": 64,
-          "value": "0x10000000"
+          "value": "0x80000000"
         },
         "size": {
           "len": 64,
-          "value": "0x02001000"
+          "value": "0x00200000"
         },
         "attributes": {
           "mem_type": "MainMemory",
