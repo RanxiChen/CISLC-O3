@@ -378,19 +378,19 @@ ACT4 当前以自身程序结果检查，尚无逐条 expected.json 的统一接
 本地 lint 只证明 RTL 解析，最终功能结论只来自 Alan
 （`agent.md:103–137,180–183`）。
 
-## 8. 未决问题（冻结前需决定，不自行补定）
+## 8. 决定（2026-10-05，已冻结）
 
-| ID | 未决事项 | 需要的决定/边界 |
-|---|---|---|
-| Q1 | Spike 固定版本、构建与链接方式 | 是否采用本轮审查 SHA `609dbe0b...`、原版默认构建及 pkg-config/共享库方案；Alan 依赖/编译器与 ABI 实证、原 build 与 Spike build 的关系。源码行号不等于已成功链接 |
-| Q2 | 内部接口依赖、参考初始化与单步失败诊断 | C++ 不是稳定公共 API；是否接受固定 SHA 的 `get_state()`/commit log 结构；共用 loader/args none/no DTB 的初始化方式、匹配已定 M/Bare 的参考初始化及 PMP/trigger 设置、取指观测、副作用限制、单步未退休/异常的检测报告方式 |
-| Q3 | DUT metadata 存储位置、来源和同拍合同/范围 | `retire_info_t` 实际在未点名的 `o3_pkg.sv`，是否允许修改；保留还是迁移类型；ROB 新字段编码/接口、load accepted/replay tap、身份保护、分配/完成/恢复优先级。若需改 LSU/LQ/SQ/WB 端口，属于任务书外文件，不能自行扩范围 |
-| Q4 | load 数据与 store/mask 规范化 | DUT 用格式化写回低位还是原始数据；Spike log 没有 load value，是否接受纯 RAM 的 mem_t 重读或其他不改 Spike 的取值方案；x0 load 必须能比数据；64位地址和56位 PA 关系、高位与 byte-mask 规则 |
-| Q5 | 扩展 schema、未来字段和诊断格式 | JSON version/字段名、FP/CSR/异常预留位宽/有效规则，CSR 单条多写形式、cause 编码，差异类型/退出码/结构化报告；本任务不定义 O3-T03 的异常提交事件 |
-| Q6 | ACT4 51 项与 tohost 迁移 | 现有 linker/runner 仍用旧图及已不存在的参数；是否允许修改 `verification/act4/` 并重新生成/链接到 AXI RAM；新的图/邮箱地址、SW/SD宽度/结束协议；51项确切manifest及本SHA可运行性未确认 |
-| Q7 | “全部现有固定程序”中的 legacy | unified_memory 旧地址/不对齐访问与当前 harness、自然对齐范围冲突；应迁移/另任务修复还是明确排除并修订任务书；在用户决定前不得静默减集合、不得说 run-spike-all 已满足全部要求 |
-| Q8 | 随机生成器配置 | §5 的具体分布、窗口、保留寄存器、PRNG、seed编号、长度按静态/动态与初始化/尾声计数口径、模板成本/循环上限以及 CLI 默认值；200种子/≥2000退休的验收下限本身已定 |
-| Q9 | 终止同拍边界与超时优先级 | 终止store/固定退休阈值同拍更年轻lane是否消费/核对、是否等待drain、fatal与记录比较优先级、cycles/无退休/宿主单步超时；不能引入漏比或死循环PASS |
-| Q10 | 比对器差异注入接口 | 自测从哪一侧的记录拷贝扰动、如何隔离正式门禁及断言精确位置；至少五类注入检测已定，具体钩子未定 |
+本文已冻结。下表取代原未决问题；表中没写到的实现细节由实现者自行决定，在报告中写明选择即可，不需要停下来问。
 
-阶段一到此停止。上述问题没有被本文件或历史 PASS 隐式解决；未冻结前不编写实现。
+| ID | 决定 |
+|---|---|
+| Q1 | 用审查的 Spike SHA `609dbe0b`，原版默认 configure/make，安装到 conda 环境前缀；`sim/o3` 通过 pkg-config 或直接 `-I/-L` 链接 `libriscv`。构建命令写进 `sim/o3/README.md`。编译/链接问题自行解决。 |
+| Q2 | 接受依赖该固定 SHA 的内部 C++ 接口（`get_state()`、commit log）。初始化：共用 ELF/hex loader，不用 DTB，M 模式、Bare、PMP 关闭或全放行、无 trigger；Spike 单步未退休或报异常时立即报错停止。 |
+| Q3 | 允许修改 `o3_pkg.sv`、`o3_types_pkg.sv`、`rob.sv`、`backend.sv`、`load_store_unit.sv`、`load_queue.sv`、`store_queue.sv`、`writeback_arbiter.sv`、`o3_core.sv`，**只加观测字段，不改执行行为**。访存信息在 LSU 产生结果/SQ 执行时写入 ROB 项（或旁路记录表，二选一自定）。 |
+| Q4 | load 比较**格式化后的写回值**（符号/零扩展后 64 位）；Spike 侧从 commit log 取地址，从 Spike 的内存模型重读该地址取值后按同样规则格式化。x0 的 load 只比地址和大小。地址比较 56 位物理地址（Bare 下等于 VA 低位，高位须为 0）。store 比较地址、大小和按大小截取的数据，mask 由大小与地址低位推出，不单独比较。 |
+| Q5 | JSONL 每条加 `"v":2`；预留字段 `fp_rd/fp_wdata/csr_addr/csr_wdata/exc_cause/exc_tval`，本任务输出 `null`。差异报告：一行 `MISMATCH field=...` + 双方完整记录 + 前 32 条，退出码 2；超时退出码 3。 |
+| Q6 | 允许修改 `verification/act4/` 的 linker 脚本与 runner，迁移到 AXI RAM `0x8000_0000`，`tohost` 放在镜像内固定符号，SD 写入非零即结束。重新生成 51 项，manifest 写进报告。若生成后少于 51 项，报告实际数量与原因，不作为停止条件。 |
+| Q7 | `unified_memory` 旧门禁**排除**在 Spike 比对之外，在 `LOOP.md` 标为历史门禁；它原有的 checker 门禁若仍可运行则保留，否则也标为历史。 |
+| Q8 | 生成器：ALU/移位 45%、分支 15%（后向分支只用计数寄存器保证有界循环，最多 8 次）、JAL 5%、load 20%、store 15%；访存窗口 `0x8010_0000`–`0x8010_ffff`，自然对齐；x1–x3 保留作基址与循环计数；Python `random.Random(seed)`；种子 1–200；长度按**动态退休数**计，目标 3000，下限 2000；默认 `SEEDS=1-200`。 |
+| Q9 | `tohost` store 退休即结束：同拍更年轻 lane 的记录照常比较；不等 SQ drain。fatal 优先于记录比较报告。超时：`max-cycles` 默认 = 退休目标 × 50；连续 10000 周期无退休即判超时。 |
+| Q10 | 注入只在 C++ 驱动中通过环境变量 `O3_INJECT=<kind>:<retire_idx>` 扰动 DUT 一侧的记录拷贝；正式门禁的 Makefile 目标在启动时清除该变量。自测目标 `run-spike-selftest` 对五类各注入一次，断言报告的字段与退休序号正确。 |
