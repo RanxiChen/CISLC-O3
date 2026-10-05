@@ -77,3 +77,80 @@ git log -1 --format='%H %s' -- doc/tasks/O3-T01-report.md
 ## 6. 停止点
 
 阶段一文档提交并 push 后停止，等待用户宣布 spec 冻结。没有进入阶段二；L3 收尾不能记为闭环通过。
+
+## 7. 阶段二记录（2026-10-05：U4 代码事实不符，停止）
+
+用户已宣布 spec 冻结，§7 U1～U6 与附加要求生效。已开始阶段二前置核对，发现下述问题后，按用户“发现 spec 有误、遗漏或与代码事实不符，停下来”的要求停止实现。没有修改设计，也没有开始 RTL、filelist 或测试改动；本次仅追加报告并更新 LOOP 状态。
+
+### 提交与工作区
+
+| 项目 | 核对结果 |
+| --- | --- |
+| 分支 | `feat/L1-closure` |
+| 阶段二进入 HEAD（冻结提交） | `b48ddf3e7f8578bd30251c160ec358f3e8fc2041` |
+| 审阅决定提交 | `26246a805b9a011c094ddde410a6b74682e359f0`，是冻结提交的直接父提交 |
+| 进入时工作区 | `git status --short` 输出为空 |
+| 进入时本地远端跟踪 SHA | `9161516f3c205cf7d8c6a18e936073f45eb1245d`；两个指定提交均在它之后 |
+| 本次提交 | 只包含本报告与 `doc/LOOP.md`；准确 SHA 用 `git log -1 --format='%H %s' -- doc/tasks/O3-T01-report.md` 查询，避免在提交自身写入自身 SHA |
+
+### 阶段二问题
+
+**P2-01：U4 要求验证的现有 PMP 放行逻辑不存在。**
+
+- 冻结 spec §7 U4 要求：“阶段二必须用定向测试确认现有 `pmp_checker` 在该配置、M 模式下放行取指与数据访问；若不放行，停下报告，不得修改 `pmp_checker` 的规则来凑结果。”
+- 当前源码 `rtl/common/pmp_checker.sv:24` 明确写“空壳。只有端口与注释，没有任何逻辑，输出未驱动”；`:44`～`:50` 声明输出，`:52`～`:53` 直接结束模块，没有赋值或时序逻辑。`s3_valid_o`、`s3_allow_o`、`s3_fault_o`、`cfg_update_done_o` 均未驱动。
+- 该接口 `:40`～`:49` 没有数据读/写访问类型输入，注释 `:3`～`:5` 也说明数据侧权限输入待补。不能把取指接口的测试宣称为完整数据访问权限验证。
+- `rg -n 'pmp_checker' rtl sim/cocotb` 只找到模块声明和 filelist 条目，未找到实际实例或既有 cocotb 包装。文件头的“前端 ICache 与数据侧 LSU/PTW 各自实例化”说法与当前源码检索结果不符。
+- U6 未授权修改 `pmp_checker.sv`，§1 也明确不实现后续 PMP/MMU 机制。不能自行填实现、接常量成功响应、删掉 U4 测试要求，或把缓存整核现有 PASS 当作 PMP 放行证据。
+
+这是静态源码核对发现的 spec／代码接缝，**不是已经执行的定向测试失败**。未用 DUT 输出生成期望，未删除、放宽或跳过已有测试／断言。停在实现前，等待用户明确 U4 对空壳 PMP 的处理合同及范围；LQ-M 例外不适用于此问题。
+
+### 命令、结果与日志
+
+以下本地命令原始输出和退出码保存在 `/tmp/o3-t01-phase2-stop-20261005/audit.log`；lint 另有 `/tmp/o3-t01-phase2-stop-20261005/lint.log`。`/tmp` 是本机临时证据位置，不是 Alan 日志。
+
+| 命令 | 结果 | 日志／证据 |
+| --- | --- | --- |
+| `git status --short` | 通过，退出码 0；进入时干净 | `audit.log` |
+| `git branch --show-current` | 通过，退出码 0；`feat/L1-closure` | `audit.log` |
+| `git log -6 --oneline` | 通过，退出码 0；确认两个提交及父子顺序 | `audit.log` |
+| `git rev-parse HEAD 26246a8 origin/feat/L1-closure` | 通过，退出码 0；完整 SHA 如上 | `audit.log` |
+| `git log origin/feat/L1-closure..HEAD --oneline` | 通过，退出码 0；两个指定提交尚未在本地跟踪的远端分支中 | `audit.log` |
+| `nl -ba rtl/common/pmp_checker.sv` | 通过，退出码 0；确认没有实现 | `audit.log` |
+| `rg -n 'pmp_checker' rtl sim/cocotb` | 通过，退出码 0；只有声明和 filelist，未发现实例／测试 | `audit.log` |
+| `rg -n 's3_valid_o\|s3_allow_o\|s3_fault_o\|cfg_update_done_o' rtl/common/pmp_checker.sv` | 通过，退出码 0；只有注释／输出声明 | `audit.log`（表中竖线仅为 Markdown 转义，准确命令见日志） |
+| `scripts/lint.sh`（本地、本次文档提交前） | 通过，退出码 0；Verilator 5.050，0 errors、211 warnings | `lint.log` |
+
+原始 lint 输出：
+
+```text
+[lint] verilator : Verilator 5.050 2026-07-01 rev conda-forge build 0
+[lint] filelist  : rtl/rtl.f
+[lint] top       : o3_core
+[lint] errors=0 warnings=211
+[lint] PASS —— RTL 解析通过（不代表功能正确）
+```
+
+以下验收均因 P2-01 停止而**未运行**，不存在 Alan 功能证据，不作为豁免或通过：
+
+| spec | 命令／检查 | 结果 | 日志 |
+| --- | --- | --- | --- |
+| §6.2 | Alan `scripts/lint.sh` | 未运行 | 无 |
+| §6.2 | `make -C sim/o3 build` | 未运行 | 无 |
+| §6.2 | `make -C sim/o3 run-smoke` | 未运行 | 无 |
+| §6.2 | `make -C sim/cocotb/branch_recovery SIM=verilator TEST_SEED=1` | 未运行 | 无 |
+| §6.2 | `make -C sim/o3 run-rv64i-instructions` | 未运行 | 无 |
+| §6.2 | `make -C sim/cocotb/store_queue SIM=verilator` | 未运行 | 无 |
+| §6.2 | `make -C sim/cocotb/dcache SIM=verilator` | 未运行 | 无 |
+| §6.2 | `make -C sim/cocotb/backend_issue_queue SIM=verilator` | 未运行 | 无 |
+| §6.2 | `make -C sim/cocotb/load_store_unit SIM=verilator` | 未运行 | 无 |
+| §6.2 | `make -C sim/o3 run-dcache-data run-dcache-replay` | 未运行 | 无 |
+| §6.2 | `make -C sim/cocotb/backend SIM=verilator TEST_SEED=1` | 未运行 | 无 |
+| §6.1 | 新增／扩展四宽、C/M 合同、U3、U4、缺口 2 DUT 随机 cocotb | 未实现、未运行；具体入口尚未新增 | 无 |
+| §6.3 | `make -C sim/o3 run-l3-branch-dense` | 未实现、未运行 | 无 |
+| §6.3 | 缺口 1 修复前后同程序、同配置、同种子的两个 SHA 周期对比 | 未运行；尚无比较 SHA 或周期数 | 无 |
+| §7 附加 | LQ-M 定向检验／授权修复、PRF 同地址读写行为报告 | 未进行；停止时未进入这些检查 | 无 |
+
+### 与 spec 的偏离
+
+无实现偏离：未修改 RTL／测试／filelist／冻结 spec，按停止条款报告问题。阶段二**未完成**，四宽、空壳清理、缺口 1、U3/U4、缺口 2 测试和分支密集门禁均未交付。相关模块未发生改动，模块头注释未更改；LOOP 已记录停止状态。提交与 push 的执行结果另由本次交付命令日志记录。
