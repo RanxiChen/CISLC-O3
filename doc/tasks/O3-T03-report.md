@@ -34,3 +34,19 @@ SV 在整个 unpacked array 连接时按位置映射，使 scalar 下标读取�
 缩减到三条静态指令 `tests/prf_lane_order.hex` 并加入 run-spike-all 的独立门禁；
 没有改既有 rv64i 期望值。属于本次实现引入的 bug，不是 O3-T02 基线缺陷。
 提交后 Alan 对照/回归继续，当前修复后功能未验证。
+
+## 开发轮次补充
+
+`0965f1c23e06d38af3324d14e51502bbe30ca1c6` Alan 重新 build 成功，
+固定门禁 7/7（原 6 项加最小 PRF 复现）0 差异；日志
+`/home/chen/FUN/CISLC-O3-runs/20261006-o3t03/trial-0965f1c/fixed.log`。
+同 SHA 新增三个合同套件各通过；M 模式固定程序在 order=16 失败：
+cycle 影子 CSR 未在 Spike ISA 字符串中启用 Zicntr。修正参考配置为
+rv64i_zicsr_zifencei_zicntr，不改 DUT 或期望；平台 reset mtvec 初始化为 0x200。
+ACT4 L5 初始配置使用了 schema 不接受的 MTVEC_ILLEGAL_WRITE_BEHAVIOR 枚举；
+按现有 WARL 行为声明为 custom，未修改已有 I target 或上游测试体。
+
+新增 riscv-tests L5 启动/邮箱包装只避开上游默认 env 中本级未实现的 S/U、PMP、
+委托初始化，不改 upstream isa/rv64mi 测试体/断言/期望。使用官方源
+`bcffa2b3188b040c611f90dc0b6e422f54775a09`；目标 csr/mcsr/illegal/sbreak/scall。
+ma_addr 依赖非对齐访存策略，按任务书留 L8；本级不宣称该项通过。

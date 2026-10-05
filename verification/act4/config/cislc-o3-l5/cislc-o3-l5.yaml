@@ -8,6 +8,7 @@ description: CISLC-O3 RV64I unprivileged ACT4 target with AXI RAM code, data, an
 implemented_extensions:
   - { name: I, version: "= 2.1" }
   - { name: Zicsr, version: "= 2.0" }
+  - { name: Zicntr, version: "= 2.0" }
   - { name: Zifencei, version: "= 2.0" }
   - { name: Sm, version: "= 1.12.0" }
 
@@ -48,7 +49,7 @@ params:
   MTVEC_MODES: [0, 1]
   MTVEC_BASE_ALIGNMENT_DIRECT: 4
   MTVEC_BASE_ALIGNMENT_VECTORED: 4
-  MTVEC_ILLEGAL_WRITE_BEHAVIOR: unspecified
+  MTVEC_ILLEGAL_WRITE_BEHAVIOR: custom
 
   NUM_PMP_ENTRIES: 0
   PMP_GRANULARITY: 2

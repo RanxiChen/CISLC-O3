@@ -58,7 +58,7 @@ class SpikeLockstep {
     std::deque<std::pair<RetireRecord,RetireRecord>> history_;
   public:
     SpikeLockstep(uint64_t base, uint64_t size, uint64_t pc) {
-        cfg_.isa="rv64i_zicsr_zifencei"; cfg_.priv="M"; cfg_.endianness=endianness_little;
+        cfg_.isa="rv64i_zicsr_zifencei_zicntr"; cfg_.priv="M"; cfg_.endianness=endianness_little;
         cfg_.pmpregions=0; cfg_.trigger_count=0; cfg_.hartids={0};
         cfg_.mem_layout={mem_cfg_t(base,size)}; cfg_.start_pc.set_global(pc);
         ram_=std::make_unique<mem_t>(size);
@@ -70,6 +70,7 @@ class SpikeLockstep {
         cpu_->enable_log_commits();
         cpu_->get_state()->pc=pc;
         cpu_->set_pmp_num(0);
+        cpu_->put_csr(0x305,0x200); // L5 platform reset mtvec, matches Breeze M-only reset.
     }
     void init(uint64_t offset, unsigned bytes, uint64_t value) {
         uint8_t b[8]; for(unsigned i=0;i<bytes;++i) b[i]=value>>(8*i);
