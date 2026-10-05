@@ -23,7 +23,8 @@
 | L3 收尾 | 完成 L3；修 B12 缺口 1（分支解析全局停顿）与缺口 2（ALU RegRead 背压时缺 kill）；重命名改 4 宽（B42）；移除当前级不需要的空壳实例（B46） | 现有 L2/L3 门禁 + 分支密集程序 + 缺口 2 定向测试 | 阶段二实现与验收通过：四宽/16 项、空壳/filelist 清理、U3/U4、缺口 1 与授权 LQ-M；缺口 2 具名/随机/真实仲裁测试通过。Alan `ac2aed1` 全部门禁与 seed 1/7/29 通过，`1b7885d` 补充 LQ-M 通过；分支密集 1967 周期/365 退休，前后差值 0。同最终交付 SHA 的复验以 [报告 §9](tasks/O3-T01-report.md) 的 final 目录为准 |
 | L5 | Spike 逐条比对；M 模式 CSR、精确异常、ecall/ebreak/illegal、MRET、committed_next_pc | 按 2026-10-06 用户策略带已知问题收口 | **已知问题退出**：Alan `2cc8a91` build、固定 11/11、新增局部 5/5、riscv-tests 5/5 PASS；随机 178/200（14 rd_wdata、8 mem_kind 失败）；M 模式 84 退休后 MRET timeout；ACT4 M 模式 Sail 签名 trap loop 暂不处理。根因未定位项留待上板抓波形，停止 T03 bug 修复，详见 [T03 报告](tasks/O3-T03-report.md) |
 | L6 | M 扩展（MUL 采用 DSP，B43）、完成 FIFO/提前唤醒、JALR；首次 OOC 综合 | 按 2026-10-06 策略：定向 cocotb + lint + 整核短程序 + OOC | 机制及简化功能验证收口：Alan 定向 6/6、lint PASS、整核 297 周期 / 71 条退休 / Spike 0 差异。整核 OOC 812 秒后崩溃，整核 PPA 未取得；局部 MUL/DIV OOC PASS，MUL 16 DSP，见 [T04 报告](tasks/O3-T04-report.md) |
-| L7 | uBTB/BTB/TAGE、FTQ 恢复、RAS 快速修复；RVC | RV64IMC + 误预测率/IPC 基线 | 未开始 |
+| O3-T04b（L7 前） | 整核 BRAM 映射与 OOC 资源/时序基线；不改机制 | 每个 cache 现有 cocotb + 整核 smoke；整核 OOC 耗时/资源/WNS/最差路径 | **定位报告已提交，改造暂停**：同步 BRAM 与 L1D 接纳前 tag 判定、L2 握手当拍写回 error 存在逐拍合同冲突；用户要求保持接口时序，先提交定位报告。另发现原 OOC 的 DTCM 2 Mbit RAM 推断硬错误；整核基线仍未取得，见 [T04b 报告](tasks/O3-T04b-report.md) |
+| L7 | uBTB/BTB/TAGE、FTQ 恢复、RAS 快速修复；RVC | RV64IMC + 误预测率/IPC 基线 | 未开始；待 T04b 完成 |
 | L8 | 多 MSHR、重放、同 line 非对齐、A 扩展、FENCE/FENCE.I | RV64IMAC + litmus + 死锁 watchdog | 未开始 |
 | L9 | F/D：拆分 CVFPU、FP 重命名、fflags/FS 退休 | ACT4 RV64GC（用户态） | 未开始 |
 | L10 | S/U、Sv39 MMU、SFENCE.VMA/satp/PMP、A/D、WFI | 特权测试 + riscv-tests p/v | 未开始 |
