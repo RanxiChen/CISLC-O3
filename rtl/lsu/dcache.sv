@@ -290,6 +290,9 @@ module dcache
         probe_resp_o.dirty_data = probe_had_dirty_q ? probe_line_data : '0;
     end
 
+    // Vivado 2022.2 cannot part-select a function call directly.
+    line_t install_store_line;
+    assign install_store_line=merge_store(m_data_q,m_req_q);
     assign bank_write_set = mstate_q == M_INSTALL ? m_set_q : stage_set_q;
     always_comb begin
         bank_write_en = '0;
@@ -299,7 +302,7 @@ module dcache
                 if (mstate_q == M_INSTALL && way == int'(m_way_q)) begin
                     bank_write_en[bank][way] = 1'b1;
                     bank_write_data[bank][way] = m_store_q
-                        ? merge_store(m_data_q, m_req_q)[bank*128 +: 128]
+                        ? install_store_line[bank*128 +: 128]
                         : m_data_q[bank*128 +: 128];
                 end else if (stage_store_hit && stage_consume
                          && way == int'(stage_way)) begin
