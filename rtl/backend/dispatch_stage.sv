@@ -1,3 +1,4 @@
+// L6 B34: pair dispatch atomic; only HEAD consumes one INT IQ slot.
 /**
  * 本次实现（O3-T03）：L5：CSR/系统/译码异常消费 RDQ 有序前缀，不入普通 IQ，由 ROB 队头处理。
  *
@@ -71,12 +72,18 @@ module dispatch_stage
             is_mem = uop_i[lane].valid && (uop_i[lane].is_load || uop_i[lane].is_store);
             is_br = uop_i[lane].valid
                  && (uop_i[lane].is_branch || uop_i[lane].is_jal || uop_i[lane].is_jalr);
-            is_int = uop_i[lane].valid && uop_i[lane].is_int_uop && !is_mem && !is_br;
-            supported = is_int || is_mem || is_br || uop_i[lane].ext.serialize || uop_i[lane].exception_valid;
-            target_has_space = (is_int && (int_left > 0))
+            is_int = uop_i[lane].valid && uop_i[lane].is_int_uop && !is_mem && !is_br
+                  && uop_i[lane].ext.fuse_role!=o3_types_pkg::FUSE_MEMBER;
+            supported = uop_i[lane].ext.fuse_role==o3_types_pkg::FUSE_MEMBER || is_int || is_mem || is_br || uop_i[lane].ext.serialize || uop_i[lane].exception_valid;
+            target_has_space = uop_i[lane].ext.fuse_role==o3_types_pkg::FUSE_MEMBER || (is_int && (int_left > 0))
                             || (is_mem && (mem_left > 0))
                             || (is_br && (br_left > 0)) || uop_i[lane].ext.serialize || uop_i[lane].exception_valid;
 
+            if(uop_i[lane].ext.fuse_role==o3_types_pkg::FUSE_HEAD) begin
+                if(lane+1>=DISPATCH_WIDTH) target_has_space=0;
+                else target_has_space &= lane+1<int'(visible_count_i) && uop_i[lane+1].valid &&
+                    uop_i[lane+1].ext.fuse_role==o3_types_pkg::FUSE_MEMBER;
+            end
             if (!blocked && (lane < int'(visible_count_i))
              && uop_i[lane].valid && supported && target_has_space) begin
                 int_lane_o[lane] = is_int;

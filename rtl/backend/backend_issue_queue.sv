@@ -1,3 +1,4 @@
+// L6: FU availability gates Select independently of PRF grants; wakes include completion heads.
 /**
  *
  * 【2026-10-02 框架：目标机制与缺口】
@@ -39,7 +40,7 @@ module backend_issue_queue
     parameter  o3_types_pkg::iq_kind_e KIND,          // 实例选择，无默认值
     localparam int ENQ_WIDTH = CFG.dispatch.width,
     localparam int ISSUE_WIDTH = (KIND == o3_types_pkg::IQ_INT) ? CFG.exec.num_alu : 1,  // MEM/BR 现状单发射；FP 待定
-    localparam int WAKEUP_WIDTH = CFG.exec.int_prf_write_ports,
+    parameter int WAKEUP_WIDTH = CFG.exec.int_prf_write_ports,
     localparam int DEPTH = (KIND == o3_types_pkg::IQ_INT) ? CFG.dispatch.int_iq_depth
                          : (KIND == o3_types_pkg::IQ_MEM) ? CFG.dispatch.mem_iq_depth
                          : (KIND == o3_types_pkg::IQ_BR)  ? CFG.dispatch.br_iq_depth
@@ -54,6 +55,7 @@ module backend_issue_queue
     output logic [$clog2(DEPTH+1)-1:0] free_count_o,
 
     input  logic preg_ready_i [NUM_PHYS_REGS-1:0],
+    input  logic mul_ready_i, mul_pair_ready_i, div_ready_i,
     input  logic allow_load_i,  // Memory replay 槽已占用/将占用时仍可选 store
     input  logic wakeup_valid_i [WAKEUP_WIDTH-1:0],
     input  logic [PREG_IDX_WIDTH-1:0] wakeup_preg_i [WAKEUP_WIDTH-1:0],
@@ -95,8 +97,9 @@ module backend_issue_queue
 
     always_comb begin
         logic selected [DEPTH-1:0];
+        logic picked_mul,picked_div;
 
-        selected = '{default: 1'b0};
+        selected = '{default: 1'b0};picked_mul=0;picked_div=0;
         issue_uop_o = '{default: '0};
         issue_valid_o = '0;
         issue_selected_valid = '{default: 1'b0};
@@ -110,6 +113,9 @@ module backend_issue_queue
                 if (!(resolution_valid_i && resolution_mispredict_i) && (chosen < 0) && queue_q[idx].valid && !selected[idx]
                  && (!OLDEST_ONLY || (idx == 0))
                  && (KIND != o3_types_pkg::IQ_MEM || !queue_q[idx].is_load || allow_load_i)
+                 && (queue_q[idx].ext.fu_class!=o3_types_pkg::FU_MUL ||
+                     (!picked_mul && (queue_q[idx].mdu_fuse.valid ? mul_pair_ready_i:mul_ready_i)))
+                 && (queue_q[idx].ext.fu_class!=o3_types_pkg::FU_DIV || (!picked_div && div_ready_i))
                  && (!queue_q[idx].rs1_read_en || src1_ready_q[idx])
                  && (!queue_q[idx].rs2_read_en || src2_ready_q[idx])) begin
                     chosen = idx;
@@ -117,8 +123,13 @@ module backend_issue_queue
             end
             if (chosen >= 0) begin
                 selected[chosen] = 1'b1;
+                if(queue_q[chosen].ext.fu_class==o3_types_pkg::FU_MUL) picked_mul=1;
+                if(queue_q[chosen].ext.fu_class==o3_types_pkg::FU_DIV) picked_div=1;
                 issue_uop_o[port] = queue_q[chosen];
-                if (resolution_valid_i) issue_uop_o[port].branch_mask[resolution_tag_i] = 1'b0;
+                if (resolution_valid_i) begin
+                    issue_uop_o[port].branch_mask[resolution_tag_i] = 1'b0;
+                    issue_uop_o[port].mdu_fuse.lo_tag.br_mask[resolution_tag_i] = 1'b0;
+                end
                 issue_valid_o[port] = 1'b1;
                 issue_selected_valid[port] = 1'b1;
                 issue_selected_idx[port] = $clog2(DEPTH)'(chosen);
@@ -154,6 +165,7 @@ module backend_issue_queue
                 queue_next[write_idx] = queue_q[idx];
                 if (resolution_valid_i) begin
                     queue_next[write_idx].branch_mask[resolution_tag_i] = 1'b0;
+                    queue_next[write_idx].mdu_fuse.lo_tag.br_mask[resolution_tag_i] = 1'b0;
                 end
                 src1_ready_next[write_idx] = !queue_q[idx].rs1_read_en
                                            || src1_ready_q[idx]
@@ -175,7 +187,10 @@ module backend_issue_queue
             for (int lane = 0; lane < ENQ_WIDTH; lane++) begin
                 if (enq_uop_i[lane].valid) begin
                     queue_next[write_idx] = enq_uop_i[lane];
-                    if (resolution_valid_i) queue_next[write_idx].branch_mask[resolution_tag_i] = 1'b0;
+                    if (resolution_valid_i) begin
+                        queue_next[write_idx].branch_mask[resolution_tag_i] = 1'b0;
+                        queue_next[write_idx].mdu_fuse.lo_tag.br_mask[resolution_tag_i] = 1'b0;
+                    end
                     src1_ready_next[write_idx] = !enq_uop_i[lane].rs1_read_en
                                                || preg_ready_i[enq_uop_i[lane].src1_preg]
                                                || wakeup_hits(enq_uop_i[lane].src1_preg);

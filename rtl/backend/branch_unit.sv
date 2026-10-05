@@ -1,3 +1,4 @@
+// L6 JALR hints and target exception; resolution once, independent of link WB.
 /**
  * 分支单元 —— 单发射 BRU 的 RegRead 槽、组合执行、Result 保持槽与解析广播
  *
@@ -66,7 +67,7 @@ module branch_unit
     assign regread_ready_o      = !branch_regread_q.valid || branch_execute_ready;
     assign result_o             = branch_result_q;
 
-    assign resolution_o.valid          = branch_result_q.valid && !branch_resolution_sent_q;
+    assign resolution_o.valid          = branch_result_q.valid && !branch_result_q.exc.valid && !branch_resolution_sent_q;
     assign resolution_o.mispredict     = branch_result_q.mispredict;
     assign resolution_o.branch_tag     = branch_result_q.branch_tag;
     assign resolution_o.branch_rob_idx = branch_result_q.rob_idx;
@@ -137,13 +138,18 @@ module branch_unit
                 branch_regread_q.cfi_type <= issue_uop_i.is_branch ? o3_types_pkg::CFI_BR
                                               : (issue_uop_i.is_jal ? o3_types_pkg::CFI_JAL
                                                                     : o3_types_pkg::CFI_JALR);
-                // 本闭环只验收直接 JAL；为后续训练仍按 RISC-V link-register hint
-                // 记录 JAL push。JALR 的完整 pop/pop-push 分类留到其单独闭环。
-                branch_regread_q.ras_action <= issue_uop_i.is_jal
-                                             && ((issue_uop_i.rd == 5'd1)
-                                              || (issue_uop_i.rd == 5'd5))
-                                              ? o3_types_pkg::RAS_PUSH
-                                              : o3_types_pkg::RAS_NONE;
+                // RISC-V x1/x5 hints: same link register means push; different
+                // link registers mean coroutine pop-push. Targets always come from EX.
+                if(issue_uop_i.is_jalr) begin
+                    if(issue_uop_i.rs1 inside {5'd1,5'd5}) begin
+                        if(issue_uop_i.rd inside {5'd1,5'd5})
+                            branch_regread_q.ras_action<=issue_uop_i.rd==issue_uop_i.rs1 ?
+                                o3_types_pkg::RAS_PUSH:o3_types_pkg::RAS_POP_PUSH;
+                        else branch_regread_q.ras_action<=o3_types_pkg::RAS_POP;
+                    end else branch_regread_q.ras_action<=issue_uop_i.rd inside {5'd1,5'd5} ?
+                        o3_types_pkg::RAS_PUSH:o3_types_pkg::RAS_NONE;
+                end else branch_regread_q.ras_action<=issue_uop_i.is_jal &&
+                    (issue_uop_i.rd inside {5'd1,5'd5}) ? o3_types_pkg::RAS_PUSH:o3_types_pkg::RAS_NONE;
                 branch_regread_q.is_branch <= issue_uop_i.is_branch;
                 branch_regread_q.is_jal <= issue_uop_i.is_jal;
                 branch_regread_q.is_jalr <= issue_uop_i.is_jalr;

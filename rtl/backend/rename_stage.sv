@@ -1,3 +1,4 @@
+// L6 B34: N accepts complete pair or neither; N+1 RDQ holds both ROB identities.
 /**
  *
  * 【2026-10-02 框架：目标机制与缺口】
@@ -97,6 +98,12 @@ module rename_stage
                        && (!need_sq || (sq_left > 0))
                        && (!need_cp || checkpoint_grant_i[lane]);
 
+            if(decoded_i[lane].ext.fuse_role==o3_types_pkg::FUSE_HEAD) begin
+                if(lane+1>=WIDTH) can_accept=0;
+                else can_accept &= lane+1<int'(visible_count_i) && decoded_i[lane+1].valid &&
+                    decoded_i[lane+1].ext.fuse_role==o3_types_pkg::FUSE_MEMBER && rob_left>=2 && rdq_left>=2 &&
+                    preg_left>=(int'(need_preg)+int'(decoded_i[lane+1].rd_write_en && decoded_i[lane+1].rd!=0));
+            end
             lane_branch_mask_o[lane] = running_mask;
             if (can_accept) begin
                 lane_accept_o[lane] = 1'b1;

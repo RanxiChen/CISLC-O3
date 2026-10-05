@@ -1,70 +1,80 @@
-/**
- * 整数乘法 FU 包装 —— 身份、结果容量、选择性取消（RV64M 乘法）
- *
- * 2026-10-02 框架：原“请求时组合 `*` + 固定拍数返回”的占位实现已移除（见 HEAD 06462b0），
- * 它不是真实多拍微结构，也没有结果 ready、身份或取消接口（B13）。
- *
- * 已定（B20/B21）：
- * - 数据通路沿用 Breeze SignedMul65x65：signed 65×65，Booth/Dadda/末级加法，三级真实流水，
- *   启动间隔 1；未来把 Chisel 实现转写为 SV（signed_mul65x65.sv），不例化 Vivado IP 或 DSP primitive。
- * - 本包装负责：MUL/MULH/MULHSU/MULHU/MULW 的输入符号/零扩展到 65 位与结果选择
- *   （MUL/MULW 取低位，MULW 结果符号扩展；高位变体取 [127:64]）。
- * - 每笔已接受请求的身份（fu_tag_t：ROB、目的 preg、分支依赖）随相同寄存边界推进。
- * - 误预测时逐条取消年轻操作、保留老操作；不能整体 flush（同一流水中可能同时有老/年轻操作）。
- * - 结果遇写回竞争可保持；迟到/已取消结果不得更新 PRF/ROB。
- *
- * 完成端（B33，2026-10-02 已定）：
- * - 流水不停顿；接受请求的同拍在 fu_completion_fifo 中预留完成空间（融合请求预留两项），
- *   无空间时 req_ready_o=0。结果到达必有位置。
- * - 交付时间确定：出口前一拍发出 wake_promise_t，依赖指令可被提前一拍安排；结果被写回仲裁推迟时
- *   留在 FIFO 头作为 bypass 源，不破坏已发出的承诺。
- * - FIFO 深度 CFG.exec.mul_result_slots 待定。
- *
- * MULH 类 + MUL 融合（B34，本项目方案）：
- * - req_i.fuse.valid=1 时只做一次 65×65 乘法，产生两个结果：高位归 req_i.tag（FUSE_HEAD），
- *   低位归 req_i.fuse.lo_tag（FUSE_MEMBER），两项进入完成 FIFO，可分拍交付；取消、迟到结果按各自
- *   身份过滤。融合时输入扩展按 FUSE_HEAD 的 MULH/MULHU/MULHSU 符号规则；MUL 低 64 位与符号扩展
- *   方式无关，因此复用同一乘积。
- *
- * 仍待定：发射归属（M FU IQ 归属）、身份代际、写回公平性；被取消运算在流水中清 valid 还是出口
- * 丢弃（两者都必须归还预留空间）。
- *
- * 当前实现状态：空壳。只有端口与注释，没有逻辑，输出未驱动。
- *
- * 目标周期行为（相对，不冻结延迟）：
- * - 周期 N：req 握手，输入扩展与身份进入流水 S0。
- * - 周期 N+1..N+3：三级实际运算流水；每拍检查 kill 并清除被取消项的 valid（方案待定）。
- * - 周期 N+STAGES-1：wake_o 发出承诺（提前一拍）。
- * - 之后：结果进入完成 FIFO（融合时两项），头部 resp_valid_o 直到 resp_ready_i（写口 grant），
- *   期间 bypass_o 持续有效。
- *
- * 本阶段不写测试代码和仿真代码。
+/** B13/B33/B34/B43 integer MUL wrapper.
+ * 当前实现状态：目标实现。Four DSP datapath registers, II=1 subject to credits;
+ * independent high/low tags, per-entry cancellation, dual enqueue to completion FIFO.
+ * N accepts/reserves 1 or 2 credits and captures stage0. N+1..N+3 advance;
+ * N+4 edge enqueues surviving results and returns canceled credits. The cycle before
+ * a result becomes head broadcasts wake; head remains bypass-visible until WB grant.
+ * Tests: sim/cocotb/mdu/.
  */
-module mul_execute_unit
-    import o3_pkg::*;
-#(
-    parameter  o3_cfg_pkg::backend_cfg_t CFG,
-    localparam int STAGES       = CFG.exec.mul_stages,
-    localparam int RESULT_SLOTS = CFG.exec.mul_result_slots
-) (
-    input  logic                       clk,
-    input  logic                       rst,
-
-    input  logic                       req_valid_i,
-    output logic                       req_ready_o,     // 完成 FIFO 可预留（融合需两项）
-    input  o3_types_pkg::mdu_req_t     req_i,
-
-    // 完成 FIFO 头：写回候选、bypass 源与提前唤醒承诺（B33）
-    output logic                       resp_valid_o,
-    input  logic                       resp_ready_i,    // 取得整数写口或被取消
-    output o3_types_pkg::mdu_resp_t    resp_o,
-    output o3_types_pkg::cpl_bypass_t  bypass_o,
+module mul_execute_unit import o3_pkg::*; #(
+    parameter o3_cfg_pkg::backend_cfg_t CFG,
+    localparam int STAGES=CFG.exec.mul_stages,
+    localparam int RESULT_SLOTS=CFG.exec.mul_result_slots
+)(
+    input logic clk,rst,req_valid_i,
+    output logic req_ready_o, req_single_ready_o, req_pair_ready_o,
+    input o3_types_pkg::mdu_req_t req_i,
+    output logic resp_valid_o,
+    input logic resp_ready_i,
+    output o3_types_pkg::mdu_resp_t resp_o,
+    output o3_types_pkg::cpl_bypass_t bypass_o,
     output o3_types_pkg::wake_promise_t wake_o,
-
-    input  branch_resolution_t         resolution_i,    // 选择性取消依据（br_mask）
-
-    output logic                       busy_o           // 有在途请求：观测/同步用
+    input branch_resolution_t resolution_i,
+    output logic busy_o
 );
-    // 未实现：输入扩展、signed_mul65x65 例化、身份流水、fu_completion_fifo 例化（预留/承诺/bypass）、
-    // 融合双结果拆分与选择性取消。
+    import o3_types_pkg::*;
+    logic [64:0] a,b;
+    logic [129:0] product;
+    mdu_req_t pipe_q [0:3];
+    logic [3:0] valid_q, hi_live_q,lo_live_q;
+    logic fifo_busy, enq_valid,enq_pair;
+    logic [1:0] release_count;
+    wb_req_t hi,lo,head;
+    logic hi_live,lo_live;
+    always_comb begin
+        a={req_i.src1[63] && req_i.op!=MDU_MULHU,req_i.src1};
+        b={req_i.src2[63] && !(req_i.op inside {MDU_MULHU,MDU_MULHSU}),req_i.src2};
+        hi='0;lo='0;
+        hi.tag=pipe_q[3].tag; lo.tag=pipe_q[3].fuse.lo_tag;
+        hi.tag.br_mask=br_resolved_mask(hi.tag.br_mask,resolution_i);
+        lo.tag.br_mask=br_resolved_mask(lo.tag.br_mask,resolution_i);
+        hi.data=pipe_q[3].op==MDU_MULW ? {{32{product[31]}},product[31:0]} :
+            pipe_q[3].op==MDU_MUL ? product[63:0] : product[127:64];
+        lo.data=product[63:0];
+        hi_live=valid_q[3] && hi_live_q[3] && !br_killed(pipe_q[3].tag.br_mask,resolution_i);
+        lo_live=valid_q[3] && lo_live_q[3] && !br_killed(pipe_q[3].fuse.lo_tag.br_mask,resolution_i);
+        enq_valid=hi_live || lo_live; enq_pair=hi_live && lo_live;
+        hi.valid=hi_live;lo.valid=lo_live;
+        if(!hi_live && lo_live) hi=lo;
+        release_count=0;
+        if(valid_q[3]) release_count=2'((pipe_q[3].fuse.valid?2:1)-int'(hi_live)-int'(lo_live));
+        resp_o='0;resp_o.valid=resp_valid_o;resp_o.tag=head.tag;resp_o.result=head.data;
+        busy_o=fifo_busy || (|valid_q);
+    end
+    signed_mul65x65 u_data(.clk(clk),.en_i(1'b1),.a_i(a),.b_i(b),.p_o(product));
+    fu_completion_fifo #(.CFG(CFG),.DEPTH(RESULT_SLOTS)) u_completion(
+        .clk(clk),.rst(rst),.rsv_req_i(req_valid_i && req_ready_o),.rsv_pair_i(req_i.fuse.valid),
+        .rsv_ok_o(req_ready_o),.rsv_single_ok_o(req_single_ready_o),.rsv_pair_ok_o(req_pair_ready_o),.rsv_release_i(release_count),
+        .enq_valid_i(enq_valid),.enq_pair_i(enq_pair),.enq_i(hi),.enq2_i(lo),
+        .promise_i('0),.promise_o(wake_o),.head_valid_o(resp_valid_o),.head_o(head),
+        .head_consume_i(resp_ready_i),.bypass_o(bypass_o),.resolution_i(resolution_i),.busy_o(fifo_busy));
+    always_ff @(posedge clk) begin
+        if(rst) begin valid_q<=0;hi_live_q<=0;lo_live_q<=0;pipe_q<='{default:'0}; end
+        else begin
+            valid_q[0]<=req_valid_i && req_ready_o;
+            hi_live_q[0]<=!br_killed(req_i.tag.br_mask,resolution_i);
+            lo_live_q[0]<=req_i.fuse.valid && !br_killed(req_i.fuse.lo_tag.br_mask,resolution_i);
+            pipe_q[0]<=req_i;
+            pipe_q[0].tag.br_mask<=br_resolved_mask(req_i.tag.br_mask,resolution_i);
+            pipe_q[0].fuse.lo_tag.br_mask<=br_resolved_mask(req_i.fuse.lo_tag.br_mask,resolution_i);
+            for(int i=1;i<4;i++) begin
+                valid_q[i]<=valid_q[i-1];pipe_q[i]<=pipe_q[i-1];
+                hi_live_q[i]<=hi_live_q[i-1] && !br_killed(pipe_q[i-1].tag.br_mask,resolution_i);
+                lo_live_q[i]<=lo_live_q[i-1] && !br_killed(pipe_q[i-1].fuse.lo_tag.br_mask,resolution_i);
+                pipe_q[i].tag.br_mask<=br_resolved_mask(pipe_q[i-1].tag.br_mask,resolution_i);
+                pipe_q[i].fuse.lo_tag.br_mask<=br_resolved_mask(pipe_q[i-1].fuse.lo_tag.br_mask,resolution_i);
+            end
+        end
+    end
+    initial assert(STAGES==4) else $fatal(1,"B43 requires four multiplier registers");
 endmodule

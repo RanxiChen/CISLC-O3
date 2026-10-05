@@ -1,3 +1,4 @@
+// L6: MUL/DIV completion heads participate in same oldest-first atomic grant as ALU.
 /**
  *
  * 【2026-10-02 框架：目标机制与缺口】
@@ -50,9 +51,12 @@ module writeback_arbiter
 
     // ---------------- 目标合同（未接入） ----------------
     input  o3_types_pkg::wb_req_t extra_src_i [NUM_EXTRA_SRC],
-    output logic                  extra_consume_o [NUM_EXTRA_SRC]
+    output logic                  extra_consume_o [NUM_EXTRA_SRC],
+    output logic extra_complete_valid_o [NUM_EXTRA_SRC],
+    output logic [ROB_IDX_WIDTH-1:0] extra_complete_idx_o [NUM_EXTRA_SRC],
+    output logic [XLEN-1:0] extra_complete_data_o [NUM_EXTRA_SRC]
 );
-    localparam int NUM_SOURCES = NUM_ALUS + 2;
+    localparam int NUM_SOURCES = NUM_ALUS + 2 + NUM_EXTRA_SRC;
     logic candidate_valid [NUM_SOURCES-1:0];
     logic [ROB_IDX_WIDTH-1:0] candidate_rob [NUM_SOURCES-1:0];
     logic [PREG_IDX_WIDTH-1:0] candidate_dst [NUM_SOURCES-1:0];
@@ -93,13 +97,20 @@ module writeback_arbiter
         candidate_rob[NUM_ALUS] = load_result_i.rob_idx;
         candidate_dst[NUM_ALUS] = load_result_i.dst_preg;
         candidate_data[NUM_ALUS] = load_result_i.result;
-        candidate_valid[NUM_ALUS+1] = branch_result_i.valid
+        candidate_valid[NUM_ALUS+1] = branch_result_i.valid && !branch_result_i.exc.valid
                                     && branch_result_i.dst_write_en
                                     && !killed(branch_result_i.branch_mask);
         candidate_rob[NUM_ALUS+1] = branch_result_i.rob_idx;
         candidate_dst[NUM_ALUS+1] = branch_result_i.dst_preg;
         candidate_data[NUM_ALUS+1] = branch_result_i.link_value;
 
+        for(int e=0;e<NUM_EXTRA_SRC;e++) begin
+            candidate_valid[NUM_ALUS+2+e]=extra_src_i[e].valid && extra_src_i[e].tag.dst_write_en &&
+                !killed(extra_src_i[e].tag.br_mask);
+            candidate_rob[NUM_ALUS+2+e]=extra_src_i[e].tag.rob_idx;
+            candidate_dst[NUM_ALUS+2+e]=extra_src_i[e].tag.dst_preg;
+            candidate_data[NUM_ALUS+2+e]=extra_src_i[e].data;
+        end
         for (int port = 0; port < PRF_WRITE_PORTS; port++) begin
             int chosen;
             int unsigned chosen_age;
@@ -139,11 +150,19 @@ module writeback_arbiter
                                    && selected[NUM_ALUS];
         complete_idx_o[NUM_ALUS] = load_result_i.rob_idx;
         complete_data_o[NUM_ALUS] = load_result_i.result;
-        branch_consume_o = !branch_result_i.valid
+        for(int e=0;e<NUM_EXTRA_SRC;e++) begin
+            extra_consume_o[e]=!extra_src_i[e].valid || killed(extra_src_i[e].tag.br_mask) ||
+                !extra_src_i[e].tag.dst_write_en || selected[NUM_ALUS+2+e];
+            extra_complete_valid_o[e]=extra_src_i[e].valid && !killed(extra_src_i[e].tag.br_mask) &&
+                (!extra_src_i[e].tag.dst_write_en || selected[NUM_ALUS+2+e]);
+            extra_complete_idx_o[e]=extra_src_i[e].tag.rob_idx;
+            extra_complete_data_o[e]=extra_src_i[e].data;
+        end
+        branch_consume_o = !branch_result_i.valid || branch_result_i.exc.valid
                          || killed(branch_result_i.branch_mask)
                          || !branch_result_i.dst_write_en
                          || selected[NUM_ALUS+1];
-        complete_valid_o[NUM_ALUS+1] = branch_result_i.valid
+        complete_valid_o[NUM_ALUS+1] = branch_result_i.valid && !branch_result_i.exc.valid
                                      && branch_result_i.dst_write_en
                                      && !killed(branch_result_i.branch_mask)
                                      && selected[NUM_ALUS+1];

@@ -72,7 +72,7 @@ module csr_file
     logic [63:0] mie_q, mtvec_q, mscratch_q, mepc_q, mcause_q, mtval_q;
     logic [63:0] mcycle_q, minstret_q, old_value, modify_value;
     logic implemented;
-    localparam logic [63:0] MISA = 64'h8000000000000100; // RV64I, Zicsr/Zifencei have no letter bit.
+    localparam logic [63:0] MISA = 64'h8000000000001100; // RV64IM, Zicsr/Zifencei have no letter bit.
     always_comb begin
         implemented = 1'b1;
         old_value = '0;

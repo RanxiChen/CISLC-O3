@@ -40,7 +40,7 @@ module backend_issue_queue_tb_top
     assign issue_rob = issue_uop[0].rob_idx;
     backend_issue_queue #(.CFG(o3_cfg_pkg::O3_CFG.be), .KIND(o3_types_pkg::IQ_MEM)) dut (
         .clk(clk), .rst(rst), .enq_uop_i(enq_uop), .enq_fire_i(enq_valid),
-        .free_count_o(), .preg_ready_i(preg_ready), .allow_load_i(allow_load),
+        .free_count_o(), .preg_ready_i(preg_ready), .mul_ready_i(1'b1),.mul_pair_ready_i(1'b1),.div_ready_i(1'b1),.allow_load_i(allow_load),
         .wakeup_valid_i(wakeup_valid), .wakeup_preg_i(wakeup_preg),
         .issue_uop_o(issue_uop), .issue_valid_o(issue_valid_arr),
         .issue_ready_i(issue_ready_arr), .resolution_valid_i(1'b0),

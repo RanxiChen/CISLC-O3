@@ -1,3 +1,4 @@
+// L6 JALR rs1+imm, bit0 clear, PC+length link, IALIGN=32 exception. Tests: sim/cocotb/jalr/.
 /**
  *
  * 【2026-10-02 框架：目标机制与缺口】
@@ -60,6 +61,12 @@ module branch_execute_unit
                               || (uop_i.is_branch && condition_true);
         result_o.actual_target = uop_i.is_jalr ? indirect_target : direct_target;
         result_o.actual_next_pc = result_o.actual_taken ? result_o.actual_target : fallthrough_pc;
+        // Before RVC (L7), IALIGN=32. A taken target with bit1 set traps on
+        // the jump itself; its link destination is never written.
+        result_o.exc.valid=uop_i.valid && result_o.actual_taken && result_o.actual_target[1];
+        result_o.exc.cause=exception_cause_t'(0);
+        result_o.exc.tval=uop_i.is_jalr ? ((uop_i.src1_value+uop_i.imm_value)&~64'd1) :
+            (64'(uop_i.pc)+uop_i.imm_value);
         result_o.mispredict = uop_i.valid
                            && (result_o.actual_next_pc != uop_i.predicted_next_pc);
         result_o.dst_preg = uop_i.dst_preg;

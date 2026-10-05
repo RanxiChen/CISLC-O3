@@ -58,7 +58,7 @@ class SpikeLockstep {
     std::deque<std::pair<RetireRecord,RetireRecord>> history_;
   public:
     SpikeLockstep(uint64_t base, uint64_t size, uint64_t pc) {
-        cfg_.isa="rv64i_zicsr_zifencei_zicntr"; cfg_.priv="M"; cfg_.endianness=endianness_little;
+        cfg_.isa="rv64im_zicsr_zifencei_zicntr"; cfg_.priv="M"; cfg_.endianness=endianness_little;
         cfg_.wfi_as_nop=true; // L5 task chooses the permitted NOP implementation.
         cfg_.pmpregions=0; cfg_.trigger_count=0; cfg_.hartids={0};
         cfg_.mem_layout={mem_cfg_t(base,size)}; cfg_.start_pc.set_global(pc);

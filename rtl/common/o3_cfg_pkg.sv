@@ -186,7 +186,7 @@ package o3_cfg_pkg;
         int unsigned int_prf_write_ports; // 待定：整数 PRF 写口
         int unsigned fp_prf_read_ports;   // 待定：两条三源 FMA 同拍最多 6 读，不等于已冻结 6 读（B14）
         int unsigned fp_prf_write_ports;  // 待定
-        int unsigned mul_stages;          // 已定方向 3：SignedMul65x65 三级实际流水（B21），O3 包装额外延迟另计
+        int unsigned mul_stages;          // B43：DSP 乘法四级实际流水，O3 包装额外延迟另计
         int unsigned mul_result_slots;    // 待定：乘法完成 FIFO 深度。机制已定（B33）：接受请求时预留完成空间，
                                           // 流水不停顿，唤醒承诺不因写回推迟而失效；深度未冻结
         int unsigned cpl_fifo_depth;      // 待定：其他流水 FU（ALU 结果槽外的 FP 等）完成 FIFO 深度（B33），
@@ -368,8 +368,8 @@ package o3_cfg_pkg;
                 int_prf_write_ports: 2,
                 fp_prf_read_ports:   6,
                 fp_prf_write_ports:  2,
-                mul_stages:          3,
-                mul_result_slots:    4,
+                mul_stages:          4,
+                mul_result_slots:    8,
                 cpl_fifo_depth:      8,
                 div_max_iters:       32,
                 num_fma:             2,

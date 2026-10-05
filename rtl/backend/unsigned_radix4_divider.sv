@@ -1,31 +1,51 @@
-/**
- * UnsignedRadix4Divider —— 64 位无符号迭代除法数据通路
- *
- * 来源（已定，B18/B21）：转写 Breeze `design/src/main/scala/divider/UnsignedRadix4Divider.scala`
- * （Flow 仓库）：单请求；按操作数最高有效位对齐；每拍串联两步 restoring radix-2 运算，
- * 处理两位商；最多 32 次迭代。只复用算法与数据通路；转写时核对具体源码版本。
- *
- * 接口约定：输入为已取绝对值的无符号操作数；除零、signed overflow、符号恢复、W 语义
- * 由 div_execute_unit 处理。abort_i 终止当前请求（被误预测取消时）。
- * 完成脉冲 done_o 需由包装锁存（Breeze 原包装 out_valid 为单拍，B18）。
- *
- * 时序：一拍两次串联比较/减法是需测量的路径（B18），优化后置。
- *
- * 当前实现状态：空壳。只有端口与注释，没有逻辑，输出未驱动。尚未转写。
- *
- * 本阶段不写测试代码和仿真代码。
+/** Hand translation of Breeze UnsignedRadix4Divider.scala (B21).
+ * Reference Flow ee4a56ceefd49befc08741a59f714f6c37261010.
+ * 当前实现状态：目标实现。One request, MSB alignment, two restoring steps/cycle.
+ * N start edge initializes q/r/shift; each subsequent edge computes two bits;
+ * when shift<=1 the edge releases busy and raises done for one cycle. Abort wins.
+ * Tests: sim/cocotb/mdu/ (through DIV).
  */
 module unsigned_radix4_divider (
-    input  logic          clk,
-    input  logic          rst,
-    input  logic          start_i,
-    output logic          ready_o,     // 空闲
-    input  logic [63:0]   dividend_i,
-    input  logic [63:0]   divisor_i,
-    input  logic          abort_i,
-    output logic          done_o,
-    output logic [63:0]   quotient_o,
-    output logic [63:0]   remainder_o
+    input logic clk, rst, start_i,
+    output logic ready_o,
+    input logic [63:0] dividend_i, divisor_i,
+    input logic abort_i,
+    output logic done_o,
+    output logic [63:0] quotient_o, remainder_o
 );
-    // 未实现：对齐、迭代、早结束。
+    logic busy_q;
+    logic [63:0] divisor_q, q1, q2, r1, r2, d1, d2;
+    logic [5:0] shift_q, shift2;
+    function automatic logic [5:0] msb(input logic [63:0] x);
+        msb=0;
+        for(int i=0;i<64;i++) if(x[i]) msb=6'(i);
+    endfunction
+    assign ready_o = !busy_q;
+    always_comb begin
+        d1 = divisor_q << shift_q;
+        r1 = remainder_o; q1 = quotient_o;
+        if(remainder_o >= d1) begin r1 = remainder_o-d1; q1 = quotient_o | (64'd1 << shift_q); end
+        shift2 = shift_q==0 ? 6'd0 : shift_q-6'd1;
+        d2 = divisor_q << shift2;
+        r2=r1; q2=q1;
+        if(shift_q!=0 && r1>=d2) begin r2=r1-d2; q2=q1 | (64'd1 << shift2); end
+    end
+    always_ff @(posedge clk) begin
+        if(rst || abort_i) begin
+            busy_q<=0; done_o<=0; quotient_o<=0; remainder_o<=0; divisor_q<=0; shift_q<=0;
+        end else begin
+            done_o<=0;
+            if(start_i && !busy_q) begin
+                quotient_o<=0; divisor_q<=divisor_i; remainder_o<=dividend_i;
+                if(divisor_i==0) begin quotient_o<='1; done_o<=1; end
+                else if(dividend_i==0 || dividend_i<divisor_i) done_o<=1;
+                else if(dividend_i==divisor_i) begin quotient_o<=1; remainder_o<=0; done_o<=1; end
+                else begin shift_q<=msb(dividend_i)-msb(divisor_i); busy_q<=1; end
+            end else if(busy_q) begin
+                quotient_o<=q2; remainder_o<=r2;
+                if(shift_q<=1) begin busy_q<=0; done_o<=1; end
+                else shift_q<=shift_q-6'd2;
+            end
+        end
+    end
 endmodule

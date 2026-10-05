@@ -252,6 +252,7 @@ package o3_pkg;
         branch_tag_t               branch_tag;
         uop_ext_t                  ext;         // 框架新增（未接入逻辑）
         rename_ext_t               rext;        // 框架新增：第三源 preg（未接入逻辑）
+        mdu_fuse_t                 mdu_fuse; // B34 member identity after dispatch pair acceptance
     } renamed_uop_t;
 
     // 前端目标框架不再消费本结构：执行解析改为 o3_types_pkg::bru_resolve_t，
@@ -445,6 +446,7 @@ package o3_pkg;
         logic [PREG_IDX_WIDTH-1:0] dst_preg;
         logic                      dst_write_en;
         logic [XLEN-1:0]           link_value;
+        exc_info_t                 exc; // L6 IALIGN=32 target exception (L7 C relaxes to 16)
     } branch_result_t;
 
 `ifdef ENABLE_RETIRE_INFO

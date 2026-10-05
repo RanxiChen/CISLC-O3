@@ -167,3 +167,11 @@ run-spike-illegal-zero:
 .PHONY: run-spike-platform-ids
 run-spike-platform-ids:
 	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) --spike --image tests/platform_ids.hex --trace platform_ids.jsonl --max-retires 3 --max-cycles 1000
+
+# L6 directed only; compiler path is supplied by the Alan environment.
+RISCV_GCC ?= riscv64-unknown-elf-gcc
+L6_ELF ?= $(BUILD_DIR)/l6_smoke.elf
+.PHONY: run-l6-smoke
+run-l6-smoke:
+	$(RISCV_GCC) -march=rv64im_zicsr_zifencei -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(REPO_ROOT)/verification/riscv-tests/l5/link.ld $(SIM_DIR)/tests/l6_smoke.S -o $(L6_ELF)
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) --spike --image $(L6_ELF) --trace $(BUILD_DIR)/l6_smoke.jsonl --tohost-address 0x801ff000 --max-cycles 20000 --max-retires 2000

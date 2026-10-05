@@ -54,7 +54,7 @@ backend_issue_queue #(.CFG(CFG), .KIND(KIND)) dut (
 .enq_fire_i(enq_fire_i),
 .free_count_o(free_count_o),
 .preg_ready_i(preg_ready_i),
-.allow_load_i(allow_load_i),
+.mul_ready_i(1'b1),.mul_pair_ready_i(1'b1),.div_ready_i(1'b1),.allow_load_i(allow_load_i),
 .wakeup_valid_i(wakeup_valid_i),
 .wakeup_preg_i(wakeup_preg_i),
 .issue_uop_o(issue_uop_o),

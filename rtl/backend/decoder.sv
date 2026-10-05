@@ -3,6 +3,7 @@
  *
  * 【2026-10-02 框架：目标机制与缺口】
  * 需要补充实现（指令集范围：RV64GC/Linux，C 已由前端展开）：
+ * 当前实现状态：闭环简化（L6）：M 编码已接通；测试 sim/cocotb/mul_fusion_detect/、sim/o3/。
  * - M：MUL/MULH/MULHSU/MULHU/MULW、DIV/DIVU/REM/REMU 及 W 变体 → ext.fu_class=FU_MUL/FU_DIV、ext.mdu_op（B13/B21）。
  * - A：LR/SC、AMO*.W/D，保留 aq/rl → FU_AMO、ext.amo_op/aq/rl（B09）。
  * - F/D：FLW/FLD/FSW/FSD、算术/FMA/比较/分类/转换/FMV → ext.fp_op/fp_fmt/rm；
@@ -443,6 +444,32 @@ module decoder
                 // 保持默认全 0。
             end
         endcase
+        // L6 M overrides only funct7=1; reserved OP-32 high-multiply encodings stay illegal.
+        if ((opcode==OPCODE_OP || opcode==OPCODE_OP_32) && funct7==7'b0000001 &&
+            (opcode==OPCODE_OP || funct3==0 || funct3>=4)) begin
+            decode_o.illegal_instruction=0;decode_o.rs1_read_en=1;decode_o.rs2_read_en=1;
+            decode_o.rd_write_en=1;decode_o.is_int_uop=1;decode_o.is_word_op=opcode==OPCODE_OP_32;
+            decode_o.ext.fu_class=funct3<4 ? o3_types_pkg::FU_MUL:o3_types_pkg::FU_DIV;
+            if(opcode==OPCODE_OP_32) case(funct3)
+                0: decode_o.ext.mdu_op=o3_types_pkg::MDU_MULW;
+                4: decode_o.ext.mdu_op=o3_types_pkg::MDU_DIVW;
+                5: decode_o.ext.mdu_op=o3_types_pkg::MDU_DIVUW;
+                6: decode_o.ext.mdu_op=o3_types_pkg::MDU_REMW;
+                7: decode_o.ext.mdu_op=o3_types_pkg::MDU_REMUW;
+                default: ;
+            endcase
+            else case(funct3)
+                0: decode_o.ext.mdu_op=o3_types_pkg::MDU_MUL;
+                1: decode_o.ext.mdu_op=o3_types_pkg::MDU_MULH;
+                2: decode_o.ext.mdu_op=o3_types_pkg::MDU_MULHSU;
+                3: decode_o.ext.mdu_op=o3_types_pkg::MDU_MULHU;
+                4: decode_o.ext.mdu_op=o3_types_pkg::MDU_DIV;
+                5: decode_o.ext.mdu_op=o3_types_pkg::MDU_DIVU;
+                6: decode_o.ext.mdu_op=o3_types_pkg::MDU_REM;
+                7: decode_o.ext.mdu_op=o3_types_pkg::MDU_REMU;
+                default: ;
+            endcase
+        end
     end
 
 endmodule

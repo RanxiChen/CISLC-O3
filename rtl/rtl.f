@@ -76,6 +76,12 @@ rtl/backend/alu_pipe.sv
 rtl/backend/int_execute_unit.sv
 rtl/backend/branch_execute_unit.sv
 rtl/backend/branch_unit.sv
+rtl/backend/fu_completion_fifo.sv
+rtl/backend/signed_mul65x65.sv
+rtl/backend/unsigned_radix4_divider.sv
+rtl/backend/mul_execute_unit.sv
+rtl/backend/div_execute_unit.sv
+rtl/backend/mul_fusion_detect.sv
 
 // ---------- 8. 后端：访存 ----------
 rtl/memory/simple_data_sram.sv
