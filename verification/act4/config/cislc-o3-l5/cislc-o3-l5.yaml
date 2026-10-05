@@ -4,7 +4,7 @@ $schema: config_schema.json#
 kind: architecture configuration
 type: fully configured
 name: cislc-o3-l5
-description: CISLC-O3 RV64I unprivileged ACT4 target with AXI RAM code, data, and image-resident SD tohost
+description: CISLC-O3 L5 M-only ACT4 target with AXI RAM code, data, and image-resident SD tohost
 implemented_extensions:
   - { name: I, version: "= 2.1" }
   - { name: Zicsr, version: "= 2.0" }
@@ -52,14 +52,10 @@ params:
   MTVEC_ILLEGAL_WRITE_BEHAVIOR: custom
 
   NUM_PMP_ENTRIES: 0
-  PMP_GRANULARITY: 2
-  NUM_USABLE_PMP_ENTRIES: 0
-  PMP_NA4_SUPPORTED: true
-  PMP_NAPOT_SUPPORTED: true
-  PMP_TOR_SUPPORTED: true
 
-  HPM_COUNTER_EN: [false, false, false, true, true, true, true, true, true, true, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]
+  HPM_COUNTER_EN: [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]
   HPM_EVENTS: [0]
-  MCOUNTINHIBIT_IMPLEMENTED: true
-  COUNTINHIBIT_EN: [true, false, true, true, true, true, true, true, true, true, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]
+  TIME_CSR_IMPLEMENTED: false
+  MCOUNTINHIBIT_IMPLEMENTED: false
+  COUNTINHIBIT_EN: [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]
   MCOUNTENABLE_EN: [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]

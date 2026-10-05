@@ -389,13 +389,15 @@ int main(int argc, char** argv) {
               << "\"version\":2,\"xlen\":64,\"retire_width\":" << kRetireWidth << "}\n";
 
         if(options.reference_only) {
+            uint64_t retired=0;
             for(uint64_t order=0;order<options.max_retires;++order) {
                 RetireRecord dummy; dummy.order=order;
                 auto r=spike->step(dummy);
                 trace << record_json(r) << "\n";
+                retired += !r.exc_valid;
                 if(r.mem_kind==2 && r.mem_addr==options.tohost_address
                    && r.mem_size==8 && r.mem_data) {
-                    std::cout << "[o3-reference] PASS retired=" << order+1 << "\n";
+                    std::cout << "[o3-reference] PASS events=" << order+1 << " retired=" << retired << "\n";
                     return r.mem_data==1 ? 0 : 1;
                 }
             }
@@ -405,7 +407,7 @@ int main(int argc, char** argv) {
 
         Vo3_tandem_top dut;
         uint64_t cycle = 0;
-        uint64_t next_order = 0;
+        uint64_t next_order = 0, real_retired = 0;
 
         dut.clk_i = 0;
         dut.rst_i = 1;
@@ -451,7 +453,7 @@ int main(int argc, char** argv) {
                 if(options.tohost_address && real.mem_kind==2
                    && real.mem_addr==options.tohost_address && real.mem_size==8 && real.mem_data)
                     tohost_value=real.mem_data;
-                ++next_order;
+                ++next_order; real_retired += !real.exc_valid;
                 last_retire_cycle=cycle;
             }
             if(cycle-last_retire_cycle>=10000) break;
@@ -483,7 +485,7 @@ int main(int argc, char** argv) {
                       << " status=" << (tohost_value==1?"PASS":"FAIL") << "\n";
             if(tohost_value!=1) return 1;
         }
-        if(spike) std::cout << "[o3-spike] PASS compared=" << next_order << " differences=0\n";
+        if(spike) std::cout << "[o3-spike] PASS compared=" << next_order << " retired=" << real_retired << " differences=0\n";
         std::cout << "[o3-memory] dtcm_init_beats=" << dtcm_init.size()
                   << " axi_init_beats=" << axi_init.size()
                   << " icache_refills=" << dut.icache_refill_count_o << "\n";
