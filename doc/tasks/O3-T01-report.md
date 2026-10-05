@@ -239,3 +239,7 @@ Alan 原 checkout 保持不变，新增隔离 worktree。GitHub fetch 直连 TLS
 - 修正 dispatch/ROB 头部过期的“所有解析阻塞”注释，未改行为。提交前本地 `scripts/lint.sh`：通过，0 errors / 101 warnings，日志 `/tmp/o3t01-next-lint.log`。
 
 `54a0383` Alan：`make -C sim/cocotb/{load_store_unit,wb_alu_kill,rob} SIM=verilator TEST_SEED=1` 各自通过，退出码 0（实际逐目录命令，日志 `trial-54a0383/<目录>.log`）；`backend_control` 失败，退出码 2（同目录日志）。新局部测试预期无目的 BNE 的 rd=0，但 +8 编码的原始 [11:7]=8；退休口即使 rd_write=0 也保留原始 rd bits。保持全部断言和预期字段不变，只把该新局部测试激励编码改为同样永不 taken 的 BNE x0,x0,+0，使原始 rd bits=0；实际路径仍 pc+4。未改冻结的分支密集程序或其期望。CK/LSU 随机测试的 ROB/LQ/SQ 容量改从包装配置端口读取，事务数量和种子不变。模块注释测试入口修正为实际存在的目录。复测待运行。
+
+`ac2aed1` Alan `backend_control` 已通过（退出码 0）；既定 120 个正确解析，要求四种推进实际同拍且至少一次四者同时发生，原断言保持。完整 §6.2/§6.1/§6.3 验收正在该 SHA 上运行，目录 `acceptance-ac2aed1/`，以 `commands.tsv` 为逐条命令／退出码／日志清单。
+
+追加 LQ-M 240 笔独立生命周期随机事务（TEST_SEED 默认 1）：环形分配、旧 load 在 M 同拍 execute/request/response、年轻取消后迟到响应、代际复用拒绝旧身份、随机响应延迟及有序释放。原有 LQ-M 定向失败复现断言不变。提交前本地 lint：通过，0 errors / 101 warnings，日志 `/tmp/o3t01-lq-random-lint.log`；新增随机项 Alan 未运行。

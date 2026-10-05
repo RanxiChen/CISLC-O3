@@ -135,7 +135,7 @@ module load_queue
                     outstanding_q[entry] <= 1'b0;
                 end else if (valid_q[entry]) begin
                     kept++;
-                    // U7/LQ-M：恢复只取消年轻项，老 load 的正常生命周期照常更新。
+                    // spec §7/LQ-M：恢复只取消年轻项，老 load 的正常生命周期照常更新。
                     // 用拍初 mask 判存活，再清解析位；请求/响应不因 M 吞掉。
                     branch_mask_q[entry][resolution_tag_i] <= 1'b0;
                     if (execute_valid_i && execute_idx_i == IDX_WIDTH'(entry)) begin

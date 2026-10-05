@@ -5,7 +5,7 @@ from l3_contract import *
 
 @cocotb.test()
 async def lq_m_surviving_old_execute_request_response(d):
-    """Normative U7 exception: old bookkeeping must survive M recovery."""
+    """Normative spec section 7 exception: old bookkeeping must survive M recovery."""
     await reset(d,INPUTS);w=val(d.cfg_width_o);depth=val(d.cfg_depth_o)
     array(d.alloc_req_i,[1]*w);array(d.alloc_rob_idx_i,list(range(w)))
     array(d.alloc_branch_mask_i,[0,0,1,1]);d.alloc_fire_i.value=1
@@ -64,3 +64,49 @@ async def lq_c_four_allocate_release_wrap_lifecycle(d):
         # Released identity must not remain live (unless allocated, which cannot
         # occur because candidates use pre-edge free slots).
         for idx in old[:release]:assert val(d.live_obs_o[idx])==0,(seed,cycle,idx)
+
+@cocotb.test()
+async def seeded_lq_m_old_bookkeeping_late_young_and_reused_identity(d):
+    seed=int(os.getenv('TEST_SEED','1'));rng=random.Random(seed)
+    await reset(d,INPUTS);w=val(d.cfg_width_o);depth=val(d.cfg_depth_o);tags=val(d.cfg_tags_o)
+    head=0;gens=[0]*depth;previous={}
+    for transaction in range(240):
+        clear(d,INPUTS);tag=rng.randrange(tags)
+        indices=[(head+n)%depth for n in range(w)]
+        d.alloc_fire_i.value=1
+        for lane,idx in enumerate(indices):
+            d.alloc_req_i[lane].value=1;d.alloc_branch_mask_i[lane].value=(1<<tag) if lane>=2 else 0
+            d.alloc_rob_idx_i[lane].value=(transaction*w+lane)%val(d.cfg_rob_o)
+            previous[idx]=gens[idx]*depth+idx;gens[idx]^=1
+        await tick(d);clear(d,INPUTS)
+        for idx in indices:
+            d.response_valid_i.value=1;d.response_tag_i.value=previous[idx]
+            await settle();assert not val(d.response_live_o),(seed,transaction,idx,'previous generation')
+        d.response_valid_i.value=0
+        # The second old request already exists before M; its response and the
+        # first old execute/request share the exact recovery edge.
+        d.request_fire_i.value=1;d.request_idx_i.value=indices[1]
+        await tick(d);clear(d,INPUTS)
+        address=0x80010000+8*rng.randrange(64)
+        d.resolution_valid_i.value=1;d.resolution_mispredict_i.value=1;d.resolution_tag_i.value=tag
+        d.restore_tail_i.value=(head+2)%depth
+        d.execute_valid_i.value=1;d.execute_idx_i.value=indices[0];d.execute_addr_i.value=address
+        d.request_fire_i.value=1;d.request_idx_i.value=indices[0]
+        d.response_valid_i.value=1;d.response_tag_i.value=gens[indices[1]]*depth+indices[1]
+        await tick(d);clear(d,INPUTS)
+        assert val(d.tail_o)==(head+2)%depth and val(d.free_count_o)==depth-2,(seed,transaction)
+        assert val(d.addr_valid_obs_o[indices[0]])==1 and val(d.outstanding_obs_o[indices[0]])==1
+        assert val(d.outstanding_obs_o[indices[1]])==0
+        for idx in indices[2:]:
+            d.response_valid_i.value=1;d.response_tag_i.value=gens[idx]*depth+idx
+            await settle();assert not val(d.response_live_o),(seed,transaction,idx,'late cancelled young')
+        d.response_valid_i.value=0
+        for delay in range(rng.randrange(1,5)):
+            await tick(d);assert val(d.outstanding_obs_o[indices[0]])==1
+        d.response_valid_i.value=1;d.response_tag_i.value=gens[indices[0]]*depth+indices[0]
+        await settle();assert val(d.response_live_o)==1
+        await tick(d);clear(d,INPUTS)
+        assert val(d.outstanding_obs_o[indices[0]])==0
+        d.release_count_i.value=2;await tick(d);clear(d,INPUTS)
+        head=(head+2)%depth
+        assert val(d.free_count_o)==depth
