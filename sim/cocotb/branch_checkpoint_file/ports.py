@@ -1,0 +1,1 @@
+INPUTS = ['clk', 'rst', 'alloc_req_i', 'create_i', 'create_parent_mask_i', 'create_rob_tail_i', 'create_lq_tail_i', 'create_sq_tail_i', 'resolution_valid_i', 'resolution_mispredict_i', 'resolution_tag_i']

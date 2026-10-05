@@ -10,8 +10,8 @@
  * - 输出每个候选使用的读口编号及读地址；grant 同时作为 IQ 的 issue_ready。
  *
  * 当前缺口与需要补充的机制：
- * - issue_block_i（现接 branch_resolution.valid）：任何解析（包括预测正确）都会阻止全部
- *   候选发射，这是 B12 缺口 1 的一部分；是否在正确解析时取消暂停未确认，不在此改。
+ * - issue_block_i（仅接 M）：只有误预测阻止全部
+ *   候选发射，O3-T01 已解除正确解析暂停，资源竞争仍可回压。
  * - 只服务整数域。目标需要 FP 域读口（FP IQ、FSW/FSD 的 FP 数据源、FMA 三源、跨域
  *   FMV/FCVT 的整数源）；FP 读口数与 FP IQ 组织待定（B14/B15）。
  * - 新增的 M FU（MUL/DIV）、CSR、AMO 候选的读口归属未定：取决于 M FU 的 IQ 归属（B21 待定）。
@@ -22,8 +22,9 @@
  * - 周期 N 上升沿：grant 候选从 IQ 删除并把读值锁存进对应 RegRead 槽（在各执行级内）。
  * - 周期 N+1：执行级可见锁存的操作数。
  *
- * 本阶段不写测试代码和仿真代码。
+ * 测试：sim/cocotb/prf_read_arbiter/。
  */
+// 当前实现状态：闭环简化（L3）；正确解析不停顿，四宽合同。测试：sim/cocotb/prf_read_arbiter/。
 module prf_read_arbiter
     import o3_pkg::*;
 #(
@@ -34,7 +35,7 @@ module prf_read_arbiter
     localparam int PORT_W          = $clog2(PRF_READ_PORTS),
     localparam int ROB_W           = $clog2(NUM_ROB_ENTRIES)
 ) (
-    input  logic                        issue_block_i,   // 现状：= branch_resolution.valid（B12 缺口 1）
+    input  logic                        issue_block_i,   // 仅 M；正确解析不阻塞
     input  logic [ROB_W-1:0]            rob_head_i,
 
     input  renamed_uop_t [NUM_INT_ALUS-1:0] int_issue_uop_i,

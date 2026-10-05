@@ -21,7 +21,7 @@
  * - INT/MEM/BR IQ → PRF → ALU/BRU/LSU → ROB；SQ/DCache/L2 真实路径保留。
  * - U3 ROB 退休直接通知 FTQ；U4 M/Bare/PMP 静态常量集中在本模块末尾。
  * - 不在本级的空壳实例已移除；R1/R2 按综合时序触发；M/FP/系统见后续阶梯。
- * - 缺口 1：基线仍在任何解析拍暂停 Decode/rename/dispatch/读口/退休。
+ * - 缺口 1：只有误预测 M 阻塞 Decode/rename/dispatch/读口/退休；正确解析 C 正常推进并清 mask。
  * - 缺口 2：ALU 独立 RegRead kill 已存在，具名/随机测试待本任务补齐。
  * - exec_resolve_o 已由 BRU 驱动，解析与 JAL 链接结果写回解耦。
  * - 异常队头仍停住，无精确 trap（L5）；JALR/RVC、完整地址边界后续补齐。
@@ -83,8 +83,8 @@ module backend
     output logic                             fetch_ready_o,
 
     // ---------------- 送前端 ----------------
-    output o3_types_pkg::bru_resolve_t       exec_resolve_o,       // 未驱动（B12 缺口 3）
-    output o3_types_pkg::sys_redirect_t      sys_redirect_o,       // 来自 commit_ctrl（空壳）
+    output o3_types_pkg::bru_resolve_t       exec_resolve_o,       // BRU one-shot 解析（B12）
+    output o3_types_pkg::sys_redirect_t      sys_redirect_o,       // L3 tie-off；L5 由 commit_ctrl 驱动
     output o3_types_pkg::ftq_commit_t        ftq_commit_o [RETIRE_WIDTH],
     input  o3_types_pkg::redirect_req_t      fe_redirect_i,        // 前端 D24 赢家观测口（归属未设计）
     output logic                             fe_sync_valid_o,
@@ -196,6 +196,8 @@ module backend
     branch_tag_t checkpoint_tag [MACHINE_WIDTH-1:0];
     branch_mask_t rename_branch_mask [MACHINE_WIDTH-1:0];
     branch_mask_t active_branch_mask;
+    logic branch_mispredict;
+    assign branch_mispredict = branch_resolution_i.valid && branch_resolution_i.mispredict;
     logic rob_exception [MACHINE_WIDTH-1:0];
     logic [REG_ADDR_WIDTH-1:0] rename_rs1_addr    [MACHINE_WIDTH-1:0];
     logic [REG_ADDR_WIDTH-1:0] rename_rs2_addr    [MACHINE_WIDTH-1:0];
@@ -541,15 +543,18 @@ module backend
             int_iq_enq_uop[lane] = dispatch_uop_head[lane];
             mem_iq_enq_uop[lane] = dispatch_uop_head[lane];
             br_iq_enq_uop[lane] = dispatch_uop_head[lane];
+            int_iq_enq_uop[lane].branch_mask = resolved_branch_mask(dispatch_uop_head[lane].branch_mask);
             int_iq_enq_uop[lane].valid = dispatch_int_lane[lane];
+            mem_iq_enq_uop[lane].branch_mask = resolved_branch_mask(dispatch_uop_head[lane].branch_mask);
             mem_iq_enq_uop[lane].valid = dispatch_mem_lane[lane];
+            br_iq_enq_uop[lane].branch_mask = resolved_branch_mask(dispatch_uop_head[lane].branch_mask);
             br_iq_enq_uop[lane].valid = dispatch_br_lane[lane];
         end
     end
 
-    assign decode_ready    = uopq_enq_ready && !branch_resolution_i.valid;
+    assign decode_ready    = uopq_enq_ready && !branch_mispredict;
     assign decode_fire     = decode_valid && decode_ready;
-    assign fetch_ready_o   = !branch_resolution_i.valid
+    assign fetch_ready_o   = !branch_mispredict
                            && ((!fetch_entry_valid_q) || decode_ready);
     assign fetch_fire      = fetch_valid_i && fetch_ready_o;
     assign rename_valid    = (uopq_deq_count != '0);
@@ -624,9 +629,9 @@ module backend
     assign single_inst_retired_o = single_trace_done_q;
 `endif
 
-    // 读口仲裁（原样迁出到 prf_read_arbiter）。issue_block 仍为 branch_resolution.valid（B12 缺口 1）。
+    // 读口仲裁（原样迁出到 prf_read_arbiter）。issue_block 仅为 M；C 保留正常年龄/读口仲裁。
     prf_read_arbiter #(.CFG(CFG)) u_prf_read_arbiter (
-        .issue_block_i        (branch_resolution_i.valid),
+        .issue_block_i        (branch_mispredict),
         .rob_head_i           (rob_head),
         .int_issue_uop_i      (int_iq_issue_uop),
         .int_issue_valid_i    (int_iq_issue_valid),
@@ -709,7 +714,7 @@ module backend
     rename_stage #(.CFG(CFG)) u_rename_stage (
         .decoded_i(rename_uop_head),
         .visible_count_i(uopq_deq_count),
-        .recovery_block_i(branch_resolution_i.valid),
+        .recovery_block_i(branch_mispredict),
         .preg_free_count_i(free_preg_count),
         .rob_free_count_i(rob_free_count),
         .lq_free_count_i(lq_free_count),
@@ -893,7 +898,7 @@ module backend
     dispatch_stage #(.CFG(CFG)) u_dispatch_stage (
         .uop_i(dispatch_uop_head),
         .visible_count_i(dispatch_count),
-        .recovery_block_i(branch_resolution_i.valid),
+        .recovery_block_i(branch_mispredict),
         .int_free_count_i(int_iq_free_count),
         .mem_free_count_i(mem_iq_free_count),
         .br_free_count_i(br_iq_free_count),
@@ -1726,5 +1731,36 @@ module backend
         .l2_wb_error_i(l2_wb_error_i),
         .idle_o(), .fatal_o(t_dc_fatal), .perf_o()
     );
+
+    // 冻结 §4.4：R 仍广播；M 是唯一恢复 block，资源回压保持独立。
+    always_ff @(posedge clk) begin
+        if (!rst) begin
+            assert (rename_accept_count <= MACHINE_WIDTH && dispatch_accept_count <= DISPATCH_WIDTH);
+            if (branch_mispredict) begin
+                assert (int_read_grant == '0 && !mem_read_grant && !branch_read_grant);
+                assert (rename_accept_count == '0 && dispatch_accept_count == '0);
+                for (int lane=0; lane<RETIRE_WIDTH; lane++) assert (!rob_retire_valid[lane]);
+            end
+            if (branch_resolution_i.valid && !branch_resolution_i.mispredict) begin
+                assert (decode_ready == uopq_enq_ready);
+                assert (!u_prf_read_arbiter.issue_block_i);
+                assert (!u_rename_stage.recovery_block_i && !u_dispatch_stage.recovery_block_i);
+                for (int lane=0; lane<MACHINE_WIDTH; lane++) begin
+                    if (rename_lane_valid[lane]) begin
+                        assert (!rename_branch_mask[lane][branch_resolution_i.branch_tag]);
+                        assert (rob_req[lane]);
+                        assert (lq_alloc_req[lane] == rename_uop_head[lane].is_load);
+                        assert (sq_alloc_req[lane] == rename_uop_head[lane].is_store);
+                        assert (checkpoint_create[lane] == rename_uop_head[lane].needs_checkpoint);
+                    end
+                end
+                for (int lane=0; lane<DISPATCH_WIDTH; lane++) begin
+                    if (int_iq_enq_uop[lane].valid) assert (!int_iq_enq_uop[lane].branch_mask[branch_resolution_i.branch_tag]);
+                    if (mem_iq_enq_uop[lane].valid) assert (!mem_iq_enq_uop[lane].branch_mask[branch_resolution_i.branch_tag]);
+                    if (br_iq_enq_uop[lane].valid) assert (!br_iq_enq_uop[lane].branch_mask[branch_resolution_i.branch_tag]);
+                end
+            end
+        end
+    end
 
 endmodule

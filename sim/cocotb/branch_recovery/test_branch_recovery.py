@@ -130,6 +130,18 @@ async def direct_control_recovery_contract(dut):
     dut.fb_kill_i.value = 0
     assert int(dut.fb_deq_valid_o.value) == 0
 
+    # Fixed-seed metadata sanity: all generated taken targets use the model's
+    # target rather than the fallthrough. This keeps failures reproducible.
+    for _ in range(16):
+        rand_pc = rng.randrange(0x200, 0x1000, 4)
+        rand_target = rng.randrange(0x200, 0x1000, 4)
+        assert expected_redirect(rand_pc, 4, rand_target, True) == rand_target
+
+
+@cocotb.test()
+async def older_result_backpressure_kills_younger_regread(dut):
+    cocotb.start_soon(Clock(dut.clk_i, 10, unit="ns").start())
+    seed = int(os.environ.get("TEST_SEED", "1"))
     # B12 hazard: an old held result backpressures a younger RegRead entry.
     # A matching misprediction must clear valid before it can execute later.
     await reset(dut)
@@ -157,9 +169,38 @@ async def direct_control_recovery_contract(dut):
     await cycle(dut)
     assert int(dut.alu_result_valid_o.value) == 0, f"seed={seed}: killed uop reached Result"
 
-    # Fixed-seed metadata sanity: all generated taken targets use the model's
-    # target rather than the fallthrough. This keeps failures reproducible.
-    for _ in range(16):
-        rand_pc = rng.randrange(0x200, 0x1000, 4)
-        rand_target = rng.randrange(0x200, 0x1000, 4)
-        assert expected_redirect(rand_pc, 4, rand_target, True) == rand_target
+
+
+@cocotb.test()
+async def seeded_dut_alu_backpressure_resolution_lifecycle(dut):
+    """Two-stage transaction model: arbitrary holds, every tag, C/M and kills."""
+    cocotb.start_soon(Clock(dut.clk_i,10,unit='ns').start())
+    seed=int(os.getenv('TEST_SEED','1'));rng=random.Random(seed)
+    await reset(dut)
+    rr=None;res=None;tags=len(dut.alu_issue_branch_mask_i);serial=0;holds=kills=correct=0
+    for n in range(700):
+        r=rng.randrange(3)==0;mis=bool(rng.randrange(2));tag=n%tags
+        bit=1<<tag
+        def killed(e):return e is not None and r and mis and bool(e[1]&bit)
+        def cleaned(e):return (e[0],e[1]&~bit) if e is not None and r else e
+        # Consume means permission to advance, as granted by WB arbiter.
+        consume=res is None or killed(res) or bool(rng.randrange(3)==0)
+        ready=rr is None or consume
+        grant=ready and not(r and mis) and bool(rng.randrange(2))
+        serial=(serial+1)%(1<<len(dut.alu_issue_rob_i))
+        incoming=(serial,rng.getrandbits(tags))
+        dut.alu_read_grant_i.value=int(grant)
+        dut.alu_issue_rob_i.value=incoming[0];dut.alu_issue_branch_mask_i.value=incoming[1]
+        dut.alu_result_consume_i.value=int(consume)
+        dut.alu_resolution_valid_i.value=int(r);dut.alu_resolution_mispredict_i.value=int(mis);dut.alu_resolution_tag_i.value=tag
+        holds+=res is not None and not consume;kills+=killed(rr);correct+=r and not mis
+        nxt_res=(None if killed(rr) else cleaned(rr)) if consume else cleaned(res)
+        nxt_rr=None if killed(rr) else (cleaned(incoming) if grant else None) if ready else cleaned(rr)
+        await cycle(dut);rr,res=nxt_rr,nxt_res
+        actual_rr=bool(int(dut.alu_regread_valid_o.value));actual_res=bool(int(dut.alu_result_valid_o.value))
+        assert actual_rr==(rr is not None) and actual_res==(res is not None),(seed,n,rr,res,actual_rr,actual_res)
+        if rr:
+            assert (int(dut.alu_regread_rob_o.value),int(dut.alu_regread_mask_o.value))==rr,(seed,n,rr)
+        if res:
+            assert (int(dut.alu_result_rob_o.value),int(dut.alu_result_mask_o.value))==res,(seed,n,res)
+    assert holds>0 and kills>0 and correct>0,(seed,holds,kills,correct)

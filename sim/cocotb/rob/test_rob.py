@@ -3,13 +3,14 @@ import cocotb
 from ports import INPUTS
 from l3_contract import *
 
-@cocotb.test()
-async def four_wide_allocate_complete_retire_ftq_wrap(d):
+async def run_four_wide_model(d, correct=False):
     seed=int(os.getenv('TEST_SEED','1'));rng=random.Random(seed)
     await reset(d,INPUTS);w=val(d.cfg_width_o);depth=val(d.cfg_depth_o)
     q=[];head=tail=0;serial=1;wraps=0;multi_regions=0
     for cycle in range(600):
         clear(d,INPUTS)
+        d.resolution_valid_i.value=correct and cycle%3==0
+        d.resolution_tag_i.value=cycle%val(d.cfg_tags_o)
         ret=[]
         for e in q[:w]:
             if not e['complete']:break
@@ -48,3 +49,12 @@ async def four_wide_allocate_complete_retire_ftq_wrap(d):
         wraps+=tail+n>=depth;tail=(tail+n)%depth
         await tick(d)
     assert not q and wraps>4 and multi_regions>0,(seed,q,wraps,multi_regions)
+
+
+@cocotb.test()
+async def four_wide_allocate_complete_retire_ftq_wrap(d):
+    await run_four_wide_model(d)
+
+@cocotb.test()
+async def rob_c_retire_allocate_complete_are_independent(d):
+    await run_four_wide_model(d, correct=True)

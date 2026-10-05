@@ -1,0 +1,1 @@
+INPUTS = ['decoded_i', 'visible_count_i', 'recovery_block_i', 'preg_free_count_i', 'rob_free_count_i', 'lq_free_count_i', 'sq_free_count_i', 'rdq_free_count_i', 'active_branch_mask_i', 'checkpoint_grant_i', 'checkpoint_tag_i', 'src1_preg_i', 'src2_preg_i', 'old_dst_preg_i', 'new_dst_preg_i', 'rob_idx_i', 'lq_idx_i', 'sq_idx_i', 'src1_from_older_lane_i', 'src2_from_older_lane_i']

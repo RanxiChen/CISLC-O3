@@ -21,6 +21,8 @@
  * 周期N上升沿原子执行allocate/AGU/request/response/commit，mispredict恢复优先；
  * 周期N+1可见更新后的entry状态。本阶段不实现Load replay或异常。
  */
+// 当前实现状态：闭环简化（L3）；四宽分配/退休释放，M 拍保留老 load execute/request/response。
+// 测试：sim/cocotb/load_queue/；多事务代际/异常待 L8/L5。
 module load_queue
     import o3_pkg::*;
 #(
@@ -133,6 +135,17 @@ module load_queue
                     outstanding_q[entry] <= 1'b0;
                 end else if (valid_q[entry]) begin
                     kept++;
+                    // U7/LQ-M：恢复只取消年轻项，老 load 的正常生命周期照常更新。
+                    // 用拍初 mask 判存活，再清解析位；请求/响应不因 M 吞掉。
+                    branch_mask_q[entry][resolution_tag_i] <= 1'b0;
+                    if (execute_valid_i && execute_idx_i == IDX_WIDTH'(entry)) begin
+                        addr_q[entry] <= execute_addr_i;
+                        addr_valid_q[entry] <= 1'b1;
+                    end
+                    if (request_fire_i && request_idx_i == IDX_WIDTH'(entry))
+                        outstanding_q[entry] <= 1'b1;
+                    if (response_live_o && response_tag_i[IDX_WIDTH-1:0] == IDX_WIDTH'(entry))
+                        outstanding_q[entry] <= 1'b0;
                 end
             end
             for (int released = 0; released < RENAME_WIDTH; released++) begin

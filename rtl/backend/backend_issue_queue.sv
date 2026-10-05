@@ -107,7 +107,7 @@ module backend_issue_queue
             int chosen;
             chosen = -1;
             for (int idx = 0; idx < DEPTH; idx++) begin
-                if (!resolution_valid_i && (chosen < 0) && queue_q[idx].valid && !selected[idx]
+                if (!(resolution_valid_i && resolution_mispredict_i) && (chosen < 0) && queue_q[idx].valid && !selected[idx]
                  && (!OLDEST_ONLY || (idx == 0))
                  && (KIND != o3_types_pkg::IQ_MEM || !queue_q[idx].is_load || allow_load_i)
                  && (!queue_q[idx].rs1_read_en || src1_ready_q[idx])
@@ -118,6 +118,7 @@ module backend_issue_queue
             if (chosen >= 0) begin
                 selected[chosen] = 1'b1;
                 issue_uop_o[port] = queue_q[chosen];
+                if (resolution_valid_i) issue_uop_o[port].branch_mask[resolution_tag_i] = 1'b0;
                 issue_valid_o[port] = 1'b1;
                 issue_selected_valid[port] = 1'b1;
                 issue_selected_idx[port] = $clog2(DEPTH)'(chosen);
@@ -170,10 +171,11 @@ module backend_issue_queue
         end
 
         // 恢复拍禁止Dispatch，因此只有正常拍会追加新项。
-        if (enq_fire_i && !resolution_valid_i) begin
+        if (enq_fire_i && !(resolution_valid_i && resolution_mispredict_i)) begin
             for (int lane = 0; lane < ENQ_WIDTH; lane++) begin
                 if (enq_uop_i[lane].valid) begin
                     queue_next[write_idx] = enq_uop_i[lane];
+                    if (resolution_valid_i) queue_next[write_idx].branch_mask[resolution_tag_i] = 1'b0;
                     src1_ready_next[write_idx] = !enq_uop_i[lane].rs1_read_en
                                                || preg_ready_i[enq_uop_i[lane].src1_preg]
                                                || wakeup_hits(enq_uop_i[lane].src1_preg);

@@ -1,0 +1,1 @@
+INPUTS = ['issue_block_i', 'rob_head_i', 'int_issue_uop_i', 'int_issue_valid_i', 'alu_regread_ready_i', 'mem_issue_uop_i', 'mem_issue_valid_i', 'mem_accept_i', 'br_issue_uop_i', 'br_issue_valid_i', 'branch_regread_ready_i']

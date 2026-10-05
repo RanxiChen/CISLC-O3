@@ -17,10 +17,10 @@
  *
  * 周期行为：
  * - 周期N组合阶段从当前空闲tag集合按lane年龄产生候选tag。
- * - 周期N上升沿写入本拍真正接受的checkpoint；resolution与新建互斥且优先处理resolution。
+ * - 周期N上升沿写入本拍真正接受的checkpoint；C 同时释放/清位和新建不同 tag；M 禁止新建。
  * - 周期N+1 active_mask_o反映仍未解析的分支集合。
  */
-
+// 当前实现状态：闭环简化（L3）；正确解析不停顿，四宽合同。测试：sim/cocotb/branch_checkpoint_file/。
 module branch_checkpoint_file
     import o3_pkg::*;
 #(
@@ -60,7 +60,11 @@ module branch_checkpoint_file
     logic [$clog2(LQ_DEPTH)-1:0] lq_tail_q [NUM_CHECKPOINTS-1:0];
     logic [$clog2(SQ_DEPTH)-1:0] sq_tail_q [NUM_CHECKPOINTS-1:0];
 
-    assign active_mask_o = branch_mask_t'(valid_q);
+    // 候选 tag 只用拍初 valid_q；rename 依赖集合立即去掉已解析 t。
+    always_comb begin
+        active_mask_o = branch_mask_t'(valid_q);
+        if (resolution_valid_i) active_mask_o[resolution_tag_i] = 1'b0;
+    end
     assign restore_rob_tail_o = rob_tail_q[resolution_tag_i];
     assign restore_lq_tail_o = lq_tail_q[resolution_tag_i];
     assign restore_sq_tail_o = sq_tail_q[resolution_tag_i];
@@ -97,7 +101,8 @@ module branch_checkpoint_file
             rob_tail_q <= '{default: '0};
             lq_tail_q <= '{default: '0};
             sq_tail_q <= '{default: '0};
-        end else if (resolution_valid_i) begin
+        end else begin
+          if (resolution_valid_i) begin
             for (int tag = 0; tag < NUM_CHECKPOINTS; tag++) begin
                 if ((tag == int'(resolution_tag_i))
                  || (resolution_mispredict_i && parent_mask_q[tag][resolution_tag_i])) begin
@@ -107,16 +112,22 @@ module branch_checkpoint_file
                     parent_mask_q[tag][resolution_tag_i] <= 1'b0;
                 end
             end
-        end else begin
+          end
+          if (!(resolution_valid_i && resolution_mispredict_i)) begin
             for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
                 if (create_i[lane]) begin
                     valid_q[alloc_tag_o[lane]] <= 1'b1;
                     parent_mask_q[alloc_tag_o[lane]] <= create_parent_mask_i[lane];
+                    if (resolution_valid_i) parent_mask_q[alloc_tag_o[lane]][resolution_tag_i] <= 1'b0;
+                    assert (alloc_grant_o[lane] && !valid_q[alloc_tag_o[lane]]);
+                    assert (!resolution_valid_i || alloc_tag_o[lane] != resolution_tag_i)
+                        else $error("checkpoint cannot release/create same tag in one cycle");
                     rob_tail_q[alloc_tag_o[lane]] <= create_rob_tail_i[lane];
                     lq_tail_q[alloc_tag_o[lane]] <= create_lq_tail_i[lane];
                     sq_tail_q[alloc_tag_o[lane]] <= create_sq_tail_i[lane];
                 end
             end
+          end
         end
     end
 

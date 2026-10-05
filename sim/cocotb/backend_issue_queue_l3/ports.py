@@ -1,0 +1,1 @@
+INPUTS = ['clk', 'rst', 'enq_uop_i', 'enq_fire_i', 'preg_ready_i', 'allow_load_i', 'wakeup_valid_i', 'wakeup_preg_i', 'issue_ready_i', 'resolution_valid_i', 'resolution_mispredict_i', 'resolution_tag_i']

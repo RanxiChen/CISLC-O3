@@ -211,3 +211,22 @@ rg -n 's3_valid_o|s3_allow_o|s3_fault_o|cfg_update_done_o' rtl/common/pmp_checke
 `48526165ae6844b0000a962e6504c88c8a4e68cb`：`make -C sim/cocotb/load_queue TEST_SEED=1` FAIL，2 tests：1 PASS／1 FAIL，LQ-M 断言 `LQ-M lost old execute` 复现 M 分支不更新存活老 load 的地址记账。日志 `baseline/lq-m-before.log`；按 spec §7 附加授权修复，不修改期望。
 
 Alan 原 checkout 保持不变，新增隔离 worktree。GitHub fetch 直连 TLS 失败，已有代理亦连接 reset；改为本地 `git bundle create /tmp/o3-t01-baseline.bundle feat/L1-closure`／`git bundle verify`、`scp`、Alan `git fetch /tmp/o3-t01-baseline.bundle refs/heads/feat/L1-closure`，均成功。源码完整 SHA 核对如上；环境 Verilator 5.050、cocotb 2.1.0、Python 命令显示 3.12.14（cocotb 嵌入日志显示 3.12.12）。
+
+
+### 缺口 1 控制与 LQ-M 修复
+
+基线正式前测 SHA：`919eaaa38f627bd860529fd156d491193a70c4b3`。Alan `make -C sim/o3 build`／`make -C sim/o3 run-l3-branch-dense`／`make -C sim/cocotb/rob TEST_SEED=1` 均 PASS，退出码 0。日志 `/home/chen/FUN/CISLC-O3-runs/20261005-o3t01/baseline-fixed/{build,branch-dense,rob}.log`；分支密集 1967 周期、365 退休、40 正确解析、80 误预测、10 replay、轨迹 PASS。程序／期望固定，后测保持同配置、同停止条件。
+
+- Decode/fetch、PRF read、rename、dispatch 与 ROB retire 的 block 全部只看 M；R 广播保留。IQ C 拍可选择/删除/入队，输出与新入队 mask 清 t。
+- checkpoint active 依赖集清 t，候选仍只看拍初空闲 tag；C 合并旧 release／parent 清位与不同 tag create，新增同 tag 释放／分配禁止断言；M 禁 create。
+- RDQ／ROB 新项清 t，M 存活项清 t；总装 dispatch 边界归一化；BR hold Result 清位。没有 wakeup-select、retire-complete 或释放资源旁路。
+- LQ-M：先用原 mask 删除年轻项，再在存活老项合并 execute 地址、request outstanding、匹配 response 完成（响应在 request 后更新，沿用正常拍优先级）；恢复 tail/count 与退休释放不变。触发证据见上一节，不改断言。
+- 新增 CK/WR/RR/ROB-C/LQ-C/M/RDQ 与 INT/MEM/BR IQ 真实 DUT 固定种子合同测试；RAT RAW/WAW/x0/self-checkpoint、free-list 分配／同拍释放／回收测试覆盖参数四宽。
+- 缺口 2 原定向段原样移到具名 `older_result_backpressure_kills_younger_regread`，保留原断言；新增 700 事务固定种子 ALU DUT 两槽生命周期测试，含各 tag、hold、C／M、kill 与身份/mask 观察。既有 helper 随机检查保留但不计作 DUT 随机证据。
+- SQ 包装保留既有 lane0 激励，另加四 lane／恢复端口；新测试 80 批次四 store 分配／提交、old execute/commit 与 M、committed drain 响应及重复响应不重复释放、随机总线延迟。
+
+本地 `scripts/lint.sh` PASS，0 errors、101 warnings，日志 `/tmp/o3-t01-gap1-lint.log`。各新增 wrapper `verilator --lint-only` PASS（`/tmp/o3-<module>-wrapper-lint.log`）；全部 cocotb Python 文件 AST 解析 PASS。这些是静态检查，Alan 功能结果待记录。
+
+本地代理反向隧道已按用户指示建立，Alan GitHub HTTP=200，`git fetch origin feat/L1-closure` 成功；后续通过该通道同步。私有运维参数只留会话，不写入仓库。
+
+与 spec 的实现偏离：无；LQ-M 按冻结附加授权修复。阶段二问题：暂无新增需设计裁决的问题；测试首次失败按原日志留存，不以修改期望／断言掩盖。

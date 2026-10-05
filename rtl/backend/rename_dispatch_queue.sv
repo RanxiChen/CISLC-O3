@@ -1,16 +1,17 @@
 /**
  *
  * 【2026-10-02 框架：目标机制与缺口】
- * - 入队宽度为 rename 宽度（B01 暂定 6），出队宽度为 dispatch 宽度（待定）。
+ * - 入队宽度为 rename 宽度（B42 为 4），出队宽度为 dispatch 宽度（待定）。
  * - 下文“当前只由旧整数Dispatch消费”已过时：现由 dispatch_stage 分流到三类 IQ。
  * Rename to Dispatch Queue
  *
  * 按单条renamed uop连续保存，解耦Rename资源分配和后续Dispatch/IQ背压。
  * 正确解析分支时清除对应branch bit；误预测时压缩删除所有依赖该分支的年轻uop。
- * 当前只由旧整数Dispatch消费全整数队头前缀，LSU/BRU Dispatch留到下一阶段。
+ * dispatch_stage 按最老前缀向 INT/MEM/BR IQ 分流。
  * 周期N组合阶段展示最老前缀并形成压缩后的next状态；上升沿原子读写或恢复；
  * 周期N+1对外看到更新后的连续队列。
  */
+// 当前实现状态：闭环简化（L3）；正确解析不停顿，四宽合同。测试：sim/cocotb/rename_dispatch_queue/。
 module rename_dispatch_queue
     import o3_pkg::*;
 #(
@@ -59,6 +60,7 @@ module rename_dispatch_queue
             for (int idx = 0; idx < DEPTH; idx++) begin
                 if (queue_q[idx].valid && !queue_q[idx].branch_mask[resolution_tag_i]) begin
                     queue_next[write_idx] = queue_q[idx];
+                    queue_next[write_idx].branch_mask[resolution_tag_i] = 1'b0;
                     write_idx++;
                 end
             end
@@ -75,6 +77,7 @@ module rename_dispatch_queue
                 for (int lane = 0; lane < ENQ_WIDTH; lane++) begin
                     if (lane < int'(enq_count_i)) begin
                         queue_next[write_idx] = enq_uop_i[lane];
+                        if (resolution_valid_i) queue_next[write_idx].branch_mask[resolution_tag_i] = 1'b0;
                         write_idx++;
                     end
                 end

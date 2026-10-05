@@ -272,7 +272,7 @@ module rob #(
                     end
                 end
 
-                retire_valid_o[ridx] = retire_prefix_valid && !resolution_valid_i;
+                retire_valid_o[ridx] = retire_prefix_valid && !(resolution_valid_i && resolution_mispredict_i);
             end
         end
     endgenerate
@@ -321,6 +321,7 @@ module rob #(
                 if (entry_valid_q[entry] && entry_branch_mask_q[entry][resolution_tag_i]) begin
                     entry_valid_q[entry] <= 1'b0;
                 end else if (entry_valid_q[entry]) begin
+                    entry_branch_mask_q[entry][resolution_tag_i] <= 1'b0;
                     kept_count++;
                 end
             end
@@ -370,6 +371,7 @@ module rob #(
                     entry_lq_idx_q[alloc_idx_o[lane]] <= alloc_lq_idx_i[lane];
                     entry_sq_idx_q[alloc_idx_o[lane]] <= alloc_sq_idx_i[lane];
                     entry_branch_mask_q[alloc_idx_o[lane]] <= alloc_branch_mask_i[lane];
+                    if (resolution_valid_i) entry_branch_mask_q[alloc_idx_o[lane]][resolution_tag_i] <= 1'b0;
                     entry_ftq_idx_q[alloc_idx_o[lane]] <= alloc_ftq_idx_i[lane];
                     entry_ftq_slot_q[alloc_idx_o[lane]] <= alloc_ftq_slot_i[lane];
                     entry_ftq_last_q[alloc_idx_o[lane]] <= alloc_ftq_last_i[lane];

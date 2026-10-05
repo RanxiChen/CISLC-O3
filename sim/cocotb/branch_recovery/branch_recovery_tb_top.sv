@@ -68,7 +68,9 @@ module branch_recovery_tb_top
     input  logic alu_resolution_valid_i,
     input  logic alu_resolution_mispredict_i,
     input  logic [BR_TAG_W-1:0] alu_resolution_tag_i,
-    output logic alu_regread_valid_o,
+    output logic alu_regread_valid_o, alu_ready_o,
+    output logic [ROB_IDX_W-1:0] alu_regread_rob_o,
+    output logic [BACKEND_NUM_BRANCH_CHECKPOINTS-1:0] alu_regread_mask_o, alu_result_mask_o,
     output logic alu_result_valid_o,
     output logic [ROB_IDX_W-1:0] alu_result_rob_o
 );
@@ -200,6 +202,10 @@ module branch_recovery_tb_top
         .regread_ready_o(alu_ready_unused), .result_o(alu_result),
         .obs_regread_o(alu_obs), .obs_exec_result_o(alu_exec_unused)
     );
+    assign alu_ready_o = alu_ready_unused;
+    assign alu_regread_rob_o = alu_obs.rob_idx;
+    assign alu_regread_mask_o = alu_obs.branch_mask;
+    assign alu_result_mask_o = alu_result.branch_mask;
     assign alu_regread_valid_o = alu_obs.valid;
     assign alu_result_valid_o = alu_result.valid;
     assign alu_result_rob_o = alu_result.rob_idx;

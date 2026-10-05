@@ -6,15 +6,16 @@
  *   checkpoint、RDQ，选择最老可接受连续前缀，一条指令所需资源要么全部获得要么不分配。
  * - 需要补充：FP 目的域的 preg 计数（fp_preg_free_count）与分配请求；依赖选择改用 R1
  *   记录的生产者槽位（不再使用 rename_map_table 的 src*_from_older_lane）。
- * - 宽度：目标 CFG.rename.width（B01 暂定 6）；现状 WIDTH=BACKEND_MACHINE_WIDTH。
+ * - 宽度：目标 CFG.rename.width（B42 为 4）；现状 WIDTH=BACKEND_MACHINE_WIDTH。
  * - 部分接受后剩余指令保留原槽位，资源与 RDQ 输出按剩余有效指令程序顺序形成连续前缀（B02 3.3）。
- * - recovery_block_i 现接 branch_resolution.valid：正确解析也阻止 rename（B12 缺口 1）。
+ * - recovery_block_i 仅接 M；C 正常四宽 rename（O3-T01/B12）。
  * Four-wide prefix Rename planner and uop assembler
  *
  * 本模块无状态。从Decode Queue的最老lane开始累计检查ROB、preg、LQ、SQ、
  * branch checkpoint和Rename/Dispatch Queue资源，产生本拍可原子接受的最大前缀。
  * 一旦某条指令缺少任一资源，该条和所有更年轻lane都停止；更老可行前缀仍推进。
  */
+// 当前实现状态：闭环简化（L3）；正确解析不停顿，四宽合同。测试：sim/cocotb/rename_stage/。
 module rename_stage
     import o3_pkg::*;
 #(
