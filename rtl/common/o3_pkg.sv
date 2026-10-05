@@ -16,7 +16,29 @@
 
 package o3_pkg;
     import o3_cfg_pkg::*;
-    import o3_isa_pkg::*;
+    // Explicit imports make wildcard re-export portable to Vivado 2022.2.
+    import o3_isa_pkg::XLEN;
+    import o3_isa_pkg::ILEN;
+    import o3_isa_pkg::REG_ADDR_WIDTH;
+    import o3_isa_pkg::NUM_ARCH_REGS;
+    import o3_isa_pkg::FFLAGS_W;
+    import o3_isa_pkg::FRM_W;
+    import o3_isa_pkg::CSR_ADDR_W;
+    import o3_isa_pkg::EXCEPTION_CAUSE_INST_ADDR_MISALIGNED;
+    import o3_isa_pkg::EXCEPTION_CAUSE_INST_ACCESS_FAULT;
+    import o3_isa_pkg::EXCEPTION_CAUSE_ILLEGAL_INSTRUCTION;
+    import o3_isa_pkg::EXCEPTION_CAUSE_BREAKPOINT;
+    import o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ADDR_MISALIGNED;
+    import o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ACCESS_FAULT;
+    import o3_isa_pkg::EXCEPTION_CAUSE_STORE_ADDR_MISALIGNED;
+    import o3_isa_pkg::EXCEPTION_CAUSE_STORE_ACCESS_FAULT;
+    import o3_isa_pkg::EXCEPTION_CAUSE_ECALL_U;
+    import o3_isa_pkg::EXCEPTION_CAUSE_ECALL_S;
+    import o3_isa_pkg::EXCEPTION_CAUSE_ECALL_M;
+    import o3_isa_pkg::EXCEPTION_CAUSE_INST_PAGE_FAULT;
+    import o3_isa_pkg::EXCEPTION_CAUSE_LOAD_PAGE_FAULT;
+    import o3_isa_pkg::EXCEPTION_CAUSE_STORE_PAGE_FAULT;
+    import o3_isa_pkg::exception_cause_t;
     import o3_types_pkg::*;
     export o3_isa_pkg::*;
 
