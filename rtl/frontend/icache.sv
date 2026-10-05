@@ -326,7 +326,7 @@ module ICache
             resp_o.ftq_id = m_req_q.ftq_id;
             resp_o.data = m_data_q[m_req_q.region_base[5:4]*DATA_W +: DATA_W];
             resp_o.exc_valid = m_error_q;
-            resp_o.exc_cause = EXCEPTION_CAUSE_INST_ACCESS_FAULT;
+            resp_o.exc_cause = o3_isa_pkg::EXCEPTION_CAUSE_INST_ACCESS_FAULT;
         end else if (s3_valid_q && s3_hit) begin
             resp_o.valid = 1'b1;
             resp_o.rq_idx = s3_meta_q.req.rq_idx;

@@ -637,9 +637,9 @@ module backend
                                                   && decoded_exception;
             assign decoded_uop[i].exception_cause = fetch_entry_q[i].exception_valid
                                                    ? fetch_entry_q[i].exception_cause
-                                                   : (decode_out[i].ext.sys_op==o3_types_pkg::SYSOP_ECALL ? EXCEPTION_CAUSE_ECALL_M
-                                                      : decode_out[i].ext.sys_op==o3_types_pkg::SYSOP_EBREAK ? EXCEPTION_CAUSE_BREAKPOINT
-                                                      : EXCEPTION_CAUSE_ILLEGAL_INSTRUCTION);
+                                                   : (decode_out[i].ext.sys_op==o3_types_pkg::SYSOP_ECALL ? o3_isa_pkg::EXCEPTION_CAUSE_ECALL_M
+                                                      : decode_out[i].ext.sys_op==o3_types_pkg::SYSOP_EBREAK ? o3_isa_pkg::EXCEPTION_CAUSE_BREAKPOINT
+                                                      : o3_isa_pkg::EXCEPTION_CAUSE_ILLEGAL_INSTRUCTION);
             assign decoded_uop[i].exception_tval = fetch_entry_q[i].exception_valid
                                                   ? fetch_entry_q[i].exception_tval
                                                   : (decode_out[i].ext.sys_op==o3_types_pkg::SYSOP_EBREAK ? XLEN'(fetch_entry_q[i].pc)

@@ -99,7 +99,7 @@ module ifu_f0
                     out_o[slot].raw_instruction = ILEN'(in_i.data[16*slot +: 16]);
                     out_o[slot].instruction = out_o[slot].raw_instruction;
                     out_o[slot].exc_valid = 1'b1;
-                    out_o[slot].exc_cause = EXCEPTION_CAUSE_ILLEGAL_INSTRUCTION;
+                    out_o[slot].exc_cause = o3_isa_pkg::EXCEPTION_CAUSE_ILLEGAL_INSTRUCTION;
                     out_o[slot].exc_tval = XLEN'(out_o[slot].raw_instruction);
                 end
             end
