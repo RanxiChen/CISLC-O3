@@ -11,6 +11,8 @@
 每一级是一条能在 Alan 上用一条命令验收的端到端路径。用户已决定移除 ITCM，
 先打通 ICache→inclusive L2→AXI 取指，再推进分支与数据路径；以下按当前顺序记账。
 
+2026-10-05 起按 [`O3-v1-plan.md`](O3-v1-plan.md) 推进：L3 收尾之后依次为 L5～L11，L5 起每级验收都包含 Spike 逐条比对（B45）。
+
 | 级 | 目标 | 验收 | 状态 |
 |---|---|---|---|
 | L0 | RTL 可解析、`o3_core` 可展开 | `scripts/lint.sh` | Alan PASS（`de9149d`，0 errors、227 warnings） |
@@ -18,8 +20,14 @@
 | **L4 当前** | **ICache miss → inclusive L2 → AXI RAM → 直线整数退休** | `make -C sim/o3 build && make -C sim/o3 run-smoke` | Alan 回归 PASS（`de9149d`，38 周期、4 条退休、ICache 回填 1 次） |
 | **L2 当前** | **taken 分支 / JAL：BRU 解析 → 重定向 → 前端恢复** | `make -C sim/cocotb/branch_recovery SIM=verilator TEST_SEED=1 && make -C sim/o3 run-rv64i-instructions` | Alan PASS（`de9149d`；局部 1/1；整核 76 周期、14 条退休、ICache 回填 2 次） |
 | L3 部分闭合 | SQ 依赖/转发 → 流水化 DCache → inclusive L2 → AXI 数据访存与退休 | `make -C sim/cocotb/store_queue SIM=verilator`、`make -C sim/cocotb/dcache SIM=verilator`、`make -C sim/cocotb/backend_issue_queue SIM=verilator`、`make -C sim/cocotb/load_store_unit SIM=verilator`、`make -C sim/o3 run-dcache-data run-dcache-replay` | Alan `a8b3fc6`：Memory IQ 1/1、LSU replay/恢复 2/2；整核 `7d59822` 新门禁实测 `load_replays=1`，71 周期退休 6 条且轨迹 PASS；旧 smoke/分支/数据门禁仍 PASS。SQ 3/3、DCache 3/3 沿用前次 Alan 证据。仍缺多 MSHR、多 load pending、跨行异常、FENCE.I、PTW/AMO/DMA；不是完整 B03～B05 |
-| L5 | 异常 / CSR / trap / xRET | ACT4 RV64I | 未开始 |
-| L6+ | DCache 多 MSHR、PTW/TLB、M/F/D、A、L2 并发/DMA、Linux | 待定 | 未开始 |
+| L3 收尾 | 完成 L3；修 B12 缺口 1（分支解析全局停顿）与缺口 2（ALU RegRead 背压时缺 kill）；重命名改 4 宽（B42）；移除当前级不需要的空壳实例（B46） | 现有 L2/L3 门禁 + 分支密集程序 + 缺口 2 定向测试 | 未开始 |
+| L5 | Spike 逐条比对；M 模式 CSR、精确异常、ecall/ebreak/illegal、MRET、committed_next_pc | ACT4 RV64I + Spike 比对 0 差异 | 未开始 |
+| L6 | M 扩展（MUL 采用 DSP，B43）、完成 FIFO/提前唤醒、JALR；首次 OOC 综合 | ACT4 RV64IM + CoreMark（仿真） | 未开始 |
+| L7 | uBTB/BTB/TAGE、FTQ 恢复、RAS 快速修复；RVC | RV64IMC + 误预测率/IPC 基线 | 未开始 |
+| L8 | 多 MSHR、重放、同 line 非对齐、A 扩展、FENCE/FENCE.I | RV64IMAC + litmus + 死锁 watchdog | 未开始 |
+| L9 | F/D：拆分 CVFPU、FP 重命名、fflags/FS 退休 | ACT4 RV64GC（用户态） | 未开始 |
+| L10 | S/U、Sv39 MMU、SFENCE.VMA/satp/PMP、A/D、WFI | 特权测试 + riscv-tests p/v | 未开始 |
+| L11 | SoC：L2 + DDR4（MIG）+ CLINT/PLIC + UART + SD（AXI Quad SPI，B44）+ SD DMA + FASE | 仿真启动 OpenSBI + Linux；上板经 SD 卡启动 Linux | 未开始 |
 
 ## 2. 当前目标：L4 缓存取指闭环
 

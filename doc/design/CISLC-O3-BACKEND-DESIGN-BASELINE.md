@@ -1,6 +1,8 @@
 # CISLC-O3 后端设计基线与决策记录
 
-更新日期：2026-10-02。目标工程：`/home/chen/work/CISLC-O3`。本文暂存于 Flow，仅记录设计与只读源码核对；不代表 RTL、编译、仿真、时序或 FPGA 验证完成。
+更新日期：2026-10-05。**最新：第 36 节 B42～B47（v1 实施计划确认，见 [`../O3-v1-plan.md`](../O3-v1-plan.md)）；B01 改为四宽；B16/B17/B19/B20 已移入附录 A。**
+
+原更新日期：2026-10-02。目标工程：`/home/chen/work/CISLC-O3`。本文暂存于 Flow，仅记录设计与只读源码核对；不代表 RTL、编译、仿真、时序或 FPGA 验证完成。
 
 最新恢复决定：B30 同步前端 D29 的 BOOM 式 RAS 快速修复及系统首笔取指解耦，替换旧 undo；B29 的其余审查入口继续有效。
 
@@ -24,7 +26,9 @@
 - 2026-10-01 用户明确整核目标为 KCU105 上的 RV64GC、可运行 Linux；SD DMA 是首版系统需要，不只是未来占位。浮点见 B14/B15，CSR/屏障见 B22～B24，异常/中断和返回见 B26/B27，Linux 复用见 B28/B29；设计决定不等于集成与验证完成。
 - 2026-10-01 再次只读核对：目标分支、完整 HEAD、两项未跟踪仿真文件与上次一致；父目录及文档路径未发现适用 AGENTS.md/CLAUDE.md。本次仅更新设计文档，不改 RTL、不运行编译/仿真、不提交 git。
 
-## 2. B01：参数化六宽 rename（已定方向，宽度暂定）
+## 2. B01：参数化 rename 宽度（2026-10-05 由 B42 改为四宽）
+
+**2026-10-05**：宽度改为 4，见 B42。下文为原记录。
 
 用户确认后端 rename 宽度参数化，第一版取 6，根据仿真与 FPGA 数据调整。前端仍按序每拍最多交付 4 条，Decode Queue 吸收积累，六宽用于消化积压；不宣称持续六条整核吞吐。Decode、Dispatch、发射、提交宽度不因此自动改成六，端口与容量分别设计。
 
@@ -373,61 +377,6 @@ A 扩展分为 AMO 与 LR/SC；reservation 不是乱序调度的保留站。首�
 
 本轮仅更新独立后端设计记录；前端合同继续由第 16 节互相引用，不修改现有前端及目标后端 RTL。FP 分组及数量已经确认；整数乘除法的最终来源与阶段边界见 B21，B16/B17 的 Vivado 选择已被后续决定替代。
 
-## 19. B16：整数算术 IP 的来源约束与候选（2026-10-01）
-
-### 19.1 用户明确的筛选要求
-
-仅考虑独立算术库/IP，不为复用乘除法而 clone 另一套 CPU 或引入其配置/流水线框架。CVA6、Rocket、VexiiRiscv 的 CPU 内部组件退出移植候选；此前只下载少量文件到 /tmp 做只读核对，没有 clone 或引入依赖。用户进一步授权：独立开源实现不合适时，可以采用 Vivado IP。此授权不表示 IP 已生成或 RTL 已接入。
-
-### 19.2 独立库的实际核对
-
-- BaseJump STL 固定提交 `3753148c8f57cbbd878d2b535070c51a5b00c390` 是独立 SystemVerilog 硬件库，符合来源要求。
-- `bsg_misc/bsg_idiv_iterative.sv`：参数化 width，signed/unsigned，输出 quotient 与 remainder，支持每次迭代 1/2 bit，使用输入 valid/ready 和输出 valid/yumi；控制器 DONE 保持至消费。可作为 64 位迭代 DIV/REM 候选。依赖同库基础模块，需要显式列出小规模依赖闭包；本轮未编译或验证 width=64。没有独立 kill/tag 端口，需 O3 包装保存身份并管理取消，不能当作整核 reset。
-- 同提交 `bsg_misc/bsg_mul_pipelined.sv` 采用 Booth/compressor 结构，实际 generate 只支持 width=16/32，不能仅修改参数就得到 64 位流水乘法；也不把 ASIC 结构自动说成 KCU105 DSP 优化方案。迭代 `bsg_imul_iterative.sv` 可进一步评估，但不是当前高吞吐乘法的首选。
-- 独立 `risclite/verilog-divider` 提交 `e73dec16750b45bd9e01d82848251e564a4d5354` 的 `divfunc.v` 可参数化并用 STAGE_LIST 切分，输出无符号商/余数，但没有结果 ready/背压或取消接口；不是即插即用的 RV64M FU，当前不优先。
-
-源代码：[BaseJump divider](https://github.com/bespoke-silicon-group/basejump_stl/blob/3753148c8f57cbbd878d2b535070c51a5b00c390/bsg_misc/bsg_idiv_iterative.sv)、[BaseJump multiplier](https://github.com/bespoke-silicon-group/basejump_stl/blob/3753148c8f57cbbd878d2b535070c51a5b00c390/bsg_misc/bsg_mul_pipelined.sv)、[独立 divider](https://github.com/risclite/verilog-divider/blob/e73dec16750b45bd9e01d82848251e564a4d5354/divfunc.v)。本轮只读审查，不将项目测试或历史性能移作本核心证据。
-
-### 19.3 Vivado 乘除法 IP（来源已确认，配置待定）
-
-用户随后明确“用 vivado 的 ip”：整数 MUL 与 DIV/REM 均采用 Vivado IP。独立开源候选只保留为研究记录，不继续推进 BaseJump 的首版接入。
-
-后续用户已明确改为仅复用 Breeze 的整数乘除法，未来转写 SV，见 B21。以上仅保留此前选择，不表示已生成 IP，不再是当前实施路线。
-
-本轮核对 AMD 官方 Multiplier v12.0 PG108（2015-11-18）及 Divider Generator v5.1 PG151（2021-02-04），实际安装工具的版本以后生成时复核。
-
-- **乘法建议**：优先使用 Multiplier Generator，64×64 unsigned、完整 128 位结果、DSP 实现及真实流水寄存配置。RISC-V MUL/MULW 取低位；MULH/MULHSU 可在包装中根据原操作数做高半部符号修正，避免为每种符号组合复制 IP。PG108 输入上限为 64 位，不能未经核对提出 65×65 配置。流水级数依 OOC/整核时序确定，valid/tag 随运算推进，出口有容量或统一停顿机制保证不会丢结果。
-- **除法建议配置**：使用 Divider Generator 的 Radix-2 integer remainder 模式。PG151 的 High Radix 只支持 fractional 输出，不能把它直接等同同时返回 RV64 DIV/REM。Clocks per Division、延迟、Blocking 与 output TREADY 具体配置待定，不默认需要满流水除法吞吐。
-- Vivado 除零商/余数不能当作 RV64M 规定值：PG151 明确这些输出 undefined。包装必须独立处理除零、signed overflow 和 word 输入/输出语义；状态、ROB 身份、背压和取消同样由核心侧负责。
-- 以上是建议，未生成 IP、未修改 RTL、未运行 OOC 综合/仿真/整核时序。未来为厂商实现保留统一 FU 包装与明确的仿真模型入口；模型通过不等于 FPGA IP 或整核时序通过。
-
-官方来源：[PG108](https://docs.amd.com/api/khub/documents/idOj3Pp9ocZdMoFz3IpkjQ/content)、[PG151](https://docs.amd.com/api/khub/documents/c_0ZEADkbrJCz1MvCirYoQ/content)。
-
-## 20. B17：Vivado IP 的仿真交付与整核验证路线（2026-10-01，建议待落实）
-
-状态：历史参考，随 B21 确认复用 Breeze 整数乘除法而退出当前路线。不要求为本代首版建立本节厂商模型/替代模型双入口。
-
-用户要求先仿真再 FPGA。本轮重新只读核对 `sim/o3/Makefile`：当前整核使用 Verilator + C++ 驱动；没有生成 Vivado MUL/DIV IP。本地 PATH 查到 Verilator，未查到 Vivado/xsim；不据此断言其他目录、Windows 或远程主机未安装。
-
-### 20.1 官方模型的证据
-
-- PG108 v12.0 IP Facts：Multiplier 提供 encrypted VHDL simulation model；可验证选定流水配置及 CE 控制。它不是可直接加入 Verilator 的普通 SV 文件。
-- PG151 v5.1 IP Facts 及 Appendix A Simulation Changes：Divider 提供 encrypted VHDL 模型，该模型相对最终 netlist bit/cycle accurate；官方模型可检验 AXI4-Stream 接受、返回、背压和复位。
-- PG151 Chapter 5：另有 C shared-library 数值模型，bit accurate，但不 cycle accurate，不模拟延迟、接口信号或 tuser；除零数值也不构成架构语义保证。不能仅把 C 模型接到 DPI 就声称验证了 IP 握手或核心性能。
-- XSim 支持混合语言；UG900 2022.2 的 `export_simulation` 可导出 xsim/questa/vcs 等脚本，不包含 Verilator。Verilator 官方 Input Languages 说明其不能使用 encrypted RTL。
-
-### 20.2 建议保留两个相互对照的入口
-
-1. **XSim 真实 IP + 同一 FU 包装**：固定 Vivado/IP 版本和 XCI/生成 Tcl 参数，生成 simulation output products，添加包装及 SV testbench，运行 behavioral simulation。通过脚本记录请求接受、结果返回、复位/取消以及 ROB/目的身份；无需先做整核布局布线。可以进一步将后端 RTL 纳入 XSim，原 Verilator C++ 驱动需另作适配，不能声称原二进制能直接驱动 XSim。
-2. **Verilator 快速整核**：包装内算术 IP 例化可切换为项目自有的 SV 行为模型。核心侧真实的调度、身份、写回、恢复控制包装保持相同；模型需要覆盖具体配置的 CE/流水推进、接口缓冲/握手、结果稳定、复位等可观察行为，不能只用 `*`、`/` 算值再任意等几拍。
-3. 用同一组带周期的输入激励在 XSim 官方模型和 Verilator 模型下运行，并逐周期对比接受、返回和数值。覆盖连续请求、输入两路不同步、长时间输出背压、复位以及恢复当拍/迟到结果。IP 模型自身的核对与 RISC-V FU 包装的特殊值/取消测试分开归因。官方模型对照通过后，才把行为模型用于性能评估；仍需说明采用的是模型，非 FPGA 测量。
-
-XSim 工程已添加 IP、包装和 testbench 后，可以 `generate_target simulation [get_ips {...}]`，再 `launch_simulation -mode behavioral`；或使用 `export_simulation -simulator xsim -directory ... -force` 导出批处理脚本。此为建议流程，IP 名称、工程入口及运行脚本尚未创建或验证。
-
-以上没有改变“RTL 仿真 → 综合/时序 → FPGA”的证据顺序；官方 IP 模型仿真与快速行为模型仿真必须分别记录。本轮只更新文档，没有创建 IP、修改 RTL、编译或运行仿真。
-
-来源：[PG108](https://docs.amd.com/api/khub/documents/idOj3Pp9ocZdMoFz3IpkjQ/content)、[PG151](https://docs.amd.com/api/khub/documents/c_0ZEADkbrJCz1MvCirYoQ/content)、[UG900 2022.2 export_simulation](https://docs.amd.com/r/2022.2-English/ug900-vivado-logic-simulation/export_simulation)、[Verilator Input Languages](https://verilator.org/guide/latest/languages.html)。
-
 ## 21. B18：复用 Breeze 自研整数乘除法（2026-10-01，源码已核对，替换建议待确认）
 
 状态：本节的源码核对继续有效；来源已按 B21 确认。B19 曾讨论另写优化数据通路，但后续用户明确沿用 Breeze 乘除法算法与数据通路，不能再将 B19 当作首版方向。
@@ -438,50 +387,9 @@ XSim 工程已添加 IP、包装和 testbench 后，可以 `generate_target simu
 - 除法内核 `design/src/main/scala/divider/UnsignedRadix4Divider.scala` 单请求迭代，每拍串联两步 restoring radix-2 运算，外层每拍处理两位商。按操作数最高有效位对齐，最多 32 次迭代；该数字不是包含输入预处理、接收和输出保持的 FU 总延迟。`RiscvDivUnit.scala` 恢复商/余数符号并做 W 结果符号扩展；Breeze 后端另外处理有效输入、绝对值、除零和有符号溢出。移植必须包含这些语义，不能只复制包装。
 - 当前包装没有输出 ready；乘法全局 flush 清空全部有效 token，除法 flush 终止当前请求。O3 必须携带 ROB 身份及复用代际、目的物理寄存器和恢复信息，逐条取消年轻操作，保留老操作。除法只有一个在途请求，可依据其身份决定是否 abort；乘法流水中可能同时有老/年轻操作，不能整体 flush。
 - 乘法流水不能停顿，需在发射时为必然返回的结果预留缓冲容量，写回竞争时保持结果；除法的单拍 out_valid 同样需要结果保持。具体缓冲容量、端口和仲裁尚未冻结。
-- Chisel 算术 RTL 生成普通 SystemVerilog 后可加入现有 Verilator 工程，同一数据通路也用于 FPGA 综合，不需要厂商加密仿真模型。仍要整理生成入口、文件依赖以及验证断言的仿真/综合处理，不能假定现有 Breeze 测试直接覆盖 O3 包装。
+- （**2026-10-05 由 B47 取代：手工翻译为可读 SV，生成的 Verilog 只作等价对照**）Chisel 算术 RTL 生成普通 SystemVerilog 后可加入现有 Verilator 工程，同一数据通路也用于 FPGA 综合，不需要厂商加密仿真模型。仍要整理生成入口、文件依赖以及验证断言的仿真/综合处理，不能假定现有 Breeze 测试直接覆盖 O3 包装。
 
 现有源码包含乘法数值/流水/flush 测试和除法定向、随机、flush 测试；本轮只阅读，没有重跑。没有获得本核心接入、编译、仿真或 100 MHz 时序证据。乘法为手写压缩树，不能假定会自动充分利用 FPGA DSP；除法一拍两次串联比较/减法也是需测量的时序路径。资源/时序评估后再决定是否改数据通路或使用 Vivado 备选，维持前端第 16 节接口及 B12 恢复合同。
-
-## 22. B19：新自研整数乘除法的 FPGA 优化方向（2026-10-01）
-
-状态：本节为历史候选研究，已被 B21 的“复用 Breeze 整数乘除法，优化后置”决定替代。DSP 映射、unsigned 64×64 高位修正和 radix-2 改法均未进入当前首版方案。
-
-用户允许采用新的自研实现，以优化旧 Breeze 资源开销。当前仍在设计讨论，不直接修改 RTL。新数据通路为优先方向；B18 保留旧实现的审查结果，B16/B17 保留 Vivado 备选，不继续按旧乘法树直接移植。
-
-### 22.1 资源证据边界
-
-本轮读取 `docs/plans/2026-09-10-kcu105-bram-ila-resource.md`：源提交 `cbcee530960d0aae51902c9b2fe54006bf21a0a9`、四 hart、50 MHz 的历史 routed checkpoint 归因中，整数 multiplier 触及 5,431 个 CLB site，其中 1,513 个仅由该组占用。这是四核汇总的重叠位置集合，不是单个乘法器 LUT 数，也不保证重写会释放等量 CLB。该表没有整数 divider 的独立面积归因；FPU 的 divide/sqrt 不能当作整数除法面积。文档所列本地原始报告目录本轮未找到，不能声称已复核原始 rpt 或最新 100 MHz 关键路径。
-
-### 22.2 本轮重点：DSP 映射的自研乘法 FU（建议，结构细节待定）
-
-旧 `SignedMul65x65` 显式构造 Booth 部分积和 Bool 级 full/half adder 的 Dadda 树，不能期待综合器可靠还原成 DSP 乘法。建议新 FU 用普通可综合 RTL 表达分块乘法和寄存流水，让小乘法映射到 DSP48E2，而非继续扩大 LUT 压缩树。AMD UG579 v1.11 的 DSP48E2 为 signed 27×18 乘法；无符号块必须考虑额外符号零位，不能直接把任意 unsigned 27×18 当作一块 DSP 能容纳。
-
-建议计算一个 unsigned 64×64→128 位积 P。MUL/MULW 取低位；MULHU 取 P[127:64]；MULHSU 的高半部在 a 为负时减去 b；MULH 再在 b 为负时减去 a，运算按 64 位模数。这样不必构造 65×65 的完整有符号树。符号修正是独立可流水的宽减法，不能忽略其面积和时序。
-
-流程：操作数就绪且取得发射/结果容量后，捕获输入、操作及身份；DSP 小乘法并行产生部分积，后续寄存边界逐级合并，最后符号修正及结果选择，进入可保持的完成缓冲。建议保留每拍接收一条乘法的能力，不冻结三拍延迟；块宽、DSP 数、合并方式、流水级数需要 OOC 和整核数据决定。每拍一条需要相应并行硬件，不能同时声称大幅复用 DSP 而不影响吞吐。
-
-正常写回竞争时保持结果；发射前预留返回容量，或另行设计可靠的流水停顿协议。误预测时逐条清除年轻 token，保留老操作，迟到数据不可更新 PRF/ROB；身份与数值随相同寄存边界推进。代价是 DSP、合并/修正逻辑、流水寄存器和完成缓冲，收益目标是减少 LUT/布线压力，不承诺具体百分比或已达到 100 MHz。
-
-仿真使用同一份普通 RTL，包括实际寄存流水中的小乘法表达式；综合引导 DSP 映射。属性只作引导，必须检查实际 DSP/LUT 归因。若后续必须直接例化厂商 primitive，需另行闭合其仿真路线，不能称普通 Verilator 已支持未处理的 primitive。
-
-### 22.3 除法后续单独闭合
-
-建议评估每拍一步 radix-2 迭代，采用固定移位和复用加减通路，减少旧实现每拍两次串联比较/减法及动态对齐网络的开销；最坏迭代数可能由 32 增至 64，早退出及 FU 总延迟另定。此为资源/时序与延迟的交换，不声称 radix-2 必然优于旧实现。没有冻结除法算法或修改其 RTL。本轮未生成、编译、仿真或综合新 FU。
-
-参考：[AMD UG579 v1.11](https://docs.amd.com/api/khub/documents/pTysoma4TYgNH95BrY1Sbw/content)。保持前端第 16 节交付及 B12 恢复合同。
-
-## 23. B20：先落实 SV 流水乘法与迭代除法，优化后置（2026-10-01，方向已定）
-
-最终澄清见 B21：这里的未来 SV 实现是转写 Breeze 的整数乘除法，而非重新选择算法；“待会改为 SV”不是当前开始编码的授权。除法沿用 Breeze 数据通路方向，尚待闭合的是 O3 控制与接入细节。
-
-用户明确：先将当前多拍乘法改为可流水执行的实现，资源优化以后再讨论；当前 Breeze 算术实现是 Chisel，后续乘法、除法都改为 SystemVerilog。本轮仍为设计记录，用户说“待会改为 SV”，不据此提前修改 RTL。
-
-- **乘法机制已定**：实现真实寄存分级的流水运算，支持不同乘法指令重叠执行，以每拍可接受一条为首版设计目标。不能只在接收时组合完成乘法再倒计时，也不能仅在完整组合乘法后加延迟寄存器就称拆分算术关键路径。Breeze `SignedMul65x65` 已有三级实际算术流水，可作为结构参考；移植到 SV 后的具体延迟及寄存边界仍需验证，不冻结 100 MHz 结论。
-- **除法方向**：SV 实现真实迭代运算，单元可保持单请求在途；不要求与乘法一样每拍接受一条。算法、迭代位数和总延迟另行闭合，避免将“乘法可流水”自动扩大为“除法全流水”。
-- **实现来源**：首版采用项目自有普通 SV 算术 RTL，不例化 Vivado 算术 IP 或 DSP primitive；仿真和综合使用相同数据通路。未来是否优化 DSP 映射、位宽、压缩树或迭代结构依据测量再定，B19 不再作为当前首版要求。
-- **O3 控制合同继续有效**：身份/操作/目的物理寄存器随数值推进；完成结果遇写回竞争可保持；发射与结果容量协调；恢复逐条取消年轻操作而保留老操作。符合前端第 16 节和 B12，不能直接照搬 Breeze 全局 flush。
-
-当前 O3 的 `mul_execute_unit.sv` / `div_execute_unit.sv` 是已有 SV 占位实现，Breeze 内核为 Chisel；必须区分这两个来源。本轮没有修改它们，没有编译、仿真、综合或时序证据。后续进入实施时再落实 SV 文件、接口、测试与整核集成。
 
 ## 24. B21：最终范围澄清与下一窗口交接（2026-10-01，已定）
 
@@ -489,9 +397,9 @@ XSim 工程已添加 IP、包装和 testbench 后，可以 `generate_target simu
 
 - **讨论阶段**：继续微架构设计，尚未进入 RTL 实施。用户说明“将 Breeze 乘除法改为 SV 加入 CISLC”是在澄清未来实现来源，不是要求立即转写、集成或运行测试。本轮只更新文档。
 - **复用范围**：仅整数乘除法对应的算法和数据通路，不扩大为整个 Breeze 后端/整核复用。CISLC-O3 继续从现有 rename、IQ、PRF、ROB、恢复及访存框架演进，不预设全部重写。FPU 的独立来源与拆分决定仍见 B14/B15，不能从“乘除法复用”推导其他模块复用。
-- **乘法**：沿用 `SignedMul65x65` 的 signed 65×65 Booth/Dadda/末级加法三级实际运算流水及启动间隔 1 的方向，保留 RISC-V 乘法变体所需的输入扩展和结果选择。未来转写 SV 后的周期对齐、O3 包装额外延迟、资源及时序须独立验证。
+- **乘法**（**2026-10-05 由 B43 取代：改用 DSP 实现**）：沿用 `SignedMul65x65` 的 signed 65×65 Booth/Dadda/末级加法三级实际运算流水及启动间隔 1 的方向，保留 RISC-V 乘法变体所需的输入扩展和结果选择。未来转写 SV 后的周期对齐、O3 包装额外延迟、资源及时序须独立验证。
 - **除法**：沿用 `UnsignedRadix4Divider` 的单请求、按有效位对齐、每次迭代两步 restoring 运算方向；最多 32 次迭代不是整个 FU 固定延迟。包含后端原有输入/绝对值预处理、除零与有符号溢出、商/余数符号恢复及 W 语义。未来转写 SV，不在本阶段换成 radix-2 或全流水除法。
-- **资源优化后置**：先形成可验证、可测量的整合版本并加探针，再依据仿真、时序和 FPGA 数据优化。当前不引入 Vivado 算术 IP 或 DSP primitive，不把历史 Breeze 报告作为新核心达到 100 MHz 的证据。
+- **资源优化后置**（乘法部分已由 B43 提前）：先形成可验证、可测量的整合版本并加探针，再依据仿真、时序和 FPGA 数据优化。当前不引入 Vivado 算术 IP 或 DSP primitive，不把历史 Breeze 报告作为新核心达到 100 MHz 的证据。
 
 ### 24.2 已定合同、未闭合细节、实现缺口
 
@@ -590,7 +498,7 @@ SQ 排空后，按前端 D26 的 rs1 虚拟地址、rs2 ASID、global 与页大�
 
 ## 31. B28：首版面向 Linux 的自建 SoC（2026-10-02，已定范围与候选参考）
 
-用户明确首版按单 hart RV64GC/Linux 完整平台需求设计；不采用 LiteX 框架，SoC 使用 Vivado IP 与自写逻辑集成。此要求取代任何把 Flow 的 LiteX/LiteDRAM 集成方式直接继承到 CISLC-O3 的假设。借鉴 Breeze 已有的软件可见接口及验证经验，不把其板级或 Linux 历史结果算作 CISLC-O3 验证结果。具体 IP 型号、地址图、启动介质和中断控制器实现尚未全部冻结；既有 SD DMA 需求保持在首版系统范围内。
+用户明确首版按单 hart RV64GC/Linux 完整平台需求设计；不采用 LiteX 框架，SoC 使用 Vivado IP 与自写逻辑集成。此要求取代任何把 Flow 的 LiteX/LiteDRAM 集成方式直接继承到 CISLC-O3 的假设。借鉴 Breeze 已有的软件可见接口及验证经验，不把其板级或 Linux 历史结果算作 CISLC-O3 验证结果。具体 IP 型号、地址图、启动介质和中断控制器实现尚未全部冻结；既有 SD DMA 需求保持在首版系统范围内。SD 控制器选型见 B44（2026-10-05）。
 
 本轮核对 Breeze：`litex_wrapper/flow/rtl/FlowClint.sv` 和 `FlowPlic.sv` 是独立 SV 模块，当前带 64-bit Wishbone slave；`fpga/kcu105/target.py` 负责地址译码、总线和 msip/mtip/mtime/meip/seip 接线。可参考其寄存器与 gateway/claim/complete 机制，后续改接 AXI/AXI-Lite 等选定总线时必须重查字节地址、访问宽度、写 strobe 和握手，不能把原包装直接当 AXI 外设。`design/src/main/scala/core/RegFile.scala` 包含 M/S pending、enable、delegation 仲裁、软件 STIP 路径及可选 Sstc 路径；核内 CSRFile 应承接这些架构语义。
 
@@ -754,3 +662,142 @@ CSRFile 承接 M/S pending、enable、delegation、trap entry/return 及软件 S
 - “L2 整行收齐、无错误并安装后再交付 L1，暂不 early restart”仍只是建议。
 - L2 容量、路数、bank、MSHR/回收槽/写回缓冲数、AXI 宽度/ID、具体流水拍数未冻结。
 - 系统 committed 预测上下文来源，以及首笔取指与恢复元数据的交接仍需闭合（前端 16.4）。
+
+## 36. B42～B47：v1 实施计划确认（2026-10-05，已定）
+
+用户确认 [`../O3-v1-plan.md`](../O3-v1-plan.md)。以下六项为新决定，其余已定机制不变。
+
+### 36.1 B42：机器宽度统一为四
+
+- 解码、重命名、派发、提交宽度均为 4；`o3_cfg_pkg` 的 `be.rename.width` 由 6 改为 4。取代 B01 的六宽重命名及“六宽消化积压”的理由。
+- B02 的两拍重命名（R1 依赖预处理 + R2 原子分配）**机制保留**，作为闭环简化推迟实现：先沿用现有单拍重命名（组内旁路在 `rename_map_table`）扩为四宽；综合数据表明重命名成为关键路径时再拆分。R1 槽位号随宽度改为 2 位。
+
+### 36.2 B43：乘法改用 DSP 实现
+
+- 取代 B21 中“沿用 `SignedMul65x65` Booth/Dadda 树”的乘法部分。参照 Breeze T01 的新实现：65×65 有符号乘法后接 4 级寄存器，由 Vivado 推断 DSP48E2 并允许寄存器重定时，4 拍、每拍可接收一条。RISC-V 各乘法变体的输入扩展与结果选择不变。
+- 理由：Breeze 旧乘法器单核约 6.8k LUT 且未用 DSP；O3 为四宽，面积压力更大。
+- O3 包装要求不变（ROB 身份、按条取消、完成 FIFO，B33/B34）。除法仍按 B21 沿用 radix-4。
+
+### 36.3 B44：SD 卡使用 AXI Quad SPI + SPI 模式
+
+- 不使用 LiteX 框架（B28），Xilinx 也没有可用的免费 PL 端 SD 主控 IP。v1 使用 Vivado AXI Quad SPI IP 以 SPI 模式访问 SD 卡，Linux 使用 `mmc_spi` 驱动，OpenSBI/启动程序使用 SPI 模式读取镜像。
+- 带宽为几 MB/s，满足启动与镜像加载；不追求 SD 原生 4 位模式的吞吐。
+- B08 的 SD DMA 行协调合同保持：若 SPI 控制器经 DMA 访问内存，按 B08 处理；若由 CPU 以 PIO 方式搬运，DMA 行协调可作为闭环简化推迟，但接口保留。具体在 L11 的 spec 中确定。
+
+### 36.4 B45：Spike 逐条比对作为每级门禁
+
+- 从 L5 起，每一级的验收都包含与 Spike 的逐条退休比对：PC、指令、整数/浮点写回值、访存地址与数据、异常 cause/tval、CSR 写入，差异为 0。
+- 比对按提交顺序进行；长延迟结果晚到时按目的寄存器关联。比较不一致时停止并输出两侧状态、周期和前若干条退休记录。
+- 这是对乱序核正确性和实现 agent 幻觉的主要防线，不能以“ACT4 通过”替代。
+
+### 36.5 B46：不再并行搭建目标结构
+
+- 目标结构只在其所属闭环级接入，接入方式是替换旧数据流中对应部分；替换完成后删除被替换的旧代码和空壳。
+- 不在当前级的空壳从 `backend.sv` 移除实例化，不列入 `rtl/rtl.f`，文件保留到所属级。
+- 修订 `agent.md` 第 1.3 节“不要删除尚未迁移的旧数据流代码”的适用范围：被本级替换的旧代码应在本级删除。
+
+### 36.6 B47：Breeze 组件手工翻译并做等价对照
+
+- 复用 Breeze 的 Chisel 组件时，手工翻译为可读的 SystemVerilog，不直接使用 Chisel 生成的 Verilog。
+- 验证：以同一提交的 Chisel 生成 Verilog 为参照。寄存器结构一致的模块用 Yosys `eqy` 做形式化等价检查；结构不一致的用 Verilator 并排运行两份 RTL、随机激励逐拍比较输出。参照 Verilog 只用于验证，不进入 `rtl/`。
+- 组件清单与所属级见 `O3-v1-plan.md` 第 4 节。
+
+## 附录 A：已被取代的历史决策
+
+以下各节已被后续决定取代，仅作历史记录保留，不得据此实现。
+
+### A.1 B16：整数算术 IP 的来源约束与候选（2026-10-01）
+
+#### A.1.1 用户明确的筛选要求
+
+仅考虑独立算术库/IP，不为复用乘除法而 clone 另一套 CPU 或引入其配置/流水线框架。CVA6、Rocket、VexiiRiscv 的 CPU 内部组件退出移植候选；此前只下载少量文件到 /tmp 做只读核对，没有 clone 或引入依赖。用户进一步授权：独立开源实现不合适时，可以采用 Vivado IP。此授权不表示 IP 已生成或 RTL 已接入。
+
+#### A.1.2 独立库的实际核对
+
+- BaseJump STL 固定提交 `3753148c8f57cbbd878d2b535070c51a5b00c390` 是独立 SystemVerilog 硬件库，符合来源要求。
+- `bsg_misc/bsg_idiv_iterative.sv`：参数化 width，signed/unsigned，输出 quotient 与 remainder，支持每次迭代 1/2 bit，使用输入 valid/ready 和输出 valid/yumi；控制器 DONE 保持至消费。可作为 64 位迭代 DIV/REM 候选。依赖同库基础模块，需要显式列出小规模依赖闭包；本轮未编译或验证 width=64。没有独立 kill/tag 端口，需 O3 包装保存身份并管理取消，不能当作整核 reset。
+- 同提交 `bsg_misc/bsg_mul_pipelined.sv` 采用 Booth/compressor 结构，实际 generate 只支持 width=16/32，不能仅修改参数就得到 64 位流水乘法；也不把 ASIC 结构自动说成 KCU105 DSP 优化方案。迭代 `bsg_imul_iterative.sv` 可进一步评估，但不是当前高吞吐乘法的首选。
+- 独立 `risclite/verilog-divider` 提交 `e73dec16750b45bd9e01d82848251e564a4d5354` 的 `divfunc.v` 可参数化并用 STAGE_LIST 切分，输出无符号商/余数，但没有结果 ready/背压或取消接口；不是即插即用的 RV64M FU，当前不优先。
+
+源代码：[BaseJump divider](https://github.com/bespoke-silicon-group/basejump_stl/blob/3753148c8f57cbbd878d2b535070c51a5b00c390/bsg_misc/bsg_idiv_iterative.sv)、[BaseJump multiplier](https://github.com/bespoke-silicon-group/basejump_stl/blob/3753148c8f57cbbd878d2b535070c51a5b00c390/bsg_misc/bsg_mul_pipelined.sv)、[独立 divider](https://github.com/risclite/verilog-divider/blob/e73dec16750b45bd9e01d82848251e564a4d5354/divfunc.v)。本轮只读审查，不将项目测试或历史性能移作本核心证据。
+
+#### A.1.3 Vivado 乘除法 IP（来源已确认，配置待定）
+
+用户随后明确“用 vivado 的 ip”：整数 MUL 与 DIV/REM 均采用 Vivado IP。独立开源候选只保留为研究记录，不继续推进 BaseJump 的首版接入。
+
+后续用户已明确改为仅复用 Breeze 的整数乘除法，未来转写 SV，见 B21。以上仅保留此前选择，不表示已生成 IP，不再是当前实施路线。
+
+本轮核对 AMD 官方 Multiplier v12.0 PG108（2015-11-18）及 Divider Generator v5.1 PG151（2021-02-04），实际安装工具的版本以后生成时复核。
+
+- **乘法建议**：优先使用 Multiplier Generator，64×64 unsigned、完整 128 位结果、DSP 实现及真实流水寄存配置。RISC-V MUL/MULW 取低位；MULH/MULHSU 可在包装中根据原操作数做高半部符号修正，避免为每种符号组合复制 IP。PG108 输入上限为 64 位，不能未经核对提出 65×65 配置。流水级数依 OOC/整核时序确定，valid/tag 随运算推进，出口有容量或统一停顿机制保证不会丢结果。
+- **除法建议配置**：使用 Divider Generator 的 Radix-2 integer remainder 模式。PG151 的 High Radix 只支持 fractional 输出，不能把它直接等同同时返回 RV64 DIV/REM。Clocks per Division、延迟、Blocking 与 output TREADY 具体配置待定，不默认需要满流水除法吞吐。
+- Vivado 除零商/余数不能当作 RV64M 规定值：PG151 明确这些输出 undefined。包装必须独立处理除零、signed overflow 和 word 输入/输出语义；状态、ROB 身份、背压和取消同样由核心侧负责。
+- 以上是建议，未生成 IP、未修改 RTL、未运行 OOC 综合/仿真/整核时序。未来为厂商实现保留统一 FU 包装与明确的仿真模型入口；模型通过不等于 FPGA IP 或整核时序通过。
+
+官方来源：[PG108](https://docs.amd.com/api/khub/documents/idOj3Pp9ocZdMoFz3IpkjQ/content)、[PG151](https://docs.amd.com/api/khub/documents/c_0ZEADkbrJCz1MvCirYoQ/content)。
+
+### A.2 B17：Vivado IP 的仿真交付与整核验证路线（2026-10-01，建议待落实）
+
+状态：历史参考，随 B21 确认复用 Breeze 整数乘除法而退出当前路线。不要求为本代首版建立本节厂商模型/替代模型双入口。
+
+用户要求先仿真再 FPGA。本轮重新只读核对 `sim/o3/Makefile`：当前整核使用 Verilator + C++ 驱动；没有生成 Vivado MUL/DIV IP。本地 PATH 查到 Verilator，未查到 Vivado/xsim；不据此断言其他目录、Windows 或远程主机未安装。
+
+#### A.2.1 官方模型的证据
+
+- PG108 v12.0 IP Facts：Multiplier 提供 encrypted VHDL simulation model；可验证选定流水配置及 CE 控制。它不是可直接加入 Verilator 的普通 SV 文件。
+- PG151 v5.1 IP Facts 及 Appendix A Simulation Changes：Divider 提供 encrypted VHDL 模型，该模型相对最终 netlist bit/cycle accurate；官方模型可检验 AXI4-Stream 接受、返回、背压和复位。
+- PG151 Chapter 5：另有 C shared-library 数值模型，bit accurate，但不 cycle accurate，不模拟延迟、接口信号或 tuser；除零数值也不构成架构语义保证。不能仅把 C 模型接到 DPI 就声称验证了 IP 握手或核心性能。
+- XSim 支持混合语言；UG900 2022.2 的 `export_simulation` 可导出 xsim/questa/vcs 等脚本，不包含 Verilator。Verilator 官方 Input Languages 说明其不能使用 encrypted RTL。
+
+#### A.2.2 建议保留两个相互对照的入口
+
+1. **XSim 真实 IP + 同一 FU 包装**：固定 Vivado/IP 版本和 XCI/生成 Tcl 参数，生成 simulation output products，添加包装及 SV testbench，运行 behavioral simulation。通过脚本记录请求接受、结果返回、复位/取消以及 ROB/目的身份；无需先做整核布局布线。可以进一步将后端 RTL 纳入 XSim，原 Verilator C++ 驱动需另作适配，不能声称原二进制能直接驱动 XSim。
+2. **Verilator 快速整核**：包装内算术 IP 例化可切换为项目自有的 SV 行为模型。核心侧真实的调度、身份、写回、恢复控制包装保持相同；模型需要覆盖具体配置的 CE/流水推进、接口缓冲/握手、结果稳定、复位等可观察行为，不能只用 `*`、`/` 算值再任意等几拍。
+3. 用同一组带周期的输入激励在 XSim 官方模型和 Verilator 模型下运行，并逐周期对比接受、返回和数值。覆盖连续请求、输入两路不同步、长时间输出背压、复位以及恢复当拍/迟到结果。IP 模型自身的核对与 RISC-V FU 包装的特殊值/取消测试分开归因。官方模型对照通过后，才把行为模型用于性能评估；仍需说明采用的是模型，非 FPGA 测量。
+
+XSim 工程已添加 IP、包装和 testbench 后，可以 `generate_target simulation [get_ips {...}]`，再 `launch_simulation -mode behavioral`；或使用 `export_simulation -simulator xsim -directory ... -force` 导出批处理脚本。此为建议流程，IP 名称、工程入口及运行脚本尚未创建或验证。
+
+以上没有改变“RTL 仿真 → 综合/时序 → FPGA”的证据顺序；官方 IP 模型仿真与快速行为模型仿真必须分别记录。本轮只更新文档，没有创建 IP、修改 RTL、编译或运行仿真。
+
+来源：[PG108](https://docs.amd.com/api/khub/documents/idOj3Pp9ocZdMoFz3IpkjQ/content)、[PG151](https://docs.amd.com/api/khub/documents/c_0ZEADkbrJCz1MvCirYoQ/content)、[UG900 2022.2 export_simulation](https://docs.amd.com/r/2022.2-English/ug900-vivado-logic-simulation/export_simulation)、[Verilator Input Languages](https://verilator.org/guide/latest/languages.html)。
+
+### A.3 B19：新自研整数乘除法的 FPGA 优化方向（2026-10-01）
+
+状态：本节为历史候选研究，已被 B21 的“复用 Breeze 整数乘除法，优化后置”决定替代。DSP 映射、unsigned 64×64 高位修正和 radix-2 改法均未进入当前首版方案。
+
+用户允许采用新的自研实现，以优化旧 Breeze 资源开销。当前仍在设计讨论，不直接修改 RTL。新数据通路为优先方向；B18 保留旧实现的审查结果，B16/B17 保留 Vivado 备选，不继续按旧乘法树直接移植。
+
+#### A.3.1 资源证据边界
+
+本轮读取 `docs/plans/2026-09-10-kcu105-bram-ila-resource.md`：源提交 `cbcee530960d0aae51902c9b2fe54006bf21a0a9`、四 hart、50 MHz 的历史 routed checkpoint 归因中，整数 multiplier 触及 5,431 个 CLB site，其中 1,513 个仅由该组占用。这是四核汇总的重叠位置集合，不是单个乘法器 LUT 数，也不保证重写会释放等量 CLB。该表没有整数 divider 的独立面积归因；FPU 的 divide/sqrt 不能当作整数除法面积。文档所列本地原始报告目录本轮未找到，不能声称已复核原始 rpt 或最新 100 MHz 关键路径。
+
+#### A.3.2 本轮重点：DSP 映射的自研乘法 FU（建议，结构细节待定）
+
+旧 `SignedMul65x65` 显式构造 Booth 部分积和 Bool 级 full/half adder 的 Dadda 树，不能期待综合器可靠还原成 DSP 乘法。建议新 FU 用普通可综合 RTL 表达分块乘法和寄存流水，让小乘法映射到 DSP48E2，而非继续扩大 LUT 压缩树。AMD UG579 v1.11 的 DSP48E2 为 signed 27×18 乘法；无符号块必须考虑额外符号零位，不能直接把任意 unsigned 27×18 当作一块 DSP 能容纳。
+
+建议计算一个 unsigned 64×64→128 位积 P。MUL/MULW 取低位；MULHU 取 P[127:64]；MULHSU 的高半部在 a 为负时减去 b；MULH 再在 b 为负时减去 a，运算按 64 位模数。这样不必构造 65×65 的完整有符号树。符号修正是独立可流水的宽减法，不能忽略其面积和时序。
+
+流程：操作数就绪且取得发射/结果容量后，捕获输入、操作及身份；DSP 小乘法并行产生部分积，后续寄存边界逐级合并，最后符号修正及结果选择，进入可保持的完成缓冲。建议保留每拍接收一条乘法的能力，不冻结三拍延迟；块宽、DSP 数、合并方式、流水级数需要 OOC 和整核数据决定。每拍一条需要相应并行硬件，不能同时声称大幅复用 DSP 而不影响吞吐。
+
+正常写回竞争时保持结果；发射前预留返回容量，或另行设计可靠的流水停顿协议。误预测时逐条清除年轻 token，保留老操作，迟到数据不可更新 PRF/ROB；身份与数值随相同寄存边界推进。代价是 DSP、合并/修正逻辑、流水寄存器和完成缓冲，收益目标是减少 LUT/布线压力，不承诺具体百分比或已达到 100 MHz。
+
+仿真使用同一份普通 RTL，包括实际寄存流水中的小乘法表达式；综合引导 DSP 映射。属性只作引导，必须检查实际 DSP/LUT 归因。若后续必须直接例化厂商 primitive，需另行闭合其仿真路线，不能称普通 Verilator 已支持未处理的 primitive。
+
+#### A.3.3 除法后续单独闭合
+
+建议评估每拍一步 radix-2 迭代，采用固定移位和复用加减通路，减少旧实现每拍两次串联比较/减法及动态对齐网络的开销；最坏迭代数可能由 32 增至 64，早退出及 FU 总延迟另定。此为资源/时序与延迟的交换，不声称 radix-2 必然优于旧实现。没有冻结除法算法或修改其 RTL。本轮未生成、编译、仿真或综合新 FU。
+
+参考：[AMD UG579 v1.11](https://docs.amd.com/api/khub/documents/pTysoma4TYgNH95BrY1Sbw/content)。保持前端第 16 节交付及 B12 恢复合同。
+
+### A.4 B20：先落实 SV 流水乘法与迭代除法，优化后置（2026-10-01，方向已定）
+
+最终澄清见 B21：这里的未来 SV 实现是转写 Breeze 的整数乘除法，而非重新选择算法；“待会改为 SV”不是当前开始编码的授权。除法沿用 Breeze 数据通路方向，尚待闭合的是 O3 控制与接入细节。
+
+用户明确：先将当前多拍乘法改为可流水执行的实现，资源优化以后再讨论；当前 Breeze 算术实现是 Chisel，后续乘法、除法都改为 SystemVerilog。本轮仍为设计记录，用户说“待会改为 SV”，不据此提前修改 RTL。
+
+- **乘法机制已定**：实现真实寄存分级的流水运算，支持不同乘法指令重叠执行，以每拍可接受一条为首版设计目标。不能只在接收时组合完成乘法再倒计时，也不能仅在完整组合乘法后加延迟寄存器就称拆分算术关键路径。Breeze `SignedMul65x65` 已有三级实际算术流水，可作为结构参考；移植到 SV 后的具体延迟及寄存边界仍需验证，不冻结 100 MHz 结论。
+- **除法方向**：SV 实现真实迭代运算，单元可保持单请求在途；不要求与乘法一样每拍接受一条。算法、迭代位数和总延迟另行闭合，避免将“乘法可流水”自动扩大为“除法全流水”。
+- **实现来源**：首版采用项目自有普通 SV 算术 RTL，不例化 Vivado 算术 IP 或 DSP primitive；仿真和综合使用相同数据通路。未来是否优化 DSP 映射、位宽、压缩树或迭代结构依据测量再定，B19 不再作为当前首版要求。
+- **O3 控制合同继续有效**：身份/操作/目的物理寄存器随数值推进；完成结果遇写回竞争可保持；发射与结果容量协调；恢复逐条取消年轻操作而保留老操作。符合前端第 16 节和 B12，不能直接照搬 Breeze 全局 flush。
+
+当前 O3 的 `mul_execute_unit.sv` / `div_execute_unit.sv` 是已有 SV 占位实现，Breeze 内核为 Chisel；必须区分这两个来源。本轮没有修改它们，没有编译、仿真、综合或时序证据。后续进入实施时再落实 SV 文件、接口、测试与整核集成。
