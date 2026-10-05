@@ -1,4 +1,4 @@
-"""L1 fixed-width instruction boundary reference."""
+"""L5 RV64I instruction positions and precise frontend faults."""
 from dataclasses import dataclass
 
 
@@ -15,6 +15,8 @@ class Inputs:
     cfi_slot: int = 0
     kill: bool = False
     sync: bool = False
+    exc: bool = False
+    cause: int = 1
 
 
 class F0Model:
@@ -34,6 +36,9 @@ class F0Model:
                 if i.cfi_valid and slot > i.cfi_slot:
                     break
                 word = (i.data >> (8 * byte_offset)) & 0xffffffff
-                if word & 3 == 3:
-                    instructions[slot] = (i.base + byte_offset, word, 4, i.ftq_id)
+                if i.exc:
+                    word = 0
+                elif word & 3 != 3:
+                    word &= 0xffff
+                instructions[slot] = (i.base + byte_offset, word, 4, i.ftq_id)
         return ready, instructions

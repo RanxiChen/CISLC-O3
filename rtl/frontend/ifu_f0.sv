@@ -22,11 +22,12 @@
  * - 后半字取指异常如何携带原指令 PC 与故障地址（第 3.3 节）。
  * - 非法 RVC 编码的异常 tval 内容。
  *
- * 当前实现状态：闭环简化（L1）
- * - 为 L1 实现：只识别完整的 32 位指令，把原 PC、字节和 FTQ 身份交给 F1。
+ * 当前实现状态：闭环简化（L5）
+ * - RV64I 的 IALIGN=32：每个对齐指令位置都交给 F1，非法短编码不能被丢弃。
+ * - 取指错误携带故障 PC/cause，原始字节不可用时 instruction=0。
  * - 闭环简化：RVC 与跨块拼接待 L2 后补（偏离第 3.3 节目标）；
  *   L1 镜像只有 32 位指令。当前为组合直通，受 F1 ready 回压。
- * - 仍未实现：RVC 展开、跨块半字暂存、异常处理和性能事件（显式 tie-off）。
+ * - 仍未实现：RVC 展开、跨块半字暂存和性能事件（显式 tie-off）。
  * - 测试：sim/cocotb/ifu_f0/
  *
  * 目标周期行为：
@@ -65,7 +66,8 @@ module ifu_f0
     // L1 has four aligned 32-bit instructions per 16B block. A halfword is
     // an instruction start only when it is at or after entry_slot, matches
     // the entry's 32-bit phase, and has both halfwords in this region.
-    // The low encoding bits 11 identify a 32-bit instruction.
+    // Unsupported short encodings occupy an IALIGN=32 position and trap;
+    // dropping them would let a younger instruction retire across the fault.
     always_comb begin
         out_valid_o = '0;
         for (int slot = 0; slot < F0_SLOTS; slot++) begin
@@ -75,8 +77,7 @@ module ifu_f0
                 && ((slot - int'(in_brief_i.pred.entry_slot)) % 2 == 0)
                 && slot + 1 < REGION_SLOTS
                 && (!in_brief_i.pred.cfi_valid
-                    || slot <= int'(in_brief_i.pred.cfi_slot))
-                && in_i.data[16*slot +: 2] == 2'b11) begin
+                    || slot <= int'(in_brief_i.pred.cfi_slot))) begin
                 out_valid_o[slot] = 1'b1;
                 out_o[slot].pc = in_i.region_base + vaddr_t'(2 * slot);
                 out_o[slot].raw_instruction = in_i.data[16*slot +: ILEN];
@@ -86,6 +87,21 @@ module ifu_f0
                 out_o[slot].crosses_region = 1'b0;
                 out_o[slot].ftq_id = in_i.ftq_id;
                 out_o[slot].slot = fetch_slot_t'(slot);
+                if (in_i.exc_valid) begin
+                    out_o[slot].raw_instruction = '0;
+                    out_o[slot].instruction = '0;
+                    out_o[slot].exc_valid = 1'b1;
+                    out_o[slot].exc_cause = in_i.exc_cause;
+                    out_o[slot].exc_tval = XLEN'(out_o[slot].pc);
+                end else if (in_i.data[16*slot +: 2] != 2'b11) begin
+                    // Raw instruction length is encoded even when C is absent.
+                    // No RVC expansion or execution; preserve the illegal halfword.
+                    out_o[slot].raw_instruction = ILEN'(in_i.data[16*slot +: 16]);
+                    out_o[slot].instruction = out_o[slot].raw_instruction;
+                    out_o[slot].exc_valid = 1'b1;
+                    out_o[slot].exc_cause = EXCEPTION_CAUSE_ILLEGAL_INSTRUCTION;
+                    out_o[slot].exc_tval = XLEN'(out_o[slot].raw_instruction);
+                end
             end
         end
     end

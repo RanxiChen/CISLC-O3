@@ -60,3 +60,21 @@ Alan `48b55ba852977ea9b3e5784dbcff9208d4a069c5` M 模式程序退休到旧 Store
 修正为这两类项在分配时即执行完成，正常串行退休仍受 head_serial_done 控制；CSR 仍等待执行。
 缩减为单条 ECALL（ecall_head.hex）；另加 WFI/FENCE/FENCE.I 三条串行复现。
 两项加入 run-spike-all，保留全部原门禁。修复后 Alan 结果待补。
+
+`ddb85a38597751eacd834818c52ba2a73cf4ff55` 的单条 ECALL 门禁在 Alan 已通过，
+对照原 SHA 的单条 ECALL 超时（`ecall-head-before.log`）确认修复。
+该轮串行门禁在 WFI 之后产生参考侧假 trap：Spike 默认等待中断、下一次 step 未执行；
+按任务书的 WFI=NOP 选择设置其官方 cfg.wfi_as_nop，未改 DUT 或上游执行语义。
+
+## Bug 3：F0 跳过非法短编码，也未传递取指访问错误
+
+接手时检查 Alan `mi-ddb85a3/illegal.log`：order 6，Spike 要求 PC=0x80000020
+的 `.word 0` 触发 cause 2，DUT 却退休 PC=0x80000024 的年轻 JAL。
+根因为 L1 F0 仅输出低两位为 11 的位置，其他编码被静默丢弃；返回队列的
+exc_valid/cause 同样未传给 F1。本次按 L5 RV64I 的 IALIGN=32 输出每个有效
+对齐位置；短编码不执行，携带低半字原始编码及非法指令异常；取指错误携带
+故障 PC/cause，未知 instruction=0。没有增加 C 执行或跨块拼接机制。
+最小固定复现为 `illegal_zero.hex`；F0 合同测试增加非法短编码、零编码及
+访问错误的定向/固定种子随机检查。原 L1 “跳过短编码”期望已过时，明确
+替换为 L5 精确异常要求，并保留正常位置、身份、回压、复位/kill/sync 检查。
+本地 lint PASS（0 errors / 90 warnings），Alan 对照与最终结果待补。

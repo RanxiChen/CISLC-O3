@@ -11,6 +11,11 @@ module ifu_f0_tb_top
     input logic cfi_valid_i,
     input logic [SLOT_W-1:0] cfi_slot_i,
     input logic kill_valid_i, sync_clear_i,
+    input logic exc_valid_i,
+    input logic [5:0] exc_cause_i,
+    output logic [F0_SLOTS-1:0] out_exc_o,
+    output logic [F0_SLOTS*XLEN-1:0] out_tval_flat_o,
+    output logic [F0_SLOTS*6-1:0] out_cause_flat_o,
     output logic in_ready_o,
     output logic [F0_SLOTS-1:0] out_valid_o,
     output logic [F0_SLOTS*VADDR_W-1:0] out_pc_flat_o,
@@ -27,6 +32,8 @@ module ifu_f0_tb_top
     fe_kill_t kill;
     always_comb begin
         block_in = '0;
+        block_in.exc_valid = exc_valid_i;
+        block_in.exc_cause = exception_cause_t'(exc_cause_i);
         block_in.region_base = region_base_i;
         block_in.data = block_data_i;
         block_in.ftq_id = ftq_id_t'(ftq_id_i);
@@ -47,6 +54,9 @@ module ifu_f0_tb_top
         .kill_i(kill), .sync_clear_i(sync_clear_i), .perf_o()
     );
     for (genvar slot = 0; slot < F0_SLOTS; slot++) begin : flatten
+        assign out_exc_o[slot] = inst_out[slot].exc_valid;
+        assign out_tval_flat_o[slot*XLEN +: XLEN] = inst_out[slot].exc_tval;
+        assign out_cause_flat_o[slot*6 +: 6] = 6'(inst_out[slot].exc_cause);
         assign out_pc_flat_o[slot*VADDR_W +: VADDR_W] = inst_out[slot].pc;
         assign out_inst_flat_o[slot*ILEN +: ILEN] = inst_out[slot].instruction;
         assign out_len_flat_o[slot*3 +: 3] = inst_out[slot].inst_len;

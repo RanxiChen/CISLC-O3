@@ -32,6 +32,8 @@ class Bench:
         d.cfi_slot_i.value = i.cfi_slot
         d.kill_valid_i.value = int(i.kill)
         d.sync_clear_i.value = int(i.sync)
+        d.exc_valid_i.value = int(i.exc)
+        d.exc_cause_i.value = i.cause
         await Timer(1, unit="ns")
         await ReadOnly()
         ready, instructions = self.model.visible(i)
@@ -51,6 +53,14 @@ class Bench:
         slot_bits = len(d.entry_slot_i)
         id_bits = len(d.ftq_id_i)
         for slot, (pc, word, length, ftq_id) in instructions.items():
+            raw = (i.data >> (16 * slot)) & 0xffffffff
+            fault = i.exc or raw & 3 != 3
+            assert (val(d.out_exc_o) >> slot) & 1 == fault, context
+            if fault:
+                cause = i.cause if i.exc else 2
+                tval = pc if i.exc else raw & 0xffff
+                assert (val(d.out_cause_flat_o) >> (slot * 6)) & 63 == cause, context
+                assert (val(d.out_tval_flat_o) >> (slot * 64)) & ((1 << 64)-1) == tval, context
             assert (pc_flat >> (slot * pc_bits)) & ((1 << pc_bits) - 1) == pc, context
             assert (inst_flat >> (slot * inst_bits)) & ((1 << inst_bits) - 1) == word, context
             assert (len_flat >> (slot * 3)) & 7 == length, context
@@ -73,8 +83,10 @@ async def directed_contract(dut):
     await b.step(Inputs(valid=True, ready=True, data=block, ftq_id=7, entry_slot=2))
     await b.step(Inputs(valid=True, ready=True, data=block, ftq_id=7,
                         cfi_valid=True, cfi_slot=2))
-    # A 16-bit prefix is not emitted as an instruction in L1.
+    # An unsupported short encoding must fault, never disappear.
     await b.step(Inputs(valid=True, ready=True, data=block & ~0xffff | 0x0001))
+    await b.step(Inputs(valid=True, ready=True, data=block & ~0xffffffff))
+    await b.step(Inputs(valid=True, ready=True, data=block, exc=True, cause=1))
     await b.step(Inputs(valid=True, ready=True, data=block, kill=True))
     await b.step(Inputs(valid=True, ready=True, data=block, sync=True))
 
@@ -97,4 +109,5 @@ async def seeded_transactions(dut):
             entry_slot=2 * rng.randrange(4),
             kill=rng.random() < 0.02,
             sync=rng.random() < 0.02,
+            exc=rng.random() < 0.1,
         ))

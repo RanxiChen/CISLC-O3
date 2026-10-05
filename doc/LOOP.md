@@ -179,3 +179,6 @@ FENCE.I 只排空 SQ + 失效 ICache，完整数据 clean 待 L8。Spike 增加 
 
 O3-T03 首版发现 PRF/ROB unpacked array lane 方向不一致；修正并追加三条静态
 指令的固定 Spike 门禁，详情 O3-T03 报告 Bug 1。修复后 Alan 验证待运行。
+
+L5 F0 已保留非法短编码位置及返回队列取指错误，交给 ROB 精确 trap；C 仍不执行。
+测试 sim/cocotb/ifu_f0 与固定 illegal_zero 门禁，Alan 结果待验证。
