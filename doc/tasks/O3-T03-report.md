@@ -1,6 +1,7 @@
 # O3-T03 实现与验证报告
 
-实现中；当前尚未完成 Alan 验收，不宣称 L5 通过。
+2026-10-06 收口：L5 以“已知问题”状态退出，不宣称全部门禁通过。
+按用户工期调整，停止本任务的 bug 修复和完整回归，进入 L6。
 
 已按任务书直接实现，没有阶段一 spec。跨模块合同新增：ROB 的完整串行队头元数据、
 CSR 源寄存器/指令/实际后继、执行异常；RAT/free-list/SQ 的提交边界 flush，
@@ -86,3 +87,50 @@ exc_valid/cause 同样未传给 F1。本次按 L5 RV64I 的 IALIGN=32 输出每�
 只读身份 CSR 配置常数 0，保留官方权限检查与指令执行。没有为时序或恢复
 行为改造 Spike；WFI 使用官方 cfg.wfi_as_nop=true。增加三条身份读取固定
 门禁 `platform_ids.hex`，mcsr 原测试体及所有期望不变。
+
+## 收口时的已通过项
+
+Alan 实测 RTL 提交：`2cc8a9178172e851357496870455373d631ab1c2`。
+证据根目录：`/home/chen/FUN/CISLC-O3-runs/20261006-o3t03/trial-2cc8a91/`，
+当时运行 checkout 为 `/home/chen/FUN/CISLC-O3-o3t02`。本次只读取已有日志，没有重跑。
+
+| 命令 / 范围 | 已有结果 | 日志 |
+| --- | --- | --- |
+| `make -C sim/o3 build` | PASS，exit 0 | `build.log`、`summary.json` |
+| `make -C sim/o3 run-spike-all` | 11/11 PASS，Spike 0 差异 | `fixed.log` |
+| `make -C sim/cocotb/rename_entry_gate` | 1/1 PASS | `rename_entry_gate.log` |
+| `make -C sim/cocotb/csr_file` | 1/1 PASS | `csr_file.log` |
+| `make -C sim/cocotb/trap_ctrl` | 1/1 PASS | `trap_ctrl.log` |
+| `make -C sim/cocotb/ifu_f0` | 2/2 PASS | `f0.log` |
+| riscv-tests M 模式适用子集 | csr、mcsr、illegal、sbreak、scall：5/5 PASS（build/run exit 0） | `mi/summary.json`、`mi/*.log` |
+
+固定 11 项为 ecall_head、serial_head、illegal_zero、platform_ids、icache_smoke、
+rv64i_instructions、dcache_data、dcache_replay、l3_branch_dense、branch_loop、prf_lane_order。
+其中分支密集程序 1968 周期退休 365 条，replay 程序 73 周期退休 6 条。
+上述局部通过不等于完整 L5 通过；O3-T02 的 ACT4 RV64I 51/51 历史证据仍见其报告，
+这里不把它冒充 2cc8a91 上的新验收。ma_addr 仍留 L8。
+
+## 已知问题
+
+1. **Spike 随机种子 1–200：178 PASS / 22 FAIL。** 首差异分为 14 个 `rd_wdata`、
+   8 个 `mem_kind`。根因未定位，疑似访存/trap 恢复回路，留待上板抓波形分析。
+   失败种子按首差异字段列出：
+   - `rd_wdata`：8、16、22、30、76、89、101、130、141、144、151、152、165、174。
+   - `mem_kind`：14、43、49、52、113、115、133、196。
+   证据为同目录 `random/summary.json`、`random/seed-<n>.log` 和 JSONL；
+   通过项累计匹配 529060 条退休记录。失败种子保持原样，不删除、不放宽期望。
+2. **M 模式固定程序 timeout。** `make -C sim/o3 run-spike-mmode` 在退休 84 条后，
+   停在 load-access-fault handler 的 MRET 处，日志报告 `cycles=10482 retired=84`。
+   根因未定位，处理方式同上：保留程序和日志，留待上板抓波形分析，不继续修 RTL。
+   证据为 `mmode.log`（exit 2）。
+3. **ACT4 M 模式 Sail 签名 trap loop。** 属参考配置问题，暂不处理，
+   不记为 DUT 通过，也不把参考签名生成失败算成 DUT 比对结果。
+   该项按收口时用户确认的问题状态记录；此前 schema 配置尝试和后续能力配置修正
+   保留在 `act4-l5-build*` 日志及 `56dfc7f`，不再继续调整配置或重跑。
+
+## 验证策略偏离
+
+用户于 2026-10-06 明确覆盖原任务书“全部门禁通过、发现 bug 必须修复”的验收要求：
+先实现机制，验证从简；L5 带上述已知问题退出。收口提交只改报告及 LOOP，
+没有修改 RTL，没有运行完整回归。L6 不扩展 Spike 随机生成器或新增随机比对门禁，
+采用各机制的定向 cocotb、lint、整核简单程序和首次 OOC 综合。
