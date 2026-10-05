@@ -32,7 +32,7 @@ This harness builds the current `o3_core` from the single RTL file list,
 `rtl/rtl.f`. The C++ loader accepts little-endian ELF64 `PT_LOAD` segments
 and word-oriented hex. Hex words load at `0x80000000` by default; `@ADDRESS`
 changes the byte address. While reset is asserted, the harness writes image
-bytes into the SystemVerilog AXI backing RAM at `0x80000000`–`0x800fffff`.
+bytes into the SystemVerilog AXI backing RAM at `0x80000000`–`0x801fffff`.
 DTCM initialization remains available for later data-path tests. ITCM was
 removed from RTL and from the loader.
 
@@ -105,3 +105,92 @@ replay gate; it does not imply multiple outstanding loads or speculation past
 an unknown-address older store.
 `tests/unified_memory.hex` remains a legacy software-memory image, not this
 AXI-backed data-path gate.
+
+## O3-T02 in-process Spike lockstep
+
+Activate `cislc-o3` before building. The fixed upstream Spike commit is
+`609dbe0b9994154833039209fa37151e7c05e9d4`; use unmodified sources and default
+configure/make (no commitlog patch or special configure flag):
+
+```sh
+source /home/chen/miniforge3/bin/activate cislc-o3
+git clone https://github.com/riscv-software-src/riscv-isa-sim.git /tmp/cislc-o3-spike-src
+git -C /tmp/cislc-o3-spike-src checkout --detach 609dbe0b9994154833039209fa37151e7c05e9d4
+mkdir -p /tmp/cislc-o3-spike-build
+cd /tmp/cislc-o3-spike-build
+/tmp/cislc-o3-spike-src/configure --prefix="$CONDA_PREFIX"
+make -j4
+make install
+```
+
+The Alan build used system GCC 13.3.0 and default `-g -O2 -std=c++2a`.
+Dependencies include DTC, pkg-config, Boost system/regex, pthread, and Spike's
+bundled FESVR, disassembler, softfloat and FDT. `sim/o3` uses
+`riscv-riscv.pc` for include, `-lriscv`, and conda-prefix rpath, with C++20.
+No extra FESVR library was needed. The installed `libriscv.so` SHA256 was
+`09fc861e8860bc4b8e000b422ab39312dfe082e69c4e085fb0e5dd9f6ca748e6`.
+The simulator was compiled with conda GCC 16.2.0; `ldd` resolved `libriscv.so`
+to `/home/chen/miniforge3/envs/cislc-o3/lib/libriscv.so`.
+
+From the repository root:
+
+```sh
+make -C sim/o3 build
+make -C sim/o3 run-spike-all
+make -C verification/act4 build UPSTREAM_DIR=/path/to/pinned/riscv-arch-test
+make -C sim/o3 run-spike-act4
+make -C sim/o3 run-spike-random SEEDS=1-200
+make -C sim/o3 run-spike-selftest
+```
+
+`BUILD_DIR`, `SPIKE_PREFIX`, `SPIKE_OUT`, `RETIRE_TARGET` and ACT4 `ELF_DIR`
+can be overridden. `SEEDS` accepts ranges and comma-separated seed lists.
+The five existing fixed gates retain their independent expected-record
+checker. `unified_memory` is a historical pre-AXI gate, excluded by frozen Q7;
+its original command/checker are retained.
+
+The reference shares only initial loader bytes with the DUT; runtime RAM is
+independent. It runs one RV64I hart in M/Bare, without DTB, PMP or triggers,
+and steps once per valid lane in lane order. Address/size/writeback events
+come from Spike itself. Load values are re-read from its own RAM and formatted
+according to the independently fetched instruction; x0 loads compare address
+and size. Stores compare truncated architectural data at retirement.
+
+`ENABLE_RETIRE_INFO` adds a passive ROB-indexed memory side table. LSU result
+metadata survives forwarding, replay and WB backpressure; no observation bit
+feeds execution. JSONL retains all old fields and adds `v:2`, `mem_kind`,
+`mem_addr`, byte-count `mem_size`, `mem_data`, and null FP/CSR/exception fields.
+A difference prints `MISMATCH field=... retire_idx=...`, both complete records,
+and at most 32 previously matched pairs, then exits 2. Core fatal is checked
+first. Cycle or 10000-cycle retirement watchdog timeout exits 3. `--retire-target`
+defaults to 3000 and default cycle limit is target times 50. ACT4 and random
+end at retired nonzero SD tohost, comparing all younger lanes in that cycle.
+
+The random generator reserves x1/x2/x3, uses `random.Random(seed)` and template
+weights ALU/shift 45%, branch 15%, JAL 5%, load 20%, store 15%. Backward loops
+use a countdown of at most 8; accesses are naturally aligned inside
+`0x80100000`–`0x8010ffff`. The exact dynamic budget is 3000 before any younger
+same-cycle lane after tohost. Each seed is first validated independently with
+`--spike-reference-only`; failures are preserved and all seeds continue.
+`O3_INJECT=<kind>:<retire_idx>` modifies only a copied C++ DUT record.
+All normal Makefile gates clear it; selftest explicitly tests pc, reg, load,
+store_addr and store_data and checks both field and zero-based retirement index.
+
+ACT4 code is at `0x80000000`, data at `0x80100000` (256 KiB), and the fixed
+image-resident tohost symbol at `0x801ff000`. Linker, Sail RAM and SD pass/fail
+macros use this map. The upstream revision remains
+`dfa582359db885ae4c6ed1fa82faef60874e212c`; all 51 RV64I ELFs were regenerated.
+
+O3-T02 first validation found a DUT control-flow bug. Reproduce it with:
+
+```sh
+sim/o3/build/Vo3_tandem_top --spike --image sim/o3/repros/branch_loop.hex \
+  --trace /tmp/branch-loop.jsonl --tohost-address 0x8010fff8 --max-retires 1000
+```
+
+The 12-word, two-iteration loop reports PC mismatch at retirement 8:
+DUT `0x8000002c`, Spike `0x80000014`. The old O3-T01 binary also reproduced
+this gap. The initial 200-seed result was 1 PASS / 199 PC differences,
+114412 matched retirements; ACT4 was 15 PASS / 36 FAIL / 0 infrastructure errors.
+These are failure evidence, not an L5/ISA-compliance claim. Full records and
+final-SHA verification locations are in `doc/tasks/O3-T02-report.md`.

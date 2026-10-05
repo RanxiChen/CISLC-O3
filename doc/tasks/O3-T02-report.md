@@ -102,3 +102,193 @@ Spike 引用绑定完整提交，不以浮动 master 为证据。
 | Q10 | 自测注入接口与正式门禁隔离 |
 
 本报告提交并 push 后停止，等待用户审阅与冻结；未决问题不在本轮自行决定。
+
+
+## 5. 阶段二交付记录（2026-10-06）
+
+用户以 `b37a896` 冻结 §8 Q1–Q10，并授权发现 DUT 真 bug 后跑完全部种子再汇总。
+阶段二实现已完成，**零差异验收未通过**；保留所有现有期望、测试和断言，未修执行 RTL。
+任务分支仍为 `feat/L1-closure`。
+
+| 提交 | 内容 |
+|---|---|
+| `db8b083053a93863a32146db4e9e4984428cc3fe` | 进程内 Spike、退休访存观测、JSONL v2、生成器、ACT4 SD/AXI 迁移、超时/注入 |
+| `b227994cbafea38b6b765dc9cea2164eb48e7667` | ACT4 数据容量/邮箱布局修正；随机生成器独立 Spike 预跑 |
+| `857442d` | 同步迁移 Sail RAM PMA；完整重新生成 51 项 |
+| 本阶段收尾提交 | `git log -1 --format=%H --grep='close O3-T02 phase-two failure evidence'` 可查询；提交自身 SHA 不在内容中自引用 |
+
+### 5.1 实现选择与范围
+
+Q3 选择 backend 内 ROB-indexed 旁路表，不改变 ROB complete/valid/退休控制。
+分配清槽；store 在 SQ execute 时采样；load 在真实 WB 消费时采样。
+LSU 新增仅观测的 pending/result 地址与大小寄存器，随转发、replay、迟到响应与
+Result 背压保留；M 时不采样 killed load，存活老 load 照常记录。
+类型定义保持原 `o3_pkg.sv` 位置；访存类型 0/1/2=none/load/store，大小在 RTL
+存 log2(bytes)，JSON 输出 1/2/4/8。地址保存完整 64 位以检出非法高位，正常比较
+56 位物理地址；store 数据按大小截断，load 数据为格式化 WB 值，x0 load 不比较数据。
+FP/CSR/异常 valid tie-off 为 0，JSON 六个预留字段 null。本阶段没有修改 Dxx/Bxx。
+
+参考端：固定原版 Spike，sim_t 无 DTB，单 hart RV64I/M/Bare、PMP=0、trigger=0。
+共用初始 loader bytes，运行时内存独立；每 lane 单步一次，minstret 必须增长 1。
+PC/编码独立预取；整数事件取 commit log；load 地址取 log，再读参考 RAM 并独立
+符号/零扩展。日志文本写 `/dev/null`，结构日志仍开启。首差异不重同步，退出 2；
+fatal 优先；周期/10000 周期无退休超时退出 3。SD tohost 非零退休后仍比较同拍所有 lane。
+
+测试 RAM 扩为 2 MiB以覆盖 Q8 数据窗口；未改 DUT cache/执行机制。
+生成器 nominal template 权重 45/15/5/20/15；loop/control setup 会改变动态分布。
+x1–x3 保留，访存使用窗口内自然对齐 offset；每种子目标恰好 3000 动态退休，
+同拍 younger lane 可增加最终比较数量。默认种子 1–200，batch 保留每项失败并继续。
+独立 `--spike-reference-only` 先证明生成程序合法和动态计数；200 项均为 3000。
+正式 gate 清 `O3_INJECT`，仅五类自测显式设置记录副本扰动。
+
+Q6 实际镜像图：code=0x80000000，data=0x80100000/256 KiB，tohost=0x801ff000。
+初次 60 KiB data 不足，修正为原有 256 KiB；第二次 Sail 仍用旧 RAM PMA，随后
+同步地址迁移。均为基础设施问题，已解决，不删除生成项、不放宽测试。
+ACT4 upstream 保持 `dfa582359db885ae4c6ed1fa82faef60874e212c`，最终完整生成 51 ELF；
+构建输出 `255 succeeded` 为各构建步骤数，不是 255 个测试。
+
+### 5.2 Spike 构建与环境证据
+
+Alan 源码 `/tmp/cislc-o3-spike-src` 完整 SHA
+`609dbe0b9994154833039209fa37151e7c05e9d4`，原版工作树干净。
+源码从阶段一已核对副本同步；默认 configure/make/install，日志
+`/tmp/cislc-o3-spike-build/{configure,build,install}.log`。命令完整写入
+`sim/o3/README.md`。安装前缀 `/home/chen/miniforge3/envs/cislc-o3`。
+
+| 项目 | 实测 |
+|---|---|
+| Spike 编译器 | system GCC 13.3.0，默认 -g -O2 -std=c++2a，make -j4 |
+| Simulator 编译器 | conda GCC 16.2.0，C++20；pkg-config -lriscv + prefix rpath |
+| Python/cocotb/Verilator | 3.12.14 / 2.1.0 / 5.050 |
+| libriscv.so SHA256 | `09fc861e8860bc4b8e000b422ab39312dfe082e69c4e085fb0e5dd9f6ca748e6` |
+| 实际动态库 | ldd 指向 conda prefix 的 libriscv.so；无需独立 -lfesvr |
+| 依赖 | DTC、pkg-config、Boost system/regex、pthread；FESVR/FDT/disasm/softfloat 按默认 Spike 构建 |
+
+Alan 工作目录 `/home/chen/FUN/CISLC-O3-o3t02` 是隔离 worktree。
+GitHub push 成功；Alan 原有 17897 代理失效，通过已 push 的 Git bundle 精确 fetch
+提交，再用明确 SHA checkout；未修改共享代理、原 checkout 或 Flow 文件。
+开发阶段有一次 FETCH_HEAD 在主 worktree 获取、子 worktree 不能解析，改为明确 SHA；
+该轮 `trial` 只作开发日志，不作最终同 SHA 证据。
+
+本地每个实现提交前 `scripts/lint.sh` PASS：0 errors / 101 warnings；日志
+`/tmp/o3-t02-{lint,followup-lint,act4map-lint}.log`。收尾提交前另跑 lint。
+AST 静态解析通过，不能替代 Alan 执行结果。
+
+### 5.3 开发验收结果与最终提交复验
+
+Alan 总证据目录：`/home/chen/FUN/CISLC-O3-runs/20261005-o3t02/`。
+
+| 验收 | 开发轮次实际结果 | 日志 |
+|---|---|---|
+| make -C sim/o3 build | PASS，db8b083 / b227994 两次重建成功 | trial/build.log、trial/build-b227994.log |
+| make -C sim/o3 run-spike-all | 5 个既有程序均 0 差异，固定 checker 全 PASS，共 396 条 | trial/spike-gates.log |
+| make -C sim/o3 run-spike-selftest | 5/5 检出且字段、退休序号正确 | trial/selftest/summary.json，五类 .log |
+| make -C sim/o3 run-spike-random SEEDS=1-200 | 200 项全跑完；1 PASS、199 FAIL，全部首差异 PC；匹配前缀 114412 条 | trial-b227994/random/summary.json，每种子 log/jsonl/hex/meta/reference.log |
+| 独立 Spike 随机预跑 | 200/200 合法；每项 3000，共 600000 条 | 同上 reference.log |
+| ACT4 全量生成及 run-spike-act4 | 51 项全生成/执行；15 PASS、36 FAIL、0 INFRA_ERROR | trial/act4-857442d.log、trial/act4-run-857442d.log、trial-857442d/act4/summary.json |
+| O3-T01 全部 60 条命令 | 收尾提交后的完整复验逐项保存，不以之前 O3-T01 的旧 PASS 替代 | final/commands.tsv、final/summary.json |
+
+随机通过的是 seed 120，共比较 3001 条（含 tohost 同拍年轻 lane）。其余 199 项
+首个失败前成功匹配条数各自保存在 summary；匹配合计 114412，包含失败当前条的
+DUT 观测记录合计 114611，不能把这些当作 200 项各 >=2000 且 0 差异的通过证据。
+
+**同一最终 SHA 复验**：本收尾提交 push 后，在 Alan 原样执行 O3-T01 final/commands.tsv
+中的全部 60 条命令，再执行 fixed/selftest/random/ACT4 build/run 和历史 unified。
+使用 `/tmp/o3t02_acceptance.py`，相同 make 目录串行，不同目录最多三个同时运行；
+断言、测试、seed、停止条件完全不改。全部命令即使失败也继续。
+最终目录 `final/` 的 `sha.txt`/`sha-end.txt` 必须相同且等于本收尾提交；
+`commands.tsv` 逐项记录命令、退出码和日志，`summary.json` 保存 O3-T01 60 项汇总，
+`random/summary.json`、`selftest/summary.json`、`act4/summary.json` 保存全量结果。
+最终 ACT4 ELF manifest/sha256 和工具/动态库指纹保存于同目录。最终回报以该目录
+实际结果为准，本表中的开发轮次不能替代它。
+
+### 5.4 确认的 DUT bug 与缩减复现
+
+最小复现随机种子为 1。原差异：cycle=3911、retire_idx=1022、lane=0，
+DUT PC=0x80000ea4，Spike PC=0x80000e84；之前退休的 BNE
+PC=0x80000e8c、x2=3，参考应回到 0x80000e84 继续有界循环。
+双方完整记录和此前 32 条在 `trial-b227994/random/seed-1.log`。
+
+独立缩减为 `sim/o3/repros/branch_loop.hex`，12 个静态指令、循环仅 2 次：
+PC=0x8000001c 的 BNE 退休时 x2=1，正确后继应是 0x80000014；
+DUT 下一条却到 0x8000002c。差异如下（完整版在 minimize/loop-pad1-n2.log）：
+
+```text
+MISMATCH field=pc cycle=60 retire_idx=8 lane=0
+DUT   pc=0x008000002c instruction=0x0000006f rd_write=false
+SPIKE pc=0x0080000014 instruction=0x00120213 rd=4 rd_wdata=0x2
+```
+
+Alan O3-T01 已验证的旧二进制（SHA `5d684c5726cc6f75d023d8b74311bcd91f58f60b`）
+运行同一镜像、max-retires=9，也在 order=8 退休 PC=0x8000002c；原 JSON v1
+轨迹在 `trial-b227994/minimize/old-dut.jsonl`。证明 bug 在退休观测新增之前已存在。
+64 个 loop alignment/count 激励中 pad=1/5、iterations>=2 稳定出现同类差异。
+本阶段不定位到未经证实的具体模块/拍，不修 RTL；用户随后已直接授权 O3-T02-fix。
+
+### 5.5 ACT4 manifest（全部 51 项）
+
+下表记录迁移后实际生成的完整集合；对应最终生成 ELF/hash 见 final/act4-manifest.sha256。
+每项均执行，36 FAIL 的具体首差异保留在独立日志；不以 mailbox PASS 替代逐条比对。
+
+| ELF | 初次完整 Spike 结果 |
+|---|---|
+| `I-add-00.elf` | FAIL |
+| `I-addi-00.elf` | FAIL |
+| `I-addiw-00.elf` | FAIL |
+| `I-addw-00.elf` | FAIL |
+| `I-and-00.elf` | FAIL |
+| `I-andi-00.elf` | FAIL |
+| `I-auipc-00.elf` | PASS |
+| `I-beq-00.elf` | FAIL |
+| `I-bge-00.elf` | FAIL |
+| `I-bgeu-00.elf` | FAIL |
+| `I-blt-00.elf` | FAIL |
+| `I-bltu-00.elf` | FAIL |
+| `I-bne-00.elf` | FAIL |
+| `I-fence-00.elf` | PASS |
+| `I-jal-00.elf` | PASS |
+| `I-jalr-00.elf` | FAIL |
+| `I-lb-00.elf` | PASS |
+| `I-lbu-00.elf` | FAIL |
+| `I-ld-00.elf` | PASS |
+| `I-lh-00.elf` | PASS |
+| `I-lhu-00.elf` | PASS |
+| `I-lui-00.elf` | PASS |
+| `I-lw-00.elf` | PASS |
+| `I-lwu-00.elf` | PASS |
+| `I-nop-00.elf` | PASS |
+| `I-or-00.elf` | FAIL |
+| `I-ori-00.elf` | FAIL |
+| `I-sb-00.elf` | PASS |
+| `I-sd-00.elf` | PASS |
+| `I-sh-00.elf` | PASS |
+| `I-sll-00.elf` | FAIL |
+| `I-slli-00.elf` | FAIL |
+| `I-slliw-00.elf` | FAIL |
+| `I-sllw-00.elf` | FAIL |
+| `I-slt-00.elf` | FAIL |
+| `I-slti-00.elf` | FAIL |
+| `I-sltiu-00.elf` | FAIL |
+| `I-sltu-00.elf` | FAIL |
+| `I-sra-00.elf` | FAIL |
+| `I-srai-00.elf` | FAIL |
+| `I-sraiw-00.elf` | FAIL |
+| `I-sraw-00.elf` | FAIL |
+| `I-srl-00.elf` | FAIL |
+| `I-srli-00.elf` | FAIL |
+| `I-srliw-00.elf` | FAIL |
+| `I-srlw-00.elf` | FAIL |
+| `I-sub-00.elf` | FAIL |
+| `I-subw-00.elf` | FAIL |
+| `I-sw-00.elf` | PASS |
+| `I-xor-00.elf` | FAIL |
+| `I-xori-00.elf` | FAIL |
+
+### 5.6 偏离和交接
+
+Q1–Q10 未改变；原任务书“发现真 bug 停下”已由本轮用户明确替换为跑完其余种子。
+验收事实：随机及 ACT4 零差异目标未达成，不宣称 L5 闭环通过。
+本任务保留原程序/期望/checker/断言；unified 按 Q7 标为历史。
+按 2026-10-06 用户指令，收尾复验结束后直接执行 O3-T02-fix，无阶段一：逐 bug
+缩减、定位模块/拍/条件、对照 Dxx/Bxx、补固定门禁和 cocotb、每 bug 单独提交，
+最终同 SHA 全量复验；只有必须改变设计决策时才停。
