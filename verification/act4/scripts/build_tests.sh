@@ -7,7 +7,7 @@ act_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 upstream_dir=${ACT4_UPSTREAM_DIR:-$act_dir/.upstream}
 work_dir=${ACT4_WORK_DIR:-$act_dir/.work}
 extensions=${ACT4_EXTENSIONS:-I}
-config_file=$act_dir/config/cislc-o3-rv64i/test_config.yaml
+config_file=${ACT4_CONFIG_FILE:-$act_dir/config/cislc-o3-rv64i/test_config.yaml}
 toolchain_root=${ACT4_TOOLCHAIN_ROOT:-/home/chen/opt/act4/gcc-2026.07.15}
 sail_root=${ACT4_SAIL_ROOT:-/home/chen/opt/act4/sail-0.13.1}
 mise_root=${ACT4_MISE_ROOT:-/home/chen/.local/bin}

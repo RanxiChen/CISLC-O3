@@ -148,3 +148,9 @@ run-spike-act4:
 run-spike-prf-lane-order:
 	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) --spike --image tests/prf_lane_order.hex \
 		--reset-pc 0x80000000 --trace prf_lane_order.jsonl --max-retires 3 --max-cycles 1000
+
+.PHONY: run-spike-mmode
+run-spike-mmode:
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) --spike --image tests/mmode.hex \
+		--reset-pc 0x80000000 --trace mmode.jsonl --tohost-address 0x8010fff8 \
+		--max-retires 3000 --max-cycles 100000

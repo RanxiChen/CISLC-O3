@@ -46,7 +46,9 @@ def generate(seed, target):
     # x3 AUIPC at pc+4 -> data+4, then -8; add 64 KiB for mailbox.
     words[1] = 0x00110197  # data+0x10000+4
     words[2] = i(0x13, 3, 0, 3, -12)  # 0x8010fff8
-    dynamic = 3
+    # x2 is a temporary handler pointer; bounded loops overwrite it later.
+    words += [0x00008117, i(0x13,2,0,2,-12), (0x305<<20)|(2<<15)|(1<<12)|0x73]
+    dynamic = 6
     choices = Counter()
     loop_counts = []
     # Seed all non-reserved registers; this is setup, outside mixture.
@@ -54,11 +56,20 @@ def generate(seed, target):
         words.append(i(0x13, rd, 0, 0, rng.randint(-2048, 2047)))
         dynamic += 1
     while dynamic < target - 2:
-        kind = rng.choices(['alu', 'branch', 'jal', 'load', 'store'], [45, 15, 5, 20, 15])[0]
+        kind = 'system' if rng.random()<.05 else rng.choices(['alu', 'branch', 'jal', 'load', 'store'], [45, 15, 5, 20, 15])[0]
         choices[kind] += 1
         rd, a, b = (rng.randrange(4, 32) for _ in range(3))
         block, count = [], 1
-        if kind == 'alu':
+        if kind == 'system':
+            if rng.randrange(3)==0:
+                block=[rng.choice([0x00000073,0x00100073,0x0000000b])]
+                count=8 # one trap event plus seven real handler retirements
+            else:
+                addr=rng.choice([0x340,0x305,0x341,0x342,0x343])
+                op=rng.choice([1,2,3,5,6,7]);source=a if op<4 else rng.randrange(32)
+                if addr==0x305:op=rng.choice([6,7]);source=rng.choice([0,1])
+                block=[(addr<<20)|(source<<15)|(op<<12)|(rd<<7)|0x73]
+        elif kind == 'alu':
             mode = rng.randrange(5)
             if mode == 0:
                 block = [i(0x13, rd, rng.choice([0, 2, 3, 4, 6, 7]), a, rng.randint(-2048, 2047))]
@@ -102,7 +113,14 @@ def generate(seed, target):
         dynamic += count
     words.extend([i(0x13, 2, 0, 0, 1), store(3, 3, 2, 0), jal(0, 0)])
     dynamic += 2
-    return words, {'seed': seed, 'dynamic_target': dynamic, 'tohost': hex(TOHOST),
+    # Keep x31's live value across traps; mscratch is intentionally observable
+    # scratch state. Read mcause and mepc, advance by one 32-bit faulting insn.
+    def csr(addr,rd,op,rs):return (addr<<20)|(rs<<15)|(op<<12)|(rd<<7)|0x73
+    handler=[csr(0x340,31,1,31),csr(0x342,31,2,0),csr(0x341,31,2,0),
+             i(0x13,31,0,31,4),csr(0x341,0,1,31),csr(0x340,31,1,31),0x30200073]
+    if len(words)>8192:raise ValueError('random code overlaps handler')
+    words += [i(0x13,0,0,0,0)]*(8192-len(words))+handler
+    return words, {'seed': seed, 'dynamic_target': dynamic, 'count_unit':'architectural events including traps', 'tohost': hex(TOHOST),
                    'templates': dict(choices), 'backward_iterations': loop_counts,
                    'max_backward_iterations': max(loop_counts, default=0),
                    'static_words': len(words)}
