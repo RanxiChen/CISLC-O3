@@ -1,8 +1,8 @@
-# O3-T01 阶段一：L3 收尾 RTL spec（待冻结）
+# O3-T01 阶段一：L3 收尾 RTL spec（冻结候选）
 
 日期：2026-10-05。分支：`feat/L1-closure`。审计快照：`711c762`（第 0 步文档采纳提交）；RTL 与进入任务时的 `9ec5591ecd9e8b6e25428c48d78c60d78c33870c` 相同。下述文件行号均指该快照，区间写法为 `文件:起始行–结束行`。
 
-依据：[任务书](../tasks/O3-T01-l3-closure.md)“阶段一”、[v1 计划](../O3-v1-plan.md)、[后端基线](../design/CISLC-O3-BACKEND-DESIGN-BASELINE.md) B12/B42/B46。**本文未冻结，不是阶段二实施授权。** 本轮仅阅读代码和编写文档；未修改 RTL、测试程序或 Makefile，未运行功能仿真。源码核实、未来要求、未决选择分别标明。
+依据：[任务书](../tasks/O3-T01-l3-closure.md)“阶段一”、[v1 计划](../O3-v1-plan.md)、[后端基线](../design/CISLC-O3-BACKEND-DESIGN-BASELINE.md) B12/B42/B46。**状态：冻结候选，待用户确认。第 7 节 U1～U6 已由审阅给出决定（2026-10-05）；用户宣布冻结后才是阶段二实施授权。** 本轮仅阅读代码和编写文档；未修改 RTL、测试程序或 Makefile，未运行功能仿真。源码核实、未来要求、未决选择分别标明。
 
 ## 1. 边界与保留的合同
 
@@ -248,21 +248,25 @@ make -C sim/cocotb/backend SIM=verilator TEST_SEED=1
 - 缺口 1 前后比较使用同一程序/期望/四宽配置/容量/缓存参数/种子与相同停止条件：先保存“已四宽且清理空壳、仍保守 R 阻塞”的 SHA 和 Alan 日志，再保存“只改变缺口 1 控制”的 SHA 与日志，列两个周期数及差值。不用不同宽度或不同缓存热度直接归因收益，不预先承诺周期改进。
 - 固定种子随机测试至少覆盖 `TEST_SEED=1`，另保留若干记录过的种子；seed、事务数和停止条件固定并随报告保存。不得为 PASS 改写期望/断言。
 
-## 7. 未决问题（冻结前需要决定）
+## 7. 审阅决定（原未决问题 U1～U6，2026-10-05）
 
-以下都未擅自选择；只有源码事实与待明确的接缝。已定的四宽、单 BRU、年轻取消、正确解析不停顿、B02 暂缓不重新讨论。
+以下决定取代原未决问题表；正文中引用 U1～U6 之处均按本节执行。
 
-| 编号 | 需要冻结的点 | 证据和影响 |
-| --- | --- | --- |
-| U1 | 四 bank Decode Queue 的容量选择：例如 16/20，或明确授权其他组织；当前容量 18 不能原样使用 | `rtl/common/o3_cfg_pkg.sv:346`；`rtl/backend/uop_queue.sv:50`、`:68`、`:191–192`。B42 冻结宽度，没有冻结队列深度；本 spec 不选数值 |
-| U2 | 正确解析释放的 checkpoint tag 是否本拍可重新分配？还是候选只看拍初空闲，下拍再用？需要明确 mask/create/release 同 tag 优先级 | 现有候选只看 `~valid_q`（`rtl/backend/branch_checkpoint_file.sv:71–87`），现有解析与 create 互斥（`:100–119`）；task 要求取消正确解析额外停顿，但没有定义刚释放资源的组合旁路。不能无声选择 same-cycle tag reuse |
-| U3 | 移除 commit_ctrl 后，本级是否补最小 ROB→FTQ 提交通知，还是明确推迟并限定本级长程序范围？若补，冻结动态 FTQ 身份、slot、region_last 来源/同拍资格 | `ftq_commit_o` 当前只接空壳（`rtl/backend/backend.sv:1862`），旧 count 无去向（`:378`）；ROB 旧退休字段有 FTQ 身份/last（`:330–331`、`:819–821`），目标 commit 输出只有声明（`rtl/backend/rob.sv:131–135`）。FTQ 需要完整 identity/slot/region_last（`rtl/frontend/ftq.sv:385–396`）。当前长程序回收能力未确认；不可假定全零 commit 能支持任意长门禁 |
-| U4 | 移除 CSRFile 后 L3 的 fe_csr/dmmu_csr/pmp 静态占位合同是什么？特权、satp_mode、epoch、PMP 配置应显式冻结 | 当前只由空壳输出驱动（`rtl/backend/backend.sv:1883–1894`；`rtl/system/csr_file.sv:64–70`）；`fe_csr_t` 全零 priv 为数值 0，不自动等于 M-mode（`rtl/common/o3_types_pkg.sv:405–421`）。本级无 MMU/CSR 不授权臆造静态特权状态 |
-| U5 | 为移除清单补齐未指定的后续归属：R1/buffer 按时序触发是否只记“按综合触发”而不指定 Ln；数据 stride 预取、硬件 backend_perf_events 的确切落地级 | B42 仅给 R1 的条件；v1 阶梯没有单列后两模块，源码合同分别是 B07/B10（`rtl/lsu/data_prefetcher.sv:2–13`、`rtl/system/backend_perf_events.sv:2–17`）。不能自行把它们全部归入 L8 或 L11 |
-| U6 | 阶段二范围：是否允许必要的共享模块/包注释更新，以及未实例化 L2/DMA 条目的 filelist 清理？U3 若需新增 ROB 字段也须明确范围与合同 | 任务允许列表未列 `o3_pkg/o3_types_pkg/rename_map_table/free_list/rename_dispatch_queue/preg_ready_table/physical_regfile`；它们的宽度或控制相关位置已列 §2/§4。仅参数传播无须改这些文件；若发现必须修改行为/头注释，不能自行越界。外围条目见 `rtl/rtl.f:126–127`；前端/核心更大清理不在当前授权内 |
+| 编号 | 决定 |
+| --- | --- |
+| U1 Decode Queue 容量 | **16 项**（4 bank × 4 行），`be.decode.queue_depth` 由 18 改为 16。理由：decode 与 rename 同为 4 宽，队列只吸收后端回压，不再需要消化六宽积压；16 满足整除断言。验证项按 §6.1 WQ。 |
+| U2 checkpoint tag 同拍复用 | **不允许同拍复用。**create 的候选 tag 只看拍初空闲（`~valid_q`）；C 拍释放的 tag 在 N+1 才可被分配。C 拍中 release(t) 与 create(其他 tag) 同时生效；由于 t 在拍初有效，create 不可能选中 t，不需要同 tag 优先级规则。所有在 C 拍新建或新入队的 mask 都必须清除 t（§4.2）。以 16 个 checkpoint 计，延迟一拍复用的代价可以忽略。新增断言：同一 tag 不得在同一拍既释放又分配。 |
+| U3 ROB→FTQ 提交通知 | **本级补最小通路**，否则长程序会因 FTQ 不回收而停住，§6.3 的分支密集门禁无法成立。做法：移除 `commit_ctrl` 实例后，`ftq_commit_o[lane]` 直接由 ROB 的退休 lane 驱动：`valid` = 该 lane 实际退休，`ftq_id`、`slot`、`region_last` 取自该 ROB 项。若 ROB 项或 uop 目前没有完整保存 `slot`、`region_last` 或动态 `ftq_id`，沿 `fetch_entry_t → decode → rename → ROB` 补齐字段（允许修改 `o3_types_pkg.sv`、`decoder.sv`、`rob.sv`、`backend.sv`）。该通路在 L5 原样并入 `commit_ctrl`，L5 不得改变其语义。验证：长程序跨越 FTQ 容量（>32 个区域）多次回收；同拍多条退休跨不同区域；误预测后被取消的年轻指令不产生提交通知。 |
+| U4 CSR/PMP 静态占位 | 移除 `csr_file` 后，以命名常量显式驱动：特权级 = **M**（`PRIV_M`，不能用数值 0 代替），`satp.mode` = **Bare**，翻译 epoch = 0，`mstatus.MPRV/SUM/MXR` = 0；PMP 全部条目 `A=OFF`、地址 0。按 RISC-V 规范，M 模式下无匹配 PMP 条目的访问应当放行。阶段二必须用定向测试确认现有 `pmp_checker` 在该配置、M 模式下放行取指与数据访问；若不放行，停下报告，不得修改 `pmp_checker` 的规则来凑结果。这些常量集中定义在 `backend.sv` 一处并注明“L5 由 csr_file 取代”。 |
+| U5 后续归属 | R1 依赖预处理与级间暂存：**不指定 Ln，按综合时序触发**（B42）。`data_prefetcher`：**L8**（依赖多 MSHR 的非阻塞访存，B07）。`backend_perf_events`：**L7**（与误预测率/IPC 基线一同落地，B10）。阶段二按此写入移除清单与 `LOOP.md`。 |
+| U6 阶段二范围 | 允许修改：`o3_cfg_pkg.sv`、`o3_pkg.sv`、`o3_types_pkg.sv`（含注释与 U3 所需字段）、`rename_map_table.sv`、`free_list.sv`、`rename_dispatch_queue.sv`、`preg_ready_table.sv`、`physical_regfile.sv`、`decoder.sv`、`writeback_arbiter.sv`、`dispatch_stage.sv`、`branch_unit.sv`、`load_store_unit.sv`，以及任务书原列文件；行为改动只限于本 spec 规定的内容。允许把未实例化的 `l2_recall_ctrl`、`dma_line_coord` 移出 `rtl/rtl.f`（归属 L11）。不允许修改前端（U3 只用前端已有的 `commit_i` 输入）和 `o3_core.sv` 的接线以外的内容。 |
 
-额外核实项不冒充用户决策：PRF 同地址读写可见性、存活老 LQ 事务与 M 拍记账是否完整、真实写回竞争下 ALU kill、四宽整核和长程序回收均未在本阶段动态确认，列入阶段二定向测试；若测试/审计发现 spec 以外行为，停止并补未决问题后再冻结，不自行修设计。
+**附加要求**（审阅补充）：
+
+- §5 的缺口 2 结论接受：已在源码中修复。阶段二把 `sim/cocotb/branch_recovery/` 中的定向序列拆成具名测试，并补一个真正驱动 DUT 的固定种子随机测试（现有末段随机只测 Python helper，不能算数）。
+- §4.2 中 LQ 在 M 拍的记账（存活老 load 的正常执行、请求、响应在恢复拍是否被丢失）标为“未确认”。阶段二先用 LQ-M 定向测试检验：若发现确实丢失，按“存活老项照常更新、只删除年轻项”修复，属于缺口 1 修复的必要部分，不需要另行审批；修复方式写进报告。
+- §4.3 第 6 条 PRF 同地址读写可见性：阶段二先核实并在报告中写明现有行为，不新增旁路。
 
 ## 8. 阶段一交付状态
 
-spec：待用户冻结；阶段二：未开始。缺口 1 仅给出方程与测试计划，未修 RTL；缺口 2 仅完成实时源码/测试内容核实。所有本轮命令、提交和验证边界见 [阶段一报告](../tasks/O3-T01-report.md)。
+spec：冻结候选，待用户确认；阶段二：未开始。缺口 1 仅给出方程与测试计划，未修 RTL；缺口 2 仅完成实时源码/测试内容核实。所有本轮命令、提交和验证边界见 [阶段一报告](../tasks/O3-T01-report.md)。
