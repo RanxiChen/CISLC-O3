@@ -398,7 +398,7 @@
     },
     "clint": {
       // Whether the platform contains a CLINT.
-      "supported": true,
+      "supported": false,
       // If supported, this must be in a suitable IO memory region (see `memory.regions`).
       // Otherwise, these values can be left as 0.
       "base": 33554432,
@@ -408,7 +408,7 @@
     // purposes. See docs/SimpleInterruptGenerator.md for details.
     "simple_interrupt_generator": {
       // Whether the platform contains this device.
-      "supported": true,
+      "supported": false,
       // If supported, this must be in a suitable IO memory region (see `memory.regions`)
       // and 4-byte aligned. The size is always 0x20.  If not supported, this can be left
       // as 0.
@@ -416,7 +416,7 @@
     },
     "clock_frequency": 1000000000,
     "instructions_per_tick": 2,
-    "wfi_is_nop": false,
+    "wfi_is_nop": true,
     // WFI is optionally available to User mode.  Note that even if
     // `wfi_is_nop` is set to `true` above, it will still not be
     // available to User mode unless `wfi_available_to_user_mode` is
@@ -437,13 +437,13 @@
   },
   "extensions": {
     "M": {
-      "supported": true
+      "supported": false
     },
     "A": {
-      "supported": true
+      "supported": false
     },
     "F": {
-      "supported": true,
+      "supported": false,
       // When to set mstatus[FS] and mstatus[SD] to 1, as a result of fflags
       // being set. There are three options:
       //
@@ -456,7 +456,7 @@
       "fflags_dirty_policy": "Fflags_Dirty_Precise"
     },
     "D": {
-      "supported": true
+      "supported": false
     },
     "V": {
       // `support_level` must be one of the below strings:
@@ -578,16 +578,16 @@
       "supported": false
     },
     "Zihpm": {
-      "supported": true
+      "supported": false
     },
     "Zimop": {
       "supported": false
     },
     "Zmmul": {
-      "supported": true
+      "supported": false
     },
     "Zaamo": {
-      "supported": true
+      "supported": false
     },
     "Zabha": {
       "supported": false
@@ -596,7 +596,7 @@
       "supported": false
     },
     "Zalrsc": {
-      "supported": true
+      "supported": false
     },
     // This extension just asserts that each memory region has a MAG
     // PMA of at least 16 bytes.  If you enable this you also need to ensure
@@ -638,13 +638,13 @@
       "supported": false
     },
     "Zca": {
-      "supported": true
+      "supported": false
     },
     "Zcf": {
       "supported": false
     },
     "Zcd": {
-      "supported": true
+      "supported": false
     },
     "Zcb": {
       "supported": false
