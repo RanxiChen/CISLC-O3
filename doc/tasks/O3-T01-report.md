@@ -230,3 +230,10 @@ Alan 原 checkout 保持不变，新增隔离 worktree。GitHub fetch 直连 TLS
 本地代理反向隧道已按用户指示建立，Alan GitHub HTTP=200，`git fetch origin feat/L1-closure` 成功；后续通过该通道同步。私有运维参数只留会话，不写入仓库。
 
 与 spec 的实现偏离：无；LQ-M 按冻结附加授权修复。阶段二问题：暂无新增需设计裁决的问题；测试首次失败按原日志留存，不以修改期望／断言掩盖。
+
+### 8.5 真实仲裁、LSU 延迟与总装 C 重合补测
+
+- `92ac71c` 的 Alan 合同（WQ/WR/RAT/free/CK/RR/ROB/LQ/RDQ/ALU-K/SQ、三个 IQ）和整核 build、branch-dense 均通过。日志：Alan `20261005-o3t01/trial-92ac71c/summary.tsv` 及各项 `.log`。
+- 分支密集 `919eaaa` 与 `92ac71c` 都为 **1967 cycles / 365 retires / 40 C / 80 M / 10 replay**，差值 0。本程序未显示周期收益；不能据此替代 C 同拍控制测试。
+- 新增真实两 ALU + writeback_arbiter 的仲裁回压 kill 场景、LSU 160 笔固定种子 replay/单 pending/迟到响应/Result 回压事务，以及实际 backend 的 120 组四宽 C 重合测试。新增 ROB full/异常前缀/M 同拍 JAL 完成与取消年轻 FTQ 测试；旧测试和期望不变。Alan：提交后运行，当前未运行。
+- 修正 dispatch/ROB 头部过期的“所有解析阻塞”注释，未改行为。提交前本地 `scripts/lint.sh`：通过，0 errors / 101 warnings，日志 `/tmp/o3t01-next-lint.log`。

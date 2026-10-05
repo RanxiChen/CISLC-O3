@@ -7,7 +7,9 @@
  * - FU_LDST（含 FLW/FLD/FSW/FSD）、FU_AMO：进入 Memory IQ，遵守 B05/B09。
  * - FU_CSR/FU_SYS：串行化指令，进入哪一级等待 ROB 队头未设计（建议作为 ROB 队头执行项）。
  * - 现状无法分类的 uop 停在队头，会阻塞后续全部指令。
- * - recovery_block_i 现接 branch_resolution.valid（B12 缺口 1）。
+ * - recovery_block_i 只接 M（valid && mispredict）；C 不阻塞 Dispatch。
+ * 当前实现状态：闭环简化（L3），四宽连续前缀；M/FP/系统分类待 L5/L6/L9。
+ * - 测试：sim/cocotb/backend_control/、backend_issue_queue_l3/。
  * In-order variable-prefix Dispatch planner
  *
  * 已实现：

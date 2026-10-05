@@ -58,3 +58,46 @@ async def four_wide_allocate_complete_retire_ftq_wrap(d):
 @cocotb.test()
 async def rob_c_retire_allocate_complete_are_independent(d):
     await run_four_wide_model(d, correct=True)
+
+@cocotb.test()
+async def rob_full_exception_prefix_and_m_jal_completion_cancel_ftq(d):
+    await reset(d,INPUTS);w=val(d.cfg_width_o);depth=val(d.cfg_depth_o)
+    # Full means no allocation even if a request arrives, and no uncompleted retirement.
+    for group in range(depth//w):
+        clear(d,INPUTS);d.alloc_ready_i.value=1
+        for lane in range(w):
+            d.alloc_req_i[lane].value=1;d.alloc_instruction_id_i[lane].value=group*w+lane+1
+        await tick(d)
+    clear(d,INPUTS);d.alloc_req_i[0].value=1;await settle()
+    assert val(d.free_count_o)==0 and val(d.alloc_valid_o)==0
+    assert not any(val(d.retire_valid_o[n]) for n in range(w))
+    await reset(d,INPUTS)
+    # Old ALU + JAL + cancelled young items. JAL gets ordinary WB on M itself.
+    d.alloc_ready_i.value=1
+    for n in range(w):
+        d.alloc_req_i[n].value=1;d.alloc_instruction_id_i[n].value=n+1
+        d.alloc_branch_mask_i[n].value=1 if n>=2 else 0
+        d.alloc_new_dst_preg_i[n].value=32+n;d.alloc_rd_write_en_i[n].value=1
+        d.alloc_ftq_slot_i[n].value=n
+    await tick(d);clear(d,INPUTS)
+    d.resolution_valid_i.value=1;d.resolution_mispredict_i.value=1
+    d.resolution_tag_i.value=0;d.resolution_rob_idx_i.value=1;d.restore_tail_i.value=2
+    d.complete_valid_i[0].value=1;d.complete_idx_i[0].value=0
+    d.complete_valid_i[1].value=1;d.complete_idx_i[1].value=1
+    await settle();assert not any(val(d.retire_valid_o[n]) for n in range(w))
+    await tick(d);clear(d,INPUTS);await settle()
+    assert val(d.tail_o)==2 and val(d.free_count_o)==depth-2
+    assert [val(d.retire_valid_o[n]) for n in range(w)]==[1,1,0,0]
+    assert [val(d.retire_instruction_id_o[n]) for n in range(2)]==[1,2]
+    assert val(d.retire_new_dst_preg_o[1])==33 and val(d.retire_ftq_last_o[1])==1
+    assert not any(val(d.mask_obs_o[n])&1 for n in range(2))
+    await tick(d);await settle()
+    assert not any(val(d.retire_valid_o[n]) for n in range(w)),'cancelled young FTQ notification'
+    await reset(d,INPUTS);d.alloc_ready_i.value=1
+    for n in range(w):
+        d.alloc_req_i[n].value=1;d.alloc_exception_i[n].value=n==2
+    await tick(d);clear(d,INPUTS)
+    for n in range(w):d.complete_valid_i[n].value=1;d.complete_idx_i[n].value=n
+    await tick(d);clear(d,INPUTS);await settle()
+    assert [val(d.retire_valid_o[n]) for n in range(w)]==[1,1,0,0]
+    await tick(d);await settle();assert not any(val(d.retire_valid_o[n]) for n in range(w))

@@ -4,6 +4,11 @@ module load_store_unit_tb_top
 (
     input logic clk, rst,
     input logic mem_valid, mem_load, mem_store,
+    input logic bus_mode_i, dc_ready_i, dc_response_i, result_ready_i, lq_live_i,
+    input logic [XLEN-1:0] dc_response_data_i,
+    output logic dc_request_o, pending_o,
+    output logic [31:0] cfg_tags_o,
+    output branch_mask_t result_mask_o,
     input logic [INST_ID_WIDTH-1:0] mem_id,
     input logic [ROB_IDX_WIDTH-1:0] mem_rob,
     input logic [LQ_IDX_WIDTH-1:0] mem_lq,
@@ -27,8 +32,8 @@ module load_store_unit_tb_top
     dcache_req_t dc_ld_req [o3_cfg_pkg::O3_CFG.be.lsu.agu_pipes];
     dcache_resp_t dc_ld_resp [o3_cfg_pkg::O3_CFG.be.lsu.agu_pipes];
     for (genvar port = 0; port < o3_cfg_pkg::O3_CFG.be.lsu.agu_pipes; port++) begin
-        assign dc_ld_req_ready[port] = 1'b0;
-        assign dc_ld_resp[port] = '0;
+        assign dc_ld_req_ready[port] = bus_mode_i && port == 0 && dc_ready_i;
+        assign dc_ld_resp[port] = '{valid:(bus_mode_i && port == 0 && dc_response_i), src:DC_SRC_LOAD, status:DC_OK, rdata:dc_response_data_i, default:'0};
     end
     always_comb begin
         mem_uop = '0;
@@ -44,6 +49,10 @@ module load_store_unit_tb_top
         mem_uop.store_value = mem_store_data;
         mem_uop.branch_mask = mem_branch_mask;
     end
+    assign dc_request_o = dc_ld_req_valid[0];
+    assign pending_o = dut.pending_valid_q;
+    assign cfg_tags_o = BACKEND_NUM_BRANCH_CHECKPOINTS;
+    assign result_mask_o = result.branch_mask;
     assign result_valid = result.valid;
     assign result_id = result.instruction_id;
     assign result_data = result.result;
@@ -51,7 +60,7 @@ module load_store_unit_tb_top
         .clk(clk), .rst(rst), .mem_uop_i(mem_uop), .mem_ready_o(mem_ready),
         .lq_execute_valid_o(), .lq_execute_idx_o(), .lq_execute_addr_o(),
         .lq_execute_generation_i(1'b0), .lq_request_fire_o(), .lq_request_idx_o(),
-        .lq_response_valid_o(), .lq_response_tag_o(), .lq_response_live_i(1'b0),
+        .lq_response_valid_o(), .lq_response_tag_o(), .lq_response_live_i(bus_mode_i && lq_live_i),
         .sq_execute_valid_o(store_execute), .sq_execute_idx_o(),
         .sq_execute_addr_o(), .sq_execute_data_o(), .sq_execute_mask_o(),
         .sq_query_valid_o(query_valid), .sq_query_rob_idx_o(),
@@ -63,7 +72,7 @@ module load_store_unit_tb_top
         .sq_change_i(sq_change), .replay_busy_o(replay_busy),
         .replay_capture_o(replay_capture),
         .store_complete_valid_o(), .store_complete_rob_idx_o(),
-        .load_result_o(result), .load_result_ready_i(1'b0),
+        .load_result_o(result), .load_result_ready_i(result_ready_i),
         .resolution_valid_i(resolution_valid),
         .resolution_mispredict_i(resolution_mispredict),
         .resolution_tag_i(resolution_tag),

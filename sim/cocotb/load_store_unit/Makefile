@@ -13,5 +13,6 @@ VERILOG_SOURCES := \
   $(CURDIR)/load_store_unit_tb_top.sv
 SIM_BUILD := $(CURDIR)/sim_build/$(if $(filter 1,$(WAVES)),waves,plain)
 COCOTB_RESULTS_FILE := $(CURDIR)/results.xml
-EXTRA_ARGS += --timing -Wno-fatal
+EXTRA_ARGS += --timing -Wno-fatal --assert
+export PYTHONPATH := $(REPO_ROOT)/sim/cocotb:$(PYTHONPATH)
 include $(shell cocotb-config --makefiles)/Makefile.sim

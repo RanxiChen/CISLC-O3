@@ -17,7 +17,7 @@
  *      FUSE_HEAD 的同一次乘法请求的低位结果完成，不独立执行）。
  * - U3：保存动态 FTQ 身份、槽位与 ftq_last；实际退休由 backend 转为 ftq_commit_t。
  * 当前实现状态：闭环简化（L3），四宽分配/退休；精确 trap 待 L5。
- * - 目标端口（t_*）未接入；resolution 现在会阻止退休（B12 缺口 1）。
+ * - 目标端口（t_*）未接入；M 阻止退休；C 同拍按拍初 complete 前缀正常退休。
  * Minimal ROB
  *
  * 当前已经实现的功能：
@@ -34,7 +34,7 @@
  * - Store在AGU写SQ后complete；ROB退休通过is_store/sq_idx让SQ entry转为committed，
  *   真正写Data SRAM和SQ释放由Store Queue负责
  * - checkpoint本体由branch_checkpoint_file管理，ROB只执行其恢复tail合同
- * - 当前阶段不附带测试代码和仿真代码，只先搭功能与注释
+ * - 测试：sim/cocotb/rob/，含四宽 FTQ、C/M 与固定种子合同
  *
  * 时序行为：
  * - 周期 N 组合阶段：
