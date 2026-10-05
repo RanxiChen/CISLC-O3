@@ -14,13 +14,13 @@
 #define RVMODEL_HALT_PASS                                         \
         li x1, 1;                                                 \
         la t0, tohost;                                            \
-        sw x1, 0(t0);                                             \
+        sd x1, 0(t0);                                             \
 1:      j 1b
 
 #define RVMODEL_HALT_FAIL                                         \
         li x1, 3;                                                 \
         la t0, tohost;                                            \
-        sw x1, 0(t0);                                             \
+        sd x1, 0(t0);                                             \
 1:      j 1b
 
 #define RVMODEL_IO_INIT(_R1, _R2, _R3)

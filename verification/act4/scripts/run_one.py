@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 from pathlib import Path
 
 
-TOHOST_ADDRESS = 0x1200_0000
+TOHOST_ADDRESS = 0x8010_F000
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,6 +36,7 @@ def main() -> int:
 
     command = [
         str(simulator),
+        "--spike",
         "--image", str(elf),
         "--trace", str(trace_path),
         "--max-cycles", str(args.max_cycles),
@@ -42,7 +44,8 @@ def main() -> int:
         "--tohost-address", hex(TOHOST_ADDRESS),
     ]
     completed = subprocess.run(
-        command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        env={k: v for k, v in os.environ.items() if k != "O3_INJECT"}, timeout=300
     )
     log_path.write_text(completed.stdout, encoding="utf-8")
     passed = completed.returncode == 0 and "[o3-tohost] value=0x1 status=PASS" in completed.stdout

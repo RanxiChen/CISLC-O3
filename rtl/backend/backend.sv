@@ -16,6 +16,7 @@
  *     → csr_file / trap_ctrl（CSR、精确异常入口、xRET、特权切换、中断：未设计）
  *   共享：ptw（ITLB+DTLB，经 DCache 物理入口）；dcache ↔ L2（在 o3_core）；SD DMA 经 L2 探测 L1D。
  *
+ * O3-T02: passive ROB-indexed LSU retirement observation; no execution changes.
  * 当前实现状态：闭环简化（L3）
  * - B42：4 宽 Decode/Rename/Dispatch/Commit，16 项 Decode Queue。
  * - INT/MEM/BR IQ → PRF → ALU/BRU/LSU → ROB；SQ/DCache/L2 真实路径保留。
@@ -332,6 +333,48 @@ module backend
     logic [XLEN-1:0] lq_execute_addr;
     logic lq_response_valid, lq_response_live;
     logic [BACKEND_LQ_IDX_WIDTH:0] lq_response_tag;
+`ifdef ENABLE_RETIRE_INFO
+    retire_info_t rob_retire_observe [RETIRE_WIDTH-1:0];
+    retire_mem_t observe_mem_q [NUM_ROB_ENTRIES-1:0];
+    logic [XLEN-1:0] observe_load_addr;
+    logic [1:0] observe_load_size;
+    // Passive ROB-indexed side table. Allocation clears reused slots; completion
+    // captures only live LSU results. M cancels retirement and killed loads never
+    // win WB; surviving old results still capture during M. No table bit feeds
+    // back into execution. Edge N capture is visible with ROB complete at N+1.
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            for (int i = 0; i < NUM_ROB_ENTRIES; i++) observe_mem_q[i] <= '0;
+        end else begin
+            for (int lane = 0; lane < MACHINE_WIDTH; lane++)
+                if (rename_fire && rob_req[lane]) observe_mem_q[rob_idx[lane]] <= '0;
+            if (store_complete_valid) begin
+                observe_mem_q[store_complete_rob_idx].kind <= 2;
+                observe_mem_q[store_complete_rob_idx].addr <= sq_execute_addr;
+                observe_mem_q[store_complete_rob_idx].size <= 2'(mem_execute_q.mem_size);
+                observe_mem_q[store_complete_rob_idx].data <= sq_execute_data;
+            end
+            if (load_result.valid && load_result_consume
+                && !(branch_resolution_i.valid && branch_resolution_i.mispredict
+                     && load_result.branch_mask[branch_resolution_i.branch_tag])) begin
+                observe_mem_q[load_result.rob_idx].kind <= 1;
+                observe_mem_q[load_result.rob_idx].addr <= observe_load_addr;
+                observe_mem_q[load_result.rob_idx].size <= observe_load_size;
+                observe_mem_q[load_result.rob_idx].data <= load_result.result;
+            end
+        end
+    end
+    for (genvar lane = 0; lane < RETIRE_WIDTH; lane++) begin : gen_retire_observe
+        always_comb begin
+            retire_info_o[lane] = rob_retire_observe[lane];
+            retire_info_o[lane].mem = observe_mem_q[rob_retire_idx[lane]];
+            // L5 CSR/trap and L9 FP are not implemented by this task.
+            retire_info_o[lane].fp_valid = 1'b0;
+            retire_info_o[lane].csr_valid = 1'b0;
+            retire_info_o[lane].exc_valid = 1'b0;
+        end
+    end
+`endif
     logic sq_execute_valid;
     logic [BACKEND_SQ_IDX_WIDTH-1:0] sq_execute_idx;
     logic [XLEN-1:0] sq_execute_addr, sq_execute_data;
@@ -815,7 +858,7 @@ module backend
         .retire_ftq_slot_o(rob_retire_ftq_slot),
         .retire_ftq_last_o(rob_retire_ftq_last)
 `ifdef ENABLE_RETIRE_INFO
-        ,.retire_info_o(retire_info_o)
+        ,.retire_info_o(rob_retire_observe)
 `endif
     );
 
@@ -969,6 +1012,9 @@ module backend
         .store_complete_valid_o(store_complete_valid),
         .store_complete_rob_idx_o(store_complete_rob_idx),
         .load_result_o(load_result), .load_result_ready_i(load_result_consume),
+`ifdef ENABLE_RETIRE_INFO
+        .observe_load_addr_o(observe_load_addr), .observe_load_size_o(observe_load_size),
+`endif
         .resolution_valid_i(branch_resolution_i.valid),
         .resolution_mispredict_i(branch_resolution_i.mispredict),
         .resolution_tag_i(branch_resolution_i.branch_tag),

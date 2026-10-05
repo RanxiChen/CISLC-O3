@@ -448,6 +448,14 @@ package o3_pkg;
     } branch_result_t;
 
 `ifdef ENABLE_RETIRE_INFO
+    // O3-T02 observation only; never used by execution/control logic.
+    // mem_kind: 0=none, 1=load, 2=store; size is log2(bytes).
+    typedef struct packed {
+        logic [1:0] kind;
+        logic [XLEN-1:0] addr;
+        logic [1:0] size;
+        logic [XLEN-1:0] data;
+    } retire_mem_t;
     // Retire-time architectural observation record.
     // Valid entries describe instructions that committed from the ROB head.
     typedef struct packed {
@@ -459,6 +467,12 @@ package o3_pkg;
         logic [REG_ADDR_WIDTH-1:0] rd;
         logic                      rd_write_en;
         logic [XLEN-1:0]           rd_wdata;
+        retire_mem_t               mem;
+        logic                      fp_valid, csr_valid, exc_valid;
+        logic [4:0]                fp_rd;
+        logic [63:0]               fp_wdata;
+        logic [11:0]               csr_addr;
+        logic [63:0]               csr_wdata, exc_cause, exc_tval;
     } retire_info_t;
 `endif
 

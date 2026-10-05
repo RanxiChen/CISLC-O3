@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "spike_lockstep.h"
 
 namespace {
 
@@ -22,12 +23,15 @@ constexpr int kRetireWidth = 4;
 constexpr uint64_t kDtcmBase = 0x11000000ull;
 constexpr uint64_t kDtcmBytes = 0x00040000ull;
 constexpr uint64_t kAxiBase = 0x80000000ull;
-constexpr uint64_t kAxiBytes = 0x00100000ull;
+constexpr uint64_t kAxiBytes = 0x00200000ull;
 
 struct Options {
     std::string image_path = "tests/smoke.hex";
     std::string trace_path = "tandem.jsonl";
-    uint64_t max_cycles = 1000;
+    uint64_t max_cycles = 0;
+    uint64_t retire_target = 3000;
+    uint64_t tohost_address = 0;
+    bool spike = false;
     uint64_t max_retires = 4;
     uint64_t reset_pc = kAxiBase;
     bool reset_pc_explicit = false;
@@ -238,6 +242,12 @@ Options parse_options(int argc, char** argv) {
             options.max_cycles = parse_u64(take_value("--max-cycles"));
         } else if (current == "--max-retires") {
             options.max_retires = parse_u64(take_value("--max-retires"));
+        } else if (current == "--retire-target") {
+            options.retire_target = parse_u64(take_value("--retire-target"));
+        } else if (current == "--tohost-address") {
+            options.tohost_address = parse_u64(take_value("--tohost-address"));
+        } else if (current == "--spike") {
+            options.spike = true;
         } else if (current == "--reset-pc") {
             options.reset_pc = parse_u64(take_value("--reset-pc"));
             options.reset_pc_explicit = true;
@@ -255,12 +265,16 @@ Options parse_options(int argc, char** argv) {
                 << "  --reset-pc ADDRESS   reset PC and default hex load address\n"
                 << "  --require-icache-refill  fail if no ICache line refill occurs\n"
                 << "  --require-load-replay   fail if no SQ-blocked load replay occurs\n"
+                << "  --spike              in-process RV64I lockstep comparison\n"
+                << "  --tohost-address A   stop on retired nonzero SD (compare all lanes)\n"
+                << "  --retire-target N    default max-cycles = N * 50\n"
                 << "Hex files may use @ADDRESS to change the byte load address.\n";
             std::exit(0);
         } else {
             throw std::runtime_error("unknown argument: " + current);
         }
     }
+    if (!options.max_cycles) options.max_cycles = options.retire_target * 50;
     return options;
 }
 
@@ -305,31 +319,37 @@ void write_hex_string(std::ostream& out, uint64_t value, int digits) {
     out.fill(old_fill);
 }
 
-void emit_tandem_records(const Vo3_tandem_top& dut,
-                         std::ofstream& trace,
-                         uint64_t cycle,
-                         uint64_t& next_order) {
-    for (int slot = 0; slot < kRetireWidth; ++slot) {
-        if (((dut.tandem_valid_o >> slot) & 1u) == 0) {
-            continue;
-        }
-        trace << "{\"type\":\"retire\",\"cycle\":" << cycle
-              << ",\"order\":" << next_order
-              << ",\"slot\":" << slot
-              << ",\"instruction_id\":" << dut.tandem_instruction_id_o[slot]
-              << ",\"rob_idx\":" << static_cast<unsigned>(dut.tandem_rob_idx_o[slot])
-              << ",\"pc\":";
-        write_hex_string(trace, dut.tandem_pc_o[slot], 10);
-        trace << ",\"instruction\":";
-        write_hex_string(trace, dut.tandem_instruction_o[slot], 8);
-        trace << ",\"rd\":" << static_cast<unsigned>(dut.tandem_rd_o[slot])
-              << ",\"rd_write\":"
-              << ((((dut.tandem_rd_write_o >> slot) & 1u) != 0) ? "true" : "false")
-              << ",\"rd_wdata\":";
-        write_hex_string(trace, dut.tandem_rd_wdata_o[slot], 16);
-        trace << "}\n";
-        ++next_order;
+RetireRecord dut_record(const Vo3_tandem_top& dut, int slot, uint64_t cycle, uint64_t order) {
+    RetireRecord r;
+    r.cycle=cycle; r.order=order; r.slot=slot;
+    r.instruction_id=dut.tandem_instruction_id_o[slot];
+    r.rob_idx=dut.tandem_rob_idx_o[slot];
+    r.pc=dut.tandem_pc_o[slot]; r.instruction=dut.tandem_instruction_o[slot];
+    r.rd=dut.tandem_rd_o[slot]; r.rd_write=(dut.tandem_rd_write_o>>slot)&1;
+    r.rd_wdata=dut.tandem_rd_wdata_o[slot];
+    r.mem_kind=dut.tandem_mem_kind_o[slot];
+    if(r.mem_kind) {
+        r.mem_addr=dut.tandem_mem_addr_o[slot];
+        r.mem_size=1u<<dut.tandem_mem_size_o[slot];
+        r.mem_data=dut.tandem_mem_data_o[slot];
+        if(r.mem_kind==2) r.mem_data&=byte_mask(r.mem_size);
     }
+    return r;
+}
+void inject(RetireRecord& r) {
+    const char* env=std::getenv("O3_INJECT");
+    if(!env || !*env) return;
+    const std::string value(env);
+    const auto colon=value.find(':');
+    if(colon==std::string::npos) throw std::runtime_error("invalid O3_INJECT");
+    if(parse_u64(value.substr(colon+1))!=r.order) return;
+    const auto kind=value.substr(0,colon);
+    if(kind=="pc") r.pc^=4;
+    else if(kind=="reg" && r.rd_write) r.rd_wdata^=1;
+    else if(kind=="load" && r.mem_kind==1 && r.rd_write) r.mem_data^=1;
+    else if(kind=="store_addr" && r.mem_kind==2) r.mem_addr^=8;
+    else if(kind=="store_data" && r.mem_kind==2) r.mem_data^=1;
+    else throw std::runtime_error("invalid injection kind or event at retire_idx="+std::to_string(r.order));
 }
 
 }  // namespace
@@ -346,12 +366,19 @@ int main(int argc, char** argv) {
         const std::vector<InitBeat> dtcm_init = image.memory.init_beats(kDtcmBase, kDtcmBytes);
         const std::vector<InitBeat> axi_init = image.memory.init_beats(kAxiBase, kAxiBytes);
 
+        std::unique_ptr<SpikeLockstep> spike;
+        if(options.spike) {
+            spike=std::make_unique<SpikeLockstep>(kAxiBase,kAxiBytes,options.reset_pc);
+            for(const auto& b:axi_init)
+                for(unsigned i=0;i<8;++i)
+                    if((b.mask>>i)&1) spike->init(b.addr+i-kAxiBase,1,b.data>>(8*i));
+        }
         std::ofstream trace(options.trace_path, std::ios::trunc);
         if (!trace) {
             throw std::runtime_error("cannot open Tandem trace: " + options.trace_path);
         }
         trace << "{\"type\":\"header\",\"format\":\"cislc-o3-tandem\","
-              << "\"version\":1,\"xlen\":64,\"retire_width\":" << kRetireWidth << "}\n";
+              << "\"version\":2,\"xlen\":64,\"retire_width\":" << kRetireWidth << "}\n";
 
         Vo3_tandem_top dut;
         uint64_t cycle = 0;
@@ -383,13 +410,28 @@ int main(int argc, char** argv) {
         clear_tcm_init(dut);
         dut.rst_i = 0;
 
-        while (cycle < options.max_cycles && next_order < options.max_retires) {
+        uint64_t last_retire_cycle=0;
+        uint64_t tohost_value=0;
+        while (cycle < options.max_cycles && next_order < options.max_retires && !tohost_value) {
             eval_low(dut);
-            emit_tandem_records(dut, trace, cycle, next_order);
             if (dut.fatal_o || dut.inclusion_err_o) {
                 throw std::runtime_error("core fatal/inclusion error at cycle "
                                          + std::to_string(cycle));
             }
+            for(int slot=0;slot<kRetireWidth;++slot) {
+                if(!((dut.tandem_valid_o>>slot)&1)) continue;
+                const auto real=dut_record(dut,slot,cycle,next_order);
+                auto observed=real;
+                inject(observed);
+                trace << record_json(observed) << "\n";
+                if(spike) { auto reference=spike->step(real); spike->compare(observed,reference); }
+                if(options.tohost_address && real.mem_kind==2
+                   && real.mem_addr==options.tohost_address && real.mem_size==8 && real.mem_data)
+                    tohost_value=real.mem_data;
+                ++next_order;
+                last_retire_cycle=cycle;
+            }
+            if(cycle-last_retire_cycle>=10000) break;
             rising_edge(dut);
             ++cycle;
         }
@@ -397,12 +439,13 @@ int main(int argc, char** argv) {
         dut.final();
         trace.flush();
 
-        if (next_order < options.max_retires) {
+        if ((!options.tohost_address && next_order < options.max_retires)
+            || (options.tohost_address && !tohost_value)) {
             std::cerr << "[o3-tandem] timeout: cycles=" << cycle
                       << " retired=" << next_order
                       << " expected=" << options.max_retires;
             std::cerr << "\n";
-            return 1;
+            return 3;
         }
 
         if (options.require_icache_refill && dut.icache_refill_count_o == 0) {
@@ -412,6 +455,12 @@ int main(int argc, char** argv) {
             throw std::runtime_error("no SQ-blocked load replay observed");
         }
 
+        if(options.tohost_address) {
+            std::cout << "[o3-tohost] value=0x" << std::hex << tohost_value << std::dec
+                      << " status=" << (tohost_value==1?"PASS":"FAIL") << "\n";
+            if(tohost_value!=1) return 1;
+        }
+        if(spike) std::cout << "[o3-spike] PASS compared=" << next_order << " differences=0\n";
         std::cout << "[o3-memory] dtcm_init_beats=" << dtcm_init.size()
                   << " axi_init_beats=" << axi_init.size()
                   << " icache_refills=" << dut.icache_refill_count_o << "\n";
@@ -422,6 +471,8 @@ int main(int argc, char** argv) {
                   << " retired=" << next_order
                   << " trace=" << options.trace_path << "\n";
         return 0;
+    } catch (const LockstepMismatch&) {
+        return 2;
     } catch (const std::exception& error) {
         std::cerr << "[o3-tandem] error: " << error.what() << "\n";
         return 1;

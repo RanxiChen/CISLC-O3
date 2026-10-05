@@ -1,9 +1,9 @@
-/* CISLC-O3 ACT4 map: local ITCM/DTCM plus an external tohost mailbox. */
-CODE_ORIGIN = 0x10000000;
-CODE_LENGTH = 0x01000000;
-DATA_ORIGIN = 0x11000000;
-DATA_LENGTH = 0x00040000;
-TOHOST_ORIGIN = 0x12000000;
+/* CISLC-O3 ACT4 map: AXI RAM, with an image-resident SD tohost symbol. */
+CODE_ORIGIN = 0x80000000;
+CODE_LENGTH = 0x00100000;
+DATA_ORIGIN = 0x80100000;
+DATA_LENGTH = 0x0000f000;
+TOHOST_ORIGIN = 0x8010f000;
 STACK_SIZE = 0x2000;
 NUM_HARTS = 1;
 TEST_BASE = CODE_ORIGIN;
@@ -45,5 +45,5 @@ SECTIONS
   .tohost TOHOST_ORIGIN : { KEEP(*(.tohost)) } > tohost
   _end = .;
 
-  ASSERT(__stack_top <= ORIGIN(data) + LENGTH(data), "ACT4 data and stack exceed DTCM")
+  ASSERT(__stack_top <= ORIGIN(data) + LENGTH(data), "ACT4 data and stack exceed AXI data region")
 }

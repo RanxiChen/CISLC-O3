@@ -30,6 +30,10 @@ module o3_tandem_top
     output logic [PC_WIDTH-1:0] tandem_pc_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
     output logic [ILEN-1:0] tandem_instruction_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
     output logic [REG_ADDR_WIDTH-1:0] tandem_rd_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
+    output logic [1:0] tandem_mem_kind_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
+    output logic [XLEN-1:0] tandem_mem_addr_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
+    output logic [1:0] tandem_mem_size_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
+    output logic [XLEN-1:0] tandem_mem_data_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
     output logic [XLEN-1:0] tandem_rd_wdata_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0]
 );
     localparam int RETIRE_W = o3_cfg_pkg::O3_CFG.core.commit_width;
@@ -110,6 +114,10 @@ module o3_tandem_top
         assign tandem_instruction_o[lane] = retire_info[lane].instruction;
         assign tandem_rd_o[lane] = retire_info[lane].rd;
         assign tandem_rd_wdata_o[lane] = retire_info[lane].rd_wdata;
+        assign tandem_mem_kind_o[lane] = retire_info[lane].mem.kind;
+        assign tandem_mem_addr_o[lane] = retire_info[lane].mem.addr;
+        assign tandem_mem_size_o[lane] = retire_info[lane].mem.size;
+        assign tandem_mem_data_o[lane] = retire_info[lane].mem.data;
     end
 
     int unsigned debug_cycle_q;
@@ -150,7 +158,7 @@ endmodule
  */
 module o3_axi_ram #(
     parameter int ADDR_W = 40, ID_W = 4, DATA_W = 128,
-    parameter int RAM_BYTES = 1 << 20,
+    parameter int RAM_BYTES = 2 << 20,
     parameter int READ_LATENCY = 2,
     parameter int READY_STALL_PERIOD = 0
 ) (

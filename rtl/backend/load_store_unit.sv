@@ -16,6 +16,7 @@
  * - 总原则（2026-10-02）：常规 load/store 流水不为一致性/A/D/LR/SC/回收增加流水级或组合检查，
  *   慢路径都在旁侧。
  * 待定：AGU 管线条数与 load/store 组合。
+ * O3-T02: ENABLE_RETIRE_INFO adds held load address/size observation only.
  * 当前实现状态：闭环简化（L3）。单发射、单 Load 在途；DTCM 或已接线 DCache，
  * SQ 查询命中完整覆盖时转发；一个依赖等待 replay 槽让 blocked load 让出执行级，
  * SQ 变化后重查。尚无 DTLB/PMP/PMA、精确异常、多 load pending、MMIO/AMO。
@@ -79,6 +80,11 @@ module load_store_unit
     output logic store_complete_valid_o,
     output logic [ROB_IDX_WIDTH-1:0] store_complete_rob_idx_o,
     output load_result_t load_result_o,
+`ifdef ENABLE_RETIRE_INFO
+    // Observation travels with the held result, including forwarding/replay.
+    output logic [XLEN-1:0] observe_load_addr_o,
+    output logic [1:0] observe_load_size_o,
+`endif
     input logic load_result_ready_i,
 
     input logic resolution_valid_i,
@@ -175,6 +181,29 @@ module load_store_unit
     logic pending_external_q;
     logic [SRAM_TAG_WIDTH-1:0] pending_response_tag_q;
     load_result_t load_result_q;
+`ifdef ENABLE_RETIRE_INFO
+    logic [XLEN-1:0] observe_pending_addr_q;
+    // N: request/forward selects metadata. Edge N: capture. N+1: held with result.
+    // This logic cannot affect ready, valid, kill or any execution state.
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            observe_pending_addr_q <= '0;
+            observe_load_addr_o <= '0;
+            observe_load_size_o <= '0;
+        end else begin
+            if (load_request_fire) observe_pending_addr_q <= effective_addr;
+            if (memory_rsp_valid && memory_rsp_ready && pending_valid_q
+                && lq_response_live_i && !killed(pending_branch_mask_q)) begin
+                observe_load_addr_o <= observe_pending_addr_q;
+                observe_load_size_o <= 2'(pending_mem_size_q);
+            end
+            if (load_forward_fire) begin
+                observe_load_addr_o <= effective_addr;
+                observe_load_size_o <= 2'(work_uop.mem_size);
+            end
+        end
+    end
+`endif
 
     function automatic logic access_in_dtcm(
         input logic [XLEN-1:0] addr,
