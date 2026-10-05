@@ -4,13 +4,13 @@
  *
  * 【2026-10-02 框架：目标机制与缺口】
  * 需要补充的去向（按 uop.ext.fu_class）：
- * - FU_MUL/FU_DIV：M FU 的 IQ 归属未定（独立 IQ 或与整数 IQ 共享，B21 待定）。
+ * - FU_MUL/FU_DIV：L6 已共享整数 IQ；融合成员由 head 的第二个结果完成，不独立入 IQ。
  * - FU_FMA/FDIVSQRT/FMISC/FCONV：FP IQ 组织未定（B14/B15），FP_IQ_DEPTH 先占位。
  * - FU_LDST（含 FLW/FLD/FSW/FSD）、FU_AMO：进入 Memory IQ，遵守 B05/B09。
  * - FU_CSR/FU_SYS：串行化指令，消费 RDQ 后由 ROB 队头等待/执行。
  * - 现状无法分类的 uop 停在队头，会阻塞后续全部指令。
  * - recovery_block_i 只接 M（valid && mispredict）；C 不阻塞 Dispatch。
- * 当前实现状态：闭环简化（L5），四宽连续前缀；系统队头执行已接入，M/FP 待 L6/L9。
+ * 当前实现状态：闭环简化（L6），四宽连续前缀；系统队头与 M 已接入，FP 待 L9。
  * - 测试：sim/cocotb/backend_control/、backend_issue_queue_l3/。
  * In-order variable-prefix Dispatch planner
  *

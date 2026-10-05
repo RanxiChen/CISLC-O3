@@ -22,7 +22,7 @@
  *    槽位、cfi_type、ras_action 与 inst_len，送前端 FTQ 和 redirect_arbiter。L2 闭环只启用
  *    执行纠错来源；旧 resolution_o 仍同步驱动后端 checkpoint 恢复。
  * 3) 后端恢复与前端 D24 赢家需使用同一取消边界，接口归属未设计。
- * 4) 目标地址：现以 PC_WIDTH(=VADDR_W) 计算；RV64GC 下 IALIGN=16，JALR 清 bit0 后目标不会
+ * 4) 目标地址：现以 PC_WIDTH(=VADDR_W) 计算；L6 对 target bit1 报 IALIGN=32 异常。L7 RV64GC 下 IALIGN=16，JALR 清 bit0 后目标不会
  *    出现指令地址不对齐，因此 BRU 可能不需要异常输出；非规范/不可访问目标由前端取指时报告。
  *    B12 第 4 条将“异常/完整目标边界”列为待闭合，此处只记录判断依据，未定。
  *
@@ -34,7 +34,7 @@
  *
  * 测试：sim/cocotb/branch_recovery/；整核门禁为 sim/o3/run-rv64i-instructions。
  */
-// 当前实现状态：闭环简化（L3）；正确解析不停顿，四宽合同。测试：sim/cocotb/backend_control/、backend/。
+// 当前实现状态：闭环简化（L6）；JALR、RAS 提示与 IALIGN=32 异常已接入。测试：sim/cocotb/backend_control/、backend/。
 module branch_unit
     import o3_pkg::*;
 #(

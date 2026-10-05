@@ -26,7 +26,7 @@
  *   Integer/Memory/Branch实例均由共享读口和对应FU可用性回送ready。
  * - OLDEST_ONLY=1时只允许物理队头成为候选；L3 Memory 实例设为 0，并由
  *   allow_load_i 配合 LSU 单项 replay 槽避免年轻 Load 占住执行寄存器的死锁。
- * 当前实现状态：闭环简化（L3）。Memory 单发射，可越过源未就绪队头；
+ * 当前实现状态：闭环简化（L6）。INT 共享 M，按独立 FU 容量选择；Memory 单发射，可越过源未就绪队头；
  * replay 槽占用时只选 store。测试：sim/cocotb/backend_issue_queue/。
  *
  * 周期N组合阶段更新ready视图、选择候选并计算压缩后的next状态；

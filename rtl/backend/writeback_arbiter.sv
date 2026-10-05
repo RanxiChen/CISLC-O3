@@ -1,10 +1,11 @@
+// 当前实现状态：闭环简化（L6）；测试 sim/cocotb/mdu/、early_wakeup/、sim/o3/。
 // L6: MUL/DIV completion heads participate in same oldest-first atomic grant as ALU.
 /**
  *
  * 【2026-10-02 框架：目标机制与缺口】
  * - 现有：4 个 ALU、1 个 Load、JAL/JALR 链接值按 ROB 年龄竞争整数写口；PRF 写入、wakeup、
  *   ROB complete 同一 grant 原子生效；被杀/无目的结果直接消费。
- * - 需要补充：extra_src_i 中的 MUL、DIV、FP→INT、CSR、AMO 结果作为候选（端口已列，未接入）；
+ * - L6：extra_src_i 中 MUL、DIV 已参与选择；FP→INT、AMO 待 L9/L8，CSR 用 L5 队头串行口。
  *   写口数 CFG.exec.int_prf_write_ports 待定；FP 域另有 fp_writeback_arbiter。
  * - 完成 FIFO（B33 已定）：MUL/FP 等流水 FU 的结果先进各自 fu_completion_fifo，头部作为候选；未赢得
  *   写口时留在 FIFO 头继续作 bypass 源，已发出的提前唤醒承诺不因仲裁推迟失效。融合乘法的两个结果
@@ -49,7 +50,7 @@ module writeback_arbiter
     output logic [ROB_IDX_WIDTH-1:0] complete_idx_o [NUM_ALUS+1:0],
     output logic [XLEN-1:0] complete_data_o [NUM_ALUS+1:0],
 
-    // ---------------- 目标合同（未接入） ----------------
+    // ---------------- L6 extra 源：M 已接入；其余由 backend 显式 tie-off ----------------
     input  o3_types_pkg::wb_req_t extra_src_i [NUM_EXTRA_SRC],
     output logic                  extra_consume_o [NUM_EXTRA_SRC],
     output logic extra_complete_valid_o [NUM_EXTRA_SRC],

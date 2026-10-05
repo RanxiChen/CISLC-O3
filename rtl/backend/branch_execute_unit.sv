@@ -1,3 +1,4 @@
+// 当前实现状态：闭环简化（L6）。
 // L6 JALR rs1+imm, bit0 clear, PC+length link, IALIGN=32 exception. Tests: sim/cocotb/jalr/.
 /**
  *
@@ -11,7 +12,7 @@
  * 已实现RV64 B型条件比较、JAL/JALR目标和链接值计算。输入来自Branch RegRead
  * 寄存器，组合结果在Backend上升沿进入Branch Result保持寄存器。
  * 不负责IQ选择、PRF端口仲裁、checkpoint恢复、写回仲裁或预测器训练。
- * 当前不处理目标地址异常和 RVC；L2 执行重定向合同测试见
+ * 当前按 IALIGN=32 处理目标不对齐；RVC/完整非规范地址边界留后级。L2 历史合同见
  * sim/cocotb/branch_recovery/。
  */
 module branch_execute_unit

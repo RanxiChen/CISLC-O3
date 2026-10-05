@@ -27,7 +27,7 @@
  * - 缺口 1：只有误预测 M 阻塞 Decode/rename/dispatch/读口/退休；正确解析 C 正常推进并清 mask。
  * - 缺口 2：ALU 独立 RegRead kill 已存在，具名/随机及真实写回仲裁测试见 branch_recovery/wb_alu_kill。
  * - exec_resolve_o 已由 BRU 驱动，解析与 JAL 链接结果写回解耦。
- * - 异常队头仍停住，无精确 trap（L5）；JALR/RVC、完整地址边界后续补齐。
+ * - L5 精确 trap/CSR/MRET 已接入，T03 已知问题保留；L6 JALR 已接入，RVC 与完整地址边界待后级。
  * - 测试：sim/cocotb/backend/、sim/o3/。
  *
  * 主流程已定、RTL 未实现（2026-10-02 框架接线见文件末尾）：B22～B27 串行/屏障/trap/xRET，

@@ -22,7 +22,7 @@
 | L3 部分闭合 | SQ 依赖/转发 → 流水化 DCache → inclusive L2 → AXI 数据访存与退休 | `make -C sim/cocotb/store_queue SIM=verilator`、`make -C sim/cocotb/dcache SIM=verilator`、`make -C sim/cocotb/backend_issue_queue SIM=verilator`、`make -C sim/cocotb/load_store_unit SIM=verilator`、`make -C sim/o3 run-dcache-data run-dcache-replay` | Alan `a8b3fc6`：Memory IQ 1/1、LSU replay/恢复 2/2；整核 `7d59822` 新门禁实测 `load_replays=1`，71 周期退休 6 条且轨迹 PASS；旧 smoke/分支/数据门禁仍 PASS。SQ 3/3、DCache 3/3 沿用前次 Alan 证据。仍缺多 MSHR、多 load pending、跨行异常、FENCE.I、PTW/AMO/DMA；不是完整 B03～B05 |
 | L3 收尾 | 完成 L3；修 B12 缺口 1（分支解析全局停顿）与缺口 2（ALU RegRead 背压时缺 kill）；重命名改 4 宽（B42）；移除当前级不需要的空壳实例（B46） | 现有 L2/L3 门禁 + 分支密集程序 + 缺口 2 定向测试 | 阶段二实现与验收通过：四宽/16 项、空壳/filelist 清理、U3/U4、缺口 1 与授权 LQ-M；缺口 2 具名/随机/真实仲裁测试通过。Alan `ac2aed1` 全部门禁与 seed 1/7/29 通过，`1b7885d` 补充 LQ-M 通过；分支密集 1967 周期/365 退休，前后差值 0。同最终交付 SHA 的复验以 [报告 §9](tasks/O3-T01-report.md) 的 final 目录为准 |
 | L5 | Spike 逐条比对；M 模式 CSR、精确异常、ecall/ebreak/illegal、MRET、committed_next_pc | 按 2026-10-06 用户策略带已知问题收口 | **已知问题退出**：Alan `2cc8a91` build、固定 11/11、新增局部 5/5、riscv-tests 5/5 PASS；随机 178/200（14 rd_wdata、8 mem_kind 失败）；M 模式 84 退休后 MRET timeout；ACT4 M 模式 Sail 签名 trap loop 暂不处理。根因未定位项留待上板抓波形，停止 T03 bug 修复，详见 [T03 报告](tasks/O3-T03-report.md) |
-| L6 | M 扩展（MUL 采用 DSP，B43）、完成 FIFO/提前唤醒、JALR；首次 OOC 综合 | 按 2026-10-06 策略：定向 cocotb + lint + 整核短程序 + OOC | 实现中：DSP 四拍 MUL、radix-4 DIV、融合双 ROB、预留完成 FIFO/提前唤醒/bypass、JALR 已接通；验证待 Alan，见 [T04 报告](tasks/O3-T04-report.md) |
+| L6 | M 扩展（MUL 采用 DSP，B43）、完成 FIFO/提前唤醒、JALR；首次 OOC 综合 | 按 2026-10-06 策略：定向 cocotb + lint + 整核短程序 + OOC | 机制已实现：Alan 六项定向 6/6、lint PASS、整核 297 周期 / 71 条退休 / Spike 0 差异。整核 OOC 812 秒后工具崩溃，PPA 未取得；补做 MDU 局部诊断，见 [T04 报告](tasks/O3-T04-report.md) |
 | L7 | uBTB/BTB/TAGE、FTQ 恢复、RAS 快速修复；RVC | RV64IMC + 误预测率/IPC 基线 | 未开始 |
 | L8 | 多 MSHR、重放、同 line 非对齐、A 扩展、FENCE/FENCE.I | RV64IMAC + litmus + 死锁 watchdog | 未开始 |
 | L9 | F/D：拆分 CVFPU、FP 重命名、fflags/FS 退休 | ACT4 RV64GC（用户态） | 未开始 |
@@ -168,21 +168,34 @@ O3-T02 收尾（2026-10-06）：上节 15/51、1/200 是修复前历史失败。
 日志 Alan `/home/chen/FUN/CISLC-O3-runs/20261006-o3t02-close/final/`；
 收尾文档提交原样复验另存 delivery/，其 sha.txt 与 commands.tsv 为准确交付证据。
 
-## 6. O3-T03 实现中（L5）
+## 6. O3-T03 已知问题退出（L5）
 
 接入 rename_entry_gate、commit_ctrl、csr_file、trap_ctrl；ROB 保存队头串行/异常/
 实际后继元信息；CSR 在队头一次读改写并写回，trap 不退休故障指令，MRET 自身退休。
 RAT/free list 从提交态恢复；SQ 只取消未提交项；LSU 保留已发事务的所有权并丢弃迟到结果。
 存储访问在退休前通过只读 DCache 探测确认；probe 不修改数据，成功才 complete Store。
 FENCE.I 只排空 SQ + 失效 ICache，完整数据 clean 待 L8。Spike 增加 CSR/trap 事件。
-本地 lint 待提交前检查，Alan 功能未验证，不能宣称 L5 通过。
+Alan `2cc8a91` 的通过项和三个已知问题见 [T03 报告](tasks/O3-T03-report.md)；L5 带已知问题退出，不宣称完整通过。
 
 O3-T03 首版发现 PRF/ROB unpacked array lane 方向不一致；修正并追加三条静态
-指令的固定 Spike 门禁，详情 O3-T03 报告 Bug 1。修复后 Alan 验证待运行。
+指令的固定 Spike 门禁，详情 O3-T03 报告 Bug 1；最小 PRF 门禁在 `2cc8a91` 已通过。
 
 L5 F0 已保留非法短编码位置及返回队列取指错误，交给 ROB 精确 trap；C 仍不执行。
-测试 sim/cocotb/ifu_f0 与固定 illegal_zero 门禁，Alan 结果待验证。
+测试 sim/cocotb/ifu_f0 在 Alan `2cc8a91` 2/2 PASS，固定 illegal_zero 门禁 PASS。
 
 ## 2026-10-06 L6 合同更新
 
 完成 FIFO 双入队、取消归还与独立单双容量；renamed_uop 携带融合成员 tag；共享 INT IQ 加入 FU 可用性与完成头唤醒；WB extra 源完成口；BRU 目标异常。详见 T04 报告。验证按用户新策略从简；T03 已知问题不再阻塞 L6。
+
+### L6 当前模块状态
+
+| 模块 / 路径 | 当前状态 | 定向证据 |
+| --- | --- | --- |
+| signed_mul65x65 / mul_execute_unit | DSP 四拍数据通路与完整身份、双结果和按条取消 | mdu DIV=0 |
+| unsigned_radix4_divider / div_execute_unit | MSB 对齐 radix-4、符号与 W / 除零 / 溢出 | mdu DIV=1 |
+| fu_completion_fifo | 预留信用、双入队、WB 背压、选择性取消 | fu_completion_fifo |
+| mul_fusion_detect / rename_stage / dispatch_stage | 两条架构指令、整对接纳、单次执行 | mul_fusion_detect、整核 L6 短程序 |
+| backend_issue_queue / backend / writeback_arbiter | 共享 INT IQ 的 MUL/DIV 可用性、额外写回、早唤醒和头部 bypass | early_wakeup、整核 L6 短程序 |
+| branch_unit / branch_execute_unit | JALR 重定向 / 链接保持 / RAS 提示 / 当前 IALIGN=32 异常 | jalr、整核 L6 短程序 |
+
+最终实现与综合证据以 [T04 报告](tasks/O3-T04-report.md) 为准。

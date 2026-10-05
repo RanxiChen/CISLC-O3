@@ -16,7 +16,7 @@
  * branch checkpoint和Rename/Dispatch Queue资源，产生本拍可原子接受的最大前缀。
  * 一旦某条指令缺少任一资源，该条和所有更年轻lane都停止；更老可行前缀仍推进。
  */
-// 当前实现状态：闭环简化（L3）；正确解析不停顿，四宽合同。测试：sim/cocotb/rename_stage/。
+// 当前实现状态：闭环简化（L6）；正确解析不停顿，四宽合同、B34 整对资源接纳。测试：sim/cocotb/rename_stage/。
 module rename_stage
     import o3_pkg::*;
 #(
