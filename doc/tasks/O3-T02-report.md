@@ -321,3 +321,45 @@ FAIL：older redirect valid=0；相同测试及全部原有分支恢复测试在
 对照证据，不能替代提交 SHA 上的最终验收。新增 `run-spike-branch-loop`
 并纳入 `run-spike-all`，保留五个既有固定程序及其期望/checker/断言不变。
 本地 lint 0 errors / 101 warnings，PASS；提交后继续 ACT4/随机全量迭代。
+
+## 7. 修复记录与最终结果（2026-10-06）
+
+Bug 1 的独立修复提交为 `5fe77a271d26b2c92b77da4d2c6d8ab4c695d313`，
+根因、逐拍复现、D24 依据及新增门禁见 §6.1；没有删除或放宽原测试/断言，
+没有修改既有期望。补跑 137–200 未发现新 bug，无第二个 RTL 修复提交。
+
+Alan 补跑命令：`make -C sim/o3 run-spike-random SEEDS=137-200
+SPIKE_OUT=/home/chen/FUN/CISLC-O3-runs/20261006-o3t02-close/remaining`
+（实际为一行）。64/64、0 差异，共匹配 192053 条。日志 `remaining.log`，
+逐种子工件及汇总 `remaining/random/summary.json`，均相对上述 close 根目录。
+该轮沿用 `5fe77a2` 构建的二进制；checkout 为 `3cbd759`，两者执行源码相同，
+因此它仅用于完成剩余种子的开发检查，最终结论使用下述重新构建。
+
+完整复验 SHA：`3cbd759f7f98d1cdd1fe5e8cff6a38768e9ed71a`。
+Alan 根目录 `/home/chen/FUN/CISLC-O3-runs/20261006-o3t02-close/final/`。
+`sha.txt` 与 `sha-end.txt` 绑定准确 SHA；`commands.tsv` 逐项保存原命令、
+退出码与绝对日志位置；`summary.json` 保存 O3-T01 全部 60 条及附加验收结果。
+
+执行入口为 `/tmp/o3t02_close_acceptance.py`，使用 O3-T01 final/commands.tsv
+的原 60 条命令，按 make 目录串行、不同目录最多三路并行。整核重新 build 后
+顺序执行固定程序、注入、随机与 ACT4，源码不在验收过程中修改。
+
+| 命令/门禁 | 结果 | final 内日志/汇总 |
+| --- | --- | --- |
+| O3-T01 §6.2、§6.3 及既有四宽合同，原 60 命令（含 seed 1/7/29） | 60/60、退出码均 0 | commands.tsv、summary.json，各命令独立 .log |
+| `make -C sim/o3 run-spike-all` | 6/6、0 差异，既有 checker 全通过 | spike-fixed.log |
+| `make -C sim/o3 run-spike-selftest SPIKE_OUT=<final>` | 5/5 正确检出 | spike-selftest.log、selftest/summary.json |
+| `make -C sim/o3 run-spike-random SEEDS=1-200 SPIKE_OUT=<final>` | 200/200、0 差异，共匹配 600160 条 | spike-random.log、random/summary.json |
+| `make -C verification/act4 build UPSTREAM_DIR=/tmp/cislc-o3-act4-source WORK_DIR=<final>/act4-build` | 完整生成 51 ELF，退出码 0 | act4-build.log |
+| `make -C sim/o3 run-spike-act4 ELF_DIR=<final>/act4-build/cislc-o3-rv64i/elfs SPIKE_OUT=<final>` | 51/51、0 差异、0 FAIL/INFRA_ERROR | spike-act4.log、act4/summary.json |
+
+`<final>` 是上述绝对目录；shell 实际命令保存在 commands.tsv。ACT4 清单仍为
+§5.5 的完整 51 项，无删除项；旧阶段二失败是历史证据，不作为本轮结果。
+原版 Spike SHA、环境与共享库见 §5.2，本轮 tools.txt 另记录实测工具版本。
+本任务完成的是 RV64I 比对闭环；CSR/精确 trap 等 L5 功能由 O3-T03 继续，
+不是 RV64GC、Linux、PPA/时序、FPGA 或形式化证明。
+
+收尾文档提交前本地 `scripts/lint.sh` PASS，0 errors / 101 warnings，
+日志 `/tmp/o3t02-close-lint.log`。收尾提交再次在 Alan 原样运行上述全部验收，
+目录 `20261006-o3t02-close/delivery/`，准确收尾 SHA 见该目录 sha.txt / sha-end.txt，
+所有命令与结果见 commands.tsv / summary.json；文档提交自身 SHA 不在内容中自引用。

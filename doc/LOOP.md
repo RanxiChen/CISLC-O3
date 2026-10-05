@@ -21,7 +21,7 @@
 | **L2 当前** | **taken 分支 / JAL：BRU 解析 → 重定向 → 前端恢复** | `make -C sim/cocotb/branch_recovery SIM=verilator TEST_SEED=1 && make -C sim/o3 run-rv64i-instructions` | Alan PASS（`de9149d`；局部 1/1；整核 76 周期、14 条退休、ICache 回填 2 次） |
 | L3 部分闭合 | SQ 依赖/转发 → 流水化 DCache → inclusive L2 → AXI 数据访存与退休 | `make -C sim/cocotb/store_queue SIM=verilator`、`make -C sim/cocotb/dcache SIM=verilator`、`make -C sim/cocotb/backend_issue_queue SIM=verilator`、`make -C sim/cocotb/load_store_unit SIM=verilator`、`make -C sim/o3 run-dcache-data run-dcache-replay` | Alan `a8b3fc6`：Memory IQ 1/1、LSU replay/恢复 2/2；整核 `7d59822` 新门禁实测 `load_replays=1`，71 周期退休 6 条且轨迹 PASS；旧 smoke/分支/数据门禁仍 PASS。SQ 3/3、DCache 3/3 沿用前次 Alan 证据。仍缺多 MSHR、多 load pending、跨行异常、FENCE.I、PTW/AMO/DMA；不是完整 B03～B05 |
 | L3 收尾 | 完成 L3；修 B12 缺口 1（分支解析全局停顿）与缺口 2（ALU RegRead 背压时缺 kill）；重命名改 4 宽（B42）；移除当前级不需要的空壳实例（B46） | 现有 L2/L3 门禁 + 分支密集程序 + 缺口 2 定向测试 | 阶段二实现与验收通过：四宽/16 项、空壳/filelist 清理、U3/U4、缺口 1 与授权 LQ-M；缺口 2 具名/随机/真实仲裁测试通过。Alan `ac2aed1` 全部门禁与 seed 1/7/29 通过，`1b7885d` 补充 LQ-M 通过；分支密集 1967 周期/365 退休，前后差值 0。同最终交付 SHA 的复验以 [报告 §9](tasks/O3-T01-report.md) 的 final 目录为准 |
-| L5 | Spike 逐条比对；M 模式 CSR、精确异常、ecall/ebreak/illegal、MRET、committed_next_pc | ACT4 RV64I + Spike 比对 0 差异 | O3-T02 比对基础设施已实现：5 个既有固定程序 0 差异、五类注入全部检出；ACT4 15/51 PASS，随机 1/200 PASS、199 个 PC 差异。已确认既有 DUT 循环控制流 bug；本任务未修 RTL。未满足 L5 门禁；最终 SHA 复验与后续 O3-T02-fix 见任务报告 |
+| L5 | Spike 逐条比对；M 模式 CSR、精确异常、ecall/ebreak/illegal、MRET、committed_next_pc | ACT4 RV64I + Spike 比对 0 差异 | O3-T02 收尾完成：D24 busy 丢更老重定向 bug 独立修复 `5fe77a2`；Alan `3cbd759` O3-T01 60/60、固定 6/6、ACT4 51/51、随机 200/200 均通过且 0 差异，自测 5/5。CSR/精确 trap 等 O3-T03 随后直接实现；尚不是完整 L5，详见报告 §7 |
 | L6 | M 扩展（MUL 采用 DSP，B43）、完成 FIFO/提前唤醒、JALR；首次 OOC 综合 | ACT4 RV64IM + CoreMark（仿真） | 未开始 |
 | L7 | uBTB/BTB/TAGE、FTQ 恢复、RAS 快速修复；RVC | RV64IMC + 误预测率/IPC 基线 | 未开始 |
 | L8 | 多 MSHR、重放、同 line 非对齐、A 扩展、FENCE/FENCE.I | RV64IMAC + litmus + 死锁 watchdog | 未开始 |
@@ -104,7 +104,7 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
 | `frontend/fetch_return_queue.sv` | **闭环简化（L1）**：单槽身份匹配、按序出队和第二笔回压 | D15/D17 待 L4 | `sim/cocotb/fetch_return_queue/` Alan 2/2 PASS；整核 L1 PASS |
 | `frontend/ifu_f0.sv` | **闭环简化（L1）**：完整 32 位指令识别 | RVC 与跨块拼接待 L2 | `sim/cocotb/ifu_f0/` Alan 2/2 PASS；整核 L1 PASS |
 | `frontend/ifu_f1.sv` | **闭环简化（L1）**：生成 `fetch_entry_t`、`ftq_last`，修正端口无效 | 预解码修正待 L2 | `sim/cocotb/ifu_f1/` Alan 2/2 PASS；整核 L1 PASS |
-| `frontend/redirect_arbiter.sv` | **闭环简化（L2）**：执行误预测 R0 kill/重定向、R1 身份恢复、R2 重新分配；D24 busy 期间更老执行请求按 FTQ 环形年龄/槽位替换 | 系统/预解码/慢预测多来源年龄仲裁待后级 | O3-T02-fix：新增定向测试在原 RTL FAIL，临时修复对照 4/4 PASS；提交后全量复验待跑 |
+| `frontend/redirect_arbiter.sv` | **闭环简化（L2）**：执行误预测 R0 kill/重定向、R1 身份恢复、R2 重新分配；D24 busy 期间更老执行请求按 FTQ 环形年龄/槽位替换 | 系统/预解码/慢预测多来源年龄仲裁待后级 | Alan `3cbd759` branch_recovery 原有/新增 4/4 PASS（seed 1/7/29）；固定 6/6、ACT4 51/51、随机 200/200 0 差异 |
 | `frontend/fetch_buffer.sv` | **闭环简化（L2）**：执行重定向整体清空未交付项 | 预解码修正需要按 FTQ 身份/槽位选择性保留 | `sim/cocotb/branch_recovery/` Alan 1/1 PASS；整核 L2 PASS（`de9149d`） |
 | `frontend/frontend.sv` | 总装（连线） | L1 路径已接通；其余空壳仍待后级 | `sim/o3` Alan PASS |
 | `backend/backend.sv` 旧数据流 | **闭环简化（L3）**：INT/MEM/BR IQ、BRU 恢复、SQ/LSU→DCache；Memory IQ 可越过未就绪队头并受 replay 槽控制 | 四宽/16 项；U3 退休 FTQ 通知、U4 M/Bare/PMP update=0；正确解析正常推进，M 保留恢复边界；JALR/RVC 待后级 | Alan backend 2/2 与 backend_control 同拍合同 PASS（`ac2aed1`）；smoke/分支/数据/replay/dense 门禁 PASS；最终提交复验见报告 |
@@ -117,7 +117,7 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
 | `backend/branch_unit.sv`、`alu_pipe.sv` | **闭环简化（L3）**：one-shot C/M 与 JAL 链接解耦；ALU 独立 kill 保留旧 Result | JALR/完整目标边界待后级 | Alan 缺口 2 具名/700 事务 DUT/真实 WB 竞争与总装 C 合同 PASS（`ac2aed1`，seed 1/7/29） |
 | `backend/load_queue.sv` | **闭环简化（L3）**：四宽；C 合并正常记账，M 仅取消年轻并保留旧 execute/request/response | 多事务代际/异常待 L8/L5 | Alan LQ-C/M PASS（`ac2aed1`）；240 事务复用/迟到合同 PASS（`1b7885d`，seed 1/7/29） |
 | `core/o3_core.sv` | 总装（连线） | ICache/L2/AXI、直接控制流恢复及基础 DCache 数据路径已接通 | 整核 Alan smoke、分支及基础数据门禁 PASS（`6b4c540`） |
-| `sim/o3/` | AXI RAM 2 MiB、JSONL v2、进程内固定版本 Spike、LSU/ROB 访存观测、ACT4 迁移、3000 动态退休随机生成与五类自测 | 修复循环控制流 PC 差异；CSR/异常/JALR/RVC 等仍由后续任务闭合 | Alan 既有 5 程序 0 差异、自测 5/5；ACT4 15/51、随机 1/200；最终同 SHA 记录见 O3-T02 报告 |
+| `sim/o3/` | AXI RAM 2 MiB、JSONL v2、进程内固定版本 Spike、LSU/ROB 访存观测、ACT4 迁移、3000 动态退休随机生成与五类自测 | 循环控制流差异已修复；CSR/异常由 O3-T03、RVC 等由后续任务闭合 | Alan `3cbd759` 固定 6/6、自测 5/5、ACT4 51/51、随机 200/200 全部通过，0 差异；准确命令/日志见 O3-T02 报告 §7 |
 
 ## 3. 其他模块状态概览
 
@@ -161,3 +161,9 @@ R1 依赖与级间暂存按 B42 综合时序触发，不指定 Ln。
 O3-T01 60 条既有命令和全部新门禁的最终提交复验记录见
 [O3-T02 阶段二报告](tasks/O3-T02-report.md)，不得以开发轮次替代同 SHA 复验。
 用户已授权随后直接执行 O3-T02-fix；需要改 Dxx/Bxx 决策时才停。
+
+O3-T02 收尾（2026-10-06）：上节 15/51、1/200 是修复前历史失败。
+修复后补跑 137–200 为 64/64；重新构建后的同 SHA 全量复验为 O3-T01 60/60、
+固定 6/6、ACT4 51/51、随机 200/200（600160 条匹配），无新 bug。
+日志 Alan `/home/chen/FUN/CISLC-O3-runs/20261006-o3t02-close/final/`；
+收尾文档提交原样复验另存 delivery/，其 sha.txt 与 commands.tsv 为准确交付证据。
