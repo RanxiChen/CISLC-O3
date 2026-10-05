@@ -10,13 +10,13 @@ VERILATOR_FLAGS := \
 	--cc \
 	--exe \
 	--build \
-	-Wno-fatal \
+	-Wno-fatal --assert \
 	-f rtl/rtl.f \
 	--top-module $(TOP) \
 	--Mdir $(BUILD_DIR) \
 	-DENABLE_RETIRE_INFO
 
-.PHONY: build run run-smoke run-icache-smoke run-rv64i-instructions run-dcache-data run-dcache-replay run-unified-memory test clean
+.PHONY: build run run-smoke run-icache-smoke run-rv64i-instructions run-dcache-data run-dcache-replay run-unified-memory run-l3-branch-dense test clean
 
 build:
 	rm -rf $(BUILD_DIR)
@@ -103,3 +103,11 @@ test: build run-smoke
 
 clean:
 	rm -rf $(BUILD_DIR) tandem.jsonl icache_smoke.jsonl rv64i_instructions.jsonl dcache_data.jsonl dcache_replay.jsonl unified_memory.jsonl
+
+# Frozen input/oracle: 40 correct BNE, 40 taken BEQ, 40 JAL; 365 retires.
+run-l3-branch-dense:
+	cd $(SIM_DIR) && $(RUN_BIN) --image tests/l3_branch_dense.hex \
+		--reset-pc 0x80000000 --trace l3_branch_dense.jsonl \
+		--max-cycles 30000 --max-retires 365 --require-load-replay
+	cd $(SIM_DIR) && python3 check_trace.py --trace l3_branch_dense.jsonl \
+		--expect tests/l3_branch_dense.expected.json

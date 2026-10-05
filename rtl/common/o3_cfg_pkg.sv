@@ -50,7 +50,7 @@ package o3_cfg_pkg;
         int unsigned asid_bits;
         // 待定：satp 切换与旧请求隔离使用的翻译上下文 epoch 位宽（D27 不固定）。
         int unsigned xlate_epoch_bits;
-        // 待定：每拍 ROB 提交宽度；B01 明确提交宽度不随 rename=6 自动确定。
+        // 已定 4：每拍 ROB 提交宽度，与 rename 一致（B42）。
         int unsigned commit_width;
         // 待定：PMP 项数（D28 未定数量）。
         int unsigned pmp_entries;
@@ -157,11 +157,11 @@ package o3_cfg_pkg;
     // ------------------------------------------------------------
     typedef struct packed {
         int unsigned width;               // 已定 4：与前端每拍最多交付 4 条一致（前端 16.2 节）
-        int unsigned queue_depth;         // 待定：Decode Queue 深度，按单条 uop 计（B01：吸收积压）
+        int unsigned queue_depth;         // L3 为 16：4 bank × 4 行，吸收后端回压（U1）
     } decode_cfg_t;
 
     typedef struct packed {
-        int unsigned width;               // 暂定 6：参数化 rename 宽度（B01）
+        int unsigned width;               // 已定 4：Decode/Rename/Dispatch/Commit 统一宽度（B42）
         int unsigned int_phys_regs;       // 待定：整数物理寄存器数（现状 96 不是基线决定）
         int unsigned fp_phys_regs;        // 已定 64：32 个架构 FPR 映射到 64 个 64 位物理 FPR（B15）
         int unsigned checkpoints;         // 待定：未决分支 checkpoint 数
@@ -173,7 +173,7 @@ package o3_cfg_pkg;
     } rob_cfg_t;
 
     typedef struct packed {
-        int unsigned width;               // 待定：Dispatch 宽度（B01：不随 rename=6 自动确定）
+        int unsigned width;               // 已定 4：Dispatch 宽度（B42）
         int unsigned int_iq_depth;        // 待定
         int unsigned mem_iq_depth;        // 待定
         int unsigned br_iq_depth;         // 待定
@@ -343,10 +343,10 @@ package o3_cfg_pkg;
         be: '{
             decode: '{
                 width:       4,
-                queue_depth: 18
+                queue_depth: 16
             },
             rename: '{
-                width:         6,
+                width:         4,
                 int_phys_regs: 96,
                 fp_phys_regs:  64,
                 checkpoints:   16,

@@ -16,26 +16,16 @@
  *     → csr_file / trap_ctrl（CSR、精确异常入口、xRET、特权切换、中断：未设计）
  *   共享：ptw（ITLB+DTLB，经 DCache 物理入口）；dcache ↔ L2（在 o3_core）；SD DMA 经 L2 探测 L1D。
  *
- * 当前实现状态：闭环简化（L1）
- * - 仍在运行的是 HEAD 06462b0 的旧数据流：4 宽 Decode → Decode Queue → 前缀 rename
- *   （组内旁路在 rename_map_table 内）→ RDQ → Dispatch → INT/MEM/BR IQ → ALU/LSU/BRU →
- *   写回 → ROB 退休。2026-10-02 只做了结构调整：
- *   1) PRF 读口仲裁、ALU 管线、BRU 单元、ready 表从本文件原样迁出为 prf_read_arbiter、
- *      alu_pipe、branch_unit、preg_ready_table，逻辑未改；
- *   2) 参数全部改由 CFG 推导（O3_CFG.be），模块不再有默认值；
- *   3) 端口改为目标合同；旧的 branch_resolution_o / ftq_release_count_o / redirect_* /
- *      dmem_* 端口删除。旧 LSU 外部 memory 口在此不再连接。
- * - INT/MEM/BR issue queue 已在旧数据流实例化；此前 INT/MEM 队列缺席，导致
- *   L1 指令在 rename 后无法 dispatch。目标系统/FP/非阻塞访存仍是空壳。
- * - 测试：sim/cocotb/backend/；整核退休：sim/o3/run-smoke。
- *
- * 已知缺口（B12，保留原行为，只标注）：
- * - 缺口 1：任何 branch_resolution.valid（含预测正确）都阻止 Decode/rename/dispatch、
- *   读口授予与 ROB 退休（recovery_block / issue_block）。
- * - 缺口 2：alu_pipe 中年轻 RegRead 槽在结果背压时缺少独立 kill（静态审查，未仿真复现）。
- * - 缺口 3：exec_resolve_o（bru_resolve_t）未驱动；D24 统一恢复接口未落实。
- * - 缺口 4：异常/完整目标地址边界待闭合。
- * - ROB 中异常项到达队头后不会退休，没有精确异常入口。
+ * 当前实现状态：闭环简化（L3）
+ * - B42：4 宽 Decode/Rename/Dispatch/Commit，16 项 Decode Queue。
+ * - INT/MEM/BR IQ → PRF → ALU/BRU/LSU → ROB；SQ/DCache/L2 真实路径保留。
+ * - U3 ROB 退休直接通知 FTQ；U4 M/Bare/PMP 静态常量集中在本模块末尾。
+ * - 不在本级的空壳实例已移除；R1/R2 按综合时序触发；M/FP/系统见后续阶梯。
+ * - 缺口 1：基线仍在任何解析拍暂停 Decode/rename/dispatch/读口/退休。
+ * - 缺口 2：ALU 独立 RegRead kill 已存在，具名/随机测试待本任务补齐。
+ * - exec_resolve_o 已由 BRU 驱动，解析与 JAL 链接结果写回解耦。
+ * - 异常队头仍停住，无精确 trap（L5）；JALR/RVC、完整地址边界后续补齐。
+ * - 测试：sim/cocotb/backend/、sim/o3/。
  *
  * 主流程已定、RTL 未实现（2026-10-02 框架接线见文件末尾）：B22～B27 串行/屏障/trap/xRET，
  * B31 非对齐，B32～B41（load 依赖等待、提前唤醒与完成 FIFO、MULH+MUL 融合、LR/SC reservation、
@@ -216,6 +206,7 @@ module backend
     logic                      rename_rd_write_en [MACHINE_WIDTH-1:0];
     logic [INST_ID_WIDTH-1:0]  rob_alloc_instruction_id [MACHINE_WIDTH-1:0];
     o3_types_pkg::ftq_id_t      rob_alloc_ftq_idx [MACHINE_WIDTH-1:0];
+    o3_types_pkg::fetch_slot_t rob_alloc_ftq_slot [MACHINE_WIDTH-1:0];
     logic                       rob_alloc_ftq_last [MACHINE_WIDTH-1:0];
 `ifdef ENABLE_RETIRE_INFO
     logic [PC_WIDTH-1:0]       rob_alloc_pc          [MACHINE_WIDTH-1:0];
@@ -328,6 +319,7 @@ module backend
     logic [LQ_IDX_WIDTH-1:0] rob_retire_lq_idx [RETIRE_WIDTH-1:0];
     logic [SQ_IDX_WIDTH-1:0] rob_retire_sq_idx [RETIRE_WIDTH-1:0];
     o3_types_pkg::ftq_id_t      rob_retire_ftq_idx [RETIRE_WIDTH-1:0];
+    o3_types_pkg::fetch_slot_t rob_retire_ftq_slot [RETIRE_WIDTH-1:0];
     logic rob_retire_ftq_last [RETIRE_WIDTH-1:0];
     logic free_release_valid [RETIRE_WIDTH-1:0];
     logic [BACKEND_LANE_COUNT_WIDTH-1:0] lq_release_count;
@@ -375,7 +367,6 @@ module backend
     logic [63:0] retired_inst_count_q;
     logic [63:0] retired_inst_count_next;
     logic [BACKEND_LANE_COUNT_WIDTH-1:0] retire_count_this_cycle;
-    logic [$clog2(BACKEND_MACHINE_WIDTH+1)-1:0] legacy_ftq_release_count;  // 旧合同：ftq_last 计数，已无去向
     logic                              rename_alloc_valid [MACHINE_WIDTH-1:0];  // 送 preg_ready_table
 
     function automatic logic [INST_ID_WIDTH-1:0] make_instruction_id(
@@ -531,6 +522,7 @@ module backend
                                          && (rename_uop_head[i].rd != REG_ADDR_WIDTH'(0));
             assign rob_alloc_instruction_id[i] = rename_uop_head[i].instruction_id;
             assign rob_alloc_ftq_idx[i] = rename_uop_head[i].ftq_id;
+            assign rob_alloc_ftq_slot[i] = rename_uop_head[i].ext.ftq_slot;
             assign rob_alloc_ftq_last[i] = rename_uop_head[i].ftq_last;
 `ifdef ENABLE_RETIRE_INFO
             assign rob_alloc_pc[i]          = rename_uop_head[i].pc;
@@ -601,7 +593,6 @@ module backend
 
     always_comb begin
         lq_release_count = '0;
-        legacy_ftq_release_count = '0;
         for (int port = 0; port < RETIRE_WIDTH; port++) begin
             sq_commit_valid[port] = rob_retire_valid[port] && rob_retire_is_store[port];
             free_release_valid[port] = rob_retire_valid[port]
@@ -609,9 +600,6 @@ module backend
                                     && (rob_retire_old_dst_preg[port] != '0);
             if (rob_retire_valid[port] && rob_retire_is_load[port]) begin
                 lq_release_count = lq_release_count + BACKEND_LANE_COUNT_WIDTH'(1);
-            end
-            if (rob_retire_valid[port] && rob_retire_ftq_last[port]) begin
-                legacy_ftq_release_count = legacy_ftq_release_count + 1'b1;
             end
         end
     end
@@ -783,6 +771,7 @@ module backend
         .alloc_sq_idx_i(sq_idx),
         .alloc_branch_mask_i(rename_branch_mask),
         .alloc_ftq_idx_i(rob_alloc_ftq_idx),
+        .alloc_ftq_slot_i(rob_alloc_ftq_slot),
         .alloc_ftq_last_i(rob_alloc_ftq_last),
         .alloc_instruction_id_i(rob_alloc_instruction_id),
 `ifdef ENABLE_RETIRE_INFO
@@ -818,6 +807,7 @@ module backend
         .retire_sq_idx_o(rob_retire_sq_idx),
         .retire_instruction_id_o(rob_retire_instruction_id),
         .retire_ftq_idx_o(rob_retire_ftq_idx),
+        .retire_ftq_slot_o(rob_retire_ftq_slot),
         .retire_ftq_last_o(rob_retire_ftq_last)
 `ifdef ENABLE_RETIRE_INFO
         ,.retire_info_o(retire_info_o)
@@ -1622,116 +1612,6 @@ module backend
         end
     end
 
-    // ================================================================
-    // 目标结构（2026-10-02 框架）：新模块均为空壳，未接入上面的旧数据流。
-    // 切换顺序沿指令路径：R1/暂存 → R2 → FP rename → M/FP FU → 访存 → 提交/系统。
-    // ================================================================
-
-    // ---------------- Decode Queue 出口：融合标记 + Rename 入口放行门 ----------------
-    // 目标顺序：uop_queue → mul_fusion_detect（B34）→ rename_entry_gate（B22/B38/B39）→ R1。
-    decoded_uop_t [CFG.rename.width-1:0]        t_fuse_uop;
-    logic [CFG.rename.width-1:0]                t_fuse_pair_head;
-    logic [$clog2(CFG.rename.width+1)-1:0]      t_gate_pass_count;
-    logic                                       t_serial_retire, t_wfi_stall, t_isolate;
-    logic                                       t_csr_block_younger_cycle;
-
-    mul_fusion_detect #(.CFG(CFG)) u_mul_fusion_detect (
-        .uop_i       (/* 目标：Decode Queue 出队，宽度 CFG.rename.width */),
-        .count_i     (/* 同上 */),
-        .no_fuse_i   (/* 单步/触发器/debug：来源未接入 */),
-        .uop_o       (t_fuse_uop),
-        .pair_head_o (t_fuse_pair_head)
-    );
-
-    rename_entry_gate #(.CFG(CFG)) u_rename_entry_gate (
-        .clk(clk), .rst(rst),
-        .uop_i                 (t_fuse_uop),
-        .count_i               (/* Decode Queue 可见数 */),
-        .pair_head_i           (t_fuse_pair_head),
-        .pass_count_o          (t_gate_pass_count),
-        .accepted_count_i      (/* R1/级间暂存实际接受数 */),
-        .serial_retire_i       (t_serial_retire),
-        .flush_i               (/* D24 取消边界 / trap */),
-        .wfi_stall_i           (t_wfi_stall),
-        .isolate_i             (t_isolate),
-        .block_younger_cycle_o (t_csr_block_younger_cycle)
-    );
-
-    // ---------------- Rename：R1 + 级间暂存（B02） ----------------
-    o3_types_pkg::r1_lane_dep_t t_r1_dep [CFG.rename.width-1:0];
-    logic                       t_rsb_enq_ready;
-    logic [CFG.rename.width-1:0] t_rsb_slot_valid;
-    decoded_uop_t [CFG.rename.width-1:0] t_rsb_slot_uop;
-    o3_types_pkg::r1_lane_dep_t t_rsb_slot_dep [CFG.rename.width-1:0];
-    logic [CFG.rename.width-1:0] t_rsb_producer_gone [3];
-    logic [CFG.rename.width-1:0] t_r2_accept_mask;          // 未实现：R2 规划结果（融合对整对接受）
-
-    rename_dep_r1 #(.CFG(CFG)) u_rename_dep_r1 (
-        .uop_i   (t_fuse_uop),
-        .count_i (t_gate_pass_count),
-        .dep_o   (t_r1_dep)
-    );
-
-    rename_stage_buffer #(.CFG(CFG)) u_rename_stage_buffer (
-        .clk(clk), .rst(rst),
-        .flush_i         (branch_resolution_i.valid && branch_resolution_i.mispredict),
-        .enq_valid_i     (/* 未接入 */),
-        .enq_ready_o     (t_rsb_enq_ready),
-        .enq_uop_i       (t_fuse_uop),
-        .enq_dep_i       (t_r1_dep),
-        .slot_valid_o    (t_rsb_slot_valid),
-        .slot_uop_o      (t_rsb_slot_uop),
-        .slot_dep_o      (t_rsb_slot_dep),
-        .producer_gone_o (t_rsb_producer_gone),
-        .accept_mask_i   (t_r2_accept_mask)
-    );
-
-    // ---------------- FP rename 域（B15：32 → 64，f0 可写） ----------------
-    // 未实现：FP RAT/free list/ready 表/FP PRF 的连线随 R2 实现接入。
-    rename_map_table   #(.CFG(CFG), .DOMAIN(o3_types_pkg::RD_FP)) u_fp_rename_map_table ();
-    free_list          #(.CFG(CFG), .DOMAIN(o3_types_pkg::RD_FP)) u_fp_free_list ();
-    preg_ready_table   #(.CFG(CFG), .DOMAIN(o3_types_pkg::RD_FP)) u_fp_preg_ready_table (.clk(clk), .rst(rst));
-    physical_regfile   #(.CFG(CFG), .DOMAIN(o3_types_pkg::RD_FP)) u_fp_physical_regfile (.clk(clk), .rst(rst));
-    // FP IQ 组织未定（B14/B15），先放一个总队列实例。
-    backend_issue_queue #(.CFG(CFG), .KIND(o3_types_pkg::IQ_FP)) u_fp_issue_queue (
-        .clk(clk), .rst(rst), .allow_load_i(1'b1));
-
-    // ---------------- 整数 M FU（B21）+ 完成 FIFO / 提前唤醒（B33）+ 融合（B34） ----------------
-    // 完成 FIFO 在 FU 包装内部例化（fu_completion_fifo）；FU 输出 FIFO 头、bypass 源与唤醒承诺。
-    // 未接入：IQ 唤醒广播、bypass 网络、写回仲裁 extra_src。
-    logic                          t_mul_resp_valid, t_div_resp_valid;
-    o3_types_pkg::mdu_resp_t       t_mul_resp, t_div_resp;
-    o3_types_pkg::cpl_bypass_t     t_mul_bypass, t_div_bypass;
-    o3_types_pkg::wake_promise_t   t_mul_wake, t_div_wake;
-    mul_execute_unit #(.CFG(CFG)) u_mul_execute_unit (
-        .clk(clk), .rst(rst),
-        .req_valid_i(/* M FU IQ 归属待定 */), .req_ready_o(), .req_i(),
-        .resp_valid_o(t_mul_resp_valid), .resp_ready_i(/* 写回仲裁 extra_consume */),
-        .resp_o(t_mul_resp), .bypass_o(t_mul_bypass), .wake_o(t_mul_wake),
-        .resolution_i(branch_resolution_i), .busy_o()
-    );
-    div_execute_unit #(.CFG(CFG)) u_div_execute_unit (
-        .clk(clk), .rst(rst),
-        .req_valid_i(/* M FU IQ 归属待定 */), .req_ready_o(), .req_i(),
-        .resp_valid_o(t_div_resp_valid), .resp_ready_i(/* 写回仲裁 extra_consume */),
-        .resp_o(t_div_resp), .bypass_o(t_div_bypass), .wake_o(t_div_wake),
-        .resolution_i(branch_resolution_i), .busy_o()
-    );
-
-    // ---------------- 浮点 FU（B14） ----------------
-    // B33：各 FP FU 出口同样接 fu_completion_fifo（深度 CFG.exec.cpl_fifo_depth），端口随 FP 接入补齐。
-    generate
-        for (genvar f = 0; f < CFG.exec.num_fma; f++) begin : gen_fma
-            fpu_fma_fu #(.CFG(CFG)) u_fpu_fma_fu (.clk(clk), .rst(rst), .resolution_i(branch_resolution_i));
-        end
-    endgenerate
-    fpu_divsqrt_fu #(.CFG(CFG)) u_fpu_divsqrt_fu (.clk(clk), .rst(rst), .resolution_i(branch_resolution_i));
-    fpu_misc_fu    #(.CFG(CFG)) u_fpu_misc_fu    (.clk(clk), .rst(rst), .resolution_i(branch_resolution_i));
-    fpu_conv_fu    #(.CFG(CFG)) u_fpu_conv_fu    (.clk(clk), .rst(rst), .resolution_i(branch_resolution_i));
-    fp_writeback_arbiter #(.CFG(CFG)) u_fp_writeback_arbiter (
-        .rob_head_i(rob_head), .resolution_i(branch_resolution_i)
-    );
-
     // ---------------- 访存：DCache、共享 PTW、A/D 旁侧更新、预取（B03～B11、B31、B35、B36） ----------------
     // 总原则（2026-10-02）：常规 load/store 流水不变；A/D、LR/SC、DMA/回收探测、FENCE.I 维护都在旁侧。
     logic                       t_dtlb_ptw_req_valid, t_dtlb_ptw_req_ready;
@@ -1745,7 +1625,6 @@ module backend
     o3_types_pkg::dmmu_csr_t    t_dmmu_csr;
     o3_types_pkg::pmp_state_t   t_pmp;
     o3_types_pkg::sfence_req_t  t_sfence;
-    logic                       t_sfence_done_ptw;
     logic                       t_dc_clean_all_req, t_dc_clean_all_done, t_dc_clean_all_busy;
     logic                       t_dc_ld_req_valid [CFG.lsu.agu_pipes];
     logic                       t_dc_ld_req_ready [CFG.lsu.agu_pipes];
@@ -1755,56 +1634,71 @@ module backend
     o3_types_pkg::dcache_req_t  t_sq_dc_req;
     o3_types_pkg::dcache_resp_t t_sq_dc_resp;
     // A/D
-    logic                       t_a_upd_req_valid, t_a_upd_req_ready;
-    o3_types_pkg::pte_ad_req_t  t_a_upd_req;
-    o3_types_pkg::pte_ad_resp_t t_a_upd_resp;
-    logic                       t_rewalk_req_valid, t_rewalk_req_ready;
-    o3_types_pkg::ptw_req_t     t_rewalk_req;
     logic                       t_dc_pte_ad_valid, t_dc_pte_ad_ready;
     o3_types_pkg::pte_ad_req_t  t_dc_pte_ad_req;
     o3_types_pkg::pte_ad_resp_t t_dc_pte_ad_resp;
-    logic                       t_st_d_req_valid, t_st_d_req_ready, t_st_d_done;
     o3_types_pkg::rsv_conflict_t t_rsv_pte_ad_conflict;
     // reservation 清除与 fatal
     logic                       t_rsv_clear_valid;
     o3_types_pkg::rsv_clear_e   t_rsv_clear_reason;
     o3_types_pkg::fatal_evt_t   t_dc_fatal;
 
-    ptw #(.CFG(CFG)) u_ptw (
-        .clk(clk), .rst(rst),
-        .itlb_req_valid_i(itlb_ptw_req_valid_i), .itlb_req_ready_o(itlb_ptw_req_ready_o),
-        .itlb_req_i(itlb_ptw_req_i),
-        .dtlb_req_valid_i(t_dtlb_ptw_req_valid), .dtlb_req_ready_o(t_dtlb_ptw_req_ready),
-        .dtlb_req_i(t_dtlb_ptw_req),
-        .resp_o(t_ptw_resp),
-        .mem_req_valid_o(t_ptw_mem_req_valid), .mem_req_ready_i(t_ptw_mem_req_ready),
-        .mem_req_o(t_ptw_mem_req), .mem_resp_i(t_ptw_mem_resp),
-        .csr_i(t_dmmu_csr), .pmp_i(t_pmp), .sfence_i(t_sfence), .sfence_done_o(t_sfence_done_ptw),
-        .idle_o(ptw_idle_o),
-        .a_upd_req_valid_o(t_a_upd_req_valid), .a_upd_req_ready_i(t_a_upd_req_ready),
-        .a_upd_req_o(t_a_upd_req), .a_upd_resp_i(t_a_upd_resp),
-        .rewalk_req_valid_i(t_rewalk_req_valid), .rewalk_req_ready_o(t_rewalk_req_ready),
-        .rewalk_req_i(t_rewalk_req),
-        .perf_o()
-    );
-    assign itlb_ptw_resp_o = t_ptw_resp;
+    // 不在 L3：PTW/A-D（L10）、数据预取（L8）、系统提交/CSR（L5 起）。
+    // 禁用请求不伪造应答；idle 仅表示没有 walker 在途。
+    assign itlb_ptw_req_ready_o = 1'b0;
+    assign itlb_ptw_resp_o = '0;
+    assign ptw_idle_o = 1'b1;
+    assign t_dtlb_ptw_req_ready = 1'b0;
+    assign t_ptw_resp = '0;
+    assign t_ptw_mem_req_valid = 1'b0;
+    assign t_ptw_mem_req = '0;
+    assign t_dc_pte_ad_valid = 1'b0;
+    assign t_dc_pte_ad_req = '0;
+    assign t_rsv_pte_ad_conflict = '0;
+    assign t_pf_req_valid = 1'b0;
+    assign t_pf_req = '0;
+    assign t_sfence = '0;
+    assign t_dc_clean_all_req = 1'b0;
+    assign t_rsv_clear_valid = 1'b0;
+    assign t_rsv_clear_reason = o3_types_pkg::RSV_CLR_SC; // valid=0；合法编码无事件
+    assign sys_redirect_o = '0;
+    assign fe_sync_valid_o = 1'b0;
+    assign fe_sync_o = '0;
+    assign fatal_o = 1'b0; // L11 才实现 fatal 隔离，不能据此声称处理了故障
+    assign perf_rd_data_o = '0; // 硬件计数器 L7；保留 retired_inst_count_o
 
-    pte_ad_updater #(.CFG(CFG)) u_pte_ad_updater (
-        .clk(clk), .rst(rst),
-        .ptw_a_req_valid_i(t_a_upd_req_valid), .ptw_a_req_ready_o(t_a_upd_req_ready),
-        .ptw_a_req_i(t_a_upd_req), .ptw_a_resp_o(t_a_upd_resp),
-        .st_d_req_valid_i(t_st_d_req_valid), .st_d_req_ready_o(t_st_d_req_ready),
-        .st_d_vaddr_i(/* 队首 store VA：SQ 目标端口未接入 */), .st_d_sq_idx_i(),
-        .st_d_done_o(t_st_d_done), .st_d_exc_o(),
-        .rewalk_req_valid_o(t_rewalk_req_valid), .rewalk_req_ready_i(t_rewalk_req_ready),
-        .rewalk_req_o(t_rewalk_req), .rewalk_resp_i(t_ptw_resp),
-        .dc_req_valid_o(t_dc_pte_ad_valid), .dc_req_ready_i(t_dc_pte_ad_ready),
-        .dc_req_o(t_dc_pte_ad_req), .dc_resp_i(t_dc_pte_ad_resp),
-        .cur_epoch_i(t_dmmu_csr.epoch),
-        .kill_i(/* 取消 / SFENCE.VMA / satp 切换 */),
-        .rsv_conflict_o(t_rsv_pte_ad_conflict),
-        .busy_o()
-    );
+    // U4：静态 M/Bare。L5 起由 csr_file 取代，PMP 检查待 L10。
+    localparam logic [1:0] PRIV_M = 2'b11;
+    localparam logic [3:0] SATP_BARE = 4'b0000;
+    localparam logic MSTATUS_MPRV = 1'b0, MSTATUS_SUM = 1'b0, MSTATUS_MXR = 1'b0;
+    localparam o3_types_pkg::fe_csr_t L3_FE_CSR =
+        '{priv:PRIV_M, satp_mode:SATP_BARE, default:'0};
+    // MPRV=0 => priv_eff=当前 M；dmmu_csr_t 保存派生特权，无独立 MPRV 位。
+    localparam o3_types_pkg::dmmu_csr_t L3_DMMU_CSR =
+        '{priv_eff:PRIV_M, sum:MSTATUS_SUM, mxr:MSTATUS_MXR,
+          satp_mode:SATP_BARE, default:'0};
+    localparam o3_types_pkg::pmp_state_t L3_PMP = '{update:1'b0, entries:'0};
+    assign fe_csr_o = L3_FE_CSR;
+    assign t_dmmu_csr = L3_DMMU_CSR;
+    assign t_pmp = L3_PMP;
+    assign fe_pmp_o = L3_PMP;
+    always_ff @(posedge clk) begin
+        assert (!fe_pmp_o.update && !t_pmp.update)
+            else $error("L3 static PMP must never start D28 synchronization");
+    end
+
+    // U3：每条实际 ROB 退休通知携带完整动态身份、槽位和区域末项。
+    // N 组合读取拍初已完成的退休前缀；N 边沿 ROB 删除这些项，前端记账；
+    // N+1 前端据 region_last 回收区域。L5 原样并入 commit_ctrl。
+    for (genvar lane = 0; lane < RETIRE_WIDTH; lane++) begin : gen_ftq_commit
+        always_comb begin
+            ftq_commit_o[lane] = '0;
+            ftq_commit_o[lane].valid = rob_retire_valid[lane];
+            ftq_commit_o[lane].ftq_id = rob_retire_ftq_idx[lane];
+            ftq_commit_o[lane].slot = rob_retire_ftq_slot[lane];
+            ftq_commit_o[lane].region_last = rob_retire_ftq_last[lane];
+        end
+    end
 
     dcache #(.CFG(CFG)) u_dcache (
         .clk(clk), .rst(rst),
@@ -1831,94 +1725,6 @@ module backend
         .l2_wb_line_paddr_o(l2_wb_line_paddr_o), .l2_wb_data_o(l2_wb_data_o),
         .l2_wb_error_i(l2_wb_error_i),
         .idle_o(), .fatal_o(t_dc_fatal), .perf_o()
-    );
-
-    data_prefetcher #(.CFG(CFG)) u_data_prefetcher (
-        .clk(clk), .rst(rst),
-        .train_valid_i(/* LSU t_pf_train_* */), .train_pc_i(), .train_paddr_i(), .train_miss_i(),
-        .pf_req_valid_o(t_pf_req_valid), .pf_req_ready_i(t_pf_req_ready), .pf_req_o(t_pf_req),
-        .perf_o()
-    );
-
-    // ---------------- 提交、CSR、trap、WFI、fatal（B22～B27、B37～B40） ----------------
-    o3_types_pkg::csr_req_t       t_csr_req;
-    o3_types_pkg::csr_resp_t      t_csr_resp;
-    logic                         t_csr_req_valid;
-    o3_types_pkg::trap_req_t      t_trap_req, t_trap_csr_update;
-    logic                         t_trap_redirect_valid, t_trap_csr_update_valid;
-    logic                         t_trap_csr_done;
-    o3_types_pkg::vaddr_t         t_trap_redirect_pc, t_trap_target_pc;
-    o3_types_pkg::fp_retire_evt_t t_fp_retire;
-    o3_types_pkg::vaddr_t         t_committed_next_pc;
-    o3_types_pkg::irq_view_t      t_irq_view;
-    logic                         t_irq_take;
-    logic                         t_wfi_retire;
-    o3_types_pkg::fatal_evt_t     t_fatal_evt [2];
-
-    commit_ctrl #(.CFG(CFG)) u_commit_ctrl (
-        .clk(clk), .rst(rst), .boot_pc_i(boot_pc_i),
-        .commit_i(/* ROB t_commit_o */), .head_valid_i(), .head_i(), .head_serial_done_o(),
-        .commit_block_o(),
-        .ftq_commit_o(ftq_commit_o), .sq_commit_valid_o(), .sq_commit_idx_o(),
-        .fp_retire_o(t_fp_retire), .committed_next_pc_o(t_committed_next_pc),
-        .sys_redirect_o(sys_redirect_o),
-        .fe_sync_valid_o(fe_sync_valid_o), .fe_sync_ready_i(fe_sync_ready_i),
-        .fe_sync_o(fe_sync_o), .fe_sync_done_i(fe_sync_done_i),
-        .sq_committed_empty_i(/* SQ t_committed_empty_o */),
-        .dcache_clean_all_o(t_dc_clean_all_req), .dcache_clean_all_done_i(t_dc_clean_all_done),
-        .dcache_clean_all_busy_i(t_dc_clean_all_busy),
-        .sfence_o(t_sfence), .sfence_done_i(t_sfence_done_ptw),
-        .st_d_req_valid_o(t_st_d_req_valid), .st_d_req_ready_i(t_st_d_req_ready),
-        .st_d_done_i(t_st_d_done),
-        .csr_req_valid_o(t_csr_req_valid), .csr_req_o(t_csr_req), .csr_resp_i(t_csr_resp),
-        .irq_take_i(t_irq_take),
-        .trap_req_o(t_trap_req),
-        .trap_redirect_valid_i(t_trap_redirect_valid), .trap_redirect_pc_i(t_trap_redirect_pc),
-        .rsv_clear_valid_o(t_rsv_clear_valid), .rsv_clear_reason_o(t_rsv_clear_reason),
-        .wfi_retire_o(t_wfi_retire), .wfi_stall_i(t_wfi_stall), .isolate_i(t_isolate),
-        .flush_all_o(), .perf_o()
-    );
-    // 未接入：t_serial_retire = 阻塞所属串行指令的退休握手（来自 commit_ctrl/ROB 目标端口）。
-
-    csr_file #(.CFG(CFG)) u_csr_file (
-        .clk(clk), .rst(rst),
-        .req_valid_i(t_csr_req_valid), .req_i(t_csr_req), .resp_o(t_csr_resp),
-        .fp_retire_i(t_fp_retire), .frm_o(), .fs_o(),
-        .trap_update_valid_i(t_trap_csr_update_valid), .trap_update_i(t_trap_csr_update),
-        .trap_target_pc_o(t_trap_target_pc), .trap_update_done_o(t_trap_csr_done),
-        .irq_m_ext_i(irq_m_ext_i), .irq_m_timer_i(irq_m_timer_i),
-        .irq_m_soft_i(irq_m_soft_i), .irq_s_ext_i(irq_s_ext_i),
-        .irq_view_o(t_irq_view), .irq_take_o(t_irq_take), .irq_cause_o(),
-        .fe_csr_o(fe_csr_o), .pmp_o(t_pmp), .dmmu_csr_o(t_dmmu_csr), .priv_o()
-    );
-    assign fe_pmp_o = t_pmp;
-
-    trap_ctrl #(.CFG(CFG)) u_trap_ctrl (
-        .clk(clk), .rst(rst), .req_i(t_trap_req),
-        .csr_update_valid_o(t_trap_csr_update_valid), .csr_update_o(t_trap_csr_update),
-        .csr_target_pc_i(t_trap_target_pc), .csr_update_done_i(t_trap_csr_done),
-        .redirect_valid_o(t_trap_redirect_valid), .redirect_pc_o(t_trap_redirect_pc)
-    );
-
-    wfi_ctrl #(.CFG(CFG)) u_wfi_ctrl (
-        .clk(clk), .rst(rst),
-        .wfi_retire_i(t_wfi_retire), .irq_i(t_irq_view), .debug_req_i(1'b0 /* Debug Mode 不在首版 */),
-        .sleeping_o(), .stall_o(t_wfi_stall)
-    );
-
-    // B39：来源 0 = L1D 写回失败，1 = L2 写回 DDR 失败（含 L2 回收/维护）。
-    assign t_fatal_evt[0] = t_dc_fatal;
-    assign t_fatal_evt[1] = l2_fatal_i;
-    fatal_err_ctrl #(.CFG(CFG), .NUM_SRC(2)) u_fatal_err_ctrl (
-        .clk(clk), .rst(rst),
-        .evt_i(t_fatal_evt),
-        .fatal_o(fatal_o), .isolate_o(t_isolate), .record_o()
-    );
-
-    backend_perf_events #(.CFG(CFG)) u_backend_perf_events (
-        .clk(clk), .rst(rst), .evt_i(/* 各模块 perf 合并：未实现 */),
-        .rd_valid_i(perf_rd_valid_i), .rd_idx_i(perf_rd_idx_i), .rd_data_o(perf_rd_data_o),
-        .clear_i(perf_clear_i), .snapshot_i(perf_snapshot_i)
     );
 
 endmodule

@@ -7,10 +7,12 @@
  * - 每拍向下游展示最多 MACHINE_WIDTH 条最老 uop。
  * - 输入 bundle 的边界不进入存储语义；相邻两批 uop 在队列中连续排列。
  *
+ * 当前实现状态：闭环简化（L3）
+ * - 测试：sim/cocotb/uop_queue/。
  * 当前实现：
- * - DEPTH 按单条 uop 计数，由 CFG.decode.queue_depth 给出（待定）。
+ * - DEPTH 按单条 uop 计数，由 CFG.decode.queue_depth 给出（L3 为 16）。
  * - 入队宽度 ENQ_WIDTH = decode 宽度 4；出队宽度 DEQ_WIDTH = 现有 rename 宽度。
- *   目标：出队给 R1 依赖预处理，宽度为 rename 宽度（B01 暂定 6，B02）。
+ *   目标：出队给 R1 依赖预处理，宽度为 rename 宽度（B42 为 4，R1/R2 按综合时序触发）。
  * - 存储按 NUM_BANKS = max(ENQ_WIDTH, DEQ_WIDTH) 个 bank 组织；逻辑位置对 bank 数取模决定物理 bank。
  *   （2026-10-02 框架阶段把原单一 MACHINE_WIDTH 拆成两侧宽度，仅作参数拆分，未运行测试。）
  * - 输入和输出均要求 lane0 最老、有效 lane 为连续前缀。

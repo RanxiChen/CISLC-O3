@@ -174,3 +174,29 @@ rg -n 's3_valid_o|s3_allow_o|s3_fault_o|cfg_update_done_o' rtl/common/pmp_checke
 | `git push origin feat/L1-closure` | 通过，退出码 0；远端 `9161516..76601b9`，包含指定的两个冻结／审阅提交 |
 | `git rev-parse HEAD`、`git status --short`、`git diff b48ddf3 --name-only` | 通过，退出码 0；HEAD 为 `76601b9`、工作区干净、仅本报告与 LOOP 不同 |
 | `scripts/lint.sh`（交付结果记录提交前） | 通过，退出码 0；0 errors、211 warnings；`/tmp/o3-t01-phase2-stop-20261005/delivery-record-lint.log` |
+
+
+## 8. 阶段二恢复（U4/U6 修订后）
+
+进入 SHA：`ffd11e1e1f7957bac13a59b67f5586badaa6cfc0`，工作区干净。P2-01 已由用户修订解除，其余冻结要求不变。
+
+### 四宽／空壳／U3/U4 基线
+
+- Rename=4，Decode Queue=16（4 bank × 4 行）；其余容量与执行资源不变。
+- spec §3 清单的后端空壳实例及独占 filelist 条目已移除，文件保留；修订 U6 的 PMP/PMA 和 L2/DMA 协调亦移出清单。共享 INT 模块、真实 DCache/LSU/SQ/L2/probe/DTCM 保留。后续归属按 U5 更新 LOOP。
+- U3：已有 decoded_uop_t 的 `ext.ftq_slot`、动态 `ftq_id`、`ftq_last` 经队列／rename 保留；ROB 新增 alloc/retire 槽位端口与存储，backend 将每条实际退休转换为 `ftq_commit_t`。跨模块影响仅 backend→ROB 槽位字段，前端和 o3_core 未改。M 拍分支自身区域末项沿用原 ROB 行为。L5 原样并入 commit_ctrl。
+- U4：集中定义 PRIV_M、SATP_BARE、MPRV/SUM/MXR=0、epoch=0、PMP entries/update=0；dmmu 保存派生 priv_eff=M（MPRV=0）。断言 update 永远为 0；禁用 PTW/预取/系统请求全部显式 tie-off，不伪造成功响应。
+- PRF 核实：非 FPGA `mem_generic` 的组合读扫描写口形成同地址 bypass；FPGA flat/consistent/latest-tag 三种读路径也已有 bypass，较大写口号优先。x0 读零、写忽略。没有新增旁路。源码依据 `rtl/backend/physical_regfile.sv` 的 `gen_generic_read`、`gen_read_ports_*`。
+- 新程序独立模型 `sim/o3/tests/l3_branch_dense_model.py` 生成固定 HEX／expected JSON，不读取 DUT。525 静态指令（跨 131 个以上 FTQ 区域）、365 条架构退休，40 正确 BNE、40 taken BEQ、40 JAL；错路寄存器／store／load，正确路径 readback，旧未知 store replay。新增解析计数器观察 one-shot `exec_resolve.valid`，包含 JAL。
+- 原保守 R 阻塞保持不变，此提交作为缺口 1 前测基线；后续控制修复提交另记录。
+
+命令／当前结果：
+
+| 命令 | 结果 | 日志 |
+| --- | --- | --- |
+| `scripts/lint.sh` | PASS，0 errors、99 warnings，退出码 0 | `/tmp/o3-t01-baseline-lint.log`（提交前另检查） |
+| `python3 sim/o3/tests/l3_branch_dense_model.py` | PASS；words=525，retires=365，correct=40，mispredict=80 | 会话输出；固定生成物已纳入提交 |
+| 独立 wrapper 的 `verilator --lint-only` | WQ PASS；ROB 首次因包装未限定 ftq_id_t 类型失败，已限定类型，提交前复检 | `/tmp/o3-wq-wrapper-lint.log`、`/tmp/o3-rob-wrapper-lint.log` |
+| Alan 功能门禁 | 待运行，不计为通过 | 无 |
+
+与 spec 的实现偏离：无。阶段二问题：当前无新增未决设计问题。模块测试／Alan 门禁／周期对比未完成，不声明 L3 收尾完成。

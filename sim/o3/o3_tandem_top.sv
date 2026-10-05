@@ -22,6 +22,7 @@ module o3_tandem_top
     output logic [63:0] retired_inst_count_o,
     output logic [31:0] icache_refill_count_o,
     output logic [31:0] load_replay_count_o,
+    output logic [31:0] correct_resolve_count_o, mispredict_count_o,
     output logic [o3_cfg_pkg::O3_CFG.core.commit_width-1:0] tandem_valid_o,
     output logic [o3_cfg_pkg::O3_CFG.core.commit_width-1:0] tandem_rd_write_o,
     output logic [INST_ID_WIDTH-1:0] tandem_instruction_id_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
@@ -75,6 +76,17 @@ module o3_tandem_top
         if (rst_i) load_replay_count_o <= '0;
         else if (u_core.u_backend.mem_replay_capture)
             load_replay_count_o <= load_replay_count_o + 1'b1;
+    end
+    // Exec resolution is one-shot even if JAL link writeback is held.
+    always_ff @(posedge clk_i) begin
+        if (rst_i) begin
+            correct_resolve_count_o <= '0;
+            mispredict_count_o <= '0;
+        end else if (u_core.u_backend.exec_resolve_o.valid) begin
+            if (u_core.u_backend.exec_resolve_o.mispredict)
+                mispredict_count_o <= mispredict_count_o + 1'b1;
+            else correct_resolve_count_o <= correct_resolve_count_o + 1'b1;
+        end
     end
     o3_axi_ram #(.ADDR_W(PADDR_W), .ID_W(AXI_ID_W), .DATA_W(AXI_DATA_W)) u_axi_ram (
         .clk_i(clk_i), .rst_i(rst_i),

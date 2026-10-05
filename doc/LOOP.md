@@ -20,7 +20,7 @@
 | **L4 当前** | **ICache miss → inclusive L2 → AXI RAM → 直线整数退休** | `make -C sim/o3 build && make -C sim/o3 run-smoke` | Alan 回归 PASS（`de9149d`，38 周期、4 条退休、ICache 回填 1 次） |
 | **L2 当前** | **taken 分支 / JAL：BRU 解析 → 重定向 → 前端恢复** | `make -C sim/cocotb/branch_recovery SIM=verilator TEST_SEED=1 && make -C sim/o3 run-rv64i-instructions` | Alan PASS（`de9149d`；局部 1/1；整核 76 周期、14 条退休、ICache 回填 2 次） |
 | L3 部分闭合 | SQ 依赖/转发 → 流水化 DCache → inclusive L2 → AXI 数据访存与退休 | `make -C sim/cocotb/store_queue SIM=verilator`、`make -C sim/cocotb/dcache SIM=verilator`、`make -C sim/cocotb/backend_issue_queue SIM=verilator`、`make -C sim/cocotb/load_store_unit SIM=verilator`、`make -C sim/o3 run-dcache-data run-dcache-replay` | Alan `a8b3fc6`：Memory IQ 1/1、LSU replay/恢复 2/2；整核 `7d59822` 新门禁实测 `load_replays=1`，71 周期退休 6 条且轨迹 PASS；旧 smoke/分支/数据门禁仍 PASS。SQ 3/3、DCache 3/3 沿用前次 Alan 证据。仍缺多 MSHR、多 load pending、跨行异常、FENCE.I、PTW/AMO/DMA；不是完整 B03～B05 |
-| L3 收尾 | 完成 L3；修 B12 缺口 1（分支解析全局停顿）与缺口 2（ALU RegRead 背压时缺 kill）；重命名改 4 宽（B42）；移除当前级不需要的空壳实例（B46） | 现有 L2/L3 门禁 + 分支密集程序 + 缺口 2 定向测试 | spec 已冻结；阶段二核对因 U4 停止：现有 `pmp_checker` 是未驱动输出的空壳，无法验证要求的 M 模式放行；尚未修改 RTL/测试。见 [阶段二问题](tasks/O3-T01-report.md#阶段二问题) |
+| L3 收尾 | 完成 L3；修 B12 缺口 1（分支解析全局停顿）与缺口 2（ALU RegRead 背压时缺 kill）；重命名改 4 宽（B42）；移除当前级不需要的空壳实例（B46） | 现有 L2/L3 门禁 + 分支密集程序 + 缺口 2 定向测试 | 阶段二进行中；P2-01 已由 `ffd11e1` 修订解除；四宽/16 项、空壳清理、ROB→FTQ 与 U4 常量已实现，原解析停顿保留作周期对比基线；Alan 验证待运行 |
 | L5 | Spike 逐条比对；M 模式 CSR、精确异常、ecall/ebreak/illegal、MRET、committed_next_pc | ACT4 RV64I + Spike 比对 0 差异 | 未开始 |
 | L6 | M 扩展（MUL 采用 DSP，B43）、完成 FIFO/提前唤醒、JALR；首次 OOC 综合 | ACT4 RV64IM + CoreMark（仿真） | 未开始 |
 | L7 | uBTB/BTB/TAGE、FTQ 恢复、RAS 快速修复；RVC | RV64IMC + 误预测率/IPC 基线 | 未开始 |
@@ -107,7 +107,7 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
 | `frontend/redirect_arbiter.sv` | **闭环简化（L2）**：执行误预测 R0 kill/重定向、R1 身份恢复、R2 重新分配 | 系统/预解码/慢预测多来源年龄仲裁待后级 | `sim/cocotb/branch_recovery/` Alan 1/1 PASS（`de9149d`） |
 | `frontend/fetch_buffer.sv` | **闭环简化（L2）**：执行重定向整体清空未交付项 | 预解码修正需要按 FTQ 身份/槽位选择性保留 | `sim/cocotb/branch_recovery/` Alan 1/1 PASS；整核 L2 PASS（`de9149d`） |
 | `frontend/frontend.sv` | 总装（连线） | L1 路径已接通；其余空壳仍待后级 | `sim/o3` Alan PASS |
-| `backend/backend.sv` 旧数据流 | **闭环简化（L3）**：INT/MEM/BR IQ、BRU 恢复、SQ/LSU→DCache；Memory IQ 可越过未就绪队头并受 replay 槽控制 | 正确解析仍保守暂停一拍；JALR/RVC、目标系统与其他执行路径待后级 | Alan `sim/cocotb/backend/` 1/1 PASS（`b15b4bc`），整核 smoke/分支/数据/replay 门禁 PASS（`7d59822`） |
+| `backend/backend.sv` 旧数据流 | **闭环简化（L3）**：INT/MEM/BR IQ、BRU 恢复、SQ/LSU→DCache；Memory IQ 可越过未就绪队头并受 replay 槽控制 | 四宽/16 项；U3 退休 FTQ 通知、U4 M/Bare/PMP update=0；正确解析仍保守暂停（对比基线）；JALR/RVC 待后级 | Alan `sim/cocotb/backend/` 1/1 PASS（`b15b4bc`），整核 smoke/分支/数据/replay 门禁 PASS（`7d59822`） |
 | `backend/rob.sv` | 实现 | `retire_info_o` 已在 `ENABLE_RETIRE_INFO` 下导出到 `o3_core` | — |
 | `core/o3_core.sv` | 总装（连线） | ICache/L2/AXI、直接控制流恢复及基础 DCache 数据路径已接通 | 整核 Alan smoke、分支及基础数据门禁 PASS（`6b4c540`） |
 | `sim/o3/` | 使用 `rtl/rtl.f`、SV AXI RAM、缓存镜像加载与 JSONL 退休轨迹；taken BEQ/JAL 与 DCache 数据门禁 | JALR/RVC、LQ replay、异常及并发访存后续扩展 | Alan smoke、分支及基础数据门禁 PASS（`6b4c540`） |
@@ -129,7 +129,9 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
   重命名新结构（`rename_dep_r1` 等）、`O3.sv`/`Tile.sv`。
 
 `backend.sv` 中同时存在旧数据流（实际运行）和 2026-10-02 搭建的目标结构
-（空壳，未接入旧数据流）。目标结构按闭环阶梯逐级接入，不一次性迁移。
+（空壳，未接入旧数据流）。O3-T01 已移除本级后端空壳实例及独占 filelist 条目；文件保留。
+归属：入口/提交/CSR/trap L5，M/FIFO/融合 L6，性能计数 L7，数据预取/非阻塞访存/AMO/LRSC L8，FP L9，PTW/A-D/WFI/PMP/PMA L10，fatal/L2-recall/DMA 协调 L11。
+R1 依赖与级间暂存按 B42 综合时序触发，不指定 Ln。
 
 ## 4. 已知的文档不一致
 

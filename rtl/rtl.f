@@ -51,8 +51,6 @@ rtl/frontend/frontend.sv
 rtl/common/lfsr.sv
 rtl/common/o3_sram.sv
 rtl/common/o3_sram_1r1w.sv
-rtl/common/pmp_checker.sv
-rtl/common/pma_checker.sv
 
 // ---------- 4. 后端：寄存器域 / 重命名 ----------
 rtl/backend/uop_queue.sv
@@ -60,15 +58,11 @@ rtl/backend/free_list.sv
 rtl/backend/rename_map_table.sv
 rtl/backend/branch_checkpoint_file.sv
 rtl/backend/preg_ready_table.sv
-rtl/backend/rename_dep_r1.sv
-rtl/backend/rename_stage_buffer.sv
-rtl/backend/rename_entry_gate.sv
 rtl/backend/rename_stage.sv
 rtl/backend/rename_dispatch_queue.sv
 
 // ---------- 5. 后端：译码 / 派发 / 发射 ----------
 rtl/backend/decoder.sv
-rtl/backend/mul_fusion_detect.sv
 rtl/backend/dispatch_stage.sv
 rtl/backend/backend_issue_queue.sv
 
@@ -76,55 +70,28 @@ rtl/backend/backend_issue_queue.sv
 rtl/backend/physical_regfile.sv
 rtl/backend/prf_read_arbiter.sv
 rtl/backend/writeback_arbiter.sv
-rtl/backend/fp_writeback_arbiter.sv
-rtl/backend/fu_completion_fifo.sv
 
 // ---------- 7. 后端：执行单元 ----------
 rtl/backend/alu_pipe.sv
 rtl/backend/int_execute_unit.sv
 rtl/backend/branch_execute_unit.sv
 rtl/backend/branch_unit.sv
-rtl/backend/signed_mul65x65.sv
-rtl/backend/unsigned_radix4_divider.sv
-rtl/backend/mul_execute_unit.sv
-rtl/backend/div_execute_unit.sv
-rtl/backend/fpu/fpu_fma_fu.sv
-rtl/backend/fpu/fpu_divsqrt_fu.sv
-rtl/backend/fpu/fpu_misc_fu.sv
-rtl/backend/fpu/fpu_conv_fu.sv
 
 // ---------- 8. 后端：访存 ----------
 rtl/memory/simple_data_sram.sv
-rtl/lsu/dcache_mshr.sv
-rtl/lsu/dcache_writeback.sv
-rtl/lsu/dcache_amo_unit.sv
 rtl/lsu/dcache.sv
-rtl/lsu/dtlb.sv
-rtl/lsu/walk_cache.sv
-rtl/lsu/pte_ad_updater.sv
-rtl/lsu/ptw.sv
-rtl/lsu/lrsc_reservation.sv
-rtl/lsu/data_prefetcher.sv
 rtl/backend/load_queue.sv
 rtl/backend/store_queue.sv
 rtl/backend/load_store_unit.sv
 
 // ---------- 9. 后端：ROB / 系统 ----------
 rtl/backend/rob.sv
-rtl/system/csr_file.sv
-rtl/system/trap_ctrl.sv
-rtl/system/commit_ctrl.sv
-rtl/system/wfi_ctrl.sv
-rtl/system/fatal_err_ctrl.sv
-rtl/system/backend_perf_events.sv
 
 // ---------- 10. 后端总装 ----------
 rtl/backend/backend.sv
 
 // ---------- 11. 存储层次 ----------
 rtl/memory/l2_cache.sv
-rtl/memory/l2_recall_ctrl.sv
-rtl/memory/dma_line_coord.sv
 rtl/memory/axi_master.sv
 
 // ---------- 12. 顶层 ----------

@@ -415,6 +415,8 @@ int main(int argc, char** argv) {
         std::cout << "[o3-memory] dtcm_init_beats=" << dtcm_init.size()
                   << " axi_init_beats=" << axi_init.size()
                   << " icache_refills=" << dut.icache_refill_count_o << "\n";
+        std::cout << "[o3-branch] correct_resolves=" << dut.correct_resolve_count_o
+                  << " mispredicts=" << dut.mispredict_count_o << "\n";
         std::cout << "[o3-lsq] load_replays=" << dut.load_replay_count_o << "\n";
         std::cout << "[o3-tandem] PASS cycles=" << cycle
                   << " retired=" << next_order

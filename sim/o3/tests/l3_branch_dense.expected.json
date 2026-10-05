@@ -1,0 +1,2557 @@
+[
+  {
+    "pc": "0x80000000",
+    "instruction": "0x00010097",
+    "rd": 1,
+    "rd_write": true,
+    "rd_wdata": "0x80010000"
+  },
+  {
+    "pc": "0x80000004",
+    "instruction": "0x0000b383",
+    "rd": 7,
+    "rd_write": true,
+    "rd_wdata": "0x8877665544332211"
+  },
+  {
+    "pc": "0x80000008",
+    "instruction": "0x0070b423",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000000c",
+    "instruction": "0x0080b603",
+    "rd": 12,
+    "rd_write": true,
+    "rd_wdata": "0x8877665544332211"
+  },
+  {
+    "pc": "0x80000010",
+    "instruction": "0x00160693",
+    "rd": 13,
+    "rd_write": true,
+    "rd_wdata": "0x8877665544332212"
+  },
+  {
+    "pc": "0x80000014",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000018",
+    "instruction": "0x00100193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x1"
+  },
+  {
+    "pc": "0x8000001c",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x2"
+  },
+  {
+    "pc": "0x80000020",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000030",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000034"
+  },
+  {
+    "pc": "0x80000038",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000035"
+  },
+  {
+    "pc": "0x8000003c",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000040",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000044",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x2"
+  },
+  {
+    "pc": "0x80000048",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000004c",
+    "instruction": "0x00200193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x2"
+  },
+  {
+    "pc": "0x80000050",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x3"
+  },
+  {
+    "pc": "0x80000054",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000064",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000068"
+  },
+  {
+    "pc": "0x8000006c",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000069"
+  },
+  {
+    "pc": "0x80000070",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000074",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000078",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x3"
+  },
+  {
+    "pc": "0x8000007c",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000080",
+    "instruction": "0x00300193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x3"
+  },
+  {
+    "pc": "0x80000084",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x4"
+  },
+  {
+    "pc": "0x80000088",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000098",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x8000009c"
+  },
+  {
+    "pc": "0x800000a0",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x8000009d"
+  },
+  {
+    "pc": "0x800000a4",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x800000a8",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800000ac",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x4"
+  },
+  {
+    "pc": "0x800000b0",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800000b4",
+    "instruction": "0x00400193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x4"
+  },
+  {
+    "pc": "0x800000b8",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x5"
+  },
+  {
+    "pc": "0x800000bc",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800000cc",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x800000d0"
+  },
+  {
+    "pc": "0x800000d4",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x800000d1"
+  },
+  {
+    "pc": "0x800000d8",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x800000dc",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800000e0",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x5"
+  },
+  {
+    "pc": "0x800000e4",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800000e8",
+    "instruction": "0x00500193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x5"
+  },
+  {
+    "pc": "0x800000ec",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x6"
+  },
+  {
+    "pc": "0x800000f0",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000100",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000104"
+  },
+  {
+    "pc": "0x80000108",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000105"
+  },
+  {
+    "pc": "0x8000010c",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000110",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000114",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x6"
+  },
+  {
+    "pc": "0x80000118",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000011c",
+    "instruction": "0x00600193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x6"
+  },
+  {
+    "pc": "0x80000120",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x7"
+  },
+  {
+    "pc": "0x80000124",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000134",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000138"
+  },
+  {
+    "pc": "0x8000013c",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000139"
+  },
+  {
+    "pc": "0x80000140",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000144",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000148",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x7"
+  },
+  {
+    "pc": "0x8000014c",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000150",
+    "instruction": "0x00700193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x7"
+  },
+  {
+    "pc": "0x80000154",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x8"
+  },
+  {
+    "pc": "0x80000158",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000168",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x8000016c"
+  },
+  {
+    "pc": "0x80000170",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x8000016d"
+  },
+  {
+    "pc": "0x80000174",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000178",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000017c",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x8"
+  },
+  {
+    "pc": "0x80000180",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000184",
+    "instruction": "0x00800193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x8"
+  },
+  {
+    "pc": "0x80000188",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x9"
+  },
+  {
+    "pc": "0x8000018c",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000019c",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x800001a0"
+  },
+  {
+    "pc": "0x800001a4",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x800001a1"
+  },
+  {
+    "pc": "0x800001a8",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x800001ac",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800001b0",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x9"
+  },
+  {
+    "pc": "0x800001b4",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800001b8",
+    "instruction": "0x00900193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x9"
+  },
+  {
+    "pc": "0x800001bc",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0xa"
+  },
+  {
+    "pc": "0x800001c0",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800001d0",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x800001d4"
+  },
+  {
+    "pc": "0x800001d8",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x800001d5"
+  },
+  {
+    "pc": "0x800001dc",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x800001e0",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800001e4",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0xa"
+  },
+  {
+    "pc": "0x800001e8",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800001ec",
+    "instruction": "0x00a00193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0xa"
+  },
+  {
+    "pc": "0x800001f0",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0xb"
+  },
+  {
+    "pc": "0x800001f4",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000204",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000208"
+  },
+  {
+    "pc": "0x8000020c",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000209"
+  },
+  {
+    "pc": "0x80000210",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000214",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000218",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0xb"
+  },
+  {
+    "pc": "0x8000021c",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000220",
+    "instruction": "0x00b00193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0xb"
+  },
+  {
+    "pc": "0x80000224",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0xc"
+  },
+  {
+    "pc": "0x80000228",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000238",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x8000023c"
+  },
+  {
+    "pc": "0x80000240",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x8000023d"
+  },
+  {
+    "pc": "0x80000244",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000248",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000024c",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0xc"
+  },
+  {
+    "pc": "0x80000250",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000254",
+    "instruction": "0x00c00193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0xc"
+  },
+  {
+    "pc": "0x80000258",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0xd"
+  },
+  {
+    "pc": "0x8000025c",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000026c",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000270"
+  },
+  {
+    "pc": "0x80000274",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000271"
+  },
+  {
+    "pc": "0x80000278",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x8000027c",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000280",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0xd"
+  },
+  {
+    "pc": "0x80000284",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000288",
+    "instruction": "0x00d00193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0xd"
+  },
+  {
+    "pc": "0x8000028c",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0xe"
+  },
+  {
+    "pc": "0x80000290",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800002a0",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x800002a4"
+  },
+  {
+    "pc": "0x800002a8",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x800002a5"
+  },
+  {
+    "pc": "0x800002ac",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x800002b0",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800002b4",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0xe"
+  },
+  {
+    "pc": "0x800002b8",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800002bc",
+    "instruction": "0x00e00193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0xe"
+  },
+  {
+    "pc": "0x800002c0",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0xf"
+  },
+  {
+    "pc": "0x800002c4",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800002d4",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x800002d8"
+  },
+  {
+    "pc": "0x800002dc",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x800002d9"
+  },
+  {
+    "pc": "0x800002e0",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x800002e4",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800002e8",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0xf"
+  },
+  {
+    "pc": "0x800002ec",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800002f0",
+    "instruction": "0x00f00193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0xf"
+  },
+  {
+    "pc": "0x800002f4",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x10"
+  },
+  {
+    "pc": "0x800002f8",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000308",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x8000030c"
+  },
+  {
+    "pc": "0x80000310",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x8000030d"
+  },
+  {
+    "pc": "0x80000314",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000318",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000031c",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x10"
+  },
+  {
+    "pc": "0x80000320",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000324",
+    "instruction": "0x01000193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x10"
+  },
+  {
+    "pc": "0x80000328",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x11"
+  },
+  {
+    "pc": "0x8000032c",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000033c",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000340"
+  },
+  {
+    "pc": "0x80000344",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000341"
+  },
+  {
+    "pc": "0x80000348",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x8000034c",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000350",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x11"
+  },
+  {
+    "pc": "0x80000354",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000358",
+    "instruction": "0x01100193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x11"
+  },
+  {
+    "pc": "0x8000035c",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x12"
+  },
+  {
+    "pc": "0x80000360",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000370",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000374"
+  },
+  {
+    "pc": "0x80000378",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000375"
+  },
+  {
+    "pc": "0x8000037c",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000380",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000384",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x12"
+  },
+  {
+    "pc": "0x80000388",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000038c",
+    "instruction": "0x01200193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x12"
+  },
+  {
+    "pc": "0x80000390",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x13"
+  },
+  {
+    "pc": "0x80000394",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800003a4",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x800003a8"
+  },
+  {
+    "pc": "0x800003ac",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x800003a9"
+  },
+  {
+    "pc": "0x800003b0",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x800003b4",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800003b8",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x13"
+  },
+  {
+    "pc": "0x800003bc",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800003c0",
+    "instruction": "0x01300193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x13"
+  },
+  {
+    "pc": "0x800003c4",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x14"
+  },
+  {
+    "pc": "0x800003c8",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800003d8",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x800003dc"
+  },
+  {
+    "pc": "0x800003e0",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x800003dd"
+  },
+  {
+    "pc": "0x800003e4",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x800003e8",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800003ec",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x14"
+  },
+  {
+    "pc": "0x800003f0",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800003f4",
+    "instruction": "0x01400193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x14"
+  },
+  {
+    "pc": "0x800003f8",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x15"
+  },
+  {
+    "pc": "0x800003fc",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000040c",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000410"
+  },
+  {
+    "pc": "0x80000414",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000411"
+  },
+  {
+    "pc": "0x80000418",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x8000041c",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000420",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x15"
+  },
+  {
+    "pc": "0x80000424",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000428",
+    "instruction": "0x01500193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x15"
+  },
+  {
+    "pc": "0x8000042c",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x16"
+  },
+  {
+    "pc": "0x80000430",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000440",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000444"
+  },
+  {
+    "pc": "0x80000448",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000445"
+  },
+  {
+    "pc": "0x8000044c",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000450",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000454",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x16"
+  },
+  {
+    "pc": "0x80000458",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000045c",
+    "instruction": "0x01600193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x16"
+  },
+  {
+    "pc": "0x80000460",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x17"
+  },
+  {
+    "pc": "0x80000464",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000474",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000478"
+  },
+  {
+    "pc": "0x8000047c",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000479"
+  },
+  {
+    "pc": "0x80000480",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000484",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000488",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x17"
+  },
+  {
+    "pc": "0x8000048c",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000490",
+    "instruction": "0x01700193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x17"
+  },
+  {
+    "pc": "0x80000494",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x18"
+  },
+  {
+    "pc": "0x80000498",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800004a8",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x800004ac"
+  },
+  {
+    "pc": "0x800004b0",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x800004ad"
+  },
+  {
+    "pc": "0x800004b4",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x800004b8",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800004bc",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x18"
+  },
+  {
+    "pc": "0x800004c0",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800004c4",
+    "instruction": "0x01800193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x18"
+  },
+  {
+    "pc": "0x800004c8",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x19"
+  },
+  {
+    "pc": "0x800004cc",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800004dc",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x800004e0"
+  },
+  {
+    "pc": "0x800004e4",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x800004e1"
+  },
+  {
+    "pc": "0x800004e8",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x800004ec",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800004f0",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x19"
+  },
+  {
+    "pc": "0x800004f4",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800004f8",
+    "instruction": "0x01900193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x19"
+  },
+  {
+    "pc": "0x800004fc",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x1a"
+  },
+  {
+    "pc": "0x80000500",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000510",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000514"
+  },
+  {
+    "pc": "0x80000518",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000515"
+  },
+  {
+    "pc": "0x8000051c",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000520",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000524",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x1a"
+  },
+  {
+    "pc": "0x80000528",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000052c",
+    "instruction": "0x01a00193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x1a"
+  },
+  {
+    "pc": "0x80000530",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x1b"
+  },
+  {
+    "pc": "0x80000534",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000544",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000548"
+  },
+  {
+    "pc": "0x8000054c",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000549"
+  },
+  {
+    "pc": "0x80000550",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000554",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000558",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x1b"
+  },
+  {
+    "pc": "0x8000055c",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000560",
+    "instruction": "0x01b00193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x1b"
+  },
+  {
+    "pc": "0x80000564",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x1c"
+  },
+  {
+    "pc": "0x80000568",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000578",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x8000057c"
+  },
+  {
+    "pc": "0x80000580",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x8000057d"
+  },
+  {
+    "pc": "0x80000584",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000588",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000058c",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x1c"
+  },
+  {
+    "pc": "0x80000590",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000594",
+    "instruction": "0x01c00193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x1c"
+  },
+  {
+    "pc": "0x80000598",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x1d"
+  },
+  {
+    "pc": "0x8000059c",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800005ac",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x800005b0"
+  },
+  {
+    "pc": "0x800005b4",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x800005b1"
+  },
+  {
+    "pc": "0x800005b8",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x800005bc",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800005c0",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x1d"
+  },
+  {
+    "pc": "0x800005c4",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800005c8",
+    "instruction": "0x01d00193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x1d"
+  },
+  {
+    "pc": "0x800005cc",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x1e"
+  },
+  {
+    "pc": "0x800005d0",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800005e0",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x800005e4"
+  },
+  {
+    "pc": "0x800005e8",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x800005e5"
+  },
+  {
+    "pc": "0x800005ec",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x800005f0",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800005f4",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x1e"
+  },
+  {
+    "pc": "0x800005f8",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800005fc",
+    "instruction": "0x01e00193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x1e"
+  },
+  {
+    "pc": "0x80000600",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x1f"
+  },
+  {
+    "pc": "0x80000604",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000614",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000618"
+  },
+  {
+    "pc": "0x8000061c",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000619"
+  },
+  {
+    "pc": "0x80000620",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000624",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000628",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x1f"
+  },
+  {
+    "pc": "0x8000062c",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000630",
+    "instruction": "0x01f00193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x1f"
+  },
+  {
+    "pc": "0x80000634",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x20"
+  },
+  {
+    "pc": "0x80000638",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000648",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x8000064c"
+  },
+  {
+    "pc": "0x80000650",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x8000064d"
+  },
+  {
+    "pc": "0x80000654",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000658",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000065c",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x20"
+  },
+  {
+    "pc": "0x80000660",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000664",
+    "instruction": "0x02000193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x20"
+  },
+  {
+    "pc": "0x80000668",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x21"
+  },
+  {
+    "pc": "0x8000066c",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000067c",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000680"
+  },
+  {
+    "pc": "0x80000684",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000681"
+  },
+  {
+    "pc": "0x80000688",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x8000068c",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000690",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x21"
+  },
+  {
+    "pc": "0x80000694",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000698",
+    "instruction": "0x02100193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x21"
+  },
+  {
+    "pc": "0x8000069c",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x22"
+  },
+  {
+    "pc": "0x800006a0",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800006b0",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x800006b4"
+  },
+  {
+    "pc": "0x800006b8",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x800006b5"
+  },
+  {
+    "pc": "0x800006bc",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x800006c0",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800006c4",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x22"
+  },
+  {
+    "pc": "0x800006c8",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800006cc",
+    "instruction": "0x02200193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x22"
+  },
+  {
+    "pc": "0x800006d0",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x23"
+  },
+  {
+    "pc": "0x800006d4",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800006e4",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x800006e8"
+  },
+  {
+    "pc": "0x800006ec",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x800006e9"
+  },
+  {
+    "pc": "0x800006f0",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x800006f4",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800006f8",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x23"
+  },
+  {
+    "pc": "0x800006fc",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000700",
+    "instruction": "0x02300193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x23"
+  },
+  {
+    "pc": "0x80000704",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x24"
+  },
+  {
+    "pc": "0x80000708",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000718",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x8000071c"
+  },
+  {
+    "pc": "0x80000720",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x8000071d"
+  },
+  {
+    "pc": "0x80000724",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000728",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000072c",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x24"
+  },
+  {
+    "pc": "0x80000730",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000734",
+    "instruction": "0x02400193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x24"
+  },
+  {
+    "pc": "0x80000738",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x25"
+  },
+  {
+    "pc": "0x8000073c",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000074c",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000750"
+  },
+  {
+    "pc": "0x80000754",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000751"
+  },
+  {
+    "pc": "0x80000758",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x8000075c",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000760",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x25"
+  },
+  {
+    "pc": "0x80000764",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000768",
+    "instruction": "0x02500193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x25"
+  },
+  {
+    "pc": "0x8000076c",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x26"
+  },
+  {
+    "pc": "0x80000770",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000780",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000784"
+  },
+  {
+    "pc": "0x80000788",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000785"
+  },
+  {
+    "pc": "0x8000078c",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x80000790",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000794",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x26"
+  },
+  {
+    "pc": "0x80000798",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000079c",
+    "instruction": "0x02600193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x26"
+  },
+  {
+    "pc": "0x800007a0",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x27"
+  },
+  {
+    "pc": "0x800007a4",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800007b4",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x800007b8"
+  },
+  {
+    "pc": "0x800007bc",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x800007b9"
+  },
+  {
+    "pc": "0x800007c0",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x800007c4",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800007c8",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x27"
+  },
+  {
+    "pc": "0x800007cc",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800007d0",
+    "instruction": "0x02700193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x27"
+  },
+  {
+    "pc": "0x800007d4",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x28"
+  },
+  {
+    "pc": "0x800007d8",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800007e8",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x800007ec"
+  },
+  {
+    "pc": "0x800007f0",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x800007ed"
+  },
+  {
+    "pc": "0x800007f4",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x800007f8",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x800007fc",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x28"
+  },
+  {
+    "pc": "0x80000800",
+    "instruction": "0x00001463",
+    "rd": 8,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000804",
+    "instruction": "0x02800193",
+    "rd": 3,
+    "rd_write": true,
+    "rd_wdata": "0x28"
+  },
+  {
+    "pc": "0x80000808",
+    "instruction": "0x00118213",
+    "rd": 4,
+    "rd_write": true,
+    "rd_wdata": "0x29"
+  },
+  {
+    "pc": "0x8000080c",
+    "instruction": "0x00000863",
+    "rd": 16,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x8000081c",
+    "instruction": "0x008002ef",
+    "rd": 5,
+    "rd_write": true,
+    "rd_wdata": "0x80000820"
+  },
+  {
+    "pc": "0x80000824",
+    "instruction": "0x00128313",
+    "rd": 6,
+    "rd_write": true,
+    "rd_wdata": "0x80000821"
+  },
+  {
+    "pc": "0x80000828",
+    "instruction": "0x0100b403",
+    "rd": 8,
+    "rd_write": true,
+    "rd_wdata": "0x1122334455667788"
+  },
+  {
+    "pc": "0x8000082c",
+    "instruction": "0x0040bc23",
+    "rd": 24,
+    "rd_write": false,
+    "rd_wdata": "0x0"
+  },
+  {
+    "pc": "0x80000830",
+    "instruction": "0x0180b483",
+    "rd": 9,
+    "rd_write": true,
+    "rd_wdata": "0x29"
+  }
+]

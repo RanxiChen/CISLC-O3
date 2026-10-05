@@ -10,7 +10,7 @@ SIM_BUILD := $(CURDIR)/sim_build/$(if $(filter 1,$(WAVES)),waves,plain)
 COCOTB_RESULTS_FILE := $(CURDIR)/results.xml
 TEST_SEED ?= 1
 export TEST_SEED
-EXTRA_ARGS += --timing -Wno-fatal -DENABLE_RETIRE_INFO
+EXTRA_ARGS += --timing -Wno-fatal --assert -DENABLE_RETIRE_INFO
 ifeq ($(WAVES),1)
 EXTRA_ARGS += --trace --trace-structs
 endif

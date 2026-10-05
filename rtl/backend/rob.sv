@@ -15,7 +15,8 @@
  *   5) 每项保存 succ_pc（B37）：普通指令 pc+inst_len，控制流由 BRU 解析写入真实后继；
  *      crossline_misalign（B31）；fuse_role（B34：融合成员各自占 ROB 项、各自退休，成员由
  *      FUSE_HEAD 的同一次乘法请求的低位结果完成，不独立执行）。
- * - 现有 ftq_last 回收方式需与“区域全部提交”合同核对（前端 fetch_entry_t 注释）。
+ * - U3：保存动态 FTQ 身份、槽位与 ftq_last；实际退休由 backend 转为 ftq_commit_t。
+ * 当前实现状态：闭环简化（L3），四宽分配/退休；精确 trap 待 L5。
  * - 目标端口（t_*）未接入；resolution 现在会阻止退休（B12 缺口 1）。
  * Minimal ROB
  *
@@ -75,6 +76,7 @@ module rob #(
     input  logic [o3_pkg::SQ_IDX_WIDTH-1:0]     alloc_sq_idx_i [MACHINE_WIDTH-1:0],
     input  o3_pkg::branch_mask_t                alloc_branch_mask_i [MACHINE_WIDTH-1:0],
     input  o3_types_pkg::ftq_id_t                 alloc_ftq_idx_i [MACHINE_WIDTH-1:0],
+    input  o3_types_pkg::fetch_slot_t            alloc_ftq_slot_i [MACHINE_WIDTH-1:0],
     input  logic                               alloc_ftq_last_i [MACHINE_WIDTH-1:0],
     input  logic [o3_pkg::INST_ID_WIDTH-1:0]   alloc_instruction_id_i [MACHINE_WIDTH-1:0],
 `ifdef ENABLE_RETIRE_INFO
@@ -110,6 +112,7 @@ module rob #(
     output logic [o3_pkg::SQ_IDX_WIDTH-1:0]     retire_sq_idx_o [RETIRE_WIDTH-1:0],
     output logic [o3_pkg::INST_ID_WIDTH-1:0]   retire_instruction_id_o [RETIRE_WIDTH-1:0]
     ,output o3_types_pkg::ftq_id_t               retire_ftq_idx_o [RETIRE_WIDTH-1:0]
+    ,output o3_types_pkg::fetch_slot_t          retire_ftq_slot_o [RETIRE_WIDTH-1:0]
     ,output logic                              retire_ftq_last_o [RETIRE_WIDTH-1:0]
 `ifdef ENABLE_RETIRE_INFO
     ,output o3_pkg::retire_info_t              retire_info_o     [RETIRE_WIDTH-1:0]
@@ -163,6 +166,7 @@ module rob #(
     logic [o3_pkg::SQ_IDX_WIDTH-1:0] entry_sq_idx_q [NUM_ROB_ENTRIES-1:0];
     o3_pkg::branch_mask_t entry_branch_mask_q [NUM_ROB_ENTRIES-1:0];
     o3_types_pkg::ftq_id_t entry_ftq_idx_q [NUM_ROB_ENTRIES-1:0];
+    o3_types_pkg::fetch_slot_t entry_ftq_slot_q [NUM_ROB_ENTRIES-1:0];
     logic entry_ftq_last_q [NUM_ROB_ENTRIES-1:0];
     logic                      entry_complete_q  [NUM_ROB_ENTRIES-1:0];
     logic [INST_ID_WIDTH_LOCAL-1:0]  entry_instruction_id_q [NUM_ROB_ENTRIES-1:0];
@@ -238,6 +242,7 @@ module rob #(
             assign retire_sq_idx_o[ridx] = entry_sq_idx_q[retire_idx];
             assign retire_instruction_id_o[ridx] = entry_instruction_id_q[retire_idx];
             assign retire_ftq_idx_o[ridx] = entry_ftq_idx_q[retire_idx];
+            assign retire_ftq_slot_o[ridx] = entry_ftq_slot_q[retire_idx];
             assign retire_ftq_last_o[ridx] = entry_ftq_last_q[retire_idx];
 `ifdef ENABLE_RETIRE_INFO
             always_comb begin
@@ -299,6 +304,7 @@ module rob #(
                 entry_sq_idx_q[entry] <= '0;
                 entry_branch_mask_q[entry] <= '0;
                 entry_ftq_idx_q[entry] <= '0;
+                entry_ftq_slot_q[entry] <= '0;
                 entry_ftq_last_q[entry] <= 1'b0;
                 entry_complete_q[entry]  <= 1'b0;
                 entry_instruction_id_q[entry] <= '0;
@@ -365,6 +371,7 @@ module rob #(
                     entry_sq_idx_q[alloc_idx_o[lane]] <= alloc_sq_idx_i[lane];
                     entry_branch_mask_q[alloc_idx_o[lane]] <= alloc_branch_mask_i[lane];
                     entry_ftq_idx_q[alloc_idx_o[lane]] <= alloc_ftq_idx_i[lane];
+                    entry_ftq_slot_q[alloc_idx_o[lane]] <= alloc_ftq_slot_i[lane];
                     entry_ftq_last_q[alloc_idx_o[lane]] <= alloc_ftq_last_i[lane];
                     entry_complete_q[alloc_idx_o[lane]]  <= 1'b0;
                     entry_instruction_id_q[alloc_idx_o[lane]] <= alloc_instruction_id_i[lane];

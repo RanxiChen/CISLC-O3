@@ -29,7 +29,7 @@ package o3_pkg;
     parameter int IMM_RAW_WIDTH  = 21;   // 由 RISC-V 立即数格式决定
 
     // 旧代码的统一 lane 数：现有 rename 前缀规划器、ROB 分配、LQ/SQ 分配按此宽度工作。
-    // 目标 rename 宽度为 O3_CFG.be.rename.width（B01 暂定 6），由 R1/R2 实现时接入。
+    // 现有路径直接取 O3_CFG.be.rename.width；B42 为 4，R1/R2 按综合时序触发。
     parameter int BACKEND_MACHINE_WIDTH            = O3_CFG.be.rename.width;
     parameter int BACKEND_DECODE_WIDTH             = O3_CFG.be.decode.width;
     parameter int BACKEND_COMMIT_WIDTH             = O3_CFG.core.commit_width;
