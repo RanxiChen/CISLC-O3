@@ -54,8 +54,6 @@ params:
   NUM_PMP_ENTRIES: 0
 
   HPM_COUNTER_EN: [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]
-  HPM_EVENTS: [0]
   TIME_CSR_IMPLEMENTED: false
   MCOUNTINHIBIT_IMPLEMENTED: false
-  COUNTINHIBIT_EN: [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]
   MCOUNTENABLE_EN: [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]
