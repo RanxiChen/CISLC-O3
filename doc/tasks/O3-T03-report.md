@@ -50,3 +50,13 @@ ACT4 L5 初始配置使用了 schema 不接受的 MTVEC_ILLEGAL_WRITE_BEHAVIOR �
 委托初始化，不改 upstream isa/rv64mi 测试体/断言/期望。使用官方源
 `bcffa2b3188b040c611f90dc0b6e422f54775a09`；目标 csr/mcsr/illegal/sbreak/scall。
 ma_addr 依赖非对齐访存策略，按任务书留 L8；本级不宣称该项通过。
+
+## Bug 2：无执行单元的串行/译码异常项永远不 complete
+
+Alan `48b55ba852977ea9b3e5784dbcff9208d4a069c5` M 模式程序退休到旧 Store（order 18）后超时，
+日志 `/home/chen/FUN/CISLC-O3-runs/20261006-o3t03/trial-48b55ba/mmode.log`。
+根因：ROB 分配时把所有项 complete 清零，但 ECALL/译码异常与 WFI/FENCE/MRET
+不走普通执行单元，没有后续 complete 报告。队头 trap 条件等 complete，因而永远等待。
+修正为这两类项在分配时即执行完成，正常串行退休仍受 head_serial_done 控制；CSR 仍等待执行。
+缩减为单条 ECALL（ecall_head.hex）；另加 WFI/FENCE/FENCE.I 三条串行复现。
+两项加入 run-spike-all，保留全部原门禁。修复后 Alan 结果待补。

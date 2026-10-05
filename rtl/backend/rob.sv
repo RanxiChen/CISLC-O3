@@ -418,7 +418,12 @@ module rob #(
                     entry_ftq_idx_q[alloc_idx_o[lane]] <= alloc_ftq_idx_i[lane];
                     entry_ftq_slot_q[alloc_idx_o[lane]] <= alloc_ftq_slot_i[lane];
                     entry_ftq_last_q[alloc_idx_o[lane]] <= alloc_ftq_last_i[lane];
-                    entry_complete_q[alloc_idx_o[lane]]  <= 1'b0;
+                    // Decode faults and non-CSR serial operations have no execution unit.
+                    // They are ready for head trap/serial control on allocation;
+                    // serial readiness still prevents premature normal retirement.
+                    entry_complete_q[alloc_idx_o[lane]] <= alloc_exception_i[lane]
+                        || (t_alloc_ext_i[lane].serialize
+                            && t_alloc_ext_i[lane].csr_op==o3_types_pkg::CSROP_NONE);
                     entry_instruction_id_q[alloc_idx_o[lane]] <= alloc_instruction_id_i[lane];
 `ifdef ENABLE_RETIRE_INFO
                     entry_pc_q[alloc_idx_o[lane]]          <= alloc_pc_i[lane];
