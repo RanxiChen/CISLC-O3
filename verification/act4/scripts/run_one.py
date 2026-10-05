@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 
-TOHOST_ADDRESS = 0x8010_F000
+TOHOST_ADDRESS = 0x801F_F000
 
 
 def parse_args() -> argparse.Namespace:

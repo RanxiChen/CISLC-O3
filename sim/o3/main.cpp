@@ -32,6 +32,7 @@ struct Options {
     uint64_t retire_target = 3000;
     uint64_t tohost_address = 0;
     bool spike = false;
+    bool reference_only = false;
     uint64_t max_retires = 4;
     uint64_t reset_pc = kAxiBase;
     bool reset_pc_explicit = false;
@@ -246,6 +247,8 @@ Options parse_options(int argc, char** argv) {
             options.retire_target = parse_u64(take_value("--retire-target"));
         } else if (current == "--tohost-address") {
             options.tohost_address = parse_u64(take_value("--tohost-address"));
+        } else if (current == "--spike-reference-only") {
+            options.reference_only = true;
         } else if (current == "--spike") {
             options.spike = true;
         } else if (current == "--reset-pc") {
@@ -266,6 +269,7 @@ Options parse_options(int argc, char** argv) {
                 << "  --require-icache-refill  fail if no ICache line refill occurs\n"
                 << "  --require-load-replay   fail if no SQ-blocked load replay occurs\n"
                 << "  --spike              in-process RV64I lockstep comparison\n"
+                << "  --spike-reference-only validate generator without DUT\n"
                 << "  --tohost-address A   stop on retired nonzero SD (compare all lanes)\n"
                 << "  --retire-target N    default max-cycles = N * 50\n"
                 << "Hex files may use @ADDRESS to change the byte load address.\n";
@@ -367,7 +371,7 @@ int main(int argc, char** argv) {
         const std::vector<InitBeat> axi_init = image.memory.init_beats(kAxiBase, kAxiBytes);
 
         std::unique_ptr<SpikeLockstep> spike;
-        if(options.spike) {
+        if(options.spike || options.reference_only) {
             spike=std::make_unique<SpikeLockstep>(kAxiBase,kAxiBytes,options.reset_pc);
             for(const auto& b:axi_init)
                 for(unsigned i=0;i<8;++i)
@@ -379,6 +383,21 @@ int main(int argc, char** argv) {
         }
         trace << "{\"type\":\"header\",\"format\":\"cislc-o3-tandem\","
               << "\"version\":2,\"xlen\":64,\"retire_width\":" << kRetireWidth << "}\n";
+
+        if(options.reference_only) {
+            for(uint64_t order=0;order<options.max_retires;++order) {
+                RetireRecord dummy; dummy.order=order;
+                auto r=spike->step(dummy);
+                trace << record_json(r) << "\n";
+                if(r.mem_kind==2 && r.mem_addr==options.tohost_address
+                   && r.mem_size==8 && r.mem_data) {
+                    std::cout << "[o3-reference] PASS retired=" << order+1 << "\n";
+                    return r.mem_data==1 ? 0 : 1;
+                }
+            }
+            std::cerr << "[o3-reference] timeout before tohost\n";
+            return 3;
+        }
 
         Vo3_tandem_top dut;
         uint64_t cycle = 0;
