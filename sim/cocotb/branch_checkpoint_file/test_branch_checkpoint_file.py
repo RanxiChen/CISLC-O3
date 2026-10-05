@@ -33,7 +33,7 @@ async def correct_release_create_no_same_tag_reuse_and_m_tree(d):
         for l in grant:
             x=val(d.alloc_tag_o[l]);create=not mis and (cycle<4 or rng.randrange(3)!=0)
             d.create_i[l].value=create
-            rt=(cycle*w+l)%val(d.cfg_rob_o);lt=(cycle+l)%16;st=(cycle*2+l)%16
+            rt=(cycle*w+l)%val(d.cfg_rob_o);lt=(cycle+l)%val(d.cfg_lq_o);st=(cycle*2+l)%val(d.cfg_sq_o)
             d.create_parent_mask_i[l].value=running;d.create_rob_tail_i[l].value=rt
             d.create_lq_tail_i[l].value=lt;d.create_sq_tail_i[l].value=st
             if create:new[x]=(running,rt,lt,st);running|=1<<x

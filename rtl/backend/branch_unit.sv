@@ -16,9 +16,7 @@
  * - 误预测时自身 RegRead 中依赖该分支的年轻项被清 valid。
  *
  * 当前缺口与需要补充的机制（B12）：
- * 1) 解析造成全局暂停：resolution_o.valid（包括预测正确）被 backend 用来阻止 IQ 选择、
- *    读口授予、rename/dispatch 和 ROB 退休。这是保守控制，不是前端合同要求；
- *    O3-T01 已改为仅 M 阻塞；C 正常推进并清依赖。
+ * 1) O3-T01 已解除正确解析全局暂停：backend 仅 M 阻塞；C 正常推进并清依赖。
  * 2) resolve_o（o3_types_pkg::bru_resolve_t）已由 Result 槽组装，携带完整动态 FTQ 身份、
  *    槽位、cfi_type、ras_action 与 inst_len，送前端 FTQ 和 redirect_arbiter。L2 闭环只启用
  *    执行纠错来源；旧 resolution_o 仍同步驱动后端 checkpoint 恢复。
@@ -35,7 +33,7 @@
  *
  * 测试：sim/cocotb/branch_recovery/；整核门禁为 sim/o3/run-rv64i-instructions。
  */
-// 当前实现状态：闭环简化（L3）；正确解析不停顿，四宽合同。测试：sim/cocotb/branch_unit/。
+// 当前实现状态：闭环简化（L3）；正确解析不停顿，四宽合同。测试：sim/cocotb/backend_control/、backend/。
 module branch_unit
     import o3_pkg::*;
 #(

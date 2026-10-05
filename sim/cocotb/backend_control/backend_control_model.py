@@ -7,7 +7,7 @@ def program(width, groups):
             if lane==group%width:
                 # JAL +4 has a link write but the fall-through prediction is correct.
                 rd=5 if group%2 else 0
-                inst=0x004002ef if rd else 0x00001463 # BNE x0,x0,+8: not taken.
+                inst=0x004002ef if rd else 0x00001063 # BNE x0,x0,+0: not taken; raw rd bits are zero.
                 value=pc+4 if rd else 0
             else:
                 rd=8+(lane%4);rs=8+((lane-1)%4) if group%3 else 0

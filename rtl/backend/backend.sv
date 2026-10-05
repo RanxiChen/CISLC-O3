@@ -22,7 +22,7 @@
  * - U3 ROB 退休直接通知 FTQ；U4 M/Bare/PMP 静态常量集中在本模块末尾。
  * - 不在本级的空壳实例已移除；R1/R2 按综合时序触发；M/FP/系统见后续阶梯。
  * - 缺口 1：只有误预测 M 阻塞 Decode/rename/dispatch/读口/退休；正确解析 C 正常推进并清 mask。
- * - 缺口 2：ALU 独立 RegRead kill 已存在，具名/随机测试待本任务补齐。
+ * - 缺口 2：ALU 独立 RegRead kill 已存在，具名/随机及真实写回仲裁测试见 branch_recovery/wb_alu_kill。
  * - exec_resolve_o 已由 BRU 驱动，解析与 JAL 链接结果写回解耦。
  * - 异常队头仍停住，无精确 trap（L5）；JALR/RVC、完整地址边界后续补齐。
  * - 测试：sim/cocotb/backend/、sim/o3/。

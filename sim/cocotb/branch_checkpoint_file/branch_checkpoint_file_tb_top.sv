@@ -30,7 +30,7 @@ module branch_checkpoint_file_tb_top import o3_pkg::*; #(
     output logic [$clog2(LQ_DEPTH)-1:0] restore_lq_tail_o,
     output logic [$clog2(SQ_DEPTH)-1:0] restore_sq_tail_o
 ,
-output logic [31:0] cfg_width_o, cfg_depth_o, cfg_rob_o, cfg_pregs_o, cfg_read_ports_o, cfg_tags_o,
+output logic [31:0] cfg_lq_o, cfg_sq_o, cfg_width_o, cfg_depth_o, cfg_rob_o, cfg_pregs_o, cfg_read_ports_o, cfg_tags_o,
 output branch_mask_t parent_obs_o [NUM_CHECKPOINTS-1:0]
 );
 branch_checkpoint_file #(.CFG(CFG)) dut (
@@ -52,6 +52,8 @@ branch_checkpoint_file #(.CFG(CFG)) dut (
 .restore_lq_tail_o(restore_lq_tail_o),
 .restore_sq_tail_o(restore_sq_tail_o)
 );
+assign cfg_lq_o=CFG.lsu.lq_depth;
+assign cfg_sq_o=CFG.lsu.sq_depth;
 assign cfg_width_o=BACKEND_MACHINE_WIDTH;
 assign cfg_depth_o=CFG.rename.rdq_depth;
 assign cfg_rob_o=CFG.rob.entries;

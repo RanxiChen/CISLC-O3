@@ -119,7 +119,7 @@ async def seeded_c_m_replay_pending_response_result_backpressure(d):
         ident=transaction+1;data=rng.getrandbits(64);tag=transaction%tags
         mask=(1<<tag)| (1<<((tag+3)%tags));d.mem_branch_mask.value=mask
         d.mem_valid.value=1;d.mem_load.value=1;d.mem_id.value=ident
-        d.mem_rob.value=transaction%64;d.mem_lq.value=transaction%16
+        d.mem_rob.value=transaction%val(d.cfg_rob_o);d.mem_lq.value=transaction%val(d.cfg_lq_o)
         d.mem_base.value=0x80010000+8*(transaction%8)
         mode=transaction%3;kill=transaction%4==0
         if mode==0: # Direct forward, C concurrent with creating Result.

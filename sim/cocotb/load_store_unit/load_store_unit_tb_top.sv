@@ -7,7 +7,7 @@ module load_store_unit_tb_top
     input logic bus_mode_i, dc_ready_i, dc_response_i, result_ready_i, lq_live_i,
     input logic [XLEN-1:0] dc_response_data_i,
     output logic dc_request_o, pending_o,
-    output logic [31:0] cfg_tags_o,
+    output logic [31:0] cfg_tags_o, cfg_rob_o, cfg_lq_o,
     output branch_mask_t result_mask_o,
     input logic [INST_ID_WIDTH-1:0] mem_id,
     input logic [ROB_IDX_WIDTH-1:0] mem_rob,
@@ -52,6 +52,8 @@ module load_store_unit_tb_top
     assign dc_request_o = dc_ld_req_valid[0];
     assign pending_o = dut.pending_valid_q;
     assign cfg_tags_o = BACKEND_NUM_BRANCH_CHECKPOINTS;
+    assign cfg_rob_o = o3_cfg_pkg::O3_CFG.be.rob.entries;
+    assign cfg_lq_o = o3_cfg_pkg::O3_CFG.be.lsu.lq_depth;
     assign result_mask_o = result.branch_mask;
     assign result_valid = result.valid;
     assign result_id = result.instruction_id;

@@ -237,3 +237,5 @@ Alan 原 checkout 保持不变，新增隔离 worktree。GitHub fetch 直连 TLS
 - 分支密集 `919eaaa` 与 `92ac71c` 都为 **1967 cycles / 365 retires / 40 C / 80 M / 10 replay**，差值 0。本程序未显示周期收益；不能据此替代 C 同拍控制测试。
 - 新增真实两 ALU + writeback_arbiter 的仲裁回压 kill 场景、LSU 160 笔固定种子 replay/单 pending/迟到响应/Result 回压事务，以及实际 backend 的 120 组四宽 C 重合测试。新增 ROB full/异常前缀/M 同拍 JAL 完成与取消年轻 FTQ 测试；旧测试和期望不变。Alan：提交后运行，当前未运行。
 - 修正 dispatch/ROB 头部过期的“所有解析阻塞”注释，未改行为。提交前本地 `scripts/lint.sh`：通过，0 errors / 101 warnings，日志 `/tmp/o3t01-next-lint.log`。
+
+`54a0383` Alan：`make -C sim/cocotb/{load_store_unit,wb_alu_kill,rob} SIM=verilator TEST_SEED=1` 各自通过，退出码 0（实际逐目录命令，日志 `trial-54a0383/<目录>.log`）；`backend_control` 失败，退出码 2（同目录日志）。新局部测试预期无目的 BNE 的 rd=0，但 +8 编码的原始 [11:7]=8；退休口即使 rd_write=0 也保留原始 rd bits。保持全部断言和预期字段不变，只把该新局部测试激励编码改为同样永不 taken 的 BNE x0,x0,+0，使原始 rd bits=0；实际路径仍 pc+4。未改冻结的分支密集程序或其期望。CK/LSU 随机测试的 ROB/LQ/SQ 容量改从包装配置端口读取，事务数量和种子不变。模块注释测试入口修正为实际存在的目录。复测待运行。
