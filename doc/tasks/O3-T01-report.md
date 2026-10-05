@@ -243,3 +243,131 @@ Alan 原 checkout 保持不变，新增隔离 worktree。GitHub fetch 直连 TLS
 `ac2aed1` Alan `backend_control` 已通过（退出码 0）；既定 120 个正确解析，要求四种推进实际同拍且至少一次四者同时发生，原断言保持。完整 §6.2/§6.1/§6.3 验收正在该 SHA 上运行，目录 `acceptance-ac2aed1/`，以 `commands.tsv` 为逐条命令／退出码／日志清单。
 
 追加 LQ-M 240 笔独立生命周期随机事务（TEST_SEED 默认 1）：环形分配、旧 load 在 M 同拍 execute/request/response、年轻取消后迟到响应、代际复用拒绝旧身份、随机响应延迟及有序释放。原有 LQ-M 定向失败复现断言不变。提交前本地 lint：通过，0 errors / 101 warnings，日志 `/tmp/o3t01-lq-random-lint.log`；新增随机项 Alan 未运行。
+
+## 9. 阶段二交付记录
+
+### 9.1 提交与范围
+
+已核实用户指定的 `26246a805b9a011c094ddde410a6b74682e359f0`、`b48ddf3e7f8578bd30251c160ec358f3e8fc2041` 和修订 `ffd11e1e1f7957bac13a59b67f5586badaa6cfc0` 均在当前分支祖先链。按修订后的冻结 spec 执行，没有修改 spec、设计基线、前端或 o3_core。后端行为限于四宽/U3/U4/缺口 1 和已授权 LQ-M 修复。移除的是实例和独占 filelist 条目，全部模块文件保留。缺口 2 不改已有正确 RTL，保留原断言并拆成具名测试、增加 DUT 随机和真实仲裁回压证据。原测试/既有 expected/checker 均保留。
+
+| 完整提交 SHA | 内容 | 提交前 `scripts/lint.sh`（本地） | 日志 |
+| --- | --- | --- | --- |
+| `a5ca40147eeecfc35161ca257989a630921b7de7` | 四宽、16 项、空壳/filelist、U3/U4、固定分支程序；仍保守 R 阻塞 | 通过，退出码 0 | `/tmp/o3-t01-baseline-lint.log` |
+| `48526165ae6844b0000a962e6504c88c8a4e68cb` | 先补规范 LQ-M 测试并复现旧项记账丢失 | 通过，退出码 0 | `/tmp/o3-t01-lq-test-lint.log` |
+| `919eaaa38f627bd860529fd156d491193a70c4b3` | 新 oracle 序列化与 ROB 包装 lane 观察修正；正式前测 | 通过，退出码 0 | `/tmp/o3-t01-oracle-format-lint.log` |
+| `92ac71cd538373ff40a57794439046e89128f2bb` | 缺口 1 控制、C mask/checkpoint 合并、授权 LQ-M 修复、四宽合同 | 通过，退出码 0 | `/tmp/o3-t01-gap1-lint.log` |
+| `54a03837d8a09f5c859debf52a1e839e7985ab26` | 真实 WB 仲裁、LSU 延迟、ROB 边界、backend C 同拍合同 | 通过，退出码 0 | `/tmp/o3t01-next-lint.log` |
+| `ac2aed1f542bccdad01f4419cbf3c83c29bcd40f` | 局部 BNE 激励与配置端口修正，完整 60 命令验收 | 通过，退出码 0 | `/tmp/o3t01-harness-lint.log` |
+| `1b7885d0b4c6537b58afee66bf35a0400aece98f` | LQ-M 随机回绕、旧事务合并、年轻迟到、身份复用 | 通过，退出码 0 | `/tmp/o3t01-lq-random-lint.log` |
+
+本报告/LOOP 收尾提交自身 SHA 用 `git log -1 --format=%H --grep='close O3-T01 phase-two verification record'` 查询；该文档提交前也执行本地 `scripts/lint.sh`，日志 `/tmp/o3t01-delivery-lint.log`。上列提交均已 `git push origin feat/L1-closure` 成功。GitHub 通过本地代理的 loopback 反向 SSH 隧道访问，Alan fetch 成功；未改共享代理配置或他人隧道。
+
+### 9.2 Alan 已执行的完整命令矩阵
+
+本轮完整验收 SHA：`ac2aed1f542bccdad01f4419cbf3c83c29bcd40f`。60 条命令全部通过、退出码 0。环境：Verilator 5.050，cocotb 2.1.0；Python 命令 3.12.14，cocotb 嵌入解释器 3.12.12（如实保留差异）。所有新随机事务读取 TEST_SEED，种子固定为 1、7、29；无重试换种子、无删测试或跳过。
+
+日志根目录：Alan `/home/chen/FUN/CISLC-O3-runs/20261005-o3t01/acceptance-ac2aed1/`。下表日志列相对此目录；`commands.tsv` 记录原命令/实际退出码/绝对日志，`sha.txt` 与 `sha-end.txt` 记录运行前后准确 SHA，`worktree-status*.txt` 证明源码未变，`tools.txt`/`program.sha256`/`trace.sha256` 保留环境与固定工件身份。
+
+| 命令 | 结果 | 日志 |
+| --- | --- | --- |
+| `make -C sim/cocotb/backend_control SIM=verilator TEST_SEED=1` | 通过（0） | `backend-control.log` |
+| `scripts/lint.sh` | 通过（0） | `lint.log` |
+| `make -C sim/o3 build` | 通过（0） | `build.log` |
+| `make -C sim/o3 run-smoke` | 通过（0） | `smoke.log` |
+| `make -C sim/cocotb/branch_recovery SIM=verilator TEST_SEED=1` | 通过（0） | `branch-recovery.log` |
+| `make -C sim/o3 run-rv64i-instructions` | 通过（0） | `rv64i.log` |
+| `make -C sim/cocotb/store_queue SIM=verilator` | 通过（0） | `sq.log` |
+| `make -C sim/cocotb/dcache SIM=verilator` | 通过（0） | `dcache.log` |
+| `make -C sim/cocotb/backend_issue_queue SIM=verilator` | 通过（0） | `iq-existing.log` |
+| `make -C sim/cocotb/load_store_unit SIM=verilator` | 通过（0） | `lsu.log` |
+| `make -C sim/o3 run-dcache-data run-dcache-replay` | 通过（0） | `data-replay.log` |
+| `make -C sim/cocotb/backend SIM=verilator TEST_SEED=1` | 通过（0） | `backend.log` |
+| `make -C sim/o3 run-l3-branch-dense` | 通过（0） | `branch-dense.log` |
+| `make -C sim/cocotb/uop_queue SIM=verilator TEST_SEED=1` | 通过（0） | `uop_queue-seed1.log` |
+| `make -C sim/cocotb/rename_stage SIM=verilator TEST_SEED=1` | 通过（0） | `rename_stage-seed1.log` |
+| `make -C sim/cocotb/rename_map_table SIM=verilator TEST_SEED=1` | 通过（0） | `rename_map_table-seed1.log` |
+| `make -C sim/cocotb/free_list SIM=verilator TEST_SEED=1` | 通过（0） | `free_list-seed1.log` |
+| `make -C sim/cocotb/branch_checkpoint_file SIM=verilator TEST_SEED=1` | 通过（0） | `branch_checkpoint_file-seed1.log` |
+| `make -C sim/cocotb/prf_read_arbiter SIM=verilator TEST_SEED=1` | 通过（0） | `prf_read_arbiter-seed1.log` |
+| `make -C sim/cocotb/rob SIM=verilator TEST_SEED=1` | 通过（0） | `rob-seed1.log` |
+| `make -C sim/cocotb/load_queue SIM=verilator TEST_SEED=1` | 通过（0） | `load_queue-seed1.log` |
+| `make -C sim/cocotb/rename_dispatch_queue SIM=verilator TEST_SEED=1` | 通过（0） | `rename_dispatch_queue-seed1.log` |
+| `make -C sim/cocotb/wb_alu_kill SIM=verilator TEST_SEED=1` | 通过（0） | `wb_alu_kill-seed1.log` |
+| `make -C sim/cocotb/backend_issue_queue_l3 SIM=verilator KIND=0 TEST_SEED=1` | 通过（0） | `iq-kind0-seed1.log` |
+| `make -C sim/cocotb/backend_issue_queue_l3 SIM=verilator KIND=1 TEST_SEED=1` | 通过（0） | `iq-kind1-seed1.log` |
+| `make -C sim/cocotb/backend_issue_queue_l3 SIM=verilator KIND=2 TEST_SEED=1` | 通过（0） | `iq-kind2-seed1.log` |
+| `make -C sim/cocotb/uop_queue SIM=verilator TEST_SEED=7` | 通过（0） | `uop_queue-seed7.log` |
+| `make -C sim/cocotb/rename_stage SIM=verilator TEST_SEED=7` | 通过（0） | `rename_stage-seed7.log` |
+| `make -C sim/cocotb/rename_map_table SIM=verilator TEST_SEED=7` | 通过（0） | `rename_map_table-seed7.log` |
+| `make -C sim/cocotb/free_list SIM=verilator TEST_SEED=7` | 通过（0） | `free_list-seed7.log` |
+| `make -C sim/cocotb/branch_checkpoint_file SIM=verilator TEST_SEED=7` | 通过（0） | `branch_checkpoint_file-seed7.log` |
+| `make -C sim/cocotb/prf_read_arbiter SIM=verilator TEST_SEED=7` | 通过（0） | `prf_read_arbiter-seed7.log` |
+| `make -C sim/cocotb/rob SIM=verilator TEST_SEED=7` | 通过（0） | `rob-seed7.log` |
+| `make -C sim/cocotb/load_queue SIM=verilator TEST_SEED=7` | 通过（0） | `load_queue-seed7.log` |
+| `make -C sim/cocotb/rename_dispatch_queue SIM=verilator TEST_SEED=7` | 通过（0） | `rename_dispatch_queue-seed7.log` |
+| `make -C sim/cocotb/wb_alu_kill SIM=verilator TEST_SEED=7` | 通过（0） | `wb_alu_kill-seed7.log` |
+| `make -C sim/cocotb/backend_issue_queue_l3 SIM=verilator KIND=0 TEST_SEED=7` | 通过（0） | `iq-kind0-seed7.log` |
+| `make -C sim/cocotb/backend_issue_queue_l3 SIM=verilator KIND=1 TEST_SEED=7` | 通过（0） | `iq-kind1-seed7.log` |
+| `make -C sim/cocotb/backend_issue_queue_l3 SIM=verilator KIND=2 TEST_SEED=7` | 通过（0） | `iq-kind2-seed7.log` |
+| `make -C sim/cocotb/branch_recovery SIM=verilator TEST_SEED=7` | 通过（0） | `branch_recovery-seed7.log` |
+| `make -C sim/cocotb/store_queue SIM=verilator TEST_SEED=7` | 通过（0） | `store_queue-seed7.log` |
+| `make -C sim/cocotb/load_store_unit SIM=verilator TEST_SEED=7` | 通过（0） | `load_store_unit-seed7.log` |
+| `make -C sim/cocotb/backend_control SIM=verilator TEST_SEED=7` | 通过（0） | `backend_control-seed7.log` |
+| `make -C sim/cocotb/uop_queue SIM=verilator TEST_SEED=29` | 通过（0） | `uop_queue-seed29.log` |
+| `make -C sim/cocotb/rename_stage SIM=verilator TEST_SEED=29` | 通过（0） | `rename_stage-seed29.log` |
+| `make -C sim/cocotb/rename_map_table SIM=verilator TEST_SEED=29` | 通过（0） | `rename_map_table-seed29.log` |
+| `make -C sim/cocotb/free_list SIM=verilator TEST_SEED=29` | 通过（0） | `free_list-seed29.log` |
+| `make -C sim/cocotb/branch_checkpoint_file SIM=verilator TEST_SEED=29` | 通过（0） | `branch_checkpoint_file-seed29.log` |
+| `make -C sim/cocotb/prf_read_arbiter SIM=verilator TEST_SEED=29` | 通过（0） | `prf_read_arbiter-seed29.log` |
+| `make -C sim/cocotb/rob SIM=verilator TEST_SEED=29` | 通过（0） | `rob-seed29.log` |
+| `make -C sim/cocotb/load_queue SIM=verilator TEST_SEED=29` | 通过（0） | `load_queue-seed29.log` |
+| `make -C sim/cocotb/rename_dispatch_queue SIM=verilator TEST_SEED=29` | 通过（0） | `rename_dispatch_queue-seed29.log` |
+| `make -C sim/cocotb/wb_alu_kill SIM=verilator TEST_SEED=29` | 通过（0） | `wb_alu_kill-seed29.log` |
+| `make -C sim/cocotb/backend_issue_queue_l3 SIM=verilator KIND=0 TEST_SEED=29` | 通过（0） | `iq-kind0-seed29.log` |
+| `make -C sim/cocotb/backend_issue_queue_l3 SIM=verilator KIND=1 TEST_SEED=29` | 通过（0） | `iq-kind1-seed29.log` |
+| `make -C sim/cocotb/backend_issue_queue_l3 SIM=verilator KIND=2 TEST_SEED=29` | 通过（0） | `iq-kind2-seed29.log` |
+| `make -C sim/cocotb/branch_recovery SIM=verilator TEST_SEED=29` | 通过（0） | `branch_recovery-seed29.log` |
+| `make -C sim/cocotb/store_queue SIM=verilator TEST_SEED=29` | 通过（0） | `store_queue-seed29.log` |
+| `make -C sim/cocotb/load_store_unit SIM=verilator TEST_SEED=29` | 通过（0） | `load_store_unit-seed29.log` |
+| `make -C sim/cocotb/backend_control SIM=verilator TEST_SEED=29` | 通过（0） | `backend_control-seed29.log` |
+
+最后补充的 `1b7885d0b4c6537b58afee66bf35a0400aece98f` 仅新增 LQ-M 随机覆盖与注释。Alan 下列三条命令通过，退出码均 0；日志根为 `20261005-o3t01/trial-1b7885d/`：
+
+| 命令 | 结果 | 日志 |
+| --- | --- | --- |
+| `make -C sim/cocotb/load_queue SIM=verilator TEST_SEED=1` | 通过（0） | `load_queue-seed1.log` |
+| `make -C sim/cocotb/load_queue SIM=verilator TEST_SEED=7` | 通过（0） | `load_queue-seed7.log` |
+| `make -C sim/cocotb/load_queue SIM=verilator TEST_SEED=29` | 通过（0） | `load_queue-seed29.log` |
+
+**同一最终交付 SHA 复验**：本报告提交并 push 后，以该提交的准确 SHA 原样运行上面完整 60 条命令（包含最新 LQ-M 测试），不在运行期间继续编辑/提交。最终结果写入 Alan `/home/chen/FUN/CISLC-O3-runs/20261005-o3t01/final/commands.tsv`；该目录的 `sha.txt`/`sha-end.txt` 为最终验收 SHA，日志文件名与上表一致。此目录是最终提交的复验记录，不能用前面的开发轮次替代；最终回报以该目录实际结果为准。这样报告提交自身不会改变随后所验收的 SHA。
+
+### 9.3 功能与周期证据
+
+- `run-smoke`：38 cycles / 4 retires，轨迹通过。`run-rv64i-instructions`：76 / 14，轨迹通过。`run-dcache-data`：69 / 7；`run-dcache-replay`：71 / 6，轨迹均通过。
+- backend 总装局部 TEST_SEED=1：480 条架构事务、120 个 C、224 周期；C 同拍 `[retire,read,dispatch,rename]` 计数 `[69,119,112,106]`，四者同时重合 **58** 次。独立模型逐条验证退休身份/值，U3 通知 valid 等于实际退休，证据不依赖周期下降。日志 `acceptance-ac2aed1/backend-control.log`。
+- WQ 900 周期；WR 900；RAT 650；free_list 700；CK 700；RR 800；ROB normal/C 各 600 并另测 full/异常/M-JAL；LQ-C 500 加 LQ-M 240 事务；RDQ 600；三类 IQ 各 650；ALU-K 700；SQ 80 批四 store；LSU 160 事务；真实 WB kill 64 个场景（各 tag）；seed 1/7/29 全保留。队列/依赖/身份/资源模型与架构模型独立推导，包装只接端口和被动观测，不 force DUT 状态。
+- U4 update=0 的运行断言随 `--assert` 启用，全部现有门禁通过；不声称已实现 PMP/PMA 检查。PRF 同地址读写现有 bypass 核实见 §8，没有新增旁路。
+
+缺口 1 同程序比较：
+
+| 版本 | 完整 SHA | cycles / retires | C / M / replay | Alan 日志 |
+| --- | --- | --- | --- | --- |
+| 四宽/清壳，仍保守 R 阻塞 | `919eaaa38f627bd860529fd156d491193a70c4b3` | 1967 / 365 | 40 / 80 / 10 | `20261005-o3t01/baseline-fixed/branch-dense.log` |
+| 只修改缺口 1 控制与其授权 LQ-M 记账 | `92ac71cd538373ff40a57794439046e89128f2bb` | 1967 / 365 | 40 / 80 / 10 | `20261005-o3t01/trial-92ac71c/dense.log` |
+| 完整合同验收复跑 | `ac2aed1f542bccdad01f4419cbf3c83c29bcd40f` | 1967 / 365 | 40 / 80 / 10 | `20261005-o3t01/acceptance-ac2aed1/branch-dense.log` |
+
+周期差值 **0**，本程序未测得收益，不预先归因或承诺。两版 decode/rename/dispatch/commit=4、Decode Queue=16，其余容量/缓存/冷复位初始化一致；相同 HEX、固定 expected、max-cycles=30000、max-retires=365、require-load-replay。无 DUT 反写期望。`git show 919eaaa:<工件>` 与交付树按字节核对相同，SHA256 如下：
+
+- `l3_branch_dense.hex`：`2de3005a149cd8525702fe36dc3870475158478ac2d749465be68afd35e4326c`。
+- `l3_branch_dense.expected.json`：`f840f67533f602664d3ee8d332106c41f2c30836e9dab9aa93d5f60cc6e534e0`。
+
+### 9.4 与 spec 的偏离
+
+**为空。**LQ-M 修复属于 §7 已授权范围；PMP/PMA 按用户 `ffd11e1` 修订处理，不属自行设计调整。未加新的 PRF 旁路、第二 pending、trap、FP、PTW 或预测机制。
+
+### 9.5 阶段二问题
+
+- P2-01：原 U4 要求验证未实例化空壳 pmp_checker 放行，已先停止报告，用户修订 U4/U6 后解除（`ffd11e1`）。
+- LQ-M：规范定向测试先在旧实现失败（`baseline/lq-m-before.log`），修复存活旧 execute/request/response 合并后通过；原断言保留，新增随机复用与迟到响应也通过。属于授权修复，无未决设计问题。
+- 新测试首次失败：oracle PC 字符串序列化、ROB 包装数组 lane 顺序、局部 BNE 激励原始 rd bits。原因、修正与失败日志保留于 §8；未更改既有 checker、架构期望值或放宽断言。
+- 当前无未决 spec/设计问题。已有 lint warnings 保留（101），普通 lint PASS；未以关闭现有断言换取通过。本轮证据限于 L3 收尾合同和指定闭环，不扩展为完整 RV64GC、PPA/FPGA 或 Spike 验证。

@@ -20,7 +20,7 @@
 | **L4 当前** | **ICache miss → inclusive L2 → AXI RAM → 直线整数退休** | `make -C sim/o3 build && make -C sim/o3 run-smoke` | Alan 回归 PASS（`de9149d`，38 周期、4 条退休、ICache 回填 1 次） |
 | **L2 当前** | **taken 分支 / JAL：BRU 解析 → 重定向 → 前端恢复** | `make -C sim/cocotb/branch_recovery SIM=verilator TEST_SEED=1 && make -C sim/o3 run-rv64i-instructions` | Alan PASS（`de9149d`；局部 1/1；整核 76 周期、14 条退休、ICache 回填 2 次） |
 | L3 部分闭合 | SQ 依赖/转发 → 流水化 DCache → inclusive L2 → AXI 数据访存与退休 | `make -C sim/cocotb/store_queue SIM=verilator`、`make -C sim/cocotb/dcache SIM=verilator`、`make -C sim/cocotb/backend_issue_queue SIM=verilator`、`make -C sim/cocotb/load_store_unit SIM=verilator`、`make -C sim/o3 run-dcache-data run-dcache-replay` | Alan `a8b3fc6`：Memory IQ 1/1、LSU replay/恢复 2/2；整核 `7d59822` 新门禁实测 `load_replays=1`，71 周期退休 6 条且轨迹 PASS；旧 smoke/分支/数据门禁仍 PASS。SQ 3/3、DCache 3/3 沿用前次 Alan 证据。仍缺多 MSHR、多 load pending、跨行异常、FENCE.I、PTW/AMO/DMA；不是完整 B03～B05 |
-| L3 收尾 | 完成 L3；修 B12 缺口 1（分支解析全局停顿）与缺口 2（ALU RegRead 背压时缺 kill）；重命名改 4 宽（B42）；移除当前级不需要的空壳实例（B46） | 现有 L2/L3 门禁 + 分支密集程序 + 缺口 2 定向测试 | 阶段二进行中；P2-01 已由 `ffd11e1` 修订解除；四宽/16 项、空壳清理、ROB→FTQ 与 U4 常量已实现，缺口 1 已改为只在 M 阻塞；C 合并 create/分配/退休/清 mask；LQ-M 按已复现问题补齐老项记账，新增合同套件待 Alan |
+| L3 收尾 | 完成 L3；修 B12 缺口 1（分支解析全局停顿）与缺口 2（ALU RegRead 背压时缺 kill）；重命名改 4 宽（B42）；移除当前级不需要的空壳实例（B46） | 现有 L2/L3 门禁 + 分支密集程序 + 缺口 2 定向测试 | 阶段二实现与验收通过：四宽/16 项、空壳/filelist 清理、U3/U4、缺口 1 与授权 LQ-M；缺口 2 具名/随机/真实仲裁测试通过。Alan `ac2aed1` 全部门禁与 seed 1/7/29 通过，`1b7885d` 补充 LQ-M 通过；分支密集 1967 周期/365 退休，前后差值 0。同最终交付 SHA 的复验以 [报告 §9](tasks/O3-T01-report.md) 的 final 目录为准 |
 | L5 | Spike 逐条比对；M 模式 CSR、精确异常、ecall/ebreak/illegal、MRET、committed_next_pc | ACT4 RV64I + Spike 比对 0 差异 | 未开始 |
 | L6 | M 扩展（MUL 采用 DSP，B43）、完成 FIFO/提前唤醒、JALR；首次 OOC 综合 | ACT4 RV64IM + CoreMark（仿真） | 未开始 |
 | L7 | uBTB/BTB/TAGE、FTQ 恢复、RAS 快速修复；RVC | RV64IMC + 误预测率/IPC 基线 | 未开始 |
@@ -70,7 +70,7 @@ make -C sim/o3 run-rv64i-instructions
 Alan 在 `de9149d` 上局部测试 1/1 PASS（150 ns）；整核输出
 `icache_refills=2`、`PASS cycles=76 retired=14`、
 `RV64I_INSTRUCTION_TRACE_PASS retires=14`。退休轨迹包含 taken BEQ 与 direct JAL，
-并排除两条错路 `addi`。这仍采用顺序预测与每次分支解析保守暂停一拍；
+并排除两条错路 `addi`。上述历史 SHA 采用顺序预测与每次分支解析保守暂停一拍；O3-T01 已解除 C 拍暂停，M 恢复不变；
 JALR、RVC 和 predecode/slow/system 多来源重定向不在本级范围。
 
 ### 2.4 缓存取指路径与模块状态
@@ -98,17 +98,24 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
 | `frontend/icache.sv` | **闭环简化（L4）**：整行双 bank、S0–S3、单 demand MSHR/四拍回填；按行 recall；ITCM 已移除 | ITLB/PMP/PMA、预取、多 MSHR、性能事件与综合时序待后级 | `sim/cocotb/icache/` Alan 3/3 PASS（`1d2caeb`） |
 | `memory/l2_cache.sv` | **闭环简化（L4）**：256 set/4-way 配置、tree-PLRU、AXI 回填、双 L1 回收、脏行 AXI 写回 | 普通请求单未决；B03/B41 并发、DMA/维护协调与完整 L1D 数据路径未实现 | `sim/cocotb/l2_cache/` Alan 2/2 PASS（`1d2caeb`） |
 | `lsu/dcache.sv` | **闭环简化（L3）**：4 个 16B word bank、整行 tag/valid/dirty、两级查询、单行 miss、hit-under-miss、脏 victim 写回、L2 回填、probe | 多 MSHR/同 line 合并、PTW/AMO/预取、DMA 行保护；clean_all 不会虚假确认但尚未执行 | Alan 3/3 PASS（`022f90c`）；整核基本数据门禁 PASS |
-| `backend/store_queue.sv` | **闭环简化（L3）**：SQ 年龄顺序查询、最近完整覆盖旧 store 转发；未知地址与部分覆盖保守等待；DCache 完成后释放，DTCM 保留本地 drain | LQ replay、依赖等待事件、跨行异常与整核冲突覆盖 | Alan 3/3 PASS（`fe6922d`）；整核基本数据门禁 PASS |
+| `backend/store_queue.sv` | **闭环简化（L3）**：SQ 年龄顺序查询、最近完整覆盖旧 store 转发；未知地址与部分覆盖保守等待；DCache 完成后释放，DTCM 保留本地 drain | LQ replay、依赖等待事件、跨行异常与整核冲突覆盖 | Alan 既有三项+四宽/C/M/commit/drain 随机合同 4/4 PASS（`ac2aed1`，seed 1/7/29）；整核数据门禁 PASS |
 | `backend/backend_issue_queue.sv` | **闭环简化（L3）**：Memory 选择可越过源未就绪队头；依赖 replay 槽占用时仅放行 store | 多项 replay、多 load 在途及真正多管线发射 | Alan 1/1 PASS（`f038f34`）；整核 replay 门禁 PASS |
-| `backend/load_store_unit.sv` | **闭环简化（L3）**：单个 blocked load 让出执行级，SQ 变化唤醒重查；错误路径可取消，仍保留单 load pending | 多项 LQ replay、翻译/异常、跨行与 MMIO | Alan replay/恢复 2/2 PASS（`a8b3fc6`）、整核 `run-dcache-replay` PASS（`7d59822`） |
+| `backend/load_store_unit.sv` | **闭环简化（L3）**：单个 blocked load 让出执行级，SQ 变化唤醒重查；错误路径可取消，仍保留单 load pending | 多项 LQ replay、翻译/异常、跨行与 MMIO | Alan replay/恢复/单 pending/迟到/Result 背压 3/3 PASS（`ac2aed1`，seed 1/7/29），整核 replay PASS |
 | `frontend/fetch_return_queue.sv` | **闭环简化（L1）**：单槽身份匹配、按序出队和第二笔回压 | D15/D17 待 L4 | `sim/cocotb/fetch_return_queue/` Alan 2/2 PASS；整核 L1 PASS |
 | `frontend/ifu_f0.sv` | **闭环简化（L1）**：完整 32 位指令识别 | RVC 与跨块拼接待 L2 | `sim/cocotb/ifu_f0/` Alan 2/2 PASS；整核 L1 PASS |
 | `frontend/ifu_f1.sv` | **闭环简化（L1）**：生成 `fetch_entry_t`、`ftq_last`，修正端口无效 | 预解码修正待 L2 | `sim/cocotb/ifu_f1/` Alan 2/2 PASS；整核 L1 PASS |
 | `frontend/redirect_arbiter.sv` | **闭环简化（L2）**：执行误预测 R0 kill/重定向、R1 身份恢复、R2 重新分配 | 系统/预解码/慢预测多来源年龄仲裁待后级 | `sim/cocotb/branch_recovery/` Alan 1/1 PASS（`de9149d`） |
 | `frontend/fetch_buffer.sv` | **闭环简化（L2）**：执行重定向整体清空未交付项 | 预解码修正需要按 FTQ 身份/槽位选择性保留 | `sim/cocotb/branch_recovery/` Alan 1/1 PASS；整核 L2 PASS（`de9149d`） |
 | `frontend/frontend.sv` | 总装（连线） | L1 路径已接通；其余空壳仍待后级 | `sim/o3` Alan PASS |
-| `backend/backend.sv` 旧数据流 | **闭环简化（L3）**：INT/MEM/BR IQ、BRU 恢复、SQ/LSU→DCache；Memory IQ 可越过未就绪队头并受 replay 槽控制 | 四宽/16 项；U3 退休 FTQ 通知、U4 M/Bare/PMP update=0；正确解析正常推进，M 保留恢复边界；JALR/RVC 待后级 | Alan `sim/cocotb/backend/` 1/1 PASS（`b15b4bc`），整核 smoke/分支/数据/replay 门禁 PASS（`7d59822`） |
-| `backend/rob.sv` | 实现 | `retire_info_o` 已在 `ENABLE_RETIRE_INFO` 下导出到 `o3_core` | — |
+| `backend/backend.sv` 旧数据流 | **闭环简化（L3）**：INT/MEM/BR IQ、BRU 恢复、SQ/LSU→DCache；Memory IQ 可越过未就绪队头并受 replay 槽控制 | 四宽/16 项；U3 退休 FTQ 通知、U4 M/Bare/PMP update=0；正确解析正常推进，M 保留恢复边界；JALR/RVC 待后级 | Alan backend 2/2 与 backend_control 同拍合同 PASS（`ac2aed1`）；smoke/分支/数据/replay/dense 门禁 PASS；最终提交复验见报告 |
+| `backend/rob.sv` | **闭环简化（L3）**：四宽拍初 complete 前缀退休；保存动态 FTQ id/slot/last；C 推进，M 取消年轻并保留 JAL WB | 精确异常/系统提交待 L5 | Alan normal/C/M、full/异常/回绕/U3 合同 PASS（`ac2aed1`，seed 1/7/29） |
+| `backend/uop_queue.sv` | **闭环简化（L3）**：四宽、16 项、bank/回绕/满空/前缀握手/M flush | 更深流水按 B42 时序触发 | Alan WQ 900 周期 PASS（`ac2aed1`，seed 1/7/29） |
+| `backend/rename_stage.sv`、`rename_map_table.sv`、`free_list.sv` | **闭环简化（L3）**：四 lane RAW/WAW/x0、原子资源前缀、checkpoint 恢复 | FP 域待 L9；R1 按 B42 时序触发 | Alan WR/RAT/free-list 合同 PASS（`ac2aed1`，seed 1/7/29） |
+| `backend/branch_checkpoint_file.sv` | **闭环简化（L3）**：C 释放/清 parent 与不同 tag create 合并；只看拍初空闲，不同拍复用 | 系统整体恢复待 L5 | Alan CK full/C/M 700 周期 PASS（`ac2aed1`，seed 1/7/29） |
+| `backend/rename_dispatch_queue.sv`、`dispatch_stage.sv` | **闭环简化（L3）**：四宽连续前缀分流，C 正常推进/清新旧 mask，M 保留老项 | M/FP/系统分类待后级 | Alan RDQ/三个 IQ/backend_control PASS（`ac2aed1`，seed 1/7/29） |
+| `backend/backend_issue_queue.sv`、`prf_read_arbiter.sv` | **闭环简化（L3）**：C 选择/删除/入队/唤醒与四读口竞争；M grants=0；未 grant 不删除 | FP/M 读口归属待后级 | Alan INT/MEM/BR IQ 与 RR 合同 PASS（`ac2aed1`，seed 1/7/29）；既有 Memory IQ 门禁保留 |
+| `backend/branch_unit.sv`、`alu_pipe.sv` | **闭环简化（L3）**：one-shot C/M 与 JAL 链接解耦；ALU 独立 kill 保留旧 Result | JALR/完整目标边界待后级 | Alan 缺口 2 具名/700 事务 DUT/真实 WB 竞争与总装 C 合同 PASS（`ac2aed1`，seed 1/7/29） |
+| `backend/load_queue.sv` | **闭环简化（L3）**：四宽；C 合并正常记账，M 仅取消年轻并保留旧 execute/request/response | 多事务代际/异常待 L8/L5 | Alan LQ-C/M PASS（`ac2aed1`）；240 事务复用/迟到合同 PASS（`1b7885d`，seed 1/7/29） |
 | `core/o3_core.sv` | 总装（连线） | ICache/L2/AXI、直接控制流恢复及基础 DCache 数据路径已接通 | 整核 Alan smoke、分支及基础数据门禁 PASS（`6b4c540`） |
 | `sim/o3/` | 使用 `rtl/rtl.f`、SV AXI RAM、缓存镜像加载与 JSONL 退休轨迹；taken BEQ/JAL 与 DCache 数据门禁 | JALR/RVC、LQ replay、异常及并发访存后续扩展 | Alan smoke、分支及基础数据门禁 PASS（`6b4c540`） |
 
@@ -122,14 +129,13 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
   `icache` recall 回归（3 项合计）、`backend` 整核缓存路径（1 项）已在 Alan 通过。
 - **单模块实现、有 SV testbench**：`ftq`（`tb/ftq_tb.sv`）、`branch_history`、`history_snapshot_store`（`tb/` 下，仅记录过 lint）。
 - **单模块实现、无独立 cocotb**：`fetch_buffer`、
-  部分后端旧数据流（`decoder` … `rob`）、`axi_master`、`simple_data_sram`；
+  `decoder`、`axi_master`、`simple_data_sram`；后端主要队列/rename/资源合同已有 O3-T01 cocotb，见上表；
   L1 整核冒烟仅覆盖本轮四条 addi 的路径。
 - **空壳/待扩展**：`lsu/*` 的 PTW/AMO/DMA/完整维护路径、`system/*`、`backend/fpu/*`、乘除法数据通路、
   `l2_recall_ctrl`/`dma_line_coord`、`itlb`、`icache_mshr`、预取相关、
   重命名新结构（`rename_dep_r1` 等）、`O3.sv`/`Tile.sv`。
 
-`backend.sv` 中同时存在旧数据流（实际运行）和 2026-10-02 搭建的目标结构
-（空壳，未接入旧数据流）。O3-T01 已移除本级后端空壳实例及独占 filelist 条目；文件保留。
+`backend.sv` 保留当前实际数据流，2026-10-02 搭建但未接入的非 L3 目标实例已移除。O3-T01 已移除本级后端空壳实例及独占 filelist 条目；文件保留。
 归属：入口/提交/CSR/trap L5，M/FIFO/融合 L6，性能计数 L7，数据预取/非阻塞访存/AMO/LRSC L8，FP L9，PTW/A-D/WFI/PMP/PMA L10，fatal/L2-recall/DMA 协调 L11。
 R1 依赖与级间暂存按 B42 综合时序触发，不指定 Ln。
 
@@ -138,8 +144,7 @@ R1 依赖与级间暂存按 B42 综合时序触发，不指定 Ln。
 - `doc/CISLC_O3.md` 的"当前实现状态"描述的是旧数据流，并引用已删除的
   `rtl/frontend/ifu.sv`、`rtl/backend/issue_queue.sv`。
 - `doc/CISLC_O3_frontend.md` 中描述 `ifu.sv` 状态机的章节已失效。
-- `rtl/common/o3_cfg_pkg.sv` 仍定义空宏 `` `O3_TBD ``，但全仓未使用；
-  `backend.sv` 头注释称其阻止编译，与事实不符。
+- `rtl/common/o3_cfg_pkg.sv` 保留未使用的空宏 `` `O3_TBD ``；backend 相关过期说明已在 O3-T01 修正。
 
 - 58 个 RTL 文件头注释仍写着"本阶段不写测试代码和仿真代码"（旧规则，已作废，见 agent.md 第 4.1 节）。
 
