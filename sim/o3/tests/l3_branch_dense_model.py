@@ -63,7 +63,7 @@ def expected():
         else:raise AssertionError(hex(w))
         value &= MASK
         if write and rd:regs[rd]=value
-        rows.append(dict(pc=hex(pc),instruction=f'0x{w:08x}',rd=rd,rd_write=write and rd!=0,rd_wdata=hex(value)))
+        rows.append(dict(pc=f'0x{pc:010x}',instruction=f'0x{w:08x}',rd=rd,rd_write=write and rd!=0,rd_wdata=f'0x{value:016x}'))
         regs[0]=0;pc=nxt
     assert regs[30]==regs[31]==0 and mem[DATA+16]==0x1122334455667788
     assert regs[9]==GROUPS+1 and regs[12]==0x8877665544332211

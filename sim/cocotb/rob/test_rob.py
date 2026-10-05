@@ -35,7 +35,7 @@ async def four_wide_allocate_complete_retire_ftq_wrap(d):
         for p,e in enumerate(completed):
             d.complete_valid_i[p].value=1;d.complete_idx_i[p].value=e['idx']
         await settle()
-        got=[val(x) for x in d.retire_valid_o]
+        got=[val(d.retire_valid_o[lane]) for lane in range(w)]
         assert got==[int(i<len(ret)) for i in range(w)],(seed,cycle,got,ret,q)
         for lane,e in enumerate(ret):
             actual=(val(d.retire_instruction_id_o[lane]),val(d.retire_ftq_idx_o[lane]),val(d.retire_ftq_slot_o[lane]),val(d.retire_ftq_last_o[lane]))

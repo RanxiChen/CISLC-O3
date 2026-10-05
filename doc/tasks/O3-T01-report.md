@@ -200,3 +200,14 @@ rg -n 's3_valid_o|s3_allow_o|s3_fault_o|cfg_update_done_o' rtl/common/pmp_checke
 | Alan 功能门禁 | 待运行，不计为通过 | 无 |
 
 与 spec 的实现偏离：无。阶段二问题：当前无新增未决设计问题。模块测试／Alan 门禁／周期对比未完成，不声明 L3 收尾完成。
+
+
+### 基线首次 Alan 执行／测试包装修正
+
+`a5ca40147eeecfc35161ca257989a630921b7de7`：Alan `make -C sim/o3 build` PASS；`make -C sim/o3 run-l3-branch-dense` FAIL（退出码 2）：仿真 1967 周期、365 退休、40 正确解析、80 误预测、10 replay；checker 首项 PC 字符串补零格式不符（数值相同）。新 oracle 序列化按已有 `main.cpp` 的 PC 10 位／数据 16 位十六进制格式修正；修正前后 365 条 PC、instruction、rd、rd_write、rd_wdata **数值完全一致**，未改程序／架构期望值／既有 checker。日志：Alan `/home/chen/FUN/CISLC-O3-runs/20261005-o3t01/baseline/build.log`、`branch-dense.log`。
+
+同 SHA `make -C sim/cocotb/uop_queue TEST_SEED=1` PASS（`baseline/wq.log`）。新 ROB 包装模型的数组观察从声明顺序改为明确 lane0→lane3 索引，保持最老前缀的期望不变（`baseline/rob.log`）；Alan 复跑待记录。
+
+`48526165ae6844b0000a962e6504c88c8a4e68cb`：`make -C sim/cocotb/load_queue TEST_SEED=1` FAIL，2 tests：1 PASS／1 FAIL，LQ-M 断言 `LQ-M lost old execute` 复现 M 分支不更新存活老 load 的地址记账。日志 `baseline/lq-m-before.log`；按 spec §7 附加授权修复，不修改期望。
+
+Alan 原 checkout 保持不变，新增隔离 worktree。GitHub fetch 直连 TLS 失败，已有代理亦连接 reset；改为本地 `git bundle create /tmp/o3-t01-baseline.bundle feat/L1-closure`／`git bundle verify`、`scp`、Alan `git fetch /tmp/o3-t01-baseline.bundle refs/heads/feat/L1-closure`，均成功。源码完整 SHA 核对如上；环境 Verilator 5.050、cocotb 2.1.0、Python 命令显示 3.12.14（cocotb 嵌入日志显示 3.12.12）。

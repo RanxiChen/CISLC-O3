@@ -1,2557 +1,2557 @@
 [
   {
-    "pc": "0x80000000",
+    "pc": "0x0080000000",
     "instruction": "0x00010097",
     "rd": 1,
     "rd_write": true,
-    "rd_wdata": "0x80010000"
+    "rd_wdata": "0x0000000080010000"
   },
   {
-    "pc": "0x80000004",
+    "pc": "0x0080000004",
     "instruction": "0x0000b383",
     "rd": 7,
     "rd_write": true,
     "rd_wdata": "0x8877665544332211"
   },
   {
-    "pc": "0x80000008",
+    "pc": "0x0080000008",
     "instruction": "0x0070b423",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000000c",
+    "pc": "0x008000000c",
     "instruction": "0x0080b603",
     "rd": 12,
     "rd_write": true,
     "rd_wdata": "0x8877665544332211"
   },
   {
-    "pc": "0x80000010",
+    "pc": "0x0080000010",
     "instruction": "0x00160693",
     "rd": 13,
     "rd_write": true,
     "rd_wdata": "0x8877665544332212"
   },
   {
-    "pc": "0x80000014",
+    "pc": "0x0080000014",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000018",
+    "pc": "0x0080000018",
     "instruction": "0x00100193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x1"
+    "rd_wdata": "0x0000000000000001"
   },
   {
-    "pc": "0x8000001c",
+    "pc": "0x008000001c",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x2"
+    "rd_wdata": "0x0000000000000002"
   },
   {
-    "pc": "0x80000020",
+    "pc": "0x0080000020",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000030",
+    "pc": "0x0080000030",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000034"
+    "rd_wdata": "0x0000000080000034"
   },
   {
-    "pc": "0x80000038",
+    "pc": "0x0080000038",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000035"
+    "rd_wdata": "0x0000000080000035"
   },
   {
-    "pc": "0x8000003c",
+    "pc": "0x008000003c",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000040",
+    "pc": "0x0080000040",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000044",
+    "pc": "0x0080000044",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x2"
+    "rd_wdata": "0x0000000000000002"
   },
   {
-    "pc": "0x80000048",
+    "pc": "0x0080000048",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000004c",
+    "pc": "0x008000004c",
     "instruction": "0x00200193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x2"
+    "rd_wdata": "0x0000000000000002"
   },
   {
-    "pc": "0x80000050",
+    "pc": "0x0080000050",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x3"
+    "rd_wdata": "0x0000000000000003"
   },
   {
-    "pc": "0x80000054",
+    "pc": "0x0080000054",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000064",
+    "pc": "0x0080000064",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000068"
+    "rd_wdata": "0x0000000080000068"
   },
   {
-    "pc": "0x8000006c",
+    "pc": "0x008000006c",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000069"
+    "rd_wdata": "0x0000000080000069"
   },
   {
-    "pc": "0x80000070",
+    "pc": "0x0080000070",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000074",
+    "pc": "0x0080000074",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000078",
+    "pc": "0x0080000078",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x3"
+    "rd_wdata": "0x0000000000000003"
   },
   {
-    "pc": "0x8000007c",
+    "pc": "0x008000007c",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000080",
+    "pc": "0x0080000080",
     "instruction": "0x00300193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x3"
+    "rd_wdata": "0x0000000000000003"
   },
   {
-    "pc": "0x80000084",
+    "pc": "0x0080000084",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x4"
+    "rd_wdata": "0x0000000000000004"
   },
   {
-    "pc": "0x80000088",
+    "pc": "0x0080000088",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000098",
+    "pc": "0x0080000098",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x8000009c"
+    "rd_wdata": "0x000000008000009c"
   },
   {
-    "pc": "0x800000a0",
+    "pc": "0x00800000a0",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x8000009d"
+    "rd_wdata": "0x000000008000009d"
   },
   {
-    "pc": "0x800000a4",
+    "pc": "0x00800000a4",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x800000a8",
+    "pc": "0x00800000a8",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800000ac",
+    "pc": "0x00800000ac",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x4"
+    "rd_wdata": "0x0000000000000004"
   },
   {
-    "pc": "0x800000b0",
+    "pc": "0x00800000b0",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800000b4",
+    "pc": "0x00800000b4",
     "instruction": "0x00400193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x4"
+    "rd_wdata": "0x0000000000000004"
   },
   {
-    "pc": "0x800000b8",
+    "pc": "0x00800000b8",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x5"
+    "rd_wdata": "0x0000000000000005"
   },
   {
-    "pc": "0x800000bc",
+    "pc": "0x00800000bc",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800000cc",
+    "pc": "0x00800000cc",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x800000d0"
+    "rd_wdata": "0x00000000800000d0"
   },
   {
-    "pc": "0x800000d4",
+    "pc": "0x00800000d4",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x800000d1"
+    "rd_wdata": "0x00000000800000d1"
   },
   {
-    "pc": "0x800000d8",
+    "pc": "0x00800000d8",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x800000dc",
+    "pc": "0x00800000dc",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800000e0",
+    "pc": "0x00800000e0",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x5"
+    "rd_wdata": "0x0000000000000005"
   },
   {
-    "pc": "0x800000e4",
+    "pc": "0x00800000e4",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800000e8",
+    "pc": "0x00800000e8",
     "instruction": "0x00500193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x5"
+    "rd_wdata": "0x0000000000000005"
   },
   {
-    "pc": "0x800000ec",
+    "pc": "0x00800000ec",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x6"
+    "rd_wdata": "0x0000000000000006"
   },
   {
-    "pc": "0x800000f0",
+    "pc": "0x00800000f0",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000100",
+    "pc": "0x0080000100",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000104"
+    "rd_wdata": "0x0000000080000104"
   },
   {
-    "pc": "0x80000108",
+    "pc": "0x0080000108",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000105"
+    "rd_wdata": "0x0000000080000105"
   },
   {
-    "pc": "0x8000010c",
+    "pc": "0x008000010c",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000110",
+    "pc": "0x0080000110",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000114",
+    "pc": "0x0080000114",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x6"
+    "rd_wdata": "0x0000000000000006"
   },
   {
-    "pc": "0x80000118",
+    "pc": "0x0080000118",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000011c",
+    "pc": "0x008000011c",
     "instruction": "0x00600193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x6"
+    "rd_wdata": "0x0000000000000006"
   },
   {
-    "pc": "0x80000120",
+    "pc": "0x0080000120",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x7"
+    "rd_wdata": "0x0000000000000007"
   },
   {
-    "pc": "0x80000124",
+    "pc": "0x0080000124",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000134",
+    "pc": "0x0080000134",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000138"
+    "rd_wdata": "0x0000000080000138"
   },
   {
-    "pc": "0x8000013c",
+    "pc": "0x008000013c",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000139"
+    "rd_wdata": "0x0000000080000139"
   },
   {
-    "pc": "0x80000140",
+    "pc": "0x0080000140",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000144",
+    "pc": "0x0080000144",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000148",
+    "pc": "0x0080000148",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x7"
+    "rd_wdata": "0x0000000000000007"
   },
   {
-    "pc": "0x8000014c",
+    "pc": "0x008000014c",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000150",
+    "pc": "0x0080000150",
     "instruction": "0x00700193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x7"
+    "rd_wdata": "0x0000000000000007"
   },
   {
-    "pc": "0x80000154",
+    "pc": "0x0080000154",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x8"
+    "rd_wdata": "0x0000000000000008"
   },
   {
-    "pc": "0x80000158",
+    "pc": "0x0080000158",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000168",
+    "pc": "0x0080000168",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x8000016c"
+    "rd_wdata": "0x000000008000016c"
   },
   {
-    "pc": "0x80000170",
+    "pc": "0x0080000170",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x8000016d"
+    "rd_wdata": "0x000000008000016d"
   },
   {
-    "pc": "0x80000174",
+    "pc": "0x0080000174",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000178",
+    "pc": "0x0080000178",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000017c",
+    "pc": "0x008000017c",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x8"
+    "rd_wdata": "0x0000000000000008"
   },
   {
-    "pc": "0x80000180",
+    "pc": "0x0080000180",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000184",
+    "pc": "0x0080000184",
     "instruction": "0x00800193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x8"
+    "rd_wdata": "0x0000000000000008"
   },
   {
-    "pc": "0x80000188",
+    "pc": "0x0080000188",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x9"
+    "rd_wdata": "0x0000000000000009"
   },
   {
-    "pc": "0x8000018c",
+    "pc": "0x008000018c",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000019c",
+    "pc": "0x008000019c",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x800001a0"
+    "rd_wdata": "0x00000000800001a0"
   },
   {
-    "pc": "0x800001a4",
+    "pc": "0x00800001a4",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x800001a1"
+    "rd_wdata": "0x00000000800001a1"
   },
   {
-    "pc": "0x800001a8",
+    "pc": "0x00800001a8",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x800001ac",
+    "pc": "0x00800001ac",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800001b0",
+    "pc": "0x00800001b0",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x9"
+    "rd_wdata": "0x0000000000000009"
   },
   {
-    "pc": "0x800001b4",
+    "pc": "0x00800001b4",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800001b8",
+    "pc": "0x00800001b8",
     "instruction": "0x00900193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x9"
+    "rd_wdata": "0x0000000000000009"
   },
   {
-    "pc": "0x800001bc",
+    "pc": "0x00800001bc",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0xa"
+    "rd_wdata": "0x000000000000000a"
   },
   {
-    "pc": "0x800001c0",
+    "pc": "0x00800001c0",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800001d0",
+    "pc": "0x00800001d0",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x800001d4"
+    "rd_wdata": "0x00000000800001d4"
   },
   {
-    "pc": "0x800001d8",
+    "pc": "0x00800001d8",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x800001d5"
+    "rd_wdata": "0x00000000800001d5"
   },
   {
-    "pc": "0x800001dc",
+    "pc": "0x00800001dc",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x800001e0",
+    "pc": "0x00800001e0",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800001e4",
+    "pc": "0x00800001e4",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0xa"
+    "rd_wdata": "0x000000000000000a"
   },
   {
-    "pc": "0x800001e8",
+    "pc": "0x00800001e8",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800001ec",
+    "pc": "0x00800001ec",
     "instruction": "0x00a00193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0xa"
+    "rd_wdata": "0x000000000000000a"
   },
   {
-    "pc": "0x800001f0",
+    "pc": "0x00800001f0",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0xb"
+    "rd_wdata": "0x000000000000000b"
   },
   {
-    "pc": "0x800001f4",
+    "pc": "0x00800001f4",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000204",
+    "pc": "0x0080000204",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000208"
+    "rd_wdata": "0x0000000080000208"
   },
   {
-    "pc": "0x8000020c",
+    "pc": "0x008000020c",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000209"
+    "rd_wdata": "0x0000000080000209"
   },
   {
-    "pc": "0x80000210",
+    "pc": "0x0080000210",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000214",
+    "pc": "0x0080000214",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000218",
+    "pc": "0x0080000218",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0xb"
+    "rd_wdata": "0x000000000000000b"
   },
   {
-    "pc": "0x8000021c",
+    "pc": "0x008000021c",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000220",
+    "pc": "0x0080000220",
     "instruction": "0x00b00193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0xb"
+    "rd_wdata": "0x000000000000000b"
   },
   {
-    "pc": "0x80000224",
+    "pc": "0x0080000224",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0xc"
+    "rd_wdata": "0x000000000000000c"
   },
   {
-    "pc": "0x80000228",
+    "pc": "0x0080000228",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000238",
+    "pc": "0x0080000238",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x8000023c"
+    "rd_wdata": "0x000000008000023c"
   },
   {
-    "pc": "0x80000240",
+    "pc": "0x0080000240",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x8000023d"
+    "rd_wdata": "0x000000008000023d"
   },
   {
-    "pc": "0x80000244",
+    "pc": "0x0080000244",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000248",
+    "pc": "0x0080000248",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000024c",
+    "pc": "0x008000024c",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0xc"
+    "rd_wdata": "0x000000000000000c"
   },
   {
-    "pc": "0x80000250",
+    "pc": "0x0080000250",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000254",
+    "pc": "0x0080000254",
     "instruction": "0x00c00193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0xc"
+    "rd_wdata": "0x000000000000000c"
   },
   {
-    "pc": "0x80000258",
+    "pc": "0x0080000258",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0xd"
+    "rd_wdata": "0x000000000000000d"
   },
   {
-    "pc": "0x8000025c",
+    "pc": "0x008000025c",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000026c",
+    "pc": "0x008000026c",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000270"
+    "rd_wdata": "0x0000000080000270"
   },
   {
-    "pc": "0x80000274",
+    "pc": "0x0080000274",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000271"
+    "rd_wdata": "0x0000000080000271"
   },
   {
-    "pc": "0x80000278",
+    "pc": "0x0080000278",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x8000027c",
+    "pc": "0x008000027c",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000280",
+    "pc": "0x0080000280",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0xd"
+    "rd_wdata": "0x000000000000000d"
   },
   {
-    "pc": "0x80000284",
+    "pc": "0x0080000284",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000288",
+    "pc": "0x0080000288",
     "instruction": "0x00d00193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0xd"
+    "rd_wdata": "0x000000000000000d"
   },
   {
-    "pc": "0x8000028c",
+    "pc": "0x008000028c",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0xe"
+    "rd_wdata": "0x000000000000000e"
   },
   {
-    "pc": "0x80000290",
+    "pc": "0x0080000290",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800002a0",
+    "pc": "0x00800002a0",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x800002a4"
+    "rd_wdata": "0x00000000800002a4"
   },
   {
-    "pc": "0x800002a8",
+    "pc": "0x00800002a8",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x800002a5"
+    "rd_wdata": "0x00000000800002a5"
   },
   {
-    "pc": "0x800002ac",
+    "pc": "0x00800002ac",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x800002b0",
+    "pc": "0x00800002b0",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800002b4",
+    "pc": "0x00800002b4",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0xe"
+    "rd_wdata": "0x000000000000000e"
   },
   {
-    "pc": "0x800002b8",
+    "pc": "0x00800002b8",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800002bc",
+    "pc": "0x00800002bc",
     "instruction": "0x00e00193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0xe"
+    "rd_wdata": "0x000000000000000e"
   },
   {
-    "pc": "0x800002c0",
+    "pc": "0x00800002c0",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0xf"
+    "rd_wdata": "0x000000000000000f"
   },
   {
-    "pc": "0x800002c4",
+    "pc": "0x00800002c4",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800002d4",
+    "pc": "0x00800002d4",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x800002d8"
+    "rd_wdata": "0x00000000800002d8"
   },
   {
-    "pc": "0x800002dc",
+    "pc": "0x00800002dc",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x800002d9"
+    "rd_wdata": "0x00000000800002d9"
   },
   {
-    "pc": "0x800002e0",
+    "pc": "0x00800002e0",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x800002e4",
+    "pc": "0x00800002e4",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800002e8",
+    "pc": "0x00800002e8",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0xf"
+    "rd_wdata": "0x000000000000000f"
   },
   {
-    "pc": "0x800002ec",
+    "pc": "0x00800002ec",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800002f0",
+    "pc": "0x00800002f0",
     "instruction": "0x00f00193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0xf"
+    "rd_wdata": "0x000000000000000f"
   },
   {
-    "pc": "0x800002f4",
+    "pc": "0x00800002f4",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x10"
+    "rd_wdata": "0x0000000000000010"
   },
   {
-    "pc": "0x800002f8",
+    "pc": "0x00800002f8",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000308",
+    "pc": "0x0080000308",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x8000030c"
+    "rd_wdata": "0x000000008000030c"
   },
   {
-    "pc": "0x80000310",
+    "pc": "0x0080000310",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x8000030d"
+    "rd_wdata": "0x000000008000030d"
   },
   {
-    "pc": "0x80000314",
+    "pc": "0x0080000314",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000318",
+    "pc": "0x0080000318",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000031c",
+    "pc": "0x008000031c",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x10"
+    "rd_wdata": "0x0000000000000010"
   },
   {
-    "pc": "0x80000320",
+    "pc": "0x0080000320",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000324",
+    "pc": "0x0080000324",
     "instruction": "0x01000193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x10"
+    "rd_wdata": "0x0000000000000010"
   },
   {
-    "pc": "0x80000328",
+    "pc": "0x0080000328",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x11"
+    "rd_wdata": "0x0000000000000011"
   },
   {
-    "pc": "0x8000032c",
+    "pc": "0x008000032c",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000033c",
+    "pc": "0x008000033c",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000340"
+    "rd_wdata": "0x0000000080000340"
   },
   {
-    "pc": "0x80000344",
+    "pc": "0x0080000344",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000341"
+    "rd_wdata": "0x0000000080000341"
   },
   {
-    "pc": "0x80000348",
+    "pc": "0x0080000348",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x8000034c",
+    "pc": "0x008000034c",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000350",
+    "pc": "0x0080000350",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x11"
+    "rd_wdata": "0x0000000000000011"
   },
   {
-    "pc": "0x80000354",
+    "pc": "0x0080000354",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000358",
+    "pc": "0x0080000358",
     "instruction": "0x01100193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x11"
+    "rd_wdata": "0x0000000000000011"
   },
   {
-    "pc": "0x8000035c",
+    "pc": "0x008000035c",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x12"
+    "rd_wdata": "0x0000000000000012"
   },
   {
-    "pc": "0x80000360",
+    "pc": "0x0080000360",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000370",
+    "pc": "0x0080000370",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000374"
+    "rd_wdata": "0x0000000080000374"
   },
   {
-    "pc": "0x80000378",
+    "pc": "0x0080000378",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000375"
+    "rd_wdata": "0x0000000080000375"
   },
   {
-    "pc": "0x8000037c",
+    "pc": "0x008000037c",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000380",
+    "pc": "0x0080000380",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000384",
+    "pc": "0x0080000384",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x12"
+    "rd_wdata": "0x0000000000000012"
   },
   {
-    "pc": "0x80000388",
+    "pc": "0x0080000388",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000038c",
+    "pc": "0x008000038c",
     "instruction": "0x01200193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x12"
+    "rd_wdata": "0x0000000000000012"
   },
   {
-    "pc": "0x80000390",
+    "pc": "0x0080000390",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x13"
+    "rd_wdata": "0x0000000000000013"
   },
   {
-    "pc": "0x80000394",
+    "pc": "0x0080000394",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800003a4",
+    "pc": "0x00800003a4",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x800003a8"
+    "rd_wdata": "0x00000000800003a8"
   },
   {
-    "pc": "0x800003ac",
+    "pc": "0x00800003ac",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x800003a9"
+    "rd_wdata": "0x00000000800003a9"
   },
   {
-    "pc": "0x800003b0",
+    "pc": "0x00800003b0",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x800003b4",
+    "pc": "0x00800003b4",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800003b8",
+    "pc": "0x00800003b8",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x13"
+    "rd_wdata": "0x0000000000000013"
   },
   {
-    "pc": "0x800003bc",
+    "pc": "0x00800003bc",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800003c0",
+    "pc": "0x00800003c0",
     "instruction": "0x01300193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x13"
+    "rd_wdata": "0x0000000000000013"
   },
   {
-    "pc": "0x800003c4",
+    "pc": "0x00800003c4",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x14"
+    "rd_wdata": "0x0000000000000014"
   },
   {
-    "pc": "0x800003c8",
+    "pc": "0x00800003c8",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800003d8",
+    "pc": "0x00800003d8",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x800003dc"
+    "rd_wdata": "0x00000000800003dc"
   },
   {
-    "pc": "0x800003e0",
+    "pc": "0x00800003e0",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x800003dd"
+    "rd_wdata": "0x00000000800003dd"
   },
   {
-    "pc": "0x800003e4",
+    "pc": "0x00800003e4",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x800003e8",
+    "pc": "0x00800003e8",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800003ec",
+    "pc": "0x00800003ec",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x14"
+    "rd_wdata": "0x0000000000000014"
   },
   {
-    "pc": "0x800003f0",
+    "pc": "0x00800003f0",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800003f4",
+    "pc": "0x00800003f4",
     "instruction": "0x01400193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x14"
+    "rd_wdata": "0x0000000000000014"
   },
   {
-    "pc": "0x800003f8",
+    "pc": "0x00800003f8",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x15"
+    "rd_wdata": "0x0000000000000015"
   },
   {
-    "pc": "0x800003fc",
+    "pc": "0x00800003fc",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000040c",
+    "pc": "0x008000040c",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000410"
+    "rd_wdata": "0x0000000080000410"
   },
   {
-    "pc": "0x80000414",
+    "pc": "0x0080000414",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000411"
+    "rd_wdata": "0x0000000080000411"
   },
   {
-    "pc": "0x80000418",
+    "pc": "0x0080000418",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x8000041c",
+    "pc": "0x008000041c",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000420",
+    "pc": "0x0080000420",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x15"
+    "rd_wdata": "0x0000000000000015"
   },
   {
-    "pc": "0x80000424",
+    "pc": "0x0080000424",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000428",
+    "pc": "0x0080000428",
     "instruction": "0x01500193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x15"
+    "rd_wdata": "0x0000000000000015"
   },
   {
-    "pc": "0x8000042c",
+    "pc": "0x008000042c",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x16"
+    "rd_wdata": "0x0000000000000016"
   },
   {
-    "pc": "0x80000430",
+    "pc": "0x0080000430",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000440",
+    "pc": "0x0080000440",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000444"
+    "rd_wdata": "0x0000000080000444"
   },
   {
-    "pc": "0x80000448",
+    "pc": "0x0080000448",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000445"
+    "rd_wdata": "0x0000000080000445"
   },
   {
-    "pc": "0x8000044c",
+    "pc": "0x008000044c",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000450",
+    "pc": "0x0080000450",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000454",
+    "pc": "0x0080000454",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x16"
+    "rd_wdata": "0x0000000000000016"
   },
   {
-    "pc": "0x80000458",
+    "pc": "0x0080000458",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000045c",
+    "pc": "0x008000045c",
     "instruction": "0x01600193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x16"
+    "rd_wdata": "0x0000000000000016"
   },
   {
-    "pc": "0x80000460",
+    "pc": "0x0080000460",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x17"
+    "rd_wdata": "0x0000000000000017"
   },
   {
-    "pc": "0x80000464",
+    "pc": "0x0080000464",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000474",
+    "pc": "0x0080000474",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000478"
+    "rd_wdata": "0x0000000080000478"
   },
   {
-    "pc": "0x8000047c",
+    "pc": "0x008000047c",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000479"
+    "rd_wdata": "0x0000000080000479"
   },
   {
-    "pc": "0x80000480",
+    "pc": "0x0080000480",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000484",
+    "pc": "0x0080000484",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000488",
+    "pc": "0x0080000488",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x17"
+    "rd_wdata": "0x0000000000000017"
   },
   {
-    "pc": "0x8000048c",
+    "pc": "0x008000048c",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000490",
+    "pc": "0x0080000490",
     "instruction": "0x01700193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x17"
+    "rd_wdata": "0x0000000000000017"
   },
   {
-    "pc": "0x80000494",
+    "pc": "0x0080000494",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x18"
+    "rd_wdata": "0x0000000000000018"
   },
   {
-    "pc": "0x80000498",
+    "pc": "0x0080000498",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800004a8",
+    "pc": "0x00800004a8",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x800004ac"
+    "rd_wdata": "0x00000000800004ac"
   },
   {
-    "pc": "0x800004b0",
+    "pc": "0x00800004b0",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x800004ad"
+    "rd_wdata": "0x00000000800004ad"
   },
   {
-    "pc": "0x800004b4",
+    "pc": "0x00800004b4",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x800004b8",
+    "pc": "0x00800004b8",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800004bc",
+    "pc": "0x00800004bc",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x18"
+    "rd_wdata": "0x0000000000000018"
   },
   {
-    "pc": "0x800004c0",
+    "pc": "0x00800004c0",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800004c4",
+    "pc": "0x00800004c4",
     "instruction": "0x01800193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x18"
+    "rd_wdata": "0x0000000000000018"
   },
   {
-    "pc": "0x800004c8",
+    "pc": "0x00800004c8",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x19"
+    "rd_wdata": "0x0000000000000019"
   },
   {
-    "pc": "0x800004cc",
+    "pc": "0x00800004cc",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800004dc",
+    "pc": "0x00800004dc",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x800004e0"
+    "rd_wdata": "0x00000000800004e0"
   },
   {
-    "pc": "0x800004e4",
+    "pc": "0x00800004e4",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x800004e1"
+    "rd_wdata": "0x00000000800004e1"
   },
   {
-    "pc": "0x800004e8",
+    "pc": "0x00800004e8",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x800004ec",
+    "pc": "0x00800004ec",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800004f0",
+    "pc": "0x00800004f0",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x19"
+    "rd_wdata": "0x0000000000000019"
   },
   {
-    "pc": "0x800004f4",
+    "pc": "0x00800004f4",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800004f8",
+    "pc": "0x00800004f8",
     "instruction": "0x01900193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x19"
+    "rd_wdata": "0x0000000000000019"
   },
   {
-    "pc": "0x800004fc",
+    "pc": "0x00800004fc",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x1a"
+    "rd_wdata": "0x000000000000001a"
   },
   {
-    "pc": "0x80000500",
+    "pc": "0x0080000500",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000510",
+    "pc": "0x0080000510",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000514"
+    "rd_wdata": "0x0000000080000514"
   },
   {
-    "pc": "0x80000518",
+    "pc": "0x0080000518",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000515"
+    "rd_wdata": "0x0000000080000515"
   },
   {
-    "pc": "0x8000051c",
+    "pc": "0x008000051c",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000520",
+    "pc": "0x0080000520",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000524",
+    "pc": "0x0080000524",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x1a"
+    "rd_wdata": "0x000000000000001a"
   },
   {
-    "pc": "0x80000528",
+    "pc": "0x0080000528",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000052c",
+    "pc": "0x008000052c",
     "instruction": "0x01a00193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x1a"
+    "rd_wdata": "0x000000000000001a"
   },
   {
-    "pc": "0x80000530",
+    "pc": "0x0080000530",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x1b"
+    "rd_wdata": "0x000000000000001b"
   },
   {
-    "pc": "0x80000534",
+    "pc": "0x0080000534",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000544",
+    "pc": "0x0080000544",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000548"
+    "rd_wdata": "0x0000000080000548"
   },
   {
-    "pc": "0x8000054c",
+    "pc": "0x008000054c",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000549"
+    "rd_wdata": "0x0000000080000549"
   },
   {
-    "pc": "0x80000550",
+    "pc": "0x0080000550",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000554",
+    "pc": "0x0080000554",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000558",
+    "pc": "0x0080000558",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x1b"
+    "rd_wdata": "0x000000000000001b"
   },
   {
-    "pc": "0x8000055c",
+    "pc": "0x008000055c",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000560",
+    "pc": "0x0080000560",
     "instruction": "0x01b00193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x1b"
+    "rd_wdata": "0x000000000000001b"
   },
   {
-    "pc": "0x80000564",
+    "pc": "0x0080000564",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x1c"
+    "rd_wdata": "0x000000000000001c"
   },
   {
-    "pc": "0x80000568",
+    "pc": "0x0080000568",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000578",
+    "pc": "0x0080000578",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x8000057c"
+    "rd_wdata": "0x000000008000057c"
   },
   {
-    "pc": "0x80000580",
+    "pc": "0x0080000580",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x8000057d"
+    "rd_wdata": "0x000000008000057d"
   },
   {
-    "pc": "0x80000584",
+    "pc": "0x0080000584",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000588",
+    "pc": "0x0080000588",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000058c",
+    "pc": "0x008000058c",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x1c"
+    "rd_wdata": "0x000000000000001c"
   },
   {
-    "pc": "0x80000590",
+    "pc": "0x0080000590",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000594",
+    "pc": "0x0080000594",
     "instruction": "0x01c00193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x1c"
+    "rd_wdata": "0x000000000000001c"
   },
   {
-    "pc": "0x80000598",
+    "pc": "0x0080000598",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x1d"
+    "rd_wdata": "0x000000000000001d"
   },
   {
-    "pc": "0x8000059c",
+    "pc": "0x008000059c",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800005ac",
+    "pc": "0x00800005ac",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x800005b0"
+    "rd_wdata": "0x00000000800005b0"
   },
   {
-    "pc": "0x800005b4",
+    "pc": "0x00800005b4",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x800005b1"
+    "rd_wdata": "0x00000000800005b1"
   },
   {
-    "pc": "0x800005b8",
+    "pc": "0x00800005b8",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x800005bc",
+    "pc": "0x00800005bc",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800005c0",
+    "pc": "0x00800005c0",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x1d"
+    "rd_wdata": "0x000000000000001d"
   },
   {
-    "pc": "0x800005c4",
+    "pc": "0x00800005c4",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800005c8",
+    "pc": "0x00800005c8",
     "instruction": "0x01d00193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x1d"
+    "rd_wdata": "0x000000000000001d"
   },
   {
-    "pc": "0x800005cc",
+    "pc": "0x00800005cc",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x1e"
+    "rd_wdata": "0x000000000000001e"
   },
   {
-    "pc": "0x800005d0",
+    "pc": "0x00800005d0",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800005e0",
+    "pc": "0x00800005e0",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x800005e4"
+    "rd_wdata": "0x00000000800005e4"
   },
   {
-    "pc": "0x800005e8",
+    "pc": "0x00800005e8",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x800005e5"
+    "rd_wdata": "0x00000000800005e5"
   },
   {
-    "pc": "0x800005ec",
+    "pc": "0x00800005ec",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x800005f0",
+    "pc": "0x00800005f0",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800005f4",
+    "pc": "0x00800005f4",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x1e"
+    "rd_wdata": "0x000000000000001e"
   },
   {
-    "pc": "0x800005f8",
+    "pc": "0x00800005f8",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800005fc",
+    "pc": "0x00800005fc",
     "instruction": "0x01e00193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x1e"
+    "rd_wdata": "0x000000000000001e"
   },
   {
-    "pc": "0x80000600",
+    "pc": "0x0080000600",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x1f"
+    "rd_wdata": "0x000000000000001f"
   },
   {
-    "pc": "0x80000604",
+    "pc": "0x0080000604",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000614",
+    "pc": "0x0080000614",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000618"
+    "rd_wdata": "0x0000000080000618"
   },
   {
-    "pc": "0x8000061c",
+    "pc": "0x008000061c",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000619"
+    "rd_wdata": "0x0000000080000619"
   },
   {
-    "pc": "0x80000620",
+    "pc": "0x0080000620",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000624",
+    "pc": "0x0080000624",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000628",
+    "pc": "0x0080000628",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x1f"
+    "rd_wdata": "0x000000000000001f"
   },
   {
-    "pc": "0x8000062c",
+    "pc": "0x008000062c",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000630",
+    "pc": "0x0080000630",
     "instruction": "0x01f00193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x1f"
+    "rd_wdata": "0x000000000000001f"
   },
   {
-    "pc": "0x80000634",
+    "pc": "0x0080000634",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x20"
+    "rd_wdata": "0x0000000000000020"
   },
   {
-    "pc": "0x80000638",
+    "pc": "0x0080000638",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000648",
+    "pc": "0x0080000648",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x8000064c"
+    "rd_wdata": "0x000000008000064c"
   },
   {
-    "pc": "0x80000650",
+    "pc": "0x0080000650",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x8000064d"
+    "rd_wdata": "0x000000008000064d"
   },
   {
-    "pc": "0x80000654",
+    "pc": "0x0080000654",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000658",
+    "pc": "0x0080000658",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000065c",
+    "pc": "0x008000065c",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x20"
+    "rd_wdata": "0x0000000000000020"
   },
   {
-    "pc": "0x80000660",
+    "pc": "0x0080000660",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000664",
+    "pc": "0x0080000664",
     "instruction": "0x02000193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x20"
+    "rd_wdata": "0x0000000000000020"
   },
   {
-    "pc": "0x80000668",
+    "pc": "0x0080000668",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x21"
+    "rd_wdata": "0x0000000000000021"
   },
   {
-    "pc": "0x8000066c",
+    "pc": "0x008000066c",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000067c",
+    "pc": "0x008000067c",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000680"
+    "rd_wdata": "0x0000000080000680"
   },
   {
-    "pc": "0x80000684",
+    "pc": "0x0080000684",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000681"
+    "rd_wdata": "0x0000000080000681"
   },
   {
-    "pc": "0x80000688",
+    "pc": "0x0080000688",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x8000068c",
+    "pc": "0x008000068c",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000690",
+    "pc": "0x0080000690",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x21"
+    "rd_wdata": "0x0000000000000021"
   },
   {
-    "pc": "0x80000694",
+    "pc": "0x0080000694",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000698",
+    "pc": "0x0080000698",
     "instruction": "0x02100193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x21"
+    "rd_wdata": "0x0000000000000021"
   },
   {
-    "pc": "0x8000069c",
+    "pc": "0x008000069c",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x22"
+    "rd_wdata": "0x0000000000000022"
   },
   {
-    "pc": "0x800006a0",
+    "pc": "0x00800006a0",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800006b0",
+    "pc": "0x00800006b0",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x800006b4"
+    "rd_wdata": "0x00000000800006b4"
   },
   {
-    "pc": "0x800006b8",
+    "pc": "0x00800006b8",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x800006b5"
+    "rd_wdata": "0x00000000800006b5"
   },
   {
-    "pc": "0x800006bc",
+    "pc": "0x00800006bc",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x800006c0",
+    "pc": "0x00800006c0",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800006c4",
+    "pc": "0x00800006c4",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x22"
+    "rd_wdata": "0x0000000000000022"
   },
   {
-    "pc": "0x800006c8",
+    "pc": "0x00800006c8",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800006cc",
+    "pc": "0x00800006cc",
     "instruction": "0x02200193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x22"
+    "rd_wdata": "0x0000000000000022"
   },
   {
-    "pc": "0x800006d0",
+    "pc": "0x00800006d0",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x23"
+    "rd_wdata": "0x0000000000000023"
   },
   {
-    "pc": "0x800006d4",
+    "pc": "0x00800006d4",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800006e4",
+    "pc": "0x00800006e4",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x800006e8"
+    "rd_wdata": "0x00000000800006e8"
   },
   {
-    "pc": "0x800006ec",
+    "pc": "0x00800006ec",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x800006e9"
+    "rd_wdata": "0x00000000800006e9"
   },
   {
-    "pc": "0x800006f0",
+    "pc": "0x00800006f0",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x800006f4",
+    "pc": "0x00800006f4",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800006f8",
+    "pc": "0x00800006f8",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x23"
+    "rd_wdata": "0x0000000000000023"
   },
   {
-    "pc": "0x800006fc",
+    "pc": "0x00800006fc",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000700",
+    "pc": "0x0080000700",
     "instruction": "0x02300193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x23"
+    "rd_wdata": "0x0000000000000023"
   },
   {
-    "pc": "0x80000704",
+    "pc": "0x0080000704",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x24"
+    "rd_wdata": "0x0000000000000024"
   },
   {
-    "pc": "0x80000708",
+    "pc": "0x0080000708",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000718",
+    "pc": "0x0080000718",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x8000071c"
+    "rd_wdata": "0x000000008000071c"
   },
   {
-    "pc": "0x80000720",
+    "pc": "0x0080000720",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x8000071d"
+    "rd_wdata": "0x000000008000071d"
   },
   {
-    "pc": "0x80000724",
+    "pc": "0x0080000724",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000728",
+    "pc": "0x0080000728",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000072c",
+    "pc": "0x008000072c",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x24"
+    "rd_wdata": "0x0000000000000024"
   },
   {
-    "pc": "0x80000730",
+    "pc": "0x0080000730",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000734",
+    "pc": "0x0080000734",
     "instruction": "0x02400193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x24"
+    "rd_wdata": "0x0000000000000024"
   },
   {
-    "pc": "0x80000738",
+    "pc": "0x0080000738",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x25"
+    "rd_wdata": "0x0000000000000025"
   },
   {
-    "pc": "0x8000073c",
+    "pc": "0x008000073c",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000074c",
+    "pc": "0x008000074c",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000750"
+    "rd_wdata": "0x0000000080000750"
   },
   {
-    "pc": "0x80000754",
+    "pc": "0x0080000754",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000751"
+    "rd_wdata": "0x0000000080000751"
   },
   {
-    "pc": "0x80000758",
+    "pc": "0x0080000758",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x8000075c",
+    "pc": "0x008000075c",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000760",
+    "pc": "0x0080000760",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x25"
+    "rd_wdata": "0x0000000000000025"
   },
   {
-    "pc": "0x80000764",
+    "pc": "0x0080000764",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000768",
+    "pc": "0x0080000768",
     "instruction": "0x02500193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x25"
+    "rd_wdata": "0x0000000000000025"
   },
   {
-    "pc": "0x8000076c",
+    "pc": "0x008000076c",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x26"
+    "rd_wdata": "0x0000000000000026"
   },
   {
-    "pc": "0x80000770",
+    "pc": "0x0080000770",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000780",
+    "pc": "0x0080000780",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000784"
+    "rd_wdata": "0x0000000080000784"
   },
   {
-    "pc": "0x80000788",
+    "pc": "0x0080000788",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000785"
+    "rd_wdata": "0x0000000080000785"
   },
   {
-    "pc": "0x8000078c",
+    "pc": "0x008000078c",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x80000790",
+    "pc": "0x0080000790",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000794",
+    "pc": "0x0080000794",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x26"
+    "rd_wdata": "0x0000000000000026"
   },
   {
-    "pc": "0x80000798",
+    "pc": "0x0080000798",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000079c",
+    "pc": "0x008000079c",
     "instruction": "0x02600193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x26"
+    "rd_wdata": "0x0000000000000026"
   },
   {
-    "pc": "0x800007a0",
+    "pc": "0x00800007a0",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x27"
+    "rd_wdata": "0x0000000000000027"
   },
   {
-    "pc": "0x800007a4",
+    "pc": "0x00800007a4",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800007b4",
+    "pc": "0x00800007b4",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x800007b8"
+    "rd_wdata": "0x00000000800007b8"
   },
   {
-    "pc": "0x800007bc",
+    "pc": "0x00800007bc",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x800007b9"
+    "rd_wdata": "0x00000000800007b9"
   },
   {
-    "pc": "0x800007c0",
+    "pc": "0x00800007c0",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x800007c4",
+    "pc": "0x00800007c4",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800007c8",
+    "pc": "0x00800007c8",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x27"
+    "rd_wdata": "0x0000000000000027"
   },
   {
-    "pc": "0x800007cc",
+    "pc": "0x00800007cc",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800007d0",
+    "pc": "0x00800007d0",
     "instruction": "0x02700193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x27"
+    "rd_wdata": "0x0000000000000027"
   },
   {
-    "pc": "0x800007d4",
+    "pc": "0x00800007d4",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x28"
+    "rd_wdata": "0x0000000000000028"
   },
   {
-    "pc": "0x800007d8",
+    "pc": "0x00800007d8",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800007e8",
+    "pc": "0x00800007e8",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x800007ec"
+    "rd_wdata": "0x00000000800007ec"
   },
   {
-    "pc": "0x800007f0",
+    "pc": "0x00800007f0",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x800007ed"
+    "rd_wdata": "0x00000000800007ed"
   },
   {
-    "pc": "0x800007f4",
+    "pc": "0x00800007f4",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x800007f8",
+    "pc": "0x00800007f8",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x800007fc",
+    "pc": "0x00800007fc",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x28"
+    "rd_wdata": "0x0000000000000028"
   },
   {
-    "pc": "0x80000800",
+    "pc": "0x0080000800",
     "instruction": "0x00001463",
     "rd": 8,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000804",
+    "pc": "0x0080000804",
     "instruction": "0x02800193",
     "rd": 3,
     "rd_write": true,
-    "rd_wdata": "0x28"
+    "rd_wdata": "0x0000000000000028"
   },
   {
-    "pc": "0x80000808",
+    "pc": "0x0080000808",
     "instruction": "0x00118213",
     "rd": 4,
     "rd_write": true,
-    "rd_wdata": "0x29"
+    "rd_wdata": "0x0000000000000029"
   },
   {
-    "pc": "0x8000080c",
+    "pc": "0x008000080c",
     "instruction": "0x00000863",
     "rd": 16,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x8000081c",
+    "pc": "0x008000081c",
     "instruction": "0x008002ef",
     "rd": 5,
     "rd_write": true,
-    "rd_wdata": "0x80000820"
+    "rd_wdata": "0x0000000080000820"
   },
   {
-    "pc": "0x80000824",
+    "pc": "0x0080000824",
     "instruction": "0x00128313",
     "rd": 6,
     "rd_write": true,
-    "rd_wdata": "0x80000821"
+    "rd_wdata": "0x0000000080000821"
   },
   {
-    "pc": "0x80000828",
+    "pc": "0x0080000828",
     "instruction": "0x0100b403",
     "rd": 8,
     "rd_write": true,
     "rd_wdata": "0x1122334455667788"
   },
   {
-    "pc": "0x8000082c",
+    "pc": "0x008000082c",
     "instruction": "0x0040bc23",
     "rd": 24,
     "rd_write": false,
-    "rd_wdata": "0x0"
+    "rd_wdata": "0x0000000000000000"
   },
   {
-    "pc": "0x80000830",
+    "pc": "0x0080000830",
     "instruction": "0x0180b483",
     "rd": 9,
     "rd_write": true,
-    "rd_wdata": "0x29"
+    "rd_wdata": "0x0000000000000029"
   }
 ]
