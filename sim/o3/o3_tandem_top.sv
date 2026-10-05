@@ -159,6 +159,25 @@ module o3_tandem_top
                     u_core.u_backend.rob_retire_valid[0]);
             end
             debug_cycle_q <= debug_cycle_q + 1;
+            if ($test$plusargs("L5_DEBUG") && debug_cycle_q < 2000) begin
+                $display("[l5] cycle=%0d head=%b/%0d pc=%h done=%b exc=%b flush=%b csr=%b serial=%b mem=%b pend=%b store=%b req=%b/%b rsp=%b/%b sq=%b/%b",
+                    debug_cycle_q, u_core.u_backend.head_valid,
+                    u_core.u_backend.rob_head_info.rob_idx,
+                    u_core.u_backend.rob_head_info.pc,
+                    u_core.u_backend.rob_head_info.complete,
+                    u_core.u_backend.rob_head_info.exc.valid,
+                    u_core.u_backend.global_flush, u_core.u_backend.csr_req_valid,
+                    u_core.u_backend.head_serial_done,
+                    u_core.u_backend.u_load_store_unit.work_uop.valid,
+                    u_core.u_backend.u_load_store_unit.pending_valid_q,
+                    u_core.u_backend.u_load_store_unit.pending_store_q,
+                    u_core.u_backend.u_load_store_unit.memory_req_valid,
+                    u_core.u_backend.u_load_store_unit.memory_req_ready,
+                    u_core.u_backend.u_load_store_unit.memory_rsp_valid,
+                    u_core.u_backend.u_load_store_unit.memory_rsp_ready,
+                    u_core.u_backend.u_load_store_unit.sq_drain_valid_i,
+                    u_core.u_backend.u_load_store_unit.sq_drain_ready_o);
+            end
         end
     end
 endmodule
