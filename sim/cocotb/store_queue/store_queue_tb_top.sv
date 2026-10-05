@@ -2,7 +2,7 @@ module store_queue_tb_top
     import o3_pkg::*;
     import o3_types_pkg::*;
 (
-    input logic clk, rst,
+    input logic clk, rst, flush_all_i,
     input logic alloc_valid,
     input logic multi_mode_i,
     input logic [2:0] multi_alloc_count_i, multi_commit_count_i,
@@ -68,7 +68,7 @@ module store_queue_tb_top
         status:DC_OK, lq_tag:'0, sq_idx:dc_resp_idx, rdata:'0, sc_fail:1'b0};
 
     store_queue #(.CFG(o3_cfg_pkg::O3_CFG.be), .DCACHE_DRAIN(1'b1)) dut (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst),.flush_all_i(flush_all_i),
         .alloc_req_i(alloc_req), .alloc_fire_i(multi_mode_i ? multi_alloc_count_i != 0 : alloc_valid),
         .alloc_rob_idx_i(alloc_rob_idx), .alloc_branch_mask_i(alloc_branch_mask),
         .alloc_idx_o(alloc_idx_arr), .free_count_o(free_count_o), .tail_o(),

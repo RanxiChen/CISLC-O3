@@ -37,3 +37,19 @@ async def four_lane_raw_waw_x0_self_snapshot_restore(d):
         elif n:mapping=trial;snap.update(new_snaps)
         await tick(d)
         assert mapping[0]==0
+
+@cocotb.test()
+async def global_restore_uses_committed_map_including_same_edge_commit(d):
+    await reset(d,INPUTS)
+    rng=random.Random(int(os.getenv('TEST_SEED','1')));mapping=list(range(32))
+    for cycle in range(120):
+        clear(d,INPUTS);rd=rng.randrange(1,32);new=32+rng.randrange(val(d.cfg_pregs_o)-32)
+        d.rename_fire_i.value=1;d.lane_valid_i[0].value=1;d.rd_write_en_i[0].value=1;d.rd_addr_i[0].value=rd;d.new_dst_preg_i[0].value=new
+        await tick(d);clear(d,INPUTS)
+        commit=bool(rng.randrange(2));d.flush_all_i.value=1
+        if commit:
+            d.commit_valid_i[0].value=1;d.commit_rd_write_en_i[0].value=1;d.commit_rd_i[0].value=rd;d.commit_new_preg_i[0].value=new;mapping[rd]=new
+        await tick(d);clear(d,INPUTS)
+        for a in range(32):
+            d.lane_valid_i[0].value=1;d.rs1_read_en_i[0].value=1;d.rs1_addr_i[0].value=a;await settle()
+            assert val(d.src1_preg_o[0])==mapping[a],(cycle,a,mapping)

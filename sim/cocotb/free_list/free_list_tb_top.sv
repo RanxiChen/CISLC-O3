@@ -12,6 +12,9 @@ module free_list_tb_top import o3_pkg::*; #(
     // 整数域 p0 永久恒零且保留；FP 域没有恒零寄存器，f0 正常可写（B15）。
     localparam bit HAS_ZERO_REG = (DOMAIN == o3_types_pkg::RD_INT)
 ) (
+    input logic flush_all_i,
+    input logic [PREG_IDX_WIDTH-1:0] commit_new_preg_i [RELEASE_WIDTH-1:0],
+    input logic commit_write_i [RELEASE_WIDTH-1:0],
     input  logic clk,
     input  logic rst,
 
@@ -36,6 +39,8 @@ output logic [31:0] cfg_width_o, cfg_depth_o, cfg_rob_o, cfg_pregs_o, cfg_read_p
 );
 free_list #(.CFG(CFG), .DOMAIN(DOMAIN)) dut (
 .clk(clk),
+.flush_all_i(flush_all_i),
+.commit_new_preg_i(commit_new_preg_i),.commit_write_i(commit_write_i),
 .rst(rst),
 .alloc_req_i(alloc_req_i),
 .alloc_fire_i(alloc_fire_i),

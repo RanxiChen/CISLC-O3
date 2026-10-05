@@ -235,3 +235,25 @@ async def four_store_commit_and_recovery_old_execute_drain_random_delays(d):
             d.dc_resp_valid.value=1;await tick(d);d.dc_resp_valid.value=0
             assert val(d.free_count_o)==before+1,(seed,batch,n,'duplicate')
         assert val(d.free_count_o)==depth and val(d.committed_empty)==1,(seed,batch)
+
+@cocotb.test()
+async def trap_preserves_committed_drain_and_cancels_speculative_stores(d):
+    import random,os
+    rng=random.Random(int(os.getenv('TEST_SEED','1')))
+    for cycle in range(40):
+        for n in ['clk','alloc_valid','execute_valid','query_valid','commit_valid','dc_req_ready','dc_resp_valid','local_drain_ready','multi_mode_i','resolution_valid_i','flush_all_i']:
+            getattr(d,n).value=0
+        d.rst.value=1
+        async def edge():
+            d.clk.value=0;await Timer(1,unit='ns');d.clk.value=1;await Timer(1,unit='ns');d.clk.value=0;await Timer(1,unit='ns')
+        await edge();d.rst.value=0;ids=[]
+        for n in range(2):
+            d.alloc_valid.value=1;d.alloc_rob.value=n;await Timer(1,unit='ns');ids.append(int(d.alloc_idx.value));await edge();d.alloc_valid.value=0
+            d.execute_valid.value=1;d.execute_idx.value=ids[-1];d.execute_addr.value=0x80100000+8*n;d.execute_data.value=rng.getrandbits(64);d.execute_mask.value=255;await edge();d.execute_valid.value=0
+        d.commit_valid.value=1;d.commit_idx.value=ids[0];await edge();d.commit_valid.value=0
+        d.flush_all_i.value=1;await edge();d.flush_all_i.value=0;await Timer(1,unit='ns')
+        assert int(d.free_count_o.value)==int(d.cfg_depth_o.value)-1
+        assert int(d.dc_req_valid.value)==1 and int(d.dc_req_idx.value)==ids[0]
+        d.dc_req_ready.value=1;await edge();d.dc_req_ready.value=0
+        d.dc_resp_valid.value=1;d.dc_resp_idx.value=ids[0];await edge();d.dc_resp_valid.value=0;await Timer(1,unit='ns')
+        assert int(d.free_count_o.value)==int(d.cfg_depth_o.value) and int(d.committed_empty.value)==1

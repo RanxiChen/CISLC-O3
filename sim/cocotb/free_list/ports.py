@@ -1,1 +1,1 @@
-INPUTS = ['clk', 'rst', 'alloc_req_i', 'alloc_fire_i', 'release_valid_i', 'release_preg_i', 'checkpoint_create_i', 'checkpoint_create_tag_i', 'alloc_branch_mask_i', 'resolution_valid_i', 'resolution_mispredict_i', 'resolution_tag_i']
+INPUTS = ['flush_all_i', 'commit_new_preg_i', 'commit_write_i', 'clk', 'rst', 'alloc_req_i', 'alloc_fire_i', 'release_valid_i', 'release_preg_i', 'checkpoint_create_i', 'checkpoint_create_tag_i', 'alloc_branch_mask_i', 'resolution_valid_i', 'resolution_mispredict_i', 'resolution_tag_i']

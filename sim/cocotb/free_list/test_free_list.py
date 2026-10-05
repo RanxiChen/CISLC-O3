@@ -42,3 +42,15 @@ async def four_lane_allocate_release_checkpoint_reclaim_no_release_bypass(d):
         await tick(d)
         assert val(d.free_count_o)==len(free),(seed,cycle,free,candidates,releases,fire,r,mis)
     assert allocated>w*10
+
+@cocotb.test()
+async def global_free_bitmap_excludes_committed_destinations(d):
+    await reset(d,INPUTS);pregs=val(d.cfg_pregs_o);mapping=list(range(32))
+    rng=random.Random(int(os.getenv('TEST_SEED','1')))
+    for cycle in range(120):
+        clear(d,INPUTS);d.alloc_req_i[0].value=1;await settle();new=val(d.alloc_preg_o[0]);d.alloc_fire_i.value=1;await tick(d)
+        clear(d,INPUTS);rd=rng.randrange(1,32);commit=bool(rng.randrange(2));d.flush_all_i.value=1
+        if commit:
+            d.commit_write_i[0].value=1;d.commit_new_preg_i[0].value=new;d.release_valid_i[0].value=1;d.release_preg_i[0].value=mapping[rd];mapping[rd]=new
+        await tick(d);clear(d,INPUTS);await settle();assert val(d.free_count_o)==pregs-32
+        d.alloc_req_i[0].value=1;await settle();assert val(d.alloc_preg_o[0]) not in mapping,(cycle,mapping)

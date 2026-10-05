@@ -12,6 +12,7 @@ module rename_map_table_tb_top import o3_pkg::*; #(
     // 整数域 x0 恒映射 p0；FP 域 f0 正常可写，不做恒零映射（B15）。
     localparam bit HAS_ZERO_REG = (DOMAIN == o3_types_pkg::RD_INT)
 ) (
+    input logic flush_all_i,
     input  logic clk,
     input  logic rst,
 
@@ -46,6 +47,7 @@ output logic [31:0] cfg_width_o, cfg_depth_o, cfg_rob_o, cfg_pregs_o, cfg_read_p
 );
 rename_map_table #(.CFG(CFG), .DOMAIN(DOMAIN)) dut (
 .clk(clk),
+.flush_all_i(flush_all_i),
 .rst(rst),
 .rename_fire_i(rename_fire_i),
 .lane_valid_i(lane_valid_i),
