@@ -11,7 +11,7 @@ while {[gets $fp line] >= 0} {
 }
 close $fp
 set_param general.maxThreads 8
-read_verilog -sv $files
+read_verilog -sv -define FPGA_TARGET $files
 set xdc [open [file join $out_dir o3_ooc.xdc] w]
 puts $xdc {create_clock -name core_clk -period 10.000 [get_ports clk_i]}
 close $xdc

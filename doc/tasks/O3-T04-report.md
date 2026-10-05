@@ -32,7 +32,7 @@ Dxx/Bxx 机制选择未改；没有实现 WFI 等待、中断或 B38。
 
 ## 定向验证
 
-入口：`sim/cocotb/mdu`（`DIV=0/1`）、`fu_completion_fifo`、`mul_fusion_detect`、`jalr`。
+入口：`sim/cocotb/mdu`（`DIV=0/1`）、`fu_completion_fifo`、`mul_fusion_detect`、`jalr`、`early_wakeup`。
 整核短程序：`make -C sim/o3 run-l6-smoke`，自检 M 典型/边界值、依赖、取消和间接 call/return。
 不扩展随机组合，不新增 Spike 随机门禁。Alan SHA、结果与耗时待实测追加。
 
@@ -41,3 +41,11 @@ Dxx/Bxx 机制选择未改；没有实现 WFI 等待、中断或 B38。
 入口：`vivado -mode batch -source scripts/vivado/o3_ooc.tcl -tclargs <out>`，
 `o3_core` / XCKU040-FFVA1156-2-E / 100 MHz / `synth_design -mode out_of_context -retiming`。
 报告 elapsed、LUT/FF/BRAM/DSP 与综合后估计 WNS；综合结果不代替布局布线或板上测量。
+
+## 首轮 Alan 结果
+
+RTL `0cb022b2f4236ac715ca8f832602a49923a4b99e`，目录
+`/home/chen/FUN/CISLC-O3-runs/20261006-l6-0cb022b/`：
+FIFO、融合检测、JALR、MUL、DIV 定向测试各 1/1 PASS；lint 0 errors / 92 warnings；
+整核 build PASS，L6 短程序 297 周期 / 71 条退休、tohost=1、Spike 0 差异；
+原 smoke PASS。尚未运行完整回归、ACT4 RV64IM 或 CoreMark。早唤醒消费者时序与 OOC 随后追加。
