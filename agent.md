@@ -113,6 +113,8 @@ Alan：运行 cocotb 和闭环验收命令
 回报：把 Alan 上的命令、输出、提交哈希贴回来
 ```
 
+- **GitHub 访问出问题时，必须使用本地代理软件反向代理**：将本地代理通过 SSH 反向端口转发提供给 Alan，再通过该代理执行 GitHub 的 clone/fetch/pull/push。先确认本地代理实际监听地址和端口，不得沿用失效的代理端口。
+- **永远禁止使用 Git bundle**，包括生成、传输或导入 bundle；不得用 bundle 绕过 GitHub 访问问题。（2026-10-06 用户明确要求。）
 - 本地可以用 Verilator 做 lint 和快速试跑，但**本地结果只算参考，权威结论只来自 Alan**。
 - Alan 上的 cocotb 环境：Python 3.12 / cocotb 2.1.0 / Verilator 5.050（以 Alan 实际版本为准，回报时写明）。
 

@@ -1,4 +1,5 @@
 /**
+ * 本次实现（O3-T03）：L5：集成实例以只读 Store probe 确认访问权限；访问错误精确 cause 5/7，flush 隔离迟到返回。
  *
  * 【2026-10-02 框架：目标机制与缺口】
  * 目标（B03～B11）：本模块成为访存执行总装：访存发射 → AGU → DTLB → LQ/SQ 依赖检查与 replay → 多 bank DCache。
@@ -17,9 +18,9 @@
  *   慢路径都在旁侧。
  * 待定：AGU 管线条数与 load/store 组合。
  * O3-T02: ENABLE_RETIRE_INFO adds held load address/size observation only.
- * 当前实现状态：闭环简化（L3）。单发射、单 Load 在途；DTCM 或已接线 DCache，
+ * 当前实现状态：闭环简化（L5）。单发射、单 Load 在途；DTCM 或已接线 DCache，
  * SQ 查询命中完整覆盖时转发；一个依赖等待 replay 槽让 blocked load 让出执行级，
- * SQ 变化后重查。尚无 DTLB/PMP/PMA、精确异常、多 load pending、MMIO/AMO。
+ * SQ 变化后重查。访问错误交给精确 trap；尚无 DTLB/PMP/PMA、多 load pending、MMIO/AMO。
  * 测试：sim/cocotb/load_store_unit/；整核 sim/o3/。
  * Single-issue Load/Store execution unit with DTCM and external memory
  *

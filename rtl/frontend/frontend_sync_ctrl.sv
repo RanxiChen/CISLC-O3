@@ -1,4 +1,5 @@
 /**
+ * 本次实现（O3-T03）：L5：FENCE.I 等 ICache idle，发一次全失效，等确认后完成；S/U/PMP 同步待 L10。
  * 前端系统同步控制 —— FENCE.I / SFENCE.VMA / satp / PMP 的前端部分
  *
  * 归属（2026-10-02 确认）：系统同步由后端 commit_ctrl 统一编排，本模块只执行前端部分：
@@ -21,14 +22,14 @@
  *
  * 细节待定：各步骤拍数、失效遍历方式、与 sys_redirect 同拍关系的信号编码。
  *
- * 当前实现状态：空壳。只有端口与注释，没有任何逻辑，输出未驱动。
+ * 当前实现状态：闭环简化（L5）：FENCE.I 最小同步通路已实现。
  *
  * 目标周期行为：
  * - 周期 N：sync_req_valid_i && sync_req_ready_o 握手，上升沿锁存请求，hold_o 在 N+1 起为 1。
  * - 之后：按种类依次等待 icache_idle_i / 发出失效 / 等待 done；全部完成的那一拍 sync_done_o
  *   脉冲一拍，下一拍 hold_o 释放。
  *
- * 本阶段不写测试代码和仿真代码。
+ * 测试：sim/cocotb/frontend_sync_ctrl/，sim/o3 固定串行与 M 模式门禁。
  */
 module frontend_sync_ctrl
     import o3_types_pkg::*;

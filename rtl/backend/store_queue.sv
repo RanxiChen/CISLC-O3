@@ -1,4 +1,5 @@
 /**
+ * 本次实现（O3-T03）：L5：global flush 取消未提交项，保留已提交前缀与 drain 所有权。
  *
  * 【2026-10-02 框架：目标机制与缺口】
  * - 保留：首版 SQ 兼任 committed store buffer，按序 drain；已提交项不被年轻恢复取消；等待 drain 的
@@ -13,7 +14,7 @@
  * - 地址未知（B32）：年轻 load 等本项地址写入/本项被取消后再判定，不以超时越过。
  *   已实现保守依赖查询：按 SQ 年龄选择最近的完整覆盖旧 store；较年轻的完整覆盖
  *   可覆盖较老的部分写入，地址未知的旧 store 仍阻塞。测试：sim/cocotb/store_queue/。
- * - 现有 drain 是 store 队头排出，不等于已完成 FENCE/FENCE.I 系统同步。目标端口未接入。
+ * - 现有 drain 是 store 队头排出，不等于已完成 FENCE/FENCE.I 系统同步。L5 提交 drain-empty 与 global flush 已接入。
  * Store Queue and committed Store Buffer
  *
  * Rename分配entry，AGU补写地址/数据/byte mask，ROB退休只把对应entry标记committed；

@@ -1,4 +1,5 @@
 /**
+ * 本次实现（O3-T03）：L5：CSR 队头独占 PRF 口 0，CSR/trap trace；提交边界全局恢复，旧 LSU 返回隔离。
  * Backend Top —— 后端总装（2026-10-02 框架）
  *
  * 目标数据流（后端基线 B01～B15、B21；前端第 16 节）：
@@ -13,11 +14,11 @@
  *             fpu_fma_fu ×2、fpu_divsqrt_fu、fpu_misc_fu、fpu_conv_fu
  *     → 写回：writeback_arbiter（INT 域）、fp_writeback_arbiter（FP 域）
  *     → ROB 按序提交 → commit_ctrl（FTQ 回收、SQ committed、fflags、系统同步、sys_redirect）
- *     → csr_file / trap_ctrl（CSR、精确异常入口、xRET、特权切换、中断：未设计）
+ *     → csr_file / trap_ctrl（L5 CSR、精确异常入口、MRET；S/U 与中断待后续级）
  *   共享：ptw（ITLB+DTLB，经 DCache 物理入口）；dcache ↔ L2（在 o3_core）；SD DMA 经 L2 探测 L1D。
  *
  * O3-T02: passive ROB-indexed LSU retirement observation; no execution changes.
- * 当前实现状态：闭环简化（L3）
+ * 当前实现状态：闭环简化（L5）
  * - B42：4 宽 Decode/Rename/Dispatch/Commit，16 项 Decode Queue。
  * - INT/MEM/BR IQ → PRF → ALU/BRU/LSU → ROB；SQ/DCache/L2 真实路径保留。
  * - U3 ROB 退休直接通知 FTQ；U4 M/Bare/PMP 静态常量集中在本模块末尾。

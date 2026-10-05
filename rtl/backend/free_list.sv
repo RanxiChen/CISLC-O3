@@ -1,4 +1,5 @@
 /**
+ * 本次实现（O3-T03）：L5：提交态 free bitmap 跟随正常退休；global flush 恢复并包含同拍提交。
  *
  * 【2026-10-02 框架：目标机制与缺口】
  * - 实例化两份：DOMAIN=RD_INT 与 DOMAIN=RD_FP（B15）。HAS_ZERO_REG 已给出，现有逻辑仍硬编码

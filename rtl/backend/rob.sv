@@ -1,7 +1,8 @@
 /**
+ * 本次实现（O3-T03）：L5：保存完整队头串行/异常元信息；译码异常与非 CSR 串行项分配即 complete；异常不退休。
  *
  * 【2026-10-02 框架：目标机制与缺口】
- * - 当前缺口：异常项到达队头后永远不退休（只退休 complete 且无异常的前缀），没有精确异常入口。
+ * - 异常项到达队头后交给 commit_ctrl/trap_ctrl；本项不退休。
  * - 需要补充：
  *   1) 保存异常 cause/tval（含执行期报告）、fflags、FTQ 动态身份与槽位、寄存器域、串行化类型。
  *   2) 提交宽度 core.commit_width（待定）；输出 rob_commit_t 给 commit_ctrl，由其生成
@@ -16,8 +17,8 @@
  *      crossline_misalign（B31）；fuse_role（B34：融合成员各自占 ROB 项、各自退休，成员由
  *      FUSE_HEAD 的同一次乘法请求的低位结果完成，不独立执行）。
  * - U3：保存动态 FTQ 身份、槽位与 ftq_last；实际退休由 backend 转为 ftq_commit_t。
- * 当前实现状态：闭环简化（L3），四宽分配/退休；精确 trap 待 L5。
- * - 目标端口（t_*）未接入；M 阻止退休；C 同拍按拍初 complete 前缀正常退休。
+ * 当前实现状态：闭环简化（L5），四宽分配/退休、队头精确 trap。
+ * - L5 元信息、队头 ready、global flush 合同接入；分支 M 阻止退休，C 退休拍初正常前缀。
  * Minimal ROB
  *
  * 当前已经实现的功能：

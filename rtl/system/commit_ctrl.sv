@@ -1,7 +1,7 @@
 /**
  * 提交控制 —— ROB 队头之后的按序副作用、系统同步编排、trap/xRET 发起
  *
- * 主流程均已定（B22～B27、B31、B37～B40），本模块 RTL 尚未实现。
+ * 主流程均已定（B22～B27、B31、B37～B40），L5 M 模式通路已实现，后续级保留目标接口。
  *
  * 按序副作用（每拍对实际退休前缀）：
  * - ftq_commit_t（region_last：区域有效指令全部提交，FTQ 交接训练后回收，前端 16.2）。
@@ -48,7 +48,7 @@
  *
  * 当前实现状态：闭环简化（L5）：M-only CSR/同步异常/返回，SQ drain + 前端最小 FENCE.I。
  * 完整 L1D clean 待 L8；中断/S/U/FP/fatal 隔离待其所属级。
- * 现有 backend 内由组合逻辑直接把 ROB 退休转成 SQ committed / free list 释放 / FTQ release_count（旧合同）。
+ * ROB 退休经本模块转成 SQ committed / FTQ commit；free list 释放仍在 backend。
  *
  * 逐周期说明（目标）：
  * - 周期 N 组合：选定实际退休前缀（或 trap，二者不同拍；合法 xRET 可与自身退休同拍）；

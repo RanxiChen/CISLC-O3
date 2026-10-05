@@ -1,4 +1,5 @@
 /**
+ * 本次实现（O3-T03）：L5：global flush 从 committed RAT 恢复，包含同拍提交更新；分支快照机制保留。
  *
  * 【2026-10-02 框架：目标机制与缺口】
  * - 实例化两份：DOMAIN=RD_INT（x0→p0 恒零）与 DOMAIN=RD_FP（f0 正常可写，32→64，B15）。

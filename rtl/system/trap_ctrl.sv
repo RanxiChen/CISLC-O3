@@ -1,7 +1,7 @@
 /**
  * Trap 控制 —— 精确 trap/xRET 请求整理与系统重定向
  *
- * 主流程已定（B26/B27/B29/B37），RTL 未实现：
+ * 主流程已定（B26/B27/B29/B37），L5 同步异常/MRET 已接入：
  * - commit_ctrl 在精确边界锁存一次 trap 请求（异常/中断区分、EPC、cause、tval）：同步异常 EPC 为
  *   故障指令 PC；中断 EPC 为 committed_next_pc（B37，ROB 为空时同样成立）。
  * - 本模块把请求交给 csr_file 专用硬件更新（epc/cause/tval/状态位/特权级），等其给出入口或返回 PC
