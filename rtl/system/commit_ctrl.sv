@@ -46,7 +46,8 @@
  *
  * 细节待定：各同步握手的信号编码与拍数；free list 提交态恢复记录的结构；串行项是否与 CSR 共用。
  *
- * 当前实现状态：空壳。只有端口与注释，没有逻辑，输出未驱动。
+ * 当前实现状态：闭环简化（L5）：M-only CSR/同步异常/返回，SQ drain + 前端最小 FENCE.I。
+ * 完整 L1D clean 待 L8；中断/S/U/FP/fatal 隔离待其所属级。
  * 现有 backend 内由组合逻辑直接把 ROB 退休转成 SQ committed / free list 释放 / FTQ release_count（旧合同）。
  *
  * 逐周期说明（目标）：
@@ -55,7 +56,7 @@
  * - 周期 N 上升沿：committed_next_pc 更新；串行编排状态推进；trap 接受时锁存请求。
  * - 周期 N+1：trap 接受后前端按入口 PC 取指（B26 目标）；committed_next_pc 为新边界。
  *
- * 本阶段不写测试代码和仿真代码。
+ * 测试：sim/cocotb/commit_ctrl/。
  */
 module commit_ctrl
     import o3_types_pkg::*;
@@ -104,6 +105,8 @@ module commit_ctrl
     output logic            csr_req_valid_o,
     output csr_req_t        csr_req_o,
     input  csr_resp_t       csr_resp_i,
+    input logic [63:0] csr_operand_i,
+    input logic block_younger_cycle_i,
     input  logic            irq_take_i,          // csr_file 按正式中断条件给出（含委托/全局使能）
     output trap_req_t       trap_req_o,
     input  logic            trap_redirect_valid_i,
@@ -121,5 +124,96 @@ module commit_ctrl
     output logic            flush_all_o,         // 提交端整体清空（异常/xRET/同步重启）
     output be_perf_t        perf_o
 );
-    // 未实现。
+    logic serial_done_q, sync_sent_q;
+    vaddr_t committed_next_pc_q;
+    logic serial_retire;
+    // Internal B22 counters, deliberately without an L7 CSR mapping.
+    logic [63:0] csr_retired, csr_wait_empty_cycles, csr_block_younger_cycles;
+    always_comb begin
+        csr_req_o = '0;
+        csr_req_o.op = head_i.ext.csr_op;
+        csr_req_o.addr = head_i.ext.csr_addr;
+        csr_req_o.wdata = head_i.ext.csr_use_imm ? 64'(head_i.rs1) : csr_operand_i;
+        csr_req_o.write_en = head_i.ext.csr_op==CSROP_RW || head_i.rs1!=0;
+        csr_req_o.rob_idx = head_i.rob_idx;
+        csr_req_valid_o = head_valid_i && head_i.ext.csr_op!=CSROP_NONE
+                         && !head_i.exc.valid && !serial_done_q && !isolate_i;
+        head_serial_done_o = serial_done_q;
+        if (head_i.ext.csr_op==CSROP_NONE) begin
+            case (head_i.sys_op)
+                SYSOP_FENCE: head_serial_done_o = !head_i.ext.fence_pred[0] || sq_committed_empty_i;
+                SYSOP_FENCE_I: head_serial_done_o = serial_done_q;
+                default: head_serial_done_o = 1'b1;
+            endcase
+        end
+        fe_sync_valid_o = head_valid_i && head_i.sys_op==SYSOP_FENCE_I
+                          && sq_committed_empty_i && !sync_sent_q && !serial_done_q;
+        fe_sync_o = '{kind:SYS_FENCE_I, default:'0};
+        trap_req_o = '0;
+        if (head_valid_i && head_i.complete && head_i.exc.valid && !isolate_i) begin
+            trap_req_o.valid=1; trap_req_o.epc=head_i.pc;
+            trap_req_o.cause=head_i.exc.cause; trap_req_o.tval=head_i.exc.tval;
+        end
+        serial_retire=0;
+        sys_redirect_o='0;
+        if (trap_redirect_valid_i) begin
+            sys_redirect_o.valid=1; sys_redirect_o.target_pc=trap_redirect_pc_i;
+            sys_redirect_o.kind=SYS_EXCEPTION;
+        end
+        for (int lane=0;lane<COMMIT_WIDTH;lane++) begin
+            ftq_commit_o[lane]='0;
+            ftq_commit_o[lane].valid=commit_i[lane].valid;
+            ftq_commit_o[lane].ftq_id=commit_i[lane].ftq_id;
+            ftq_commit_o[lane].slot=commit_i[lane].slot;
+            ftq_commit_o[lane].region_last=commit_i[lane].region_last;
+            sq_commit_valid_o[lane]=commit_i[lane].valid && commit_i[lane].is_store;
+            sq_commit_idx_o[lane]=commit_i[lane].sq_idx;
+            if (commit_i[lane].valid && commit_i[lane].ext.serialize) begin
+                serial_retire=1;
+                if (commit_i[lane].sys_op==SYSOP_MRET) begin
+                    trap_req_o.valid=1; trap_req_o.is_xret=1; trap_req_o.is_mret=1;
+                    trap_req_o.epc=commit_i[lane].pc;
+                end
+                if (commit_i[lane].sys_op==SYSOP_FENCE_I) begin
+                    sys_redirect_o='{valid:1'b1,kind:SYS_FENCE_I,
+                        ftq_id:commit_i[lane].ftq_id,slot:commit_i[lane].slot,target_pc:commit_i[lane].succ_pc};
+                end
+            end
+        end
+        // CSR wait affects its serial-ready gate in ROB, not an earlier prefix.
+        // Do not feed retire-valid back into the ROB block signal for MRET.
+        commit_block_o=isolate_i || (head_valid_i && head_i.exc.valid);
+        flush_all_o=trap_req_o.valid || (sys_redirect_o.valid && sys_redirect_o.kind==SYS_FENCE_I);
+        committed_next_pc_o=committed_next_pc_q;
+        fp_retire_o='0; sfence_o='0; dcache_clean_all_o=0; st_d_req_valid_o=0;
+        rsv_clear_valid_o=trap_req_o.valid;
+        rsv_clear_reason_o=trap_req_o.is_xret ? RSV_CLR_XRET : RSV_CLR_TRAP;
+        wfi_retire_o=0; perf_o='0;
+    end
+    // N: CSR write executes once at the head. N+1: done permits retirement.
+    // Trap never retires the faulting item. MRET updates CSR with its retirement.
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            serial_done_q<=0; sync_sent_q<=0; committed_next_pc_q<=boot_pc_i;
+            csr_retired<=0; csr_wait_empty_cycles<=0; csr_block_younger_cycles<=0;
+        end else begin
+            if (csr_req_valid_o && csr_resp_i.valid && !csr_resp_i.illegal) serial_done_q<=1;
+            if (fe_sync_valid_o && fe_sync_ready_i) sync_sent_q<=1;
+            if (sync_sent_q && fe_sync_done_i) serial_done_q<=1;
+            if (serial_retire || flush_all_o) begin serial_done_q<=0; sync_sent_q<=0; end
+            for (int lane=0;lane<COMMIT_WIDTH;lane++)
+                if (commit_i[lane].valid) begin
+                    committed_next_pc_q<=commit_i[lane].succ_pc;
+                    if (commit_i[lane].ext.csr_op!=CSROP_NONE) csr_retired<=csr_retired+1;
+                end
+            if (sys_redirect_o.valid) committed_next_pc_q<=sys_redirect_o.target_pc;
+            if (block_younger_cycle_i) csr_block_younger_cycles<=csr_block_younger_cycles+1;
+            if (block_younger_cycle_i && !(head_valid_i && head_i.ext.serialize))
+                csr_wait_empty_cycles<=csr_wait_empty_cycles+1;
+            if (trap_req_o.valid && !trap_req_o.is_xret) begin
+                for (int lane=0;lane<COMMIT_WIDTH;lane++) assert (!commit_i[lane].valid);
+                assert (head_i.pc==committed_next_pc_q);
+            end
+        end
+    end
 endmodule

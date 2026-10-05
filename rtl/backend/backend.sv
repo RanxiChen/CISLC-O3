@@ -150,6 +150,91 @@ module backend
 `endif
 );
 
+    logic global_flush, backend_block, rob_commit_block, head_valid, head_serial_done;
+    o3_types_pkg::rob_commit_t rob_head_info, rob_commit [RETIRE_WIDTH];
+    o3_types_pkg::exc_info_t rob_alloc_exc [MACHINE_WIDTH], lsu_exc, rob_exec_exc;
+    o3_types_pkg::uop_ext_t rob_alloc_ext [MACHINE_WIDTH];
+    logic [PC_WIDTH-1:0] rob_meta_pc [MACHINE_WIDTH];
+    logic [31:0] rob_meta_instruction [MACHINE_WIDTH];
+    o3_types_pkg::preg_t rob_meta_src1 [MACHINE_WIDTH];
+    logic [4:0] rob_meta_rs1 [MACHINE_WIDTH];
+    logic rob_exc_valid, lsu_exc_valid;
+    logic [ROB_IDX_WIDTH-1:0] rob_exc_idx, lsu_exc_idx;
+    logic csr_req_valid, csr_write_fire, trap_update_valid, trap_done, trap_redirect_valid;
+    o3_types_pkg::csr_req_t csr_req;
+    o3_types_pkg::csr_resp_t csr_resp;
+    o3_types_pkg::trap_req_t trap_req, trap_update;
+    o3_types_pkg::vaddr_t trap_target, trap_redirect_pc, committed_next_pc;
+    logic [63:0] csr_write_value;
+    logic serial_retire, gate_block_cycle;
+    logic [$clog2(MACHINE_WIDTH+1)-1:0] gate_pass_count;
+`ifdef ENABLE_RETIRE_INFO
+    o3_pkg::retire_info_t csr_observe_q [NUM_ROB_ENTRIES];
+`endif
+    logic [PREG_IDX_WIDTH-1:0] arb_rd_addr [PRF_READ_PORTS];
+    logic arb_wr_en [PRF_WRITE_PORTS];
+    logic [PREG_IDX_WIDTH-1:0] arb_wr_addr [PRF_WRITE_PORTS];
+    logic [XLEN-1:0] arb_wr_data [PRF_WRITE_PORTS];
+    assign backend_block = branch_mispredict || global_flush || sys_redirect_o.valid;
+    assign csr_write_fire = csr_req_valid && csr_resp.valid && !csr_resp.illegal;
+    always_comb begin
+        serial_retire=0;
+        for (int lane=0;lane<RETIRE_WIDTH;lane++)
+            serial_retire |= rob_commit[lane].valid && rob_commit[lane].ext.serialize;
+        for (int lane=0;lane<MACHINE_WIDTH;lane++) begin
+            rob_alloc_exc[lane] = '{valid:renamed_uop[lane].exception_valid,
+                cause:renamed_uop[lane].exception_cause,tval:renamed_uop[lane].exception_tval};
+            rob_alloc_ext[lane]=renamed_uop[lane].ext;
+            rob_meta_pc[lane]=renamed_uop[lane].pc;
+            rob_meta_instruction[lane]=renamed_uop[lane].instruction;
+            rob_meta_src1[lane]=renamed_uop[lane].src1_preg;
+            rob_meta_rs1[lane]=renamed_uop[lane].rs1;
+        end
+        rob_exc_valid=lsu_exc_valid; rob_exec_exc=lsu_exc; rob_exc_idx=lsu_exc_idx;
+        if (csr_req_valid && csr_resp.illegal) begin
+            rob_exc_valid=1; rob_exc_idx=rob_head_info.rob_idx;
+            rob_exec_exc='{valid:1'b1,cause:EXCEPTION_CAUSE_ILLEGAL_INSTRUCTION,tval:64'(rob_head_info.instruction)};
+        end
+        for (int port=0;port<PRF_READ_PORTS;port++) prf_rd_addr[port]=arb_rd_addr[port];
+        if (csr_req_valid) prf_rd_addr[0]=rob_head_info.src1_preg;
+        for (int port=0;port<PRF_WRITE_PORTS;port++) begin
+            prf_wr_en[port]=arb_wr_en[port] && !global_flush;
+            prf_wr_addr[port]=arb_wr_addr[port]; prf_wr_data[port]=arb_wr_data[port];
+        end
+        if (csr_write_fire && rob_head_info.rd_write_en) begin
+            prf_wr_en[0]=1; prf_wr_addr[0]=rob_head_info.new_preg; prf_wr_data[0]=csr_resp.rdata;
+        end
+    end
+    rename_entry_gate #(.CFG(CFG)) u_rename_entry_gate (
+        .clk(clk),.rst(rst),.uop_i(rename_uop_head),.count_i(uopq_deq_count),.pair_head_i('0),
+        .pass_count_o(gate_pass_count),.accepted_count_i(rename_accept_count),
+        .serial_retire_i(serial_retire),.flush_i(backend_block),.wfi_stall_i(1'b0),.isolate_i(1'b0),
+        .block_younger_cycle_o(gate_block_cycle));
+    commit_ctrl #(.CFG(CFG)) u_commit_ctrl (
+        .clk(clk),.rst(rst),.boot_pc_i(boot_pc_i),.commit_i(rob_commit),
+        .head_valid_i(head_valid),.head_i(rob_head_info),.head_serial_done_o(head_serial_done),
+        .commit_block_o(rob_commit_block),.ftq_commit_o(ftq_commit_o),.sq_commit_valid_o(),.sq_commit_idx_o(),
+        .fp_retire_o(),.committed_next_pc_o(committed_next_pc),.sys_redirect_o(sys_redirect_o),
+        .fe_sync_valid_o(fe_sync_valid_o),.fe_sync_ready_i(fe_sync_ready_i),.fe_sync_o(fe_sync_o),.fe_sync_done_i(fe_sync_done_i),
+        .sq_committed_empty_i(t_sq_committed_empty),.dcache_clean_all_o(),.dcache_clean_all_done_i(1'b0),.dcache_clean_all_busy_i(1'b0),
+        .sfence_o(),.sfence_done_i(1'b0),.st_d_req_valid_o(),.st_d_req_ready_i(1'b0),.st_d_done_i(1'b0),
+        .csr_req_valid_o(csr_req_valid),.csr_req_o(csr_req),.csr_resp_i(csr_resp),.csr_operand_i(prf_rd_data[0]),
+        .block_younger_cycle_i(gate_block_cycle),.irq_take_i(1'b0),.trap_req_o(trap_req),
+        .trap_redirect_valid_i(trap_redirect_valid),.trap_redirect_pc_i(trap_redirect_pc),
+        .rsv_clear_valid_o(),.rsv_clear_reason_o(),.wfi_retire_o(),.wfi_stall_i(1'b0),.isolate_i(1'b0),
+        .flush_all_o(global_flush),.perf_o());
+    trap_ctrl #(.CFG(CFG)) u_trap_ctrl (
+        .clk(clk),.rst(rst),.req_i(trap_req),.csr_update_valid_o(trap_update_valid),.csr_update_o(trap_update),
+        .csr_target_pc_i(trap_target),.csr_update_done_i(trap_done),
+        .redirect_valid_o(trap_redirect_valid),.redirect_pc_o(trap_redirect_pc));
+    csr_file #(.CFG(CFG)) u_csr_file (
+        .clk(clk),.rst(rst),.req_valid_i(csr_req_valid),.req_i(csr_req),.resp_o(csr_resp),
+        .retire_count_i(retire_count_this_cycle),.write_value_o(csr_write_value),.fp_retire_i('0),.frm_o(),.fs_o(),
+        .trap_update_valid_i(trap_update_valid),.trap_update_i(trap_update),.trap_target_pc_o(trap_target),.trap_update_done_o(trap_done),
+        .irq_m_ext_i(1'b0),.irq_m_timer_i(1'b0),.irq_m_soft_i(1'b0),.irq_s_ext_i(1'b0),.irq_view_o(),.irq_take_o(),.irq_cause_o(),
+        .fe_csr_o(fe_csr_o),.pmp_o(t_pmp),.dmmu_csr_o(t_dmmu_csr),.priv_o());
+    assign fe_pmp_o=t_pmp;
+
     localparam int BACKEND_PREG_IDX_WIDTH = PREG_IDX_WIDTH;   // 两域共用 preg 字段宽度（o3_types_pkg::PREG_W）
     localparam int BACKEND_ROB_IDX_WIDTH  = $clog2(NUM_ROB_ENTRIES);
     localparam int BACKEND_LANE_COUNT_WIDTH = $clog2(MACHINE_WIDTH + 1);
@@ -216,7 +301,7 @@ module backend
     logic [ILEN-1:0]           rob_alloc_instruction [MACHINE_WIDTH-1:0];
     logic [REG_ADDR_WIDTH-1:0] rob_alloc_rd          [MACHINE_WIDTH-1:0];
     logic                      rob_alloc_rd_write_en [MACHINE_WIDTH-1:0];
-    logic [XLEN-1:0]           rob_complete_rd_wdata [NUM_INT_ALUS+2:0];
+    logic [XLEN-1:0]           rob_complete_rd_wdata [NUM_INT_ALUS+3:0];
 `endif
 
     logic [BACKEND_PREG_IDX_WIDTH-1:0] dst_new_preg [MACHINE_WIDTH-1:0];
@@ -305,8 +390,8 @@ module backend
     // exec_valid/exec_cmp_true 已迁入 alu_pipe
     logic [XLEN-1:0]                   exec_result  [NUM_INT_ALUS-1:0];
     logic                              preg_ready_q [NUM_PHYS_REGS-1:0];  // preg_ready_table 输出
-    logic                              rob_complete_valid [NUM_INT_ALUS+2:0];
-    logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_complete_idx   [NUM_INT_ALUS+2:0];
+    logic                              rob_complete_valid [NUM_INT_ALUS+3:0];
+    logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_complete_idx   [NUM_INT_ALUS+3:0];
     logic                              wb_complete_valid [NUM_INT_ALUS+1:0];
     logic [BACKEND_ROB_IDX_WIDTH-1:0]  wb_complete_idx [NUM_INT_ALUS+1:0];
     logic [XLEN-1:0]                   wb_complete_data [NUM_INT_ALUS+1:0];
@@ -348,11 +433,11 @@ module backend
         end else begin
             for (int lane = 0; lane < MACHINE_WIDTH; lane++)
                 if (rename_fire && rob_req[lane]) observe_mem_q[rob_idx[lane]] <= '0;
-            if (store_complete_valid) begin
-                observe_mem_q[store_complete_rob_idx].kind <= 2;
-                observe_mem_q[store_complete_rob_idx].addr <= sq_execute_addr;
-                observe_mem_q[store_complete_rob_idx].size <= 2'(mem_execute_q.mem_size);
-                observe_mem_q[store_complete_rob_idx].data <= sq_execute_data;
+            if (sq_execute_valid) begin
+                observe_mem_q[mem_execute_q.rob_idx].kind <= 2;
+                observe_mem_q[mem_execute_q.rob_idx].addr <= sq_execute_addr;
+                observe_mem_q[mem_execute_q.rob_idx].size <= 2'(mem_execute_q.mem_size);
+                observe_mem_q[mem_execute_q.rob_idx].data <= sq_execute_data;
             end
             if (load_result.valid && load_result_consume
                 && !(branch_resolution_i.valid && branch_resolution_i.mispredict
@@ -364,14 +449,36 @@ module backend
             end
         end
     end
+    always_ff @(posedge clk) begin
+        if (rst) csr_observe_q <= '{default:'0};
+        else begin
+            for (int lane=0;lane<MACHINE_WIDTH;lane++)
+                if (rename_fire && rob_req[lane]) csr_observe_q[rob_idx[lane]]<='0;
+            if (csr_write_fire && csr_req.write_en) begin
+                csr_observe_q[rob_head_info.rob_idx].csr_valid<=1;
+                csr_observe_q[rob_head_info.rob_idx].csr_addr<=csr_req.addr;
+                csr_observe_q[rob_head_info.rob_idx].csr_wdata<=csr_write_value;
+            end
+        end
+    end
     for (genvar lane = 0; lane < RETIRE_WIDTH; lane++) begin : gen_retire_observe
         always_comb begin
             retire_info_o[lane] = rob_retire_observe[lane];
             retire_info_o[lane].mem = observe_mem_q[rob_retire_idx[lane]];
             // L5 CSR/trap and L9 FP are not implemented by this task.
             retire_info_o[lane].fp_valid = 1'b0;
-            retire_info_o[lane].csr_valid = 1'b0;
+            retire_info_o[lane].csr_valid = csr_observe_q[rob_retire_idx[lane]].csr_valid;
+            retire_info_o[lane].csr_addr = csr_observe_q[rob_retire_idx[lane]].csr_addr;
+            retire_info_o[lane].csr_wdata = csr_observe_q[rob_retire_idx[lane]].csr_wdata;
             retire_info_o[lane].exc_valid = 1'b0;
+            if (lane==0 && trap_req.valid && !trap_req.is_xret) begin
+                retire_info_o[lane]='0; retire_info_o[lane].valid=1;
+                retire_info_o[lane].exc_valid=1;
+                retire_info_o[lane].pc=rob_head_info.pc;
+                retire_info_o[lane].instruction=rob_head_info.instruction;
+                retire_info_o[lane].exc_cause=64'(trap_req.cause);
+                retire_info_o[lane].exc_tval=trap_req.tval;
+            end
         end
     end
 `endif
@@ -493,7 +600,9 @@ module backend
             logic decoded_exception;
 
             assign decoded_exception = fetch_entry_q[i].exception_valid
-                                     || decode_out[i].illegal_instruction;
+                                     || decode_out[i].illegal_instruction
+                                     || decode_out[i].ext.sys_op==o3_types_pkg::SYSOP_ECALL
+                                     || decode_out[i].ext.sys_op==o3_types_pkg::SYSOP_EBREAK;
             assign decoded_uop[i].valid          = decode_valid && fetch_entry_q[i].valid;
             assign decoded_uop[i].instruction_id = fetch_instruction_id_q[i];
 `ifdef O3_SIM
@@ -508,19 +617,19 @@ module backend
                                                   && decoded_exception;
             assign decoded_uop[i].exception_cause = fetch_entry_q[i].exception_valid
                                                    ? fetch_entry_q[i].exception_cause
-                                                   : (decode_out[i].illegal_instruction
-                                                      ? EXCEPTION_CAUSE_ILLEGAL_INSTRUCTION
-                                                      : '0);
+                                                   : (decode_out[i].ext.sys_op==o3_types_pkg::SYSOP_ECALL ? EXCEPTION_CAUSE_ECALL_M
+                                                      : decode_out[i].ext.sys_op==o3_types_pkg::SYSOP_EBREAK ? EXCEPTION_CAUSE_BREAKPOINT
+                                                      : EXCEPTION_CAUSE_ILLEGAL_INSTRUCTION);
             assign decoded_uop[i].exception_tval = fetch_entry_q[i].exception_valid
                                                   ? fetch_entry_q[i].exception_tval
-                                                  : (decode_out[i].illegal_instruction
-                                                     ? XLEN'(fetch_entry_q[i].raw_instruction)
-                                                     : '0);
+                                                  : (decode_out[i].ext.sys_op==o3_types_pkg::SYSOP_EBREAK ? XLEN'(fetch_entry_q[i].pc)
+                                                     : decode_out[i].illegal_instruction ? XLEN'(fetch_entry_q[i].raw_instruction) : '0);
             assign decoded_uop[i].ftq_id         = fetch_entry_q[i].ftq_id;
             // 框架新增：ext 来自 decoder（当前未产生），FTQ 槽位来自前端交付。
             always_comb begin
                 decoded_ext[i]          = decode_out[i].ext;
                 decoded_ext[i].ftq_slot = fetch_entry_q[i].slot;
+                if (decoded_exception) decoded_ext[i].block_younger=1;
             end
             assign decoded_uop[i].ext            = decoded_ext[i];
             assign fetch_instruction_id_d[i]     = make_instruction_id(fetch_group_seq_q, i);
@@ -595,9 +704,9 @@ module backend
         end
     end
 
-    assign decode_ready    = uopq_enq_ready && !branch_mispredict;
+    assign decode_ready    = uopq_enq_ready && !backend_block;
     assign decode_fire     = decode_valid && decode_ready;
-    assign fetch_ready_o   = !branch_mispredict
+    assign fetch_ready_o   = !backend_block
                            && ((!fetch_entry_valid_q) || decode_ready);
     assign fetch_fire      = fetch_valid_i && fetch_ready_o;
     assign rename_valid    = (uopq_deq_count != '0);
@@ -674,7 +783,7 @@ module backend
 
     // 读口仲裁（原样迁出到 prf_read_arbiter）。issue_block 仅为 M；C 保留正常年龄/读口仲裁。
     prf_read_arbiter #(.CFG(CFG)) u_prf_read_arbiter (
-        .issue_block_i        (branch_mispredict),
+        .issue_block_i        (backend_block),
         .rob_head_i           (rob_head),
         .int_issue_uop_i      (int_iq_issue_uop),
         .int_issue_valid_i    (int_iq_issue_valid),
@@ -694,7 +803,7 @@ module backend
         .mem_src2_port_o      (mem_src2_port),
         .branch_src1_port_o   (branch_src1_port),
         .branch_src2_port_o   (branch_src2_port),
-        .prf_rd_addr_o        (prf_rd_addr)
+        .prf_rd_addr_o        (arb_rd_addr)
     );
     always_comb begin
         int_iq_issue_ready = int_read_grant;
@@ -725,7 +834,7 @@ module backend
     uop_queue #(.CFG(CFG)) u_decode_queue (
         .clk(clk),
         .rst(rst),
-        .flush_i(branch_resolution_i.valid && branch_resolution_i.mispredict),
+        .flush_i(backend_block),
         .enq_uop_i(decoded_uop),
         .enq_valid_i(decode_valid),
         .enq_ready_o(uopq_enq_ready),
@@ -736,7 +845,7 @@ module backend
 
     branch_checkpoint_file #(.CFG(CFG)) u_branch_checkpoint_file (
         .clk(clk),
-        .rst(rst),
+        .rst(rst || global_flush),
         .alloc_req_i(checkpoint_req),
         .alloc_grant_o(checkpoint_grant),
         .alloc_tag_o(checkpoint_tag),
@@ -756,8 +865,8 @@ module backend
 
     rename_stage #(.CFG(CFG)) u_rename_stage (
         .decoded_i(rename_uop_head),
-        .visible_count_i(uopq_deq_count),
-        .recovery_block_i(branch_mispredict),
+        .visible_count_i(gate_pass_count),
+        .recovery_block_i(backend_block),
         .preg_free_count_i(free_preg_count),
         .rob_free_count_i(rob_free_count),
         .lq_free_count_i(lq_free_count),
@@ -794,6 +903,7 @@ module backend
         .alloc_available_o(alloc_valid),
         .alloc_preg_o(dst_new_preg),
         .free_count_o(free_preg_count),
+        .flush_all_i(global_flush),.commit_new_preg_i(rob_retire_new_dst_preg),.commit_write_i(free_release_valid),
         .release_valid_i(free_release_valid),
         .release_preg_i(rob_retire_old_dst_preg),
         .checkpoint_create_i(checkpoint_create),
@@ -804,7 +914,7 @@ module backend
         .resolution_tag_i(branch_resolution_i.branch_tag)
     );
 
-    rob #(.CFG(CFG), .COMPLETE_WIDTH(NUM_INT_ALUS + 3)) u_rob (
+    rob #(.CFG(CFG), .COMPLETE_WIDTH(NUM_INT_ALUS + 4)) u_rob (
         .clk(clk),
         .rst(rst),
         .alloc_req_i(rob_req),
@@ -826,6 +936,12 @@ module backend
         .alloc_pc_i(rob_alloc_pc),
         .alloc_instruction_i(rob_alloc_instruction),
 `endif
+        .t_alloc_exc_i(rob_alloc_exc),.t_alloc_ext_i(rob_alloc_ext),
+        .t_alloc_pc_i(rob_meta_pc),.t_alloc_instruction_i(rob_meta_instruction),.t_alloc_src1_i(rob_meta_src1),.t_alloc_rs1_i(rob_meta_rs1),
+        .t_exc_valid_i(rob_exc_valid),.t_exc_idx_i(rob_exc_idx),.t_exc_i(rob_exec_exc),
+        .t_head_valid_o(head_valid),.t_head_o(rob_head_info),.t_head_serial_done_i(head_serial_done),
+        .t_commit_o(rob_commit),.t_flush_all_i(global_flush),.t_commit_block_i(rob_commit_block),
+        .t_succ_valid_i(exec_resolve_o.valid),.t_succ_pc_i(exec_resolve_o.redirect_pc),
         .alloc_ready_i(rename_fire),
         .complete_valid_i(rob_complete_valid),
         .complete_idx_i(rob_complete_idx),
@@ -865,6 +981,7 @@ module backend
     rename_map_table #(.CFG(CFG), .DOMAIN(o3_types_pkg::RD_INT)) u_rename_map_table (
         .clk(clk),
         .rst(rst),
+        .flush_all_i(global_flush),
         .rename_fire_i(rename_fire),
         .lane_valid_i(rename_lane_valid),
         .rs1_addr_i(rename_rs1_addr),
@@ -891,7 +1008,7 @@ module backend
     );
 
     load_queue #(.CFG(CFG)) u_load_queue (
-        .clk(clk), .rst(rst), .alloc_req_i(lq_alloc_req), .alloc_fire_i(rename_fire),
+        .clk(clk), .rst(rst || global_flush), .alloc_req_i(lq_alloc_req), .alloc_fire_i(rename_fire),
         .alloc_rob_idx_i(rob_idx), .alloc_branch_mask_i(rename_branch_mask),
         .alloc_idx_o(lq_idx), .free_count_o(lq_free_count), .tail_o(lq_tail),
         .execute_valid_i(lq_execute_valid), .execute_idx_i(lq_execute_idx),
@@ -909,6 +1026,7 @@ module backend
         .clk(clk), .rst(rst), .alloc_req_i(sq_alloc_req), .alloc_fire_i(rename_fire),
         .alloc_rob_idx_i(rob_idx), .alloc_branch_mask_i(rename_branch_mask),
         .alloc_idx_o(sq_idx), .free_count_o(sq_free_count), .tail_o(sq_tail),
+        .flush_all_i(global_flush),
         .execute_valid_i(sq_execute_valid), .execute_idx_i(sq_execute_idx),
         .execute_addr_i(sq_execute_addr), .execute_data_i(sq_execute_data),
         .execute_mask_i(sq_execute_mask),
@@ -929,7 +1047,7 @@ module backend
     );
 
     rename_dispatch_queue #(.CFG(CFG)) u_rename_dispatch_queue (
-        .clk(clk), .rst(rst), .enq_uop_i(renamed_uop), .enq_count_i(rename_accept_count),
+        .clk(clk), .rst(rst || global_flush), .enq_uop_i(renamed_uop), .enq_count_i(rename_accept_count),
         .enq_fire_i(rename_fire), .free_count_o(rdq_free_count),
         .deq_uop_o(dispatch_uop_head), .deq_count_o(dispatch_count),
         .deq_accept_count_i(dispatch_accept_count),
@@ -941,7 +1059,7 @@ module backend
     dispatch_stage #(.CFG(CFG)) u_dispatch_stage (
         .uop_i(dispatch_uop_head),
         .visible_count_i(dispatch_count),
-        .recovery_block_i(branch_mispredict),
+        .recovery_block_i(backend_block),
         .int_free_count_i(int_iq_free_count),
         .mem_free_count_i(mem_iq_free_count),
         .br_free_count_i(br_iq_free_count),
@@ -954,7 +1072,7 @@ module backend
     // L1 integer instructions must enter a live IQ after dispatch. These
     // candidates drive the existing PRF read arbiter and ALU pipelines.
     backend_issue_queue #(.CFG(CFG), .KIND(o3_types_pkg::IQ_INT)) u_int_issue_queue (
-        .clk(clk), .rst(rst), .enq_uop_i(int_iq_enq_uop),
+        .clk(clk), .rst(rst || global_flush), .enq_uop_i(int_iq_enq_uop),
         .enq_fire_i(dispatch_accept_count != '0), .free_count_o(int_iq_free_count),
         .preg_ready_i(preg_ready_q), .allow_load_i(1'b1), .wakeup_valid_i(prf_wr_en),
         .wakeup_preg_i(prf_wr_addr), .issue_uop_o(int_iq_issue_uop),
@@ -965,7 +1083,7 @@ module backend
     );
 
     backend_issue_queue #(.CFG(CFG), .KIND(o3_types_pkg::IQ_MEM)) u_mem_issue_queue (
-        .clk(clk), .rst(rst), .enq_uop_i(mem_iq_enq_uop),
+        .clk(clk), .rst(rst || global_flush), .enq_uop_i(mem_iq_enq_uop),
         .enq_fire_i(dispatch_accept_count != '0), .free_count_o(mem_iq_free_count),
         .preg_ready_i(preg_ready_q),
         .allow_load_i(!mem_replay_busy && !mem_replay_capture),
@@ -978,7 +1096,7 @@ module backend
     );
 
     backend_issue_queue #(.CFG(CFG), .KIND(o3_types_pkg::IQ_BR)) u_branch_issue_queue (
-        .clk(clk), .rst(rst), .enq_uop_i(br_iq_enq_uop),
+        .clk(clk), .rst(rst || global_flush), .enq_uop_i(br_iq_enq_uop),
         .enq_fire_i(dispatch_accept_count != '0), .free_count_o(br_iq_free_count),
         .preg_ready_i(preg_ready_q), .allow_load_i(1'b1), .wakeup_valid_i(prf_wr_en),
         .wakeup_preg_i(prf_wr_addr), .issue_uop_o(br_iq_issue_uop),
@@ -989,8 +1107,8 @@ module backend
     );
 
     // LSU拥有单发射Memory流水、LQ/SQ依赖查询后的统一memory请求以及可保持的Load结果。
-    load_store_unit #(.CFG(CFG), .USE_DCACHE(1'b1)) u_load_store_unit (
-        .clk(clk), .rst(rst), .mem_uop_i(mem_execute_q), .mem_ready_o(mem_execute_ready),
+    load_store_unit #(.CFG(CFG), .USE_DCACHE(1'b1),.CHECK_STORE_ACCESS(1'b1)) u_load_store_unit (
+        .clk(clk), .rst(rst),.flush_all_i(global_flush), .mem_uop_i(mem_execute_q), .mem_ready_o(mem_execute_ready),
         .lq_execute_valid_o(lq_execute_valid), .lq_execute_idx_o(lq_execute_idx),
         .lq_execute_addr_o(lq_execute_addr), .lq_execute_generation_i(lq_execute_generation),
         .lq_request_fire_o(lq_request_fire), .lq_request_idx_o(lq_request_idx),
@@ -1024,6 +1142,7 @@ module backend
         // 目标合同（t_*）：只连接共享 PTW，其余未接入。
         .t_ptw_req_valid_o(t_dtlb_ptw_req_valid), .t_ptw_req_ready_i(t_dtlb_ptw_req_ready),
         .t_ptw_req_o(t_dtlb_ptw_req), .t_ptw_resp_i(t_ptw_resp),
+        .t_exc_valid_o(lsu_exc_valid),.t_exc_rob_idx_o(lsu_exc_idx),.t_exc_o(lsu_exc),
         .t_csr_i(t_dmmu_csr), .t_pmp_i(t_pmp), .t_sfence_i(t_sfence),
         .t_dc_ld_req_valid_o(t_dc_ld_req_valid), .t_dc_ld_req_ready_i(t_dc_ld_req_ready),
         .t_dc_ld_req_o(t_dc_ld_req), .t_dc_ld_resp_i(t_dc_ld_resp)
@@ -1031,7 +1150,7 @@ module backend
 
     // 分支单元（原样迁出到 branch_unit；内部例化 branch_execute_unit）。
     branch_unit #(.CFG(CFG)) u_branch_unit (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst || global_flush),
         .issue_uop_i(br_iq_issue_uop[0]), .read_grant_i(branch_read_grant),
         .src1_data_i(prf_rd_data[branch_src1_port]), .src2_data_i(prf_rd_data[branch_src2_port]),
         .result_consume_i(branch_result_consume),
@@ -1047,7 +1166,7 @@ module backend
         .resolution_tag_i(branch_resolution_i.branch_tag),
         .alu_consume_o(alu_result_consume), .load_consume_o(load_result_consume),
         .branch_consume_o(branch_result_consume),
-        .prf_wr_en_o(prf_wr_en), .prf_wr_addr_o(prf_wr_addr), .prf_wr_data_o(prf_wr_data),
+        .prf_wr_en_o(arb_wr_en), .prf_wr_addr_o(arb_wr_addr), .prf_wr_data_o(arb_wr_data),
         .complete_valid_o(wb_complete_valid), .complete_idx_o(wb_complete_idx),
         .complete_data_o(wb_complete_data),
         .extra_src_i(/* MUL/DIV/FP→INT/CSR/AMO：未接入 */), .extra_consume_o()
@@ -1071,8 +1190,11 @@ module backend
         end
         rob_complete_valid[NUM_INT_ALUS+2] = store_complete_valid;
         rob_complete_idx[NUM_INT_ALUS+2] = store_complete_rob_idx;
+        rob_complete_valid[NUM_INT_ALUS+3]=csr_write_fire;
+        rob_complete_idx[NUM_INT_ALUS+3]=rob_head_info.rob_idx;
 `ifdef ENABLE_RETIRE_INFO
         rob_complete_rd_wdata[NUM_INT_ALUS+2] = '0;
+        rob_complete_rd_wdata[NUM_INT_ALUS+3]=csr_resp.rdata;
 `endif
     end
 
@@ -1090,7 +1212,7 @@ module backend
     generate
         for (i = 0; i < NUM_INT_ALUS; i++) begin : alu_pipe_array
             alu_pipe #(.CFG(CFG)) u_alu_pipe (
-                .clk(clk), .rst(rst),
+                .clk(clk), .rst(rst || global_flush),
                 .issue_uop_i(int_iq_issue_uop[i]), .read_grant_i(int_read_grant[i]),
                 .src1_data_i(prf_rd_data[int_src1_port[i]]),
                 .src2_data_i(prf_rd_data[int_src2_port[i]]),
@@ -1646,7 +1768,8 @@ module backend
                 mem_execute_q.branch_mask <= resolved_branch_mask(mem_execute_q.branch_mask);
             end
 
-            if (branch_resolution_i.valid && branch_resolution_i.mispredict) begin
+            if (global_flush) mem_execute_q.valid<=0;
+            if (backend_block) begin
                 fetch_entry_valid_q <= 1'b0;
             end else if (fetch_fire) begin
                 fetch_entry_q          <= fetch_entry_i;
@@ -1712,44 +1835,9 @@ module backend
     assign t_dc_clean_all_req = 1'b0;
     assign t_rsv_clear_valid = 1'b0;
     assign t_rsv_clear_reason = o3_types_pkg::RSV_CLR_SC; // valid=0；合法编码无事件
-    assign sys_redirect_o = '0;
-    assign fe_sync_valid_o = 1'b0;
-    assign fe_sync_o = '0;
-    assign fatal_o = 1'b0; // L11 才实现 fatal 隔离，不能据此声称处理了故障
-    assign perf_rd_data_o = '0; // 硬件计数器 L7；保留 retired_inst_count_o
-
-    // U4：静态 M/Bare。L5 起由 csr_file 取代，PMP 检查待 L10。
-    localparam logic [1:0] PRIV_M = 2'b11;
-    localparam logic [3:0] SATP_BARE = 4'b0000;
-    localparam logic MSTATUS_MPRV = 1'b0, MSTATUS_SUM = 1'b0, MSTATUS_MXR = 1'b0;
-    localparam o3_types_pkg::fe_csr_t L3_FE_CSR =
-        '{priv:PRIV_M, satp_mode:SATP_BARE, default:'0};
-    // MPRV=0 => priv_eff=当前 M；dmmu_csr_t 保存派生特权，无独立 MPRV 位。
-    localparam o3_types_pkg::dmmu_csr_t L3_DMMU_CSR =
-        '{priv_eff:PRIV_M, sum:MSTATUS_SUM, mxr:MSTATUS_MXR,
-          satp_mode:SATP_BARE, default:'0};
-    localparam o3_types_pkg::pmp_state_t L3_PMP = '{update:1'b0, entries:'0};
-    assign fe_csr_o = L3_FE_CSR;
-    assign t_dmmu_csr = L3_DMMU_CSR;
-    assign t_pmp = L3_PMP;
-    assign fe_pmp_o = L3_PMP;
-    always_ff @(posedge clk) begin
-        assert (!fe_pmp_o.update && !t_pmp.update)
-            else $error("L3 static PMP must never start D28 synchronization");
-    end
-
-    // U3：每条实际 ROB 退休通知携带完整动态身份、槽位和区域末项。
-    // N 组合读取拍初已完成的退休前缀；N 边沿 ROB 删除这些项，前端记账；
-    // N+1 前端据 region_last 回收区域。L5 原样并入 commit_ctrl。
-    for (genvar lane = 0; lane < RETIRE_WIDTH; lane++) begin : gen_ftq_commit
-        always_comb begin
-            ftq_commit_o[lane] = '0;
-            ftq_commit_o[lane].valid = rob_retire_valid[lane];
-            ftq_commit_o[lane].ftq_id = rob_retire_ftq_idx[lane];
-            ftq_commit_o[lane].slot = rob_retire_ftq_slot[lane];
-            ftq_commit_o[lane].region_last = rob_retire_ftq_last[lane];
-        end
-    end
+    assign fatal_o = 1'b0; // platform fatal isolation belongs to L11
+    assign perf_rd_data_o = '0; // CSR cost counters are internal until L7
+    always_ff @(posedge clk) if (!rst) assert (!fe_pmp_o.update && !t_pmp.update);
 
     dcache #(.CFG(CFG)) u_dcache (
         .clk(clk), .rst(rst),

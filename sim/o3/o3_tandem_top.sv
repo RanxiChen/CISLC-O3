@@ -34,6 +34,11 @@ module o3_tandem_top
     output logic [XLEN-1:0] tandem_mem_addr_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
     output logic [1:0] tandem_mem_size_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
     output logic [XLEN-1:0] tandem_mem_data_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
+    output logic [o3_cfg_pkg::O3_CFG.core.commit_width-1:0] tandem_csr_valid_o, tandem_exc_valid_o,
+    output logic [11:0] tandem_csr_addr_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
+    output logic [63:0] tandem_csr_wdata_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
+    output logic [63:0] tandem_exc_cause_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
+    output logic [63:0] tandem_exc_tval_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
     output logic [XLEN-1:0] tandem_rd_wdata_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0]
 );
     localparam int RETIRE_W = o3_cfg_pkg::O3_CFG.core.commit_width;
@@ -106,6 +111,12 @@ module o3_tandem_top
         .rresp_o(rresp), .rlast_o(rlast)
     );
     for (genvar lane = 0; lane < RETIRE_W; lane++) begin : gen_retire
+        assign tandem_csr_valid_o[lane]=retire_info[lane].csr_valid;
+        assign tandem_csr_addr_o[lane]=retire_info[lane].csr_addr;
+        assign tandem_csr_wdata_o[lane]=retire_info[lane].csr_wdata;
+        assign tandem_exc_valid_o[lane]=retire_info[lane].exc_valid;
+        assign tandem_exc_cause_o[lane]=retire_info[lane].exc_cause;
+        assign tandem_exc_tval_o[lane]=retire_info[lane].exc_tval;
         assign tandem_valid_o[lane] = retire_info[lane].valid;
         assign tandem_rd_write_o[lane] = retire_info[lane].rd_write_en;
         assign tandem_instruction_id_o[lane] = retire_info[lane].instruction_id;

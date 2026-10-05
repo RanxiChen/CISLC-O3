@@ -331,6 +331,10 @@ RetireRecord dut_record(const Vo3_tandem_top& dut, int slot, uint64_t cycle, uin
     r.pc=dut.tandem_pc_o[slot]; r.instruction=dut.tandem_instruction_o[slot];
     r.rd=dut.tandem_rd_o[slot]; r.rd_write=(dut.tandem_rd_write_o>>slot)&1;
     r.rd_wdata=dut.tandem_rd_wdata_o[slot];
+    r.csr_valid=(dut.tandem_csr_valid_o>>slot)&1; r.csr_addr=dut.tandem_csr_addr_o[slot];
+    r.csr_wdata=dut.tandem_csr_wdata_o[slot];
+    r.exc_valid=(dut.tandem_exc_valid_o>>slot)&1;
+    r.exc_cause=dut.tandem_exc_cause_o[slot]; r.exc_tval=dut.tandem_exc_tval_o[slot];
     r.mem_kind=dut.tandem_mem_kind_o[slot];
     if(r.mem_kind) {
         r.mem_addr=dut.tandem_mem_addr_o[slot];

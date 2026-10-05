@@ -1045,6 +1045,11 @@ package o3_types_pkg;
         sq_idx_t             sq_idx;
         logic [FFLAGS_W-1:0] fflags;
         sys_op_e             sys_op;
+        uop_ext_t            ext;
+        logic [31:0]         instruction;
+        preg_t               src1_preg;
+        logic [4:0]          rs1;
+        logic                complete;
         exc_info_t           exc;
         // B37：本条实际退休后的下一架构 PC。普通指令 = 原始 PC + 真实指令长度；控制流 = 真实后继
         // PC（由 BRU 解析写回 ROB）。同拍多条退休取最后一条实际退休指令的 succ_pc。

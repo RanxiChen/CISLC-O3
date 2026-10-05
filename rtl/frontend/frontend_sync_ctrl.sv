@@ -59,5 +59,24 @@ module frontend_sync_ctrl
     input  logic         pmp_update_done_i,
     output logic         f0_clear_o
 );
-    // 未实现：同步状态机。
+    typedef enum logic [1:0] {IDLE,WAIT_IDLE,WAIT_INV,DONE} state_t;
+    state_t state_q;
+    assign sync_req_ready_o=state_q==IDLE;
+    assign hold_o=state_q!=IDLE;
+    assign icache_inv_all_o=state_q==WAIT_IDLE && icache_idle_i;
+    assign sync_done_o=state_q==DONE;
+    assign f0_clear_o=state_q==DONE;
+    assign sfence_o='0; assign pmp_update_o=0; // L10
+    // N request capture; drain in-flight reads before invalidation. Edge of INV
+    // clears cache tags; next INV acknowledgement leads to a one-cycle DONE.
+    always_ff @(posedge clk_i) begin
+        if (rst_i) state_q<=IDLE;
+        else case (state_q)
+            IDLE: if (sync_req_valid_i) state_q<=WAIT_IDLE;
+            WAIT_IDLE: if (icache_idle_i) state_q<=WAIT_INV;
+            WAIT_INV: if (icache_inv_done_i) state_q<=DONE;
+            DONE: state_q<=IDLE;
+            default: state_q<=IDLE;
+        endcase
+    end
 endmodule

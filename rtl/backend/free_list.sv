@@ -37,6 +37,7 @@ module free_list
     // 整数域 p0 永久恒零且保留；FP 域没有恒零寄存器，f0 正常可写（B15）。
     localparam bit HAS_ZERO_REG = (DOMAIN == o3_types_pkg::RD_INT)
 ) (
+    input logic flush_all_i,
     input  logic clk,
     input  logic rst,
 
@@ -46,6 +47,8 @@ module free_list
     output logic [PREG_IDX_WIDTH-1:0]  alloc_preg_o [MACHINE_WIDTH-1:0],
     output logic [$clog2(NUM_PHYS_REGS+1)-1:0] free_count_o,
 
+    input logic [PREG_IDX_WIDTH-1:0] commit_new_preg_i [RELEASE_WIDTH-1:0],
+    input logic commit_write_i [RELEASE_WIDTH-1:0],
     input  logic                              release_valid_i [RELEASE_WIDTH-1:0],
     input  logic [PREG_IDX_WIDTH-1:0]  release_preg_i [RELEASE_WIDTH-1:0],
 
@@ -62,6 +65,7 @@ module free_list
     localparam int COUNT_WIDTH = $clog2(NUM_PHYS_REGS + 1);
 
     logic [NUM_PHYS_REGS-1:0] free_bitmap_q;
+    logic [NUM_PHYS_REGS-1:0] committed_free_q;
     logic [NUM_PHYS_REGS-1:0] allocation_mask_q [NUM_CHECKPOINTS-1:0];
     logic [NUM_PHYS_REGS-1:0] candidate_bitmap_after_alloc;
 
@@ -111,10 +115,19 @@ module free_list
                 free_bitmap_q[preg] <= 1'b1;
             end
             allocation_mask_q <= '{default: '0};
+            committed_free_q <= {NUM_PHYS_REGS{1'b1}} << NUM_ARCH_REGS;
         end else begin
             logic [NUM_PHYS_REGS-1:0] free_next;
             logic [NUM_PHYS_REGS-1:0] allocation_next [NUM_CHECKPOINTS-1:0];
 
+            logic [NUM_PHYS_REGS-1:0] committed_next;
+            committed_next=committed_free_q;
+            for (int lane=0;lane<RELEASE_WIDTH;lane++) if (commit_write_i[lane]) begin
+                committed_next[release_preg_i[lane]]=1;
+                committed_next[commit_new_preg_i[lane]]=0;
+            end
+            committed_next[0]=0;
+            committed_free_q<=committed_next;
             free_next = free_bitmap_q;
             allocation_next = allocation_mask_q;
 
@@ -161,6 +174,7 @@ module free_list
                 allocation_next[resolution_tag_i] = '0;
             end
 
+            if (flush_all_i) begin free_next=committed_next; allocation_next='{default:'0}; end
             free_bitmap_q <= free_next;
             allocation_mask_q <= allocation_next;
         end

@@ -71,6 +71,7 @@ module store_queue
     output logic [XLEN-1:0] drain_data_o,
     output logic [7:0] drain_mask_o,
 
+    input logic flush_all_i,
     input logic resolution_valid_i,
     input logic resolution_mispredict_i,
     input branch_tag_t resolution_tag_i,
@@ -250,6 +251,23 @@ module store_queue
             rob_idx_q <= '{default: '0};
             branch_mask_q <= '{default: '0};
             dc_inflight_q <= 1'b0;
+        end else if (flush_all_i) begin
+            int unsigned kept;
+            logic drain_fire;
+            kept=0; drain_fire=dc_drain_fire || (drain_valid_o && drain_ready_i);
+            if (DCACHE_DRAIN && t_dc_req_valid_o && t_dc_req_ready_i) dc_inflight_q<=1;
+            if (dc_drain_fire) dc_inflight_q<=0;
+            for (int entry=0;entry<DEPTH;entry++) begin
+                if (valid_q[entry] && committed_q[entry]) kept++;
+                else begin valid_q[entry]<=0; addr_valid_q[entry]<=0; data_valid_q[entry]<=0; end
+                branch_mask_q[entry]<='0;
+            end
+            tail_q<=add_idx(head_q,kept);
+            if (drain_fire) begin
+                valid_q[head_q]<=0; committed_q[head_q]<=0;
+                head_q<=add_idx(head_q,1);
+            end
+            count_q<=COUNT_WIDTH'(kept)-COUNT_WIDTH'(drain_fire);
         end else if (resolution_valid_i && resolution_mispredict_i) begin
             int unsigned kept;
             logic drain_fire;

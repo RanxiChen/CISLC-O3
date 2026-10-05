@@ -39,6 +39,7 @@ module rename_map_table
     // 整数域 x0 恒映射 p0；FP 域 f0 正常可写，不做恒零映射（B15）。
     localparam bit HAS_ZERO_REG = (DOMAIN == o3_types_pkg::RD_INT)
 ) (
+    input logic flush_all_i,
     input  logic clk,
     input  logic rst,
 
@@ -138,7 +139,15 @@ module rename_map_table
                 end
             end
 
-            if (resolution_valid_i && resolution_mispredict_i) begin
+            if (flush_all_i) begin
+                // Include MRET/other actual retirement on this same boundary.
+                for (int arch=0;arch<NUM_ARCH_REGS;arch++) begin
+                    speculative_map_q[arch] <= committed_map_q[arch];
+                    for (int lane=0;lane<COMMIT_WIDTH;lane++)
+                        if (commit_valid_i[lane] && commit_rd_write_en_i[lane] && commit_rd_i[lane]==ARCH_IDX_WIDTH'(arch))
+                            speculative_map_q[arch] <= commit_new_preg_i[lane];
+                end
+            end else if (resolution_valid_i && resolution_mispredict_i) begin
                 for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
                     speculative_map_q[arch] <= checkpoint_map_q[resolution_tag_i][arch];
                 end

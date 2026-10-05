@@ -137,6 +137,13 @@ module rob #(
     // 每条提交指令的完整信息，送 commit_ctrl
     output o3_types_pkg::rob_commit_t  t_commit_o         [RETIRE_WIDTH-1:0],
     // 提交端整体清空（异常/xRET/系统重定向）：使用 committed map 恢复（未设计）
+    input logic t_commit_block_i,
+    input logic [o3_pkg::PC_WIDTH-1:0] t_alloc_pc_i [MACHINE_WIDTH-1:0],
+    input logic [31:0] t_alloc_instruction_i [MACHINE_WIDTH-1:0],
+    input o3_types_pkg::preg_t t_alloc_src1_i [MACHINE_WIDTH-1:0],
+    input logic [4:0] t_alloc_rs1_i [MACHINE_WIDTH-1:0],
+    input logic t_succ_valid_i,
+    input o3_types_pkg::vaddr_t t_succ_pc_i,
     input  logic                       t_flush_all_i
 );
 
@@ -175,6 +182,8 @@ module rob #(
     logic [o3_pkg::ILEN-1:0]             entry_instruction_q [NUM_ROB_ENTRIES-1:0];
     logic [o3_pkg::XLEN-1:0]             entry_rd_wdata_q    [NUM_ROB_ENTRIES-1:0];
 `endif
+
+    o3_types_pkg::rob_commit_t meta_q [NUM_ROB_ENTRIES];
 
     function automatic logic [ROB_IDX_WIDTH-1:0] wrap_idx(
         input logic [ROB_IDX_WIDTH-1:0] base,
@@ -267,12 +276,13 @@ module rob #(
                     prior_idx = wrap_idx(head_q, prior);
                     if (!(entry_valid_q[prior_idx]
                        && entry_complete_q[prior_idx]
-                       && !entry_exception_q[prior_idx])) begin
+                       && !entry_exception_q[prior_idx]
+                       && (!meta_q[prior_idx].ext.serialize || (prior_idx==head_q && t_head_serial_done_i)))) begin
                         retire_prefix_valid = 1'b0;
                     end
                 end
 
-                retire_valid_o[ridx] = retire_prefix_valid && !(resolution_valid_i && resolution_mispredict_i);
+                retire_valid_o[ridx] = retire_prefix_valid && !t_commit_block_i && !(resolution_valid_i && resolution_mispredict_i);
             end
         end
     endgenerate
@@ -283,6 +293,36 @@ module rob #(
             if (retire_valid_o[port]) begin
                 retire_count = retire_count + COUNT_WIDTH'(1);
             end
+        end
+    end
+
+    always_comb begin
+        t_head_valid_o=entry_valid_q[head_q];
+        t_head_o=meta_q[head_q];
+        t_head_o.valid=t_head_valid_o;
+        t_head_o.complete=entry_complete_q[head_q];
+        t_head_o.exc.valid=entry_exception_q[head_q];
+        for (int lane=0;lane<RETIRE_WIDTH;lane++) begin
+            t_commit_o[lane]=meta_q[retire_idx_o[lane]];
+            t_commit_o[lane].valid=retire_valid_o[lane];
+            t_commit_o[lane].region_last=entry_ftq_last_q[retire_idx_o[lane]];
+        end
+    end
+    always_ff @(posedge clk) begin
+        if (rst) meta_q <= '{default:'0};
+        else begin
+            if (alloc_fire) for (int lane=0;lane<MACHINE_WIDTH;lane++) if (alloc_req_i[lane]) begin
+                meta_q[alloc_idx_o[lane]] <= '{valid:1'b1,rob_idx:o3_types_pkg::rob_idx_t'(alloc_idx_o[lane]),
+                    pc:t_alloc_pc_i[lane],inst_len:3'd4,ftq_id:alloc_ftq_idx_i[lane],slot:alloc_ftq_slot_i[lane],
+                    region_last:alloc_ftq_last_i[lane],rd_dom:o3_types_pkg::RD_INT,rd:alloc_rd_i[lane],
+                    rd_write_en:alloc_rd_write_en_i[lane],new_preg:alloc_new_dst_preg_i[lane],old_preg:alloc_old_dst_preg_i[lane],
+                    is_load:alloc_is_load_i[lane],is_store:alloc_is_store_i[lane],lq_idx:alloc_lq_idx_i[lane],sq_idx:alloc_sq_idx_i[lane],
+                    sys_op:t_alloc_ext_i[lane].sys_op,ext:t_alloc_ext_i[lane],exc:t_alloc_exc_i[lane],
+                    instruction:t_alloc_instruction_i[lane],src1_preg:t_alloc_src1_i[lane],rs1:t_alloc_rs1_i[lane],
+                    succ_pc:t_alloc_pc_i[lane]+o3_types_pkg::vaddr_t'(4),fuse_role:o3_types_pkg::FUSE_NONE,default:'0};
+            end
+            if (t_exc_valid_i) meta_q[t_exc_idx_i].exc <= t_exc_i;
+            if (t_succ_valid_i) meta_q[resolution_rob_idx_i].succ_pc <= t_succ_pc_i;
         end
     end
 
@@ -314,6 +354,9 @@ module rob #(
                 entry_rd_wdata_q[entry]    <= '0;
 `endif
             end
+        end else if (t_flush_all_i) begin
+            head_q <= '0; tail_q <= '0; free_count_q <= COUNT_WIDTH'(NUM_ROB_ENTRIES);
+            entry_valid_q <= '{default:1'b0}; entry_complete_q <= '{default:1'b0};
         end else if (resolution_valid_i && resolution_mispredict_i) begin
             int unsigned kept_count;
             kept_count = 0;
@@ -404,6 +447,10 @@ module rob #(
             end
 
             free_count_q <= free_count_q + retire_count - (alloc_fire ? alloc_req_count : COUNT_WIDTH'(0));
+            if (t_exc_valid_i) begin
+                entry_exception_q[t_exc_idx_i] <= 1'b1;
+                entry_complete_q[t_exc_idx_i] <= 1'b1;
+            end
         end
     end
 

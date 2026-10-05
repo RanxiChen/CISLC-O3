@@ -101,7 +101,8 @@ module redirect_arbiter
 );
     redirect_req_t recover_q;
     logic          recover_busy_q;
-    logic          accept_exec;
+    logic          accept_exec, accept_sys;
+    redirect_req_t sys_req;
     logic          exec_older;
     int unsigned   exec_age, recover_age;
     redirect_req_t exec_req;
@@ -121,10 +122,14 @@ module redirect_arbiter
                   || ((exec_i.ftq_id == recover_q.ftq_id)
                       && (exec_i.slot < recover_q.slot));
     end
-    assign accept_exec = !rst_i && exec_i.valid && exec_i.mispredict
+    assign accept_sys = !rst_i && sys_i.valid;
+    assign accept_exec = !accept_sys && !rst_i && exec_i.valid && exec_i.mispredict
                        && (!recover_busy_q || exec_older);
 
     always_comb begin
+        sys_req='0; sys_req.valid=accept_sys; sys_req.src=REDIR_SYS;
+        sys_req.sys_kind=sys_i.kind; sys_req.ftq_id=sys_i.ftq_id;
+        sys_req.slot=sys_i.slot; sys_req.target_pc=sys_i.target_pc; sys_req.kill_self=1;
         exec_req = '0;
         exec_req.valid = accept_exec;
         exec_req.src = REDIR_EXEC;
@@ -142,13 +147,13 @@ module redirect_arbiter
     // R0 uses the combinational request so cancellation and the new PC take
     // effect at the same edge that captures the recovery identity. During R1
     // winner_o remains the captured whole request for history/RAS correction.
-    assign winner_o = accept_exec ? exec_req : recover_q;
-    assign redirect_o = accept_exec ? exec_req : '0;
-    assign kill_o = '{valid:accept_exec, all:1'b0,
+    assign winner_o = accept_sys ? sys_req : accept_exec ? exec_req : recover_q;
+    assign redirect_o = accept_sys ? sys_req : accept_exec ? exec_req : '0;
+    assign kill_o = '{valid:(accept_exec || accept_sys), all:accept_sys,
                       ftq_id:exec_i.ftq_id, slot:exec_i.slot,
                       kill_self:1'b0};
-    assign bpu_redirect_valid_o = accept_exec;
-    assign bpu_redirect_pc_o = exec_i.redirect_pc;
+    assign bpu_redirect_valid_o = accept_exec || accept_sys;
+    assign bpu_redirect_pc_o = accept_sys ? sys_i.target_pc : exec_i.redirect_pc;
     assign snap_rd_req_o = accept_exec;
     assign snap_rd_ftq_id_o = accept_exec ? exec_i.ftq_id : recover_q.ftq_id;
     assign recover_busy_o = recover_busy_q;
@@ -161,7 +166,11 @@ module redirect_arbiter
             recover_q <= '0;
             recover_busy_q <= 1'b0;
         end else begin
-            if (accept_exec) begin
+            if (accept_sys) begin
+                // Known system entry needs no prediction in L5's sequential BPU.
+                // Future predictor committed context is integrated at L7.
+                recover_q<='0; recover_busy_q<=0;
+            end else if (accept_exec) begin
                 recover_q <= exec_req;
                 recover_busy_q <= 1'b1;
             end else if (recover_busy_q && history_done_i && ras_done_i

@@ -15,7 +15,9 @@
 struct RetireRecord {
     uint64_t cycle=0, order=0, instruction_id=0, rob_idx=0, pc=0, instruction=0;
     unsigned slot=0, rd=0, mem_kind=0, mem_size=0;
-    bool rd_write=false;
+    bool rd_write=false, csr_valid=false, exc_valid=false;
+    unsigned csr_addr=0;
+    uint64_t csr_wdata=0, exc_cause=0, exc_tval=0;
     uint64_t rd_wdata=0, mem_addr=0, mem_data=0;
 };
 inline uint64_t byte_mask(unsigned bytes) {
@@ -27,7 +29,7 @@ inline std::string record_json(const RetireRecord& r) {
         o << "\"0x" << std::hex << std::setw(digits) << std::setfill('0') << n
           << "\"" << std::dec;
     };
-    o << "{\"type\":\"retire\",\"v\":2,\"cycle\":" << r.cycle
+    o << "{\"type\":\"" << (r.exc_valid?"trap":"retire") << "\",\"v\":2,\"cycle\":" << r.cycle
       << ",\"order\":" << r.order << ",\"slot\":" << r.slot
       << ",\"instruction_id\":" << r.instruction_id << ",\"rob_idx\":" << r.rob_idx
       << ",\"pc\":"; hex(r.pc,10);
@@ -37,8 +39,12 @@ inline std::string record_json(const RetireRecord& r) {
     o << ",\"mem_kind\":\"" << (r.mem_kind==1?"load":r.mem_kind==2?"store":"none")
       << "\",\"mem_addr\":"; hex(r.mem_addr,14);
     o << ",\"mem_size\":" << r.mem_size << ",\"mem_data\":"; hex(r.mem_data,16);
-    o << ",\"fp_rd\":null,\"fp_wdata\":null,\"csr_addr\":null,\"csr_wdata\":null,"
-         "\"exc_cause\":null,\"exc_tval\":null}";
+    o << ",\"fp_rd\":null,\"fp_wdata\":null,\"csr_addr\":";
+    if(r.csr_valid) hex(r.csr_addr,3); else o << "null";
+    o << ",\"csr_wdata\":"; if(r.csr_valid) hex(r.csr_wdata,16); else o << "null";
+    o << ",\"exc_cause\":"; if(r.exc_valid) hex(r.exc_cause,16); else o << "null";
+    o << ",\"exc_tval\":"; if(r.exc_valid) hex(r.exc_tval,16); else o << "null";
+    o << "}";
     return o.str();
 }
 struct LockstepMismatch : std::runtime_error {
@@ -52,7 +58,7 @@ class SpikeLockstep {
     std::deque<std::pair<RetireRecord,RetireRecord>> history_;
   public:
     SpikeLockstep(uint64_t base, uint64_t size, uint64_t pc) {
-        cfg_.isa="rv64i"; cfg_.priv="M"; cfg_.endianness=endianness_little;
+        cfg_.isa="rv64i_zicsr_zifencei"; cfg_.priv="M"; cfg_.endianness=endianness_little;
         cfg_.pmpregions=0; cfg_.trigger_count=0; cfg_.hartids={0};
         cfg_.mem_layout={mem_cfg_t(base,size)}; cfg_.start_pc.set_global(pc);
         ram_=std::make_unique<mem_t>(size);
@@ -74,25 +80,34 @@ class SpikeLockstep {
         r.cycle=dut.cycle; r.order=dut.order; r.slot=dut.slot;
         auto* state=cpu_->get_state();
         r.pc=state->pc;
+        bool fetch_trap=false;
         try { r.instruction=cpu_->get_mmu()->load_insn(r.pc).insn.bits(); }
-        catch (const trap_t& t) {
-            throw std::runtime_error("Spike fetch trap pc="+std::to_string(r.pc)
-                                     +" cause="+std::to_string(t.cause()));
-        }
+        catch (const trap_t&) { fetch_trap=true; r.instruction=0; }
         uint64_t before=state->minstret->read();
         cpu_->step(1);
-        if(state->minstret->read()-before!=1) {
-            std::ostringstream msg;
-            msg << "Spike did not retire order=" << r.order << " pc=0x" << std::hex << r.pc
-                << " mcause=0x" << cpu_->get_csr(0x342)
-                << " mtval=0x" << cpu_->get_csr(0x343);
-            throw std::runtime_error(msg.str());
+        // step(1) returns immediately after a synchronous trap in pinned Spike.
+        // A counter write may change minstret itself, so never infer a trap from
+        // its delta for that instruction. Trap state is compared, never resynced.
+        bool counter_write=((r.instruction&0x7f)==0x73 && (r.instruction>>20)==0xb02
+                            && ((r.instruction>>12)&3));
+        if(fetch_trap || (!counter_write && state->minstret->read()==before)) {
+            r.exc_valid=true; r.exc_cause=cpu_->get_csr(0x342); r.exc_tval=cpu_->get_csr(0x343);
+            return r;
         }
         for(const auto& [key,value]:state->log_reg_write) {
             if ((key&15)==0 && (key>>4)!=0) {
                 if(r.rd_write) throw std::runtime_error("multiple Spike integer writes");
                 r.rd_write=true; r.rd=key>>4; r.rd_wdata=value.v[0];
             }
+        }
+        if((r.instruction&0x7f)==0x73 && ((r.instruction>>12)&3)) {
+            unsigned f3=(r.instruction>>12)&7, rs1=(r.instruction>>15)&31;
+            r.csr_addr=r.instruction>>20;
+            bool writes=(f3&3)==1 || rs1!=0;
+            // Match an actual CSR write event in Spike's commit log, including
+            // WARL coercion. Other implicit CSR updates are not ordinary writes.
+            if(writes) for(const auto& [key,value]:state->log_reg_write)
+                if((key&15)==4 && (key>>4)==r.csr_addr) {r.csr_valid=true;r.csr_wdata=value.v[0];}
         }
         if(state->log_mem_read.size()+state->log_mem_write.size()>1)
             throw std::runtime_error("multiple Spike memory events");
@@ -119,7 +134,15 @@ class SpikeLockstep {
         else if(d.instruction!=r.instruction) field="instruction";
         else if(d.rd_write!=r.rd_write) field="rd_write";
         else if(d.rd_write && d.rd!=r.rd) field="rd";
-        else if(d.rd_write && d.rd_wdata!=r.rd_wdata) field="rd_wdata";
+        else if(d.exc_valid!=r.exc_valid) field="exc_valid";
+        else if(d.exc_valid && d.exc_cause!=r.exc_cause) field="exc_cause";
+        else if(d.exc_valid && d.exc_tval!=r.exc_tval) field="exc_tval";
+        else if(d.rd_write && d.rd_wdata!=r.rd_wdata
+                && !(((d.instruction&0x7f)==0x73) && ((d.instruction>>12)&3)
+                     && ((d.instruction>>20)==0xb00 || (d.instruction>>20)==0xc00))) field="rd_wdata";
+        else if(d.csr_valid!=r.csr_valid) field="csr_valid";
+        else if(d.csr_valid && d.csr_addr!=r.csr_addr) field="csr_addr";
+        else if(d.csr_valid && d.csr_wdata!=r.csr_wdata) field="csr_wdata";
         else if(d.mem_kind!=r.mem_kind) field="mem_kind";
         else if(d.mem_kind && (d.mem_addr>>56 || r.mem_addr>>56 || d.mem_addr!=r.mem_addr)) field="mem_addr";
         else if(d.mem_kind && d.mem_size!=r.mem_size) field="mem_size";

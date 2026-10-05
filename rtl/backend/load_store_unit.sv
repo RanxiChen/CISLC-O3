@@ -38,6 +38,7 @@ module load_store_unit
 #(
     parameter  o3_cfg_pkg::backend_cfg_t CFG,
     parameter bit USE_DCACHE = 1'b0,
+    parameter bit CHECK_STORE_ACCESS = 1'b0, // L5 store read-for-access before retirement
     localparam int DATA_SRAM_BYTES = CFG.lsu.dtcm_bytes,                 // DTCM：现状沿用，去留未设计
     localparam logic [XLEN-1:0] DATA_SRAM_BASE = XLEN'(CFG.lsu.dtcm_base)
 ) (
@@ -87,6 +88,7 @@ module load_store_unit
 `endif
     input logic load_result_ready_i,
 
+    input logic flush_all_i,
     input logic resolution_valid_i,
     input logic resolution_mispredict_i,
     input branch_tag_t resolution_tag_i,
@@ -168,6 +170,14 @@ module load_store_unit
     logic replay_valid_q, replay_check_q, replay_service;
 
     logic pending_valid_q;
+    logic pending_store_q, pending_killed_q;
+    logic [63:0] pending_addr_q;
+    logic store_probe, store_probe_fire, store_local, bad_address;
+    assign store_local=access_in_dtcm(mem_uop_i.base_value+mem_uop_i.imm_value,size_mask(mem_uop_i.mem_size));
+    assign bad_address=USE_DCACHE && (effective_addr >> o3_types_pkg::PADDR_W)!=0;
+    assign store_probe=CHECK_STORE_ACCESS && USE_DCACHE && work_uop.valid && work_uop.is_store
+                       && !store_local && !pending_valid_q && !killed(work_uop.branch_mask) && !bad_address;
+    assign store_probe_fire=store_probe && !sq_drain_valid_i && t_dc_ld_req_ready_i[0];
     logic [INST_ID_WIDTH-1:0] pending_instruction_id_q;
 `ifdef O3_SIM
     logic [63:0] pending_kanata_id_q;
@@ -253,8 +263,8 @@ module load_store_unit
     endfunction
 
     function automatic logic killed(input branch_mask_t mask);
-        killed = resolution_valid_i && resolution_mispredict_i
-              && mask[resolution_tag_i];
+        killed = flush_all_i || (resolution_valid_i && resolution_mispredict_i
+              && mask[resolution_tag_i]);
     endfunction
 
     function automatic branch_mask_t resolved_mask(input branch_mask_t mask);
@@ -291,12 +301,12 @@ module load_store_unit
                             && (!load_result_q.valid || load_result_ready_i);
     assign load_can_request = lq_execute_valid_o && !sq_query_block_i
                             && !sq_query_forward_valid_i && !pending_valid_q
-                            && (!load_result_q.valid || load_result_ready_i);
+                            && (!load_result_q.valid || load_result_ready_i) && !bad_address;
     assign load_forward_fire = load_can_forward;
 
     // committed Store永远优先占用本拍统一请求口；完整落在DTCM窗口内才访问本地
     // SRAM，否则整笔事务交给外部memory，跨边界请求不会拆成两笔。
-    assign memory_req_valid = sq_drain_valid_i || load_can_request;
+    assign memory_req_valid = sq_drain_valid_i || load_can_request || store_probe;
     assign memory_req_write = sq_drain_valid_i;
     assign sram_req_addr = sq_drain_valid_i ? sq_drain_addr_i : effective_addr;
     assign sram_req_wdata = sq_drain_valid_i ? sq_drain_data_i : '0;
@@ -305,7 +315,7 @@ module load_store_unit
     assign memory_req_targets_dtcm = access_in_dtcm(sram_req_addr, sram_req_wmask);
     assign sram_req_valid = memory_req_valid && memory_req_targets_dtcm;
     assign sram_req_write = memory_req_write;
-    assign dcache_load_req = USE_DCACHE && load_can_request
+    assign dcache_load_req = USE_DCACHE && (load_can_request || store_probe)
                           && !sq_drain_valid_i && !memory_req_targets_dtcm;
     for (genvar port = 0; port < CFG.lsu.agu_pipes; port++) begin : g_dcache_load
         assign t_dc_ld_req_valid_o[port] = (port == 0) && dcache_load_req;
@@ -336,18 +346,22 @@ module load_store_unit
 
     // Store在SQ成功接收AGU结果后即可离开；Load在转发或目标memory请求握手后离开。
     assign mem_ready_o = !mem_uop_i.valid
-                       || (mem_uop_i.is_store && !killed(mem_uop_i.branch_mask))
+                       || (mem_uop_i.is_store && !killed(mem_uop_i.branch_mask)
+                           && (!CHECK_STORE_ACCESS || store_local || store_probe_fire || bad_address))
+                       || (bad_address && work_uop.valid)
                        || (!replay_valid_q && (replay_capture_o
                            || load_forward_fire || load_request_fire))
                        || killed(mem_uop_i.branch_mask);
     assign sq_execute_valid_o = mem_uop_i.valid && mem_uop_i.is_store
-                              && mem_ready_o && !killed(mem_uop_i.branch_mask);
+                              && mem_ready_o && !killed(mem_uop_i.branch_mask) && !bad_address;
     assign sq_execute_idx_o = mem_uop_i.sq_idx;
     assign sq_execute_addr_o = mem_uop_i.base_value + mem_uop_i.imm_value;
     assign sq_execute_data_o = mem_uop_i.store_value;
     assign sq_execute_mask_o = size_mask(mem_uop_i.mem_size);
-    assign store_complete_valid_o = sq_execute_valid_o;
-    assign store_complete_rob_idx_o = mem_uop_i.rob_idx;
+    assign store_complete_valid_o = (sq_execute_valid_o && (!CHECK_STORE_ACCESS || store_local))
+        || (memory_rsp_valid && memory_rsp_ready && pending_valid_q && pending_store_q
+            && !pending_killed_q && !killed(pending_branch_mask_q) && !memory_rsp_error);
+    assign store_complete_rob_idx_o = pending_store_q && memory_rsp_valid ? pending_rob_idx_q : mem_uop_i.rob_idx;
 
     assign dcache_load_rsp = USE_DCACHE && pending_external_q
                            && t_dc_ld_resp_i[0].valid
@@ -367,7 +381,7 @@ module load_store_unit
                             || !load_result_q.valid || load_result_ready_i;
     assign sram_rsp_ready = !pending_external_q && memory_rsp_ready;
     assign ext_rsp_ready_o = !USE_DCACHE && pending_external_q && memory_rsp_ready;
-    assign lq_response_valid_o = memory_rsp_valid && memory_rsp_ready;
+    assign lq_response_valid_o = memory_rsp_valid && memory_rsp_ready && !pending_store_q;
     assign lq_response_tag_o = pending_response_tag_q;
 
     simple_data_sram #(
@@ -392,6 +406,7 @@ module load_store_unit
             replay_check_q <= 1'b0;
             replay_uop_q <= '0;
             pending_valid_q <= 1'b0;
+            pending_store_q<=0; pending_killed_q<=0; pending_addr_q<=0;
             pending_instruction_id_q <= '0;
 `ifdef O3_SIM
             pending_kanata_id_q <= '0;
@@ -443,8 +458,9 @@ module load_store_unit
                 end
             end
 
-            if (load_request_fire) begin
+            if (load_request_fire || store_probe_fire) begin
                 pending_valid_q <= 1'b1;
+                pending_store_q<=store_probe_fire; pending_killed_q<=0; pending_addr_q<=effective_addr;
                 pending_instruction_id_q <= work_uop.instruction_id;
 `ifdef O3_SIM
                 pending_kanata_id_q <= work_uop.kanata_id;
@@ -461,8 +477,8 @@ module load_store_unit
 
             if (memory_rsp_valid && memory_rsp_ready) begin
                 pending_valid_q <= 1'b0;
-                if (pending_valid_q && lq_response_live_i
-                 && !killed(pending_branch_mask_q)) begin
+                if (pending_valid_q && !pending_store_q && !pending_killed_q && lq_response_live_i
+                 && !killed(pending_branch_mask_q) && !memory_rsp_error) begin
                     load_result_q.valid <= 1'b1;
                     load_result_q.instruction_id <= pending_instruction_id_q;
 `ifdef O3_SIM
@@ -478,6 +494,10 @@ module load_store_unit
                 end
             end
 
+            if (flush_all_i) begin
+                replay_valid_q<=0; load_result_q.valid<=0;
+                if (pending_valid_q) pending_killed_q<=1;
+            end
             if (load_forward_fire) begin
                 load_result_q.valid <= 1'b1;
                 load_result_q.instruction_id <= work_uop.instruction_id;
@@ -503,9 +523,19 @@ module load_store_unit
     assign t_dc_st_req_o = '0;
     assign t_dc_amo_req_valid_o = 1'b0;
     assign t_dc_amo_req_o = '0;
-    assign t_exc_valid_o = 1'b0;
-    assign t_exc_rob_idx_o = '0;
-    assign t_exc_o = '0;
+    always_comb begin
+        t_exc_valid_o = memory_rsp_valid && memory_rsp_ready && pending_valid_q
+                      && (pending_store_q || lq_response_live_i) && !pending_killed_q
+                      && !killed(pending_branch_mask_q) && memory_rsp_error;
+        t_exc_rob_idx_o = pending_rob_idx_q;
+        t_exc_o='{valid:t_exc_valid_o,cause:(pending_store_q ? o3_isa_pkg::EXCEPTION_CAUSE_STORE_ACCESS_FAULT
+                   : o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ACCESS_FAULT),tval:pending_addr_q};
+        if (bad_address && work_uop.valid && !killed(work_uop.branch_mask)) begin
+            t_exc_valid_o=1; t_exc_rob_idx_o=work_uop.rob_idx;
+            t_exc_o='{valid:1'b1,cause:(work_uop.is_store ? o3_isa_pkg::EXCEPTION_CAUSE_STORE_ACCESS_FAULT
+                     : o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ACCESS_FAULT),tval:effective_addr};
+        end
+    end
     assign t_pf_train_valid_o = 1'b0;
     assign t_pf_train_pc_o = '0;
     assign t_pf_train_paddr_o = '0;

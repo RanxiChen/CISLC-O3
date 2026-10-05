@@ -167,3 +167,12 @@ O3-T02 收尾（2026-10-06）：上节 15/51、1/200 是修复前历史失败。
 固定 6/6、ACT4 51/51、随机 200/200（600160 条匹配），无新 bug。
 日志 Alan `/home/chen/FUN/CISLC-O3-runs/20261006-o3t02-close/final/`；
 收尾文档提交原样复验另存 delivery/，其 sha.txt 与 commands.tsv 为准确交付证据。
+
+## 6. O3-T03 实现中（L5）
+
+接入 rename_entry_gate、commit_ctrl、csr_file、trap_ctrl；ROB 保存队头串行/异常/
+实际后继元信息；CSR 在队头一次读改写并写回，trap 不退休故障指令，MRET 自身退休。
+RAT/free list 从提交态恢复；SQ 只取消未提交项；LSU 保留已发事务的所有权并丢弃迟到结果。
+存储访问在退休前通过只读 DCache 探测确认；probe 不修改数据，成功才 complete Store。
+FENCE.I 只排空 SQ + 失效 ICache，完整数据 clean 待 L8。Spike 增加 CSR/trap 事件。
+本地 lint 待提交前检查，Alan 功能未验证，不能宣称 L5 通过。

@@ -71,10 +71,10 @@ module dispatch_stage
             is_br = uop_i[lane].valid
                  && (uop_i[lane].is_branch || uop_i[lane].is_jal || uop_i[lane].is_jalr);
             is_int = uop_i[lane].valid && uop_i[lane].is_int_uop && !is_mem && !is_br;
-            supported = is_int || is_mem || is_br;
+            supported = is_int || is_mem || is_br || uop_i[lane].ext.serialize || uop_i[lane].exception_valid;
             target_has_space = (is_int && (int_left > 0))
                             || (is_mem && (mem_left > 0))
-                            || (is_br && (br_left > 0));
+                            || (is_br && (br_left > 0)) || uop_i[lane].ext.serialize || uop_i[lane].exception_valid;
 
             if (!blocked && (lane < int'(visible_count_i))
              && uop_i[lane].valid && supported && target_has_space) begin

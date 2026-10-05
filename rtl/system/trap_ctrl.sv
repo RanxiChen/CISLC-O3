@@ -15,14 +15,14 @@
  * 仍待闭合（不在本框架冻结）：系统事件对应的 committed 预测上下文来源；入口取指的返回槽与元数据
  * 绑定；异常/中断/xRET/分支恢复同时出现时整套请求选择的信号级实现。
  *
- * 当前实现状态：空壳。只有端口与注释，没有逻辑，输出未驱动。
+ * 当前实现状态：闭环简化（L5）：M/Bare 单 hart；后续级的中断/S/U/FP 接口显式 tie-off。
  *
  * 逐周期说明（目标）：
  * - 周期 N：req_i.valid 时向 csr_file 发 csr_update，同拍组合取得 target_pc。
  * - 周期 N 上升沿：锁存 redirect；csr_file 完成架构状态更新。
  * - 周期 N+1：redirect_valid_o 有效，前端接受系统重定向。
  *
- * 本阶段不写测试代码和仿真代码。
+ * 测试：sim/cocotb/trap_ctrl/。
  */
 module trap_ctrl
     import o3_types_pkg::*;
@@ -42,5 +42,16 @@ module trap_ctrl
     output logic            redirect_valid_o,
     output vaddr_t          redirect_pc_o
 );
-    // 未实现。
+    // N: the accepted commit boundary updates CSR and cancels speculation.
+    // Edge N captures only the target. N+1 emits one system redirect; no retry.
+    assign csr_update_valid_o = req_i.valid;
+    assign csr_update_o = req_i;
+    always_ff @(posedge clk) begin
+        if (rst) begin redirect_valid_o <= 1'b0; redirect_pc_o <= '0; end
+        else begin
+            redirect_valid_o <= req_i.valid && csr_update_done_i;
+            if (req_i.valid && csr_update_done_i) redirect_pc_o <= csr_target_pc_i;
+            if (req_i.valid) assert (csr_update_done_i);
+        end
+    end
 endmodule

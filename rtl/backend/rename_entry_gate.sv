@@ -16,14 +16,14 @@
  *
  * 不负责：串行指令在 ROB 队头的执行（commit_ctrl）；前端反压（Decode Queue 满时自然反压取指）。
  *
- * 当前实现状态：空壳。只有端口与注释，没有逻辑，输出未驱动。
+ * 当前实现状态：闭环简化（L5）：M/Bare 单 hart；后续级的中断/S/U/FP 接口显式 tie-off。
  *
  * 逐周期说明（目标）：
  * - 周期 N 组合：pass_count_o = 阻塞状态 ? 0 : 截断到最老串行 uop（含）为止的前缀长度。
  * - 周期 N 上升沿：下游接受了含串行 uop 的前缀时阻塞状态置 1；serial_retire_i 或 flush_i 清 0。
  * - 周期 N+1：阻塞状态生效，年轻指令留在 Decode Queue。
  *
- * 本阶段不写测试代码和仿真代码。
+ * 测试：sim/cocotb/rename_entry_gate/。
  */
 module rename_entry_gate
     import o3_pkg::*;
@@ -47,5 +47,28 @@ module rename_entry_gate
 
     output logic                       block_younger_cycle_o
 );
-    // 未实现。
+    logic blocked_q, isolate_q;
+    always_comb begin
+        logic stopped;
+        stopped = blocked_q || isolate_q || isolate_i || wfi_stall_i || flush_i;
+        pass_count_o = '0;
+        for (int lane=0; lane<WIDTH; lane++) begin
+            if (!stopped && lane<int'(count_i)) begin
+                pass_count_o = pass_count_o + 1'b1;
+                if (uop_i[lane].ext.block_younger) stopped = 1'b1;
+            end
+        end
+        block_younger_cycle_o = blocked_q && count_i != '0;
+    end
+    always_ff @(posedge clk) begin
+        if (rst) begin blocked_q <= 1'b0; isolate_q <= 1'b0; end
+        else begin
+            if (isolate_i) isolate_q <= 1'b1;
+            if (flush_i || serial_retire_i) blocked_q <= 1'b0;
+            else for (int lane=0; lane<WIDTH; lane++)
+                if (lane<int'(accepted_count_i) && uop_i[lane].ext.block_younger)
+                    blocked_q <= 1'b1;
+            assert (accepted_count_i <= pass_count_o);
+        end
+    end
 endmodule

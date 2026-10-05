@@ -88,6 +88,10 @@ rtl/backend/load_store_unit.sv
 rtl/backend/rob.sv
 
 // ---------- 10. 后端总装 ----------
+rtl/backend/rename_entry_gate.sv
+rtl/system/csr_file.sv
+rtl/system/trap_ctrl.sv
+rtl/system/commit_ctrl.sv
 rtl/backend/backend.sv
 
 // ---------- 11. 存储层次 ----------

@@ -117,6 +117,7 @@ module decoder
     always_comb begin
         // 默认值采用“最保守不分配”策略。
         // 对当前未覆盖的指令，先不申请新物理寄存器，后续等完整解码器扩展时再细化。
+        decode_o.ext = '0;
         decode_o.rs1_read_en = 1'b0;
         decode_o.rs2_read_en = 1'b0;
         decode_o.rd_write_en = 1'b0;
@@ -405,11 +406,35 @@ module decoder
             end
 
             OPCODE_MISC_MEM: begin
-                if (funct3 == 3'b000) begin
-                    // 当前只有单个Load outstanding，Memory IQ也按序发射。FENCE先
-                    // 作为无源、无目的整数uop进入ROB并完成，保留精确程序顺序。
-                    decode_o.is_int_uop = 1'b1;
+                if (funct3==0 || funct3==1) begin
+                    decode_o.ext.sys_op = funct3==0 ? o3_types_pkg::SYSOP_FENCE : o3_types_pkg::SYSOP_FENCE_I;
+                    decode_o.ext.fence_pred = decode_i.instruction[27:24];
+                    decode_o.ext.fence_succ = decode_i.instruction[23:20];
+                    decode_o.ext.serialize = 1'b1;
+                    decode_o.ext.block_younger = 1'b1;
                     decode_o.illegal_instruction = 1'b0;
+                end
+            end
+            7'h73: begin
+                if (funct3!=0 && funct3!=4) begin
+                    decode_o.ext.csr_op = o3_types_pkg::csr_op_e'(funct3[1:0]);
+                    decode_o.ext.csr_use_imm = funct3[2];
+                    decode_o.ext.csr_addr = decode_i.instruction[31:20];
+                    decode_o.ext.fu_class = o3_types_pkg::FU_CSR;
+                    decode_o.rs1_read_en = !funct3[2];
+                    decode_o.rd_write_en = 1'b1;
+                    decode_o.illegal_instruction = 1'b0;
+                end else if (funct3==0) begin
+                    case (decode_i.instruction)
+                        32'h00000073: begin decode_o.ext.sys_op=o3_types_pkg::SYSOP_ECALL; decode_o.illegal_instruction=0; end
+                        32'h00100073: begin decode_o.ext.sys_op=o3_types_pkg::SYSOP_EBREAK; decode_o.illegal_instruction=0; end
+                        32'h30200073: begin decode_o.ext.sys_op=o3_types_pkg::SYSOP_MRET; decode_o.illegal_instruction=0; end
+                        32'h10500073: begin decode_o.ext.sys_op=o3_types_pkg::SYSOP_WFI; decode_o.illegal_instruction=0; end
+                        default: ;
+                    endcase
+                end
+                if (!decode_o.illegal_instruction) begin
+                    decode_o.ext.serialize=1; decode_o.ext.block_younger=1;
                 end
             end
 
