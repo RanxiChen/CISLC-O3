@@ -164,6 +164,7 @@ module ftq
 
     // D24 取消边界与年龄参照；恢复 R0 读取出错区域的 ras_before={top_idx,count,top_addr}（D29）
     input  o3_types_pkg::fe_kill_t          kill_i,
+    input  o3_types_pkg::redirect_req_t    winner_i,
     output o3_types_pkg::ftq_id_t           head_id_o,
     input  o3_types_pkg::ftq_id_t           ras_ckpt_rd_id_i,
     output o3_types_pkg::ras_ckpt_t         ras_ckpt_rd_o,
@@ -201,6 +202,7 @@ module ftq
         ftq_id_t id;
         bpu_pred_t fast_pred, final_pred;
         ras_ckpt_t ras_ckpt;
+        vaddr_t slow_next_pc, final_next_pc;
         tage_meta_t tage_meta;
         logic slow_done, demand_issued, pf_issued, commit_last;
         slot_mask_t resolved_br, resolved_taken, committed_br, committed_taken;
@@ -246,7 +248,7 @@ module ftq
             else $fatal(1, "FTQ depth exceeds ftq_id_t index width");
     end
 
-    // Legacy BPU/IFU ports remain only because bpu.sv imports ftq_pkg.
+    // Legacy BPU/IFU ports are retained for the historical FTQ interface.
     // They never own target-FTQ state; the target frontend leaves them open.
     assign bpu_ready_o = 1'b0;
     assign ifu_valid_o = 1'b0;
@@ -300,6 +302,7 @@ module ftq
             brief_o.ftq_id = brief_rd_id_i;
             brief_o.slow_done = entries_q[brief_rd_id_i.idx].slow_done;
             brief_o.pred = entries_q[brief_rd_id_i.idx].final_pred;
+            brief_o.ras_ckpt = entries_q[brief_rd_id_i.idx].ras_ckpt;
         end
         ras_ckpt_rd_o = '0;
         if (int'(ras_ckpt_rd_id_i.idx) < DEPTH &&
@@ -356,9 +359,17 @@ module ftq
             entries_d[slow_i.ftq_id.idx].valid &&
             entries_d[slow_i.ftq_id.idx].id == slow_i.ftq_id) begin
             entries_d[slow_i.ftq_id.idx].final_pred = slow_i.pred;
+            entries_d[slow_i.ftq_id.idx].slow_next_pc = slow_i.pred.next_pc;
+            entries_d[slow_i.ftq_id.idx].final_next_pc = slow_i.pred.next_pc;
             entries_d[slow_i.ftq_id.idx].tage_meta = slow_i.tage_meta;
             entries_d[slow_i.ftq_id.idx].slow_done = 1'b1;
         end
+
+        if (kill_i.valid && winner_i.valid && !winner_i.kill_self
+            && int'(winner_i.ftq_id.idx) < DEPTH
+            && entries_d[winner_i.ftq_id.idx].valid
+            && entries_d[winner_i.ftq_id.idx].id == winner_i.ftq_id)
+            entries_d[winner_i.ftq_id.idx].final_next_pc = winner_i.target_pc;
 
         if (resolve_i.valid && int'(resolve_i.ftq_id.idx) < DEPTH &&
             entries_d[resolve_i.ftq_id.idx].valid &&
@@ -441,7 +452,16 @@ module ftq
             keep_count = int'(count_d);
             if (kill_i.all) keep_count = protected_count;
             else if (boundary_pos >= 0) begin
-                keep_count = boundary_pos + (kill_i.kill_self ? 0 : 1);
+                keep_count = 0;
+                for (int age = 0; age < DEPTH; age++) begin
+                    if (age < int'(count_d)) begin
+                        slot_idx = add_idx(head_d, age);
+                        if (!fe_killed_by(kill_i, entries_d[slot_idx].id,
+                                         (entries_d[slot_idx].id == kill_i.ftq_id ? kill_i.slot : fetch_slot_t'(0)),
+                                         entries_d[head_d].id))
+                            keep_count++;
+                    end
+                end
                 if (keep_count < protected_count) keep_count = protected_count;
             end
             for (int age = 0; age < DEPTH; age++) begin
@@ -504,6 +524,7 @@ module ftq
                 entries_d[alloc_q].id = alloc_ftq_id_o;
                 entries_d[alloc_q].fast_pred = alloc_pred_i;
                 entries_d[alloc_q].final_pred = alloc_pred_i;
+                entries_d[alloc_q].final_next_pc = alloc_pred_i.next_pc;
                 entries_d[alloc_q].ras_ckpt = alloc_ras_ckpt_i;
                 gen_d[alloc_q] = alloc_ftq_id_o.gen;
                 alloc_d = advance(alloc_q);
@@ -561,7 +582,18 @@ module ftq
     always_comb begin
         perf_o = '0;
         if (!rst_i) begin
-            perf_o[PE_FTQ_FULL_CYCLE] = PERF_INC_W'(count_q == count_t'(DEPTH));
+            perf_o[PE_FTQ_FULL_CYCLE] = PERF_INC_W'(alloc_valid_i && !alloc_ready_o);
+            if (train_fire) begin
+                perf_o[PE_CMT_REGION] = 1;
+                case ({entries_q[head_q].fast_pred.next_pc == entries_q[head_q].final_next_pc,
+                       entries_q[head_q].slow_next_pc == entries_q[head_q].final_next_pc})
+                    2'b11: perf_o[PE_CMT_FAST_OK_SLOW_OK] = 1;
+                    2'b10: perf_o[PE_CMT_FAST_OK_SLOW_BAD] = 1;
+                    2'b01: perf_o[PE_CMT_FAST_BAD_SLOW_OK] = 1;
+                    2'b00: perf_o[PE_CMT_FAST_BAD_SLOW_BAD] = 1;
+                endcase
+                perf_o[PE_CMT_MISPRED_REGION] = PERF_INC_W'(entries_q[head_q].mispredicted);
+            end
             perf_o[PE_FTQ_EMPTY_CYCLE] = PERF_INC_W'(count_q == '0);
         end
     end

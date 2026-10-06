@@ -64,7 +64,7 @@ module ubtb
         vaddr_t      target;
         logic [1:0]  br_ctr;
         logic        cfi_is_rvc; // L7b reserved
-        logic        \edge ;       // L7b reserved
+        logic        is_edge;       // L7b reserved
     } ubtb_entry_t;
 
     ubtb_entry_t entry_q [ENTRIES];
@@ -138,7 +138,7 @@ module ubtb
                     pred_o.ras_action = selected.ras_action;
                     pred_o.raw_pred_taken = 1'b1;
                     pred_o.cfi_is_rvc = selected.cfi_is_rvc;
-                    pred_o.\edge  = selected.\edge ;
+                    pred_o.is_edge = selected.is_edge;
                     pred_o.cfi_target = selected.target;
                     pred_o.next_pc = selected.target;
                 end
@@ -182,7 +182,7 @@ module ubtb
             updated = '0;
             if (matched) updated = entry_q[selected_idx];
             updated.cfi_is_rvc = 1'b0;
-            updated.\edge  = 1'b0;
+            updated.is_edge = 1'b0;
             updated.tag = train_tag;
             updated.br_mask |= train_i.br_commit_mask;
             if (train_i.cfi_valid && train_i.cfi_type != CFI_NONE) begin

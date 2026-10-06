@@ -218,7 +218,6 @@ module frontend
     bpu #(.CFG(CFG)) u_bpu (
         .clk_i                   (clk_i),
         .rst_i                   (rst_i),
-        // 旧合同端口不连接
         .boot_pc_i               (boot_pc_i),
         .alloc_valid_o           (alloc_valid),
         .alloc_ready_i           (alloc_ready),
@@ -298,6 +297,7 @@ module frontend
         .resolve_i             (exec_resolve_i),
         .commit_i              (commit_i),
         .kill_i                (fe_kill),
+        .winner_i              (arb_winner),
         .head_id_o             (ftq_head_id),
         .ras_ckpt_rd_id_i      (arb_snap_rd_ftq_id),
         .ras_ckpt_rd_o         (ftq_ras_ckpt_rd),
@@ -320,7 +320,7 @@ module frontend
         .rst_i               (rst_i),
         .sys_i               (sys_redirect_i),
         .exec_i              (exec_resolve_i),
-        .predecode_i         (f1_predecode),
+        .predecode_i         ('0), // T05c connects the registered F1 request
         .slow_i              (bpu_override),
         .ftq_head_i          (ftq_head_id),
         .winner_o            (arb_winner),

@@ -1,33 +1,6 @@
-/**
- * 慢预测检查 —— 对齐主 BTB/TAGE/RAS 结果，确认或覆盖快预测
- *
- * 作用：
- * - 在慢预测出口把主 BTB 的位置/目标/类型与 TAGE 的 8 槽位方向对齐，按程序顺序
- *   选出该区域的有效控制流出口，生成慢预测结果 slow_o 写回 FTQ（第 4.1、6.3 节）。
- * - 与该区域的快预测比较；路径改变时发出 D24 慢覆盖请求 override_o。
- *
- * 目标机制：
- * - 已定：TAGE 给方向，主 BTB 给位置和唯一目标；taken 但目标归属槽位不匹配时
- *   target_missing=1、继续顺序路径（D05/D06，第 4.3 节）。
- * - 已定：return 优先 RAS 栈顶，空栈回退 BTB（第 6.2 节）。
- * - 已定（第 6.3 节）：保留 A 的原始 16B 数据，修正 A 的预测元数据与有效范围；路径
- *   改变时杀掉 A 之后的错误路径，恢复到 A 的检查点并应用修正结果。override 请求的
- *   kill_self=0（只清除其后），历史注入按修正后的 taken 条件分支决定。
- * - 已定：慢预测查询使用该区域保存的 C 与 RAS 上下文（D23，第 6.2 节）。D29 后 RAS 上下文即
- *   fast_ras_ckpt_i（该区域操作前的 {top_idx,count,top_addr}）：count!=0 时 return 取 top_addr，
- *   count==0 回退 BTB；不使用已前进到其他块的当前栈顶（原 ras_top_* 端口删除）。
- * - 慢预测完成（slow_o.valid）是返回队列出队条件 slow_done 的来源（D16）。
- *
- * 细节待定：
- * - 快慢比较的精确口径（第 12.2 节四类计数），寄存边界统一口径（第 4.1 节）。
- *
- * 当前实现状态：空壳。只有端口与注释，没有任何逻辑，输出未驱动。
- *
- * 目标周期行为：
- * - 周期 N：主 BTB 与 TAGE 对同一区域的结果同时有效，组合选择出口并与 fast_i 比较。
- * - 周期 N 上升沿：slow_o 写入 FTQ；override_o 送 redirect_arbiter。
- *
- * 本阶段不写测试代码和仿真代码。
+/** L7a combinational slow check. Input validity is owned by BPU p2;
+ * kill_i never gates these outputs, avoiding BPU -> arbiter -> kill loops.
+ * Ownerless candidates follow the sequential path (U1/U17).
  */
 module bpu_slow_check
     import o3_types_pkg::*;
@@ -55,5 +28,74 @@ module bpu_slow_check
 
     output fe_perf_t      perf_o
 );
-    // 未实现：出口选择、快慢比较、覆盖请求生成。
+    bpu_pred_t pred;
+    slot_mask_t candidates;
+    logic found, disagree;
+    fetch_slot_t chosen;
+    always_comb begin
+        pred = '0;
+        pred.region_base = fast_i.region_base;
+        pred.entry_slot = fast_i.entry_slot;
+        pred.next_pc = fast_i.region_base + vaddr_t'(CFG.fetch.region_bytes);
+        candidates = '0;
+        found = 1'b0;
+        chosen = '0;
+        if (btb_i.hit) begin
+            for (int slot=0; slot<REGION_SLOTS; slot++) begin
+                if (slot >= int'(fast_i.entry_slot)) begin
+                    pred.br_mask[slot] = btb_i.br_mask[slot];
+                    pred.jal_mask[slot] = btb_i.jal_mask[slot];
+                    candidates[slot] = (btb_i.br_mask[slot] && tage_i.taken_mask[slot])
+                                     || btb_i.jal_mask[slot]
+                                     || (btb_i.cfi_type == CFI_JALR && btb_i.cfi_slot == fetch_slot_t'(slot));
+                end
+                if (!found && candidates[slot]) begin
+                    found = 1'b1;
+                    chosen = fetch_slot_t'(slot);
+                end
+            end
+            if (found) begin
+                pred.raw_pred_taken = 1'b1;
+                if (chosen == btb_i.cfi_slot && btb_i.cfi_type != CFI_NONE) begin
+                    pred.cfi_valid = 1'b1;
+                    pred.cfi_slot = chosen;
+                    pred.cfi_type = btb_i.cfi_type;
+                    pred.ras_action = btb_i.ras_action;
+                    pred.cfi_target = btb_i.target;
+                    if ((btb_i.ras_action == RAS_POP || btb_i.ras_action == RAS_POP_PUSH)
+                        && fast_ras_ckpt_i.count != '0)
+                        pred.cfi_target = fast_ras_ckpt_i.top_addr;
+                    pred.next_pc = pred.cfi_target;
+                end else pred.target_missing = 1'b1;
+            end
+        end
+        disagree = (pred.cfi_valid != fast_i.cfi_valid)
+                 || (pred.cfi_valid && (pred.cfi_slot != fast_i.cfi_slot
+                     || pred.cfi_type != fast_i.cfi_type || pred.ras_action != fast_i.ras_action
+                     || pred.next_pc != fast_i.next_pc))
+                 || (!pred.cfi_valid && pred.next_pc != fast_i.next_pc);
+        slow_o = '0;
+        override_o = '0;
+        perf_o = '0;
+        if (fast_valid_i && !rst_i) begin
+            slow_o.valid = 1'b1;
+            slow_o.ftq_id = fast_ftq_id_i;
+            slow_o.pred = pred;
+            slow_o.tage_meta = tage_i.meta;
+            slow_o.override = disagree;
+            override_o.valid = disagree;
+            override_o.src = REDIR_SLOW;
+            override_o.ftq_id = fast_ftq_id_i;
+            override_o.slot = pred.cfi_valid ? pred.cfi_slot : fetch_slot_t'(REGION_SLOTS-1);
+            override_o.target_pc = pred.next_pc;
+            override_o.hist_inject = pred.cfi_valid && pred.cfi_type == CFI_BR;
+            override_o.hist_branch_pc = pred.region_base + vaddr_t'(2 * int'(pred.cfi_slot));
+            override_o.hist_target_pc = pred.cfi_target;
+            override_o.ras_fix = pred.cfi_valid ? pred.ras_action : RAS_NONE;
+            override_o.ras_push_addr = pred.region_base + vaddr_t'(2 * int'(pred.cfi_slot) + 4);
+            perf_o[PE_BTB_HIT] = PERF_INC_W'(btb_i.hit);
+            perf_o[PE_TARGET_MISSING] = PERF_INC_W'(pred.target_missing);
+            perf_o[PE_FAST_SLOW_DISAGREE] = PERF_INC_W'(disagree);
+        end
+    end
 endmodule

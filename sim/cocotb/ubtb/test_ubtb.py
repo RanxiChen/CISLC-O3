@@ -84,7 +84,7 @@ class Bench:
         hit, ready, pred, lookup_inc, hit_inc = self.model.visible(inputs)
         expected = Observed(hit, ready, pred, lookup_inc, hit_inc)
         assert int(self.dut.reserved_rvc_o.value) == 0
-        assert int(self.dut.reserved_edge_o.value) == 0
+        assert int(self.dut.reserved_is_edge_o.value) == 0
         context = f"seed={self.seed} cycle={self.cycle} {phase} inputs={inputs}"
         assert actual == expected, f"{context}: got={actual}, expected={expected}"
 

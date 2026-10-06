@@ -173,7 +173,7 @@ package o3_types_pkg;
         vaddr_t      cfi_target;
         vaddr_t      next_pc;         // 实际采用的下一区域入口
         logic        cfi_is_rvc;       // L7b reserved; L7a always zero
-        logic        \edge ;             // L7b reserved; L7a always zero
+        logic        is_edge;             // L7b reserved; L7a always zero
     } bpu_pred_t;
 
     // 主 BTB 两拍查询结果（第 4.2 节）。
@@ -186,7 +186,7 @@ package o3_types_pkg;
         ras_action_e ras_action;
         vaddr_t      target;
         logic        cfi_is_rvc;       // L7b reserved; L7a always zero
-        logic        \edge ;             // L7b reserved; L7a always zero
+        logic        is_edge;             // L7b reserved; L7a always zero
     } btb_resp_t;
 
     // TAGE 三拍查询结果：8 槽位方向（D04）。
@@ -220,7 +220,7 @@ package o3_types_pkg;
         vaddr_t      cfi_target;
         logic        mispredicted;
         logic        cfi_is_rvc;       // L7b reserved; L7a always zero
-        logic        \edge ;             // L7b reserved; L7a always zero
+        logic        is_edge;             // L7b reserved; L7a always zero
     } bpu_train_t;
 
     // ============================================================
@@ -249,6 +249,7 @@ package o3_types_pkg;
         ftq_id_t    ftq_id;
         logic       slow_done;
         bpu_pred_t  pred;
+        ras_ckpt_t  ras_ckpt;
     } ftq_pred_brief_t;
 
     // 返回队列出队给 F0 的原始块。

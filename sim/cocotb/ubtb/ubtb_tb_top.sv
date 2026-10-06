@@ -38,7 +38,7 @@ module ubtb_tb_top
 
     output logic [PERF_INC_W-1:0]   perf_lookup_o,
     output logic [PERF_INC_W-1:0]   perf_hit_o,
-    output logic reserved_rvc_o, reserved_edge_o,
+    output logic reserved_rvc_o, reserved_is_edge_o,
     output logic [31:0]             cfg_region_bytes_o,
     output logic [31:0]             cfg_entries_o,
     output logic [31:0]             cfg_tag_bits_o
@@ -86,5 +86,5 @@ module ubtb_tb_top
     assign cfg_entries_o = O3_CFG.fe.ubtb.entries;
     assign cfg_tag_bits_o = O3_CFG.fe.ubtb.tag_bits;
     assign reserved_rvc_o = pred.cfi_is_rvc;
-    assign reserved_edge_o = pred.\edge ;
+    assign reserved_is_edge_o = pred.is_edge;
 endmodule

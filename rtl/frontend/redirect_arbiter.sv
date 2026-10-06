@@ -1,65 +1,8 @@
-/**
- * 本次实现（O3-T03）：L5：系统重定向最高优先级、全局取消；已知目标直接恢复顺序取指，预测器提交上下文待 L7。
- * 重定向仲裁器 —— D24 统一选择唯一赢家并控制恢复
- *
- * 作用：
- * - 收集四类重定向来源：提交端系统重定向、执行分支纠错、F1 预解码修正、慢预测覆盖。
- * - 选出唯一赢家，整份请求驱动 BPU 新 PC、取消边界广播、历史/RAS 恢复（RAS 按 D29 栈顶修复）。
- * - 锁存恢复过程直到历史与 RAS 恢复完成，期间停止新预测。
- *
- * 目标机制（D24，已定）：
- * 1) 先剔除已被取消或动态身份失效的请求。
- * 2) 提交端已正式接受的系统重定向优先；尚未到提交边界的年轻异常不能借用此优先级。
- * 3) 其余按程序顺序选最老：年龄由动态 FTQ 身份与块内槽位决定，相对 ftq_head_i
- *    处理环形回绕；不按 PC 数值比较。
- * 4) 同一位置：执行 > 预解码 > 慢预测（redirect_src_e 编码即此优先级）。
- * - 先产生独热赢家，再选整份请求；target、清除边界、快照引用、RAS 恢复信息不得
- *   各自用不一致的 mux 优先级。使用 Mux1H 时选择信号必须已是独热。
- * - 接受同拍：kill_o 广播，被清除的年轻路径不得继续分配、交付或修改推测状态。
- *   已被 ICache 接受的错误路径请求按 D17 完成并丢弃返回。
- * - 恢复期间收到仍有效且更老的请求：替换并重新恢复到更老检查点；同位置由更高
- *   优先级来源覆盖；被替换的旧恢复不得在随后完成时覆盖新状态。
- * - 执行纠错立即触发，不等待提交；预测表仍提交训练（D08）。
- * - Flow 参考教训（前端基线 6.5 节）：Breeze 提交 d951f6ae 的固定阶段优先级不能直接
- *   套用；这里按程序年龄仲裁。
- *
- * 普通分支恢复时序目标（D29，从前端接受重定向起算）：
- * - R0：接受唯一赢家，kill_o 广播，发起 E/C 快照与 ras_before 宽读取；
- * - R1：快照返回，恢复并修正 E/C 与 RAS（RAS 双写：栈顶修复 + 正确 call 压栈）；
- * - R2：BPU 从 target_pc 发起正常预测。
- * 恢复访问优先于竞争的提交训练。恢复工作量不随错误路径 push/pop 数增长。
- * 恢复身份：ras_recover_id_o / history 恢复均绑定赢家 ftq_id；被替换的旧恢复返回的 done
- * 不得错误解除阻塞（比对 ras_done_id_i）。
- *
- * 系统重定向（B26/B27/B30、前端 16.4）：
- * - 入口 PC 与新特权/翻译上下文可用后，允许在 N+1 发起入口首笔取指，与历史/RAS 恢复解耦，
- *   不要求先用 TAGE/RAS 预测这个已知地址；恢复中的旧历史/RAS 不得作为新上下文使用。
- * - 这条解耦只用于系统入口，不得成为普通分支恢复的降级路径。
- * - 仍待闭合（不在本框架冻结）：系统事件对应的 committed 预测上下文来源、FTQ 已释放或空 ROB
- *   时如何取得该边界、入口取指如何预留返回槽并在恢复后绑定预测元数据。未选择清空 RAS、
- *   独立 committed RAS 或复制 BOOM 系统 flush 清零历史。
- *
- * 细节待定：
- * - 字段编码；恢复控制握手的具体信号。
- * - 前后端各自的赢家归属：执行与提交两路都来自后端，后端自身的 checkpoint 恢复与
- *   这里的前端恢复如何保持同一取消边界，接口归属未设计（redirect_o 先作为后端观测口）。
- * - 系统重定向的入口 PC 由后端 trap_ctrl/csr_file 计算（B26/B27），这里只接收已形成的请求。
- *
- * 当前实现状态：闭环简化（L2 执行重定向）。
- * - 本级只接受 exec_i 的误预测；sys/predecode/slow 来源保持未实现。
- * - R0 同拍广播 kill、重定向 PC 并发起快照读取；锁存整份请求。
- * - R1 等待匹配身份的 history/RAS 完成；R2 解除 recover_busy，BPU 从目标继续分配。
- * - busy 期间仍有效且更老的执行纠错按 FTQ 环形年龄/块内槽位替换恢复（D24）；
- *   单 BRU 的解析顺序可能因操作数等待而乱序，不能据此丢弃更老解析。
- *
- * 目标周期行为：
- * - 周期 N 组合：比较所有有效请求，形成独热赢家；kill_o 与 bpu_redirect_* 有效。
- * - 周期 N 上升沿：锁存赢家，发起快照读与 ras_before 读；recover_busy_o 置 1。
- * - 周期 N+1（R1）：快照返回，branch_history 与 RAS 恢复修正；history_done_i && ras_done_i
- *   且 done 身份匹配当前赢家时，上升沿清除 busy。
- * - 周期 N+2（R2）：BPU 从 target_pc 恢复正常预测。
- *
- * 测试：sim/cocotb/branch_recovery/；多来源年龄仲裁不在本级测试范围。
+/** L7a D24: sys first, then oldest (FTQ head-relative age, slot),
+ * ties EXEC > PREDECODE > SLOW. Acceptance broadcasts one whole request.
+ * A held recovery is replaced only by sys, an older request, or a higher
+ * priority request at the same position. Events count acceptance, not holds.
+ * System redirects retain the L5 known-entry behavior (spec section 7).
  */
 module redirect_arbiter
     import o3_types_pkg::*;
@@ -100,86 +43,88 @@ module redirect_arbiter
 
     output fe_perf_t       perf_o
 );
-    redirect_req_t recover_q;
-    logic          recover_busy_q;
-    logic          accept_exec, accept_sys;
-    redirect_req_t sys_req;
-    logic          exec_older;
-    int unsigned   exec_age, recover_age;
-    redirect_req_t exec_req;
+    redirect_req_t recover_q, exec_req, sys_req, candidate;
+    logic recover_busy_q, accept;
 
-    // Live FTQ entries are ordered relative to the current head, including
-    // wraparound. Generation is part of identity, never an age counter.
-    // Within a region, use its slot; a repeated resolution cannot replace
-    // itself. The backend filters resolutions killed by older branches.
-    always_comb begin
-        exec_age = int'(exec_i.ftq_id.idx) >= int'(ftq_head_i.idx)
-                 ? int'(exec_i.ftq_id.idx) - int'(ftq_head_i.idx)
-                 : int'(exec_i.ftq_id.idx) + CFG.ftq.depth - int'(ftq_head_i.idx);
-        recover_age = int'(recover_q.ftq_id.idx) >= int'(ftq_head_i.idx)
-                    ? int'(recover_q.ftq_id.idx) - int'(ftq_head_i.idx)
-                    : int'(recover_q.ftq_id.idx) + CFG.ftq.depth - int'(ftq_head_i.idx);
-        exec_older = (exec_age < recover_age)
-                  || ((exec_i.ftq_id == recover_q.ftq_id)
-                      && (exec_i.slot < recover_q.slot));
-    end
-    assign accept_sys = !rst_i && sys_i.valid;
-    assign accept_exec = !accept_sys && !rst_i && exec_i.valid && exec_i.mispredict
-                       && (!recover_busy_q || exec_older);
+    function automatic logic older_or_higher(input redirect_req_t lhs,
+                                             input redirect_req_t rhs);
+        return fe_age(lhs.ftq_id, lhs.slot, ftq_head_i) < fe_age(rhs.ftq_id, rhs.slot, ftq_head_i)
+            || (lhs.ftq_id == rhs.ftq_id && lhs.slot == rhs.slot && lhs.src > rhs.src);
+    endfunction
 
     always_comb begin
-        sys_req='0; sys_req.valid=accept_sys; sys_req.src=REDIR_SYS;
-        sys_req.sys_kind=sys_i.kind; sys_req.ftq_id=sys_i.ftq_id;
-        sys_req.slot=sys_i.slot; sys_req.target_pc=sys_i.target_pc; sys_req.kill_self=1;
+        sys_req = '0;
+        sys_req.valid = sys_i.valid;
+        sys_req.src = REDIR_SYS;
+        sys_req.sys_kind = sys_i.kind;
+        sys_req.ftq_id = sys_i.ftq_id;
+        sys_req.slot = sys_i.slot;
+        sys_req.kill_self = 1'b1;
+        sys_req.target_pc = sys_i.target_pc;
         exec_req = '0;
-        exec_req.valid = accept_exec;
+        exec_req.valid = exec_i.valid && exec_i.mispredict;
         exec_req.src = REDIR_EXEC;
         exec_req.ftq_id = exec_i.ftq_id;
         exec_req.slot = exec_i.slot;
-        exec_req.kill_self = 1'b0;
         exec_req.target_pc = exec_i.redirect_pc;
-        exec_req.hist_inject = (exec_i.cfi_type == CFI_BR) && exec_i.actual_taken;
+        exec_req.hist_inject = exec_i.cfi_type == CFI_BR && exec_i.actual_taken;
         exec_req.hist_branch_pc = exec_i.branch_pc;
         exec_req.hist_target_pc = exec_i.actual_target;
         exec_req.ras_fix = exec_i.ras_action;
         exec_req.ras_push_addr = exec_i.branch_pc + vaddr_t'(exec_i.inst_len);
+        candidate = '0;
+        if (slow_i.valid) candidate = slow_i;
+        if (predecode_i.valid && (!candidate.valid || older_or_higher(predecode_i, candidate)))
+            candidate = predecode_i;
+        if (exec_req.valid && (!candidate.valid || older_or_higher(exec_req, candidate)))
+            candidate = exec_req;
+        if (sys_req.valid) candidate = sys_req;
+        accept = !rst_i && candidate.valid && (candidate.src == REDIR_SYS
+                  || !recover_busy_q || older_or_higher(candidate, recover_q));
     end
-
-    // R0 uses the combinational request so cancellation and the new PC take
-    // effect at the same edge that captures the recovery identity. During R1
-    // winner_o remains the captured whole request for history/RAS correction.
-    assign winner_o = accept_sys ? sys_req : accept_exec ? exec_req : recover_q;
-    assign redirect_o = accept_sys ? sys_req : accept_exec ? exec_req : '0;
-    assign kill_o = '{valid:(accept_exec || accept_sys), all:accept_sys,
-                      ftq_id:exec_i.ftq_id, slot:exec_i.slot,
-                      kill_self:1'b0};
-    assign bpu_redirect_valid_o = accept_exec || accept_sys;
-    assign bpu_redirect_pc_o = accept_sys ? sys_i.target_pc : exec_i.redirect_pc;
-    assign snap_rd_req_o = accept_exec;
-    assign snap_rd_ftq_id_o = accept_exec ? exec_i.ftq_id : recover_q.ftq_id;
+    assign winner_o = accept ? candidate : recover_q;
+    assign redirect_o = accept ? candidate : '0;
+    assign kill_o = '{valid:accept, all:(accept && candidate.src == REDIR_SYS),
+                      ftq_id:candidate.ftq_id, slot:candidate.slot,
+                      kill_self:candidate.kill_self};
+    assign bpu_redirect_valid_o = accept;
+    assign bpu_redirect_pc_o = candidate.target_pc;
+    assign snap_rd_req_o = accept && candidate.src != REDIR_SYS;
+    assign snap_rd_ftq_id_o = snap_rd_req_o ? candidate.ftq_id : recover_q.ftq_id;
     assign recover_busy_o = recover_busy_q;
     assign ras_recover_ckpt_o = ftq_ras_ckpt_i;
     assign ras_recover_id_o = recover_q.ftq_id;
-    assign perf_o = '0;
 
     always_ff @(posedge clk_i) begin
         if (rst_i) begin
             recover_q <= '0;
             recover_busy_q <= 1'b0;
-        end else begin
-            if (accept_sys) begin
-                // Known system entry needs no prediction in L5's sequential BPU.
-                // Future predictor committed context is integrated at L7.
-                recover_q<='0; recover_busy_q<=0;
-            end else if (accept_exec) begin
-                recover_q <= exec_req;
-                recover_busy_q <= 1'b1;
-            end else if (recover_busy_q && history_done_i && ras_done_i
-                      && ras_done_id_i == recover_q.ftq_id) begin
+        end else if (accept) begin
+            if (candidate.src == REDIR_SYS) begin
                 recover_q <= '0;
                 recover_busy_q <= 1'b0;
+            end else begin
+                recover_q <= candidate;
+                recover_busy_q <= 1'b1;
+            end
+        end else if (recover_busy_q && history_done_i && ras_done_i
+                     && ras_done_id_i == recover_q.ftq_id) begin
+            recover_q <= '0;
+            recover_busy_q <= 1'b0;
+        end
+    end
+    always_comb begin
+        perf_o = '0;
+        if (!rst_i) begin
+            perf_o[PE_RECOVER_CYCLE] = PERF_INC_W'(recover_busy_o);
+            if (accept) begin
+                case (candidate.src)
+                    REDIR_SLOW: perf_o[PE_SLOW_OVERRIDE] = 1;
+                    REDIR_PREDECODE: perf_o[PE_PREDECODE_REDIRECT] = 1;
+                    REDIR_EXEC: perf_o[PE_REDIRECT_EXEC] = 1;
+                    REDIR_SYS: perf_o[PE_REDIRECT_SYS] = 1;
+                endcase
             end
         end
     end
-
 endmodule

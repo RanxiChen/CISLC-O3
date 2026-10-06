@@ -35,7 +35,7 @@ module main_btb_tb_top
     input  logic [1:0]             train_ras_action_i,
     input  logic [VADDR_W-1:0]     train_cfi_target_i,
 
-    output logic reserved_rvc_o, reserved_edge_o,
+    output logic reserved_rvc_o, reserved_is_edge_o,
     output logic [31:0]             cfg_region_bytes_o,
     output logic [31:0]             cfg_sets_o,
     output logic [31:0]             cfg_ways_o,
@@ -78,5 +78,5 @@ module main_btb_tb_top
     assign cfg_ways_o = O3_CFG.fe.btb.ways;
     assign cfg_tag_bits_o = O3_CFG.fe.btb.tag_bits;
     assign reserved_rvc_o = resp.cfi_is_rvc;
-    assign reserved_edge_o = resp.\edge ;
+    assign reserved_is_edge_o = resp.is_edge;
 endmodule

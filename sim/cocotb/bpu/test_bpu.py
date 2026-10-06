@@ -1,98 +1,195 @@
-"""BPU L1 PC, allocation, and no-history/RAS contract."""
+"""L7a public BPU timing, training, RAS/history side effects and kill tests."""
 import os
 import random
-
 import cocotb
-from cocotb.triggers import ReadOnly, Timer
-from bpu_model import BpuModel, Inputs
-
-
-def val(signal):
-    return int(signal.value)
+from cocotb.triggers import Timer
+from bpu_model import Records, encode, decode
 
 
 class Bench:
-    def __init__(self, dut, seed):
-        self.dut = dut
-        self.seed = seed
-        self.cycle = 0
-        self.model = BpuModel(val(dut.cfg_region_bytes_o), len(dut.boot_pc_i))
+    def __init__(self, d):
+        self.d = d
+        self.r = Records(addr=len(d.boot_pc_i), idw=len(d.alloc_ftq_id_i),
+                         folds=int(d.cfg_fold_w_o.value), history=int(d.cfg_history_w_o.value))
+        self.incw = int(d.cfg_perf_inc_w_o.value)
+        assert len(d.pred_bits_o) == sum(w for _, w in self.r.pred)
+        assert len(d.train_bits_i) == sum(w for _, w in self.r.train)
 
-    def drive(self, i):
-        d = self.dut
+    def view(self):
+        d, r = self.d, self.r
+        p = decode(r.pred, int(d.pred_bits_o.value))
+        slow = decode(r.pred, int(d.slow_pred_bits_o.value))
+        assert p['cfi_is_rvc'] == p['is_edge'] == 0
+        assert slow['cfi_is_rvc'] == slow['is_edge'] == 0
+        perf = int(d.perf_bits_o.value)
+        return dict(pred=p, hist=decode(r.hist, int(d.snapshot_bits_o.value)),
+                    ras=decode(r.ras, int(d.ras_bits_o.value)),
+                    valid=int(d.alloc_valid_o.value), ready=int(d.train_ready_o.value),
+                    slow_valid=int(d.slow_valid_o.value), slow_id=int(d.slow_id_o.value),
+                    slow=slow, disagree=int(d.slow_override_o.value),
+                    req=decode(r.req, int(d.override_bits_o.value)),
+                    perf=lambda e:(perf >> (e*self.incw)) & ((1<<self.incw)-1))
+
+    async def step(self, *, rst=False, boot=0x1000, ready=False, fid=1,
+                   hold=False, busy=False, kill=False, redirect=None, train=None,
+                   restore=None, inject=False, hpc=0, htgt=0, ras_restore=None,
+                   ras_fix=0, ras_push=0):
+        d, r = self.d, self.r
         d.clk_i.value = 0
-        d.rst_i.value = int(i.rst)
-        d.boot_pc_i.value = i.boot_pc
-        d.alloc_ready_i.value = int(i.ready)
-        d.alloc_ftq_id_i.value = i.ftq_id
-        d.hold_i.value = int(i.hold)
-        d.recover_busy_i.value = int(i.recover)
-        d.kill_valid_i.value = int(i.kill)
-        d.train_valid_i.value = int(i.train)
+        values = dict(rst_i=rst, boot_pc_i=boot, alloc_ready_i=ready,
+            alloc_ftq_id_i=fid, hold_i=hold, recover_busy_i=busy, kill_valid_i=kill,
+            arb_redirect_valid_i=redirect is not None, arb_redirect_pc_i=redirect or 0,
+            train_valid_i=train is not None, train_bits_i=encode(r.train, train or {}),
+            hist_restore_valid_i=restore is not None, hist_restore_bits_i=encode(r.hist, restore or {}),
+            hist_restore_inject_i=inject, hist_branch_i=hpc, hist_target_i=htgt,
+            ras_recover_valid_i=ras_restore is not None, ras_recover_bits_i=encode(r.ras, ras_restore or {}),
+            ras_recover_id_i=fid, ras_fix_i=ras_fix, ras_push_i=ras_push)
+        for name, value in values.items():getattr(d, name).value = int(value)
+        await Timer(1, unit='ns')
+        before = self.view()
+        assert before['valid'] == (not (rst or hold or busy or kill))
+        assert before['ready'] == (not rst)
+        assert before['perf'](1) == (before['valid'] and ready)
+        assert int(d.hist_done_o.value) == (restore is not None and not rst)
+        assert int(d.ras_done_o.value) == (ras_restore is not None and not rst)
+        d.clk_i.value = 1
+        await Timer(1, unit='ns')
+        after = self.view()
+        d.clk_i.value = 0
+        return before, after
 
-    def check(self, i, phase):
-        if self.cycle == 0 and i.rst and phase == "before":
-            # cocotb runs both tests in one simulation; reset has not yet
-            # sampled the new boot PC at this first edge.
-            return
-        d = self.dut
-        e = self.model.visible(i)
-        context = f"seed={self.seed} cycle={self.cycle} {phase} inputs={i}"
-        assert val(d.alloc_valid_o) == e["valid"], context
-        assert val(d.region_base_o) == e["base"], context
-        assert val(d.entry_slot_o) == e["slot"], context
-        assert val(d.next_pc_o) == e["next"], context
-        actual_completion = (
-            val(d.slow_ftq_id_o), val(d.slow_region_base_o), val(d.slow_next_pc_o)
-        ) if val(d.slow_valid_o) else None
-        assert actual_completion == e["completion"], context
-        # These fields enforce the L1 boundary even under repeated allocations.
-        assert val(d.cfi_valid_o) == 0 and val(d.ras_action_o) == 0, context
-        assert val(d.snapshot_o) == 0 and val(d.ras_ckpt_o) == 0, context
-        assert val(d.override_valid_o) == 0 and val(d.train_ready_o) == 1, context
+    async def reset(self, pc=0x1000):
+        await self.step(rst=True, boot=pc)
+        await self.step()
 
-    async def step(self, i):
-        self.drive(i)
-        await Timer(1, unit="ns")
-        await ReadOnly()
-        self.check(i, "before")
-        await Timer(1, unit="ns")
-        self.dut.clk_i.value = 1
-        self.model.tick(i)
-        await Timer(1, unit="ns")
-        await ReadOnly()
-        self.check(i, "after")
-        await Timer(1, unit="ns")
-        self.dut.clk_i.value = 0
-        self.cycle += 1
+    async def goto(self, pc):
+        await self.step(kill=True, redirect=pc)
+
+    async def train(self, base, kind, slot, target, ras=0, count=2):
+        for _ in range(count):
+            await self.step(train=dict(region_base=base, cfi_valid=1, cfi_type=kind,
+                cfi_slot=slot, cfi_target=target, ras_action=ras,
+                br_commit_mask=(1<<slot) if kind==1 else 0,
+                br_taken_mask=(1<<slot) if kind==1 else 0))
+
+
+async def bench(d):
+    d.clk_i.value = 0
+    await Timer(1, unit='ns')
+    return Bench(d)
 
 
 @cocotb.test()
-async def directed_contract(dut):
-    bench = Bench(dut, 0)
-    await bench.step(Inputs(rst=True, boot_pc=0x10000004))
-    await bench.step(Inputs(ready=False, ftq_id=3))
-    await bench.step(Inputs(ready=True, ftq_id=3))
-    await bench.step(Inputs(ready=True, ftq_id=4, hold=True))
-    await bench.step(Inputs(ready=True, ftq_id=4))
-    await bench.step(Inputs(ready=True, ftq_id=5, recover=True))
-    await bench.step(Inputs(ready=True, ftq_id=5, kill=True))
-    await bench.step(Inputs(ready=True, ftq_id=5, train=True))
-    await bench.step(Inputs(rst=True, boot_pc=0x10000000))
+async def sequential_pipeline_and_stalls(d):
+    b = await bench(d)
+    await b.reset(0x1004)
+    pending = []
+    expected_pc = 0x1004
+    rng = random.Random(int(os.environ.get('TEST_SEED','1')))
+    for cycle in range(120):
+        ready = rng.random()<.75
+        hold = rng.random()<.12
+        busy = rng.random()<.05
+        kill = rng.random()<.08
+        fid = cycle+32
+        before, after = await b.step(ready=ready, fid=fid, hold=hold, busy=busy, kill=kill)
+        assert before['pred']['region_base'] == expected_pc & ~15
+        assert before['pred']['entry_slot'] == (expected_pc & 15)//2
+        assert before['pred']['next_pc'] == (expected_pc & ~15)+16
+        assert before['pred']['cfi_valid'] == 0
+        assert before['hist']['events'] == before['hist']['folds'] == before['ras']['count'] == 0
+        completion = pending.pop(0) if pending else None
+        if kill:
+            completion = None
+            pending = []
+        else:
+            pending.append((fid, before['pred']) if before['valid'] and ready else None)
+        assert after['slow_valid'] == (completion is not None)
+        if completion:
+            assert after['slow_id'] == completion[0] and after['slow'] == completion[1]
+        assert after['req']['valid'] == 0
+        if before['valid'] and ready:expected_pc = before['pred']['next_pc']
 
 
 @cocotb.test()
-async def seeded_transactions(dut):
-    seed = int(os.environ.get("TEST_SEED", "1"), 0)
-    rng = random.Random(seed)
-    bench = Bench(dut, seed)
-    await bench.step(Inputs(rst=True, boot_pc=0x10000000))
-    for cycle in range(200):
-        await bench.step(Inputs(
-            ready=rng.random() < 0.75,
-            ftq_id=cycle & ((1 << len(dut.alloc_ftq_id_i)) - 1),
-            hold=rng.random() < 0.1,
-            recover=rng.random() < 0.05,
-            kill=rng.random() < 0.05,
-            train=rng.random() < 0.4,
-        ))
+async def taken_branch_history_once_and_recovery(d):
+    b = await bench(d)
+    await b.reset(0x4000)
+    await b.train(0x4000, 1, 2, 0x5000)
+    before, first = await b.step(ready=True, fid=0x41)
+    assert before['pred']['cfi_valid'] and before['pred']['cfi_target']==0x5000
+    assert first['slow_valid'] == 0
+    def fold8(pc):
+        x=pc>>1
+        return (x ^ (x>>8) ^ (x>>16) ^ (x>>24) ^ (x>>32)) & 255
+    event=fold8(0x4004) ^ (((fold8(0x5000)<<1) | (fold8(0x5000)>>7)) & 255)
+    assert first['hist']['events'] == event
+    stable = first['hist']
+    _, slow = await b.step(hold=True, ready=True)
+    assert slow['slow_valid'] and slow['slow_id']==0x41
+    assert slow['slow']['next_pc']==0x5000 and slow['disagree']==0
+    assert slow['perf'](3)==1 and slow['perf'](4)==0
+    for kwargs in (dict(hold=True, ready=True), dict(ready=False), dict(busy=True, ready=True)):
+        old, new = await b.step(**kwargs)
+        assert old['perf'](1)==old['perf'](2)==0
+        assert old['hist']==new['hist']==stable
+    _, restored=await b.step(hold=True, restore={})
+    assert restored['hist']=={'events':0,'folds':0}
+    await b.step(hold=True, restore={}, inject=True, hpc=0x4004, htgt=0x5000)
+    _, view=await b.step(hold=True)
+    assert view['hist']==stable
+
+
+@cocotb.test()
+async def call_return_use_entry_ras_checkpoint(d):
+    b=await bench(d)
+    await b.reset(0x1000)
+    await b.train(0x1000, 2, 2, 0x2000, ras=1)
+    await b.train(0x2000, 3, 0, 0xDEAD0, ras=2)
+    for kwargs in (dict(hold=True, ready=True), dict(ready=False), dict(busy=True, ready=True)):
+        old,new=await b.step(**kwargs)
+        assert old['ras']['count']==new['ras']['count']==0
+        assert old['perf'](0x0b)==0
+    old,call=await b.step(ready=True, fid=0x61)
+    assert old['ras']['count']==0 and call['ras']['count']==1
+    assert call['ras']['top_addr']==0x1008
+    assert old['perf'](0x0b)==1
+    old,ret=await b.step(ready=True, fid=0x62)
+    assert old['pred']['cfi_target']==old['pred']['next_pc']==0x1008
+    assert old['perf'](0x0c)==1 and ret['ras']['count']==0
+    assert ret['slow_id']==0x61 and ret['slow']['next_pc']==0x2000
+    _,ret_slow=await b.step(hold=True)
+    assert ret_slow['slow_id']==0x62 and ret_slow['slow']['next_pc']==0x1008
+    assert ret_slow['disagree']==0, 'slow return must use saved entry stack, not current empty stack'
+    _,restored=await b.step(hold=True, ras_restore=dict(top_idx=0,count=1,top_addr=0xA000))
+    assert restored['ras']=={'top_idx':0,'count':1,'top_addr':0xA000}
+
+
+@cocotb.test()
+async def eviction_slow_override_and_inflight_kill(d):
+    b=await bench(d)
+    await b.reset()
+    for n in range(33):
+        await b.train(0x1000+n*16, 2, 0, 0x8000+n*16, count=1)
+    await b.goto(0x1000)
+    old,one=await b.step(ready=True, fid=0x83)
+    assert old['pred']['cfi_valid']==0 and old['pred']['next_pc']==0x1010
+    assert old['perf'](2)==0 and one['slow_valid']==0
+    _,two=await b.step(hold=True)
+    assert two['slow_valid'] and two['slow_id']==0x83
+    assert two['slow']['cfi_valid'] and two['slow']['next_pc']==0x8000
+    assert two['disagree'] and two['perf'](3)==two['perf'](4)==1
+    req=two['req']
+    assert req==decode(b.r.req,encode(b.r.req,dict(valid=1,src=0,ftq_id=0x83,
+        slot=0,target_pc=0x8000,hist_branch_pc=0x1000,hist_target_pc=0x8000,
+        ras_push_addr=0x1004)))
+    old,killed=await b.step(kill=True)
+    assert old['slow_valid'] and old['req']['valid'], 'kill must not combinationally gate slow outputs'
+    assert killed['slow_valid']==0 and killed['req']['valid']==0
+    await b.goto(0x1100)
+    await b.step(ready=True, fid=0x84)
+    _,killed=await b.step(kill=True)
+    assert not killed['slow_valid']
+    for _ in range(3):
+        _,view=await b.step(hold=True)
+        assert not view['slow_valid'] and not view['req']['valid']

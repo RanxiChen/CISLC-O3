@@ -76,7 +76,7 @@ class Bench:
     def check(self, actual: Observed, inputs: Inputs, phase: str) -> None:
         expected_valid, expected_resp = self.model.visible(inputs)
         assert int(self.dut.reserved_rvc_o.value) == 0
-        assert int(self.dut.reserved_edge_o.value) == 0
+        assert int(self.dut.reserved_is_edge_o.value) == 0
         context = f"seed={self.seed} cycle={self.cycle} {phase} inputs={inputs}"
         assert actual.ready == (not inputs.rst), f"{context}: train_ready={actual.ready}"
         assert actual.valid == expected_valid, (
