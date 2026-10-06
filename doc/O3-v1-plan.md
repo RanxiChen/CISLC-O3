@@ -24,6 +24,8 @@
 
 从 L5 起，每一级的验收都必须包含**与 Spike 逐条退休比对**：PC、指令、整数/浮点写回值、访存地址与数据、异常 cause/tval、CSR 写入，差异为 0（B45）。乱序核的错误大多出现在分支恢复、重放、异常与访存排序的交织中，只有逐条比对能在随机程序下可靠地发现它们，也是防止实现 agent 幻觉的主要手段。
 
+> 2026-10-06 起暂停：L6 之后不再运行 Spike 比对（含现有回归），推迟到 FPGA 阶段，见第 3 节“验收调整”。
+
 ### 2.3 任务流程
 
 每一级拆成若干任务，沿用 `agent.md` 第 7 节的任务书格式，并采用两阶段流程：
@@ -35,17 +37,23 @@
 
 ### 2.4 面积与时序检查点
 
-4 宽 RV64GC 乱序核加 FASE 在 XCKU040（约 242k LUT）上的面积没有可靠的事先估计。参照：Breeze 顺序单核约 34k LUT（其中 FPU 11k、旧乘法器 6.8k）。L6 起每一级结束做一次核心 OOC 综合，记录 LUT/FF/BRAM/DSP 与 100 MHz 下的 WNS；若趋势显示放不下，再依据数据调整容量参数（不是删除机制）。
+4 宽 RV64GC 乱序核加 FASE 在 XCKU040（约 242k LUT）上的面积没有可靠的事先估计。参照：Breeze 顺序单核约 34k LUT（其中 FPU 11k、旧乘法器 6.8k）。
+
+**2026-10-06 用户决定：完整 SoC（L11）前不再运行综合。** L6 首次整核 OOC（O3-T04）失败，O3-T04b 定位到 L1D/L2 tag 组合判定与同步 BRAM 的接口时序冲突及 DTCM 映射硬错误（见 `tasks/O3-T04b-report.md`）；这些问题留到完整访存级处理。L6～L10 各级不设 OOC 门禁；首次综合基线在 SoC 集成时取得，届时若面积/时序放不下，再依据数据调整容量参数（不是删除机制）。
 
 ## 3. 闭环阶梯
 
-L0～L4 及 L3 的已有证据见 `LOOP.md`。v1 从 L3 收尾开始：
+L0～L4 及 L3 的已有证据见 `LOOP.md`。v1 从 L3 收尾开始。
+
+**2026-10-06 顺序调整：先跳过访存。** L6 之后按 L7 → L9 → L10 → L8 → L11 推进。L8 之前访存只要求现有基础实现（L3 闭环的 L1D/L2/DTCM/LSU）能用，不做完整非阻塞访存、BRAM 化或 T04b 所列改造；L9/L10 中需要访存的部分（FLD/FSD、PTW 访存、A/D 更新）接在现有 LSU 上，只做到功能可用。表中级号保持不变，以便沿用既有决策与任务引用。
+
+**2026-10-06 验收调整：完整一致性测试推迟到 FPGA。** L7～L10 表中“验收”列的 ACT4（RV64IMC/RV64GC）、特权测试、riscv-tests p/v、litmus、随机程序及新增 Spike 比对不再作为级门禁，统一推迟到 L11 后在 FPGA 上运行（bootrom 测试程序 + ILA 调试）。现有 Spike 逐条比对与 ACT4 回归也不再运行。各级只要求：手写的本级机制简单定向 testbench 通过；未通过项记为已知问题后继续推进。`sim/cocotb/` 中已有的非访存模块 testbench 可在改动对应模块时顺带运行；访存类（`dcache`、`l2_cache`、`load_queue`、`store_queue`、`load_store_unit`、`load_store_unit_l5`）在 L8 前不运行。
 
 | 级 | 内容 | 主要决策 | 验收 |
 | --- | --- | --- | --- |
 | L3 收尾 | 完成当前访存闭环；修 B12 缺口 1（任何分支解析都全局停顿）与缺口 2（ALU RegRead 背压时缺 kill）；重命名改为 4 宽；移除当前级不需要的空壳实例 | B12、B42、B46 | 现有 L2/L3 门禁 + 分支密集程序；缺口 2 的定向复现测试 |
 | L5 | 接入 Spike 逐条比对；M 模式 CSR、精确异常、ecall/ebreak/illegal、MRET、committed_next_pc | B22、B26、B27、B37、B45 | ACT4 RV64I 全部通过；Spike 比对 0 差异 |
-| L6 | M 扩展（MUL 采用 DSP，DIV 沿用 Breeze radix-4，手工翻译）；完成 FIFO 与提前唤醒；JALR | B13、B33、B34、B43 | ACT4 RV64IM；仿真跑 CoreMark；**首次 OOC 综合** |
+| L6 | M 扩展（MUL 采用 DSP，DIV 沿用 Breeze radix-4，手工翻译）；完成 FIFO 与提前唤醒；JALR | B13、B33、B34、B43 | ACT4 RV64IM；仿真跑 CoreMark（原定首次 OOC 综合已推迟到 L11，见 2.4） |
 | L7 | 完整预测：uBTB/BTB/TAGE、FTQ 恢复、RAS 快速修复；RVC（手工翻译 Breeze 解压器） | D01～D24、D29、B30 | RV64IMC；误预测率与 IPC 基线；Spike 比对 |
 | L8 | 完整非阻塞访存：多 MSHR、重放、同 line 非对齐、A 扩展、FENCE/FENCE.I | B03～B05、B09、B23、B31、B32、B35 | RV64IMAC；litmus；死锁 watchdog；随机访存程序 |
 | L9 | F/D：拆分 CVFPU、FP 重命名、fflags/FS 退休 | B14、B15、B40 | ACT4 RV64GC（用户态） |
