@@ -4,7 +4,7 @@
 
 依据：[v1 计划](../O3-v1-plan.md) 第 3 节 L7（2026-10-06 拆为 L7a/L7b）及“验收调整”；[前端基线](../design/CISLC-O3-FRONTEND-DESIGN-BASELINE.md) D01～D35（重点 D02、D05～D09、D22～D24、D29～D32）；[后端基线](../design/CISLC-O3-BACKEND-DESIGN-BASELINE.md) B48。
 
-**状态：已冻结（2026-10-06，用户确认 U1～U6 按推荐值）。** 本文是阶段二唯一实施依据；spec 未覆盖的行为先提问，不得自行补设计。本轮只读代码、写文档，未改 RTL、未运行仿真。
+**状态：已冻结（2026-10-06，用户确认 U1～U6 按推荐值；同日修订补充 U7～U14，见第 8 节）。** 本文是阶段二唯一实施依据；spec 未覆盖的行为先提问，不得自行补设计。本轮只读代码、写文档，未改 RTL、未运行仿真。
 
 ---
 
@@ -16,7 +16,7 @@
       实现 M 模式 Zihpm 性能计数器并接入前端预测事件（B48）。
 涉及模块（允许改动）：
   rtl/frontend/{bpu,bpu_slow_check,redirect_arbiter,ftq,ifu_f1,fetch_buffer,
-                fetch_return_queue,frontend,ubtb,main_btb}.sv
+                fetch_return_queue,frontend,ubtb,main_btb,ras}.sv（ras 仅删除 PE_RECOVER_CYCLE 增量，U13）
   rtl/common/{o3_cfg_pkg,o3_types_pkg}.sv
   rtl/system/csr_file.sv，新增 rtl/system/hpm_counters.sv
   rtl/core/o3_core.sv、rtl/backend/backend.sv（仅性能事件连线）
@@ -34,7 +34,7 @@
 | `ubtb.sv` | 已实现：全相联、提交训练、全局轮转、只为 taken 分配；组合单拍（`:1–25`） | 只改配置为 32 项（D30）；预留位（2.6） |
 | `main_btb.sv` | 已实现：组相联、单目标、提交训练；N 拍查、N+1 出结果（`:30–37`） | 改配置；预留位 |
 | `tage.sv` | 已实现：base + 6 表，N 查、N+2 出结果（`:22–26`），meta 编码 provider/alt | 改配置 |
-| `ras.sv` | 已实现：寄存器栈、单拍操作与恢复、ckpt 输出；不做 x1/x5 解码（`:33`） | 无需改（x1/x5 解码在 F1 与后端） |
+| `ras.sv` | 已实现：寄存器栈、单拍操作与恢复、ckpt 输出；不做 x1/x5 解码（`:33`） | 只删除 `PE_RECOVER_CYCLE` 增量（`:182`，U13）；x1/x5 解码在 F1 与后端 |
 | `branch_history.sv`、`history_snapshot_store.sv` | 已实现 | 无需改 |
 | `bpu_slow_check.sv` | 空壳 | 第 3 节：实现 |
 | `redirect_arbiter.sv` | 只接 exec 与 sys（`:48–52`），predecode/slow 未用 | 第 5 节：接入两路，统一年龄仲裁 |
@@ -151,7 +151,7 @@ L7a 只有 32 位指令（RV64I，`.option norvc`），每块最多 4 条，起�
 
 ### 4.2 修正规则
 
-按程序顺序扫描块内指令 `i`（槽位 `s_i`，PC `pc_i`），直到预测出口为止。对每条指令做 x1/x5 解码（与后端 `branch_unit.sv:146–151` 同一规则），得到实际类型 `T_i ∈ {非 CFI, BR, JAL, JALR}` 与 `ras_i`。第一条满足下列条件的指令产生修正，之后的指令不交付：
+按程序顺序扫描块内指令 `i`（槽位 `s_i`，PC `pc_i`），直到预测出口为止；遇到 `exc_valid=1` 的项也停止扫描（见本节末“取指异常”，U10）。对每条指令做 x1/x5 解码（与后端 `branch_unit.sv:146–151` 同一规则），得到实际类型 `T_i ∈ {非 CFI, BR, JAL, JALR}` 与 `ras_i`。第一条满足下列条件的指令产生修正，之后的指令不交付：
 
 | # | 情况 | 修正后 target | ras_fix | hist_inject |
 | --- | --- | --- | --- | --- |
@@ -159,16 +159,18 @@ L7a 只有 32 位指令（RV64I，`.option norvc`），每块最多 4 条，起�
 | b | `s_i` 早于预测出口（或无出口），`T_i = JALR` 且 `ras_i ∈ {POP, POP_PUSH}`，且 `brief.ras_ckpt.count != 0` | `ras_ckpt.top_addr` | `ras_i` | 0 |
 | c | 预测出口槽 `pred.cfi_slot` 不是指令起点，或该指令不是 CFI（假 CFI） | 下一条指令起点（`pc_i + 4`，`i` 为覆盖该槽的指令） | NONE | 0 |
 | d | 出口指令 `T_i` 与 `pred.cfi_type` 不同 | 按 a/b 规则重算；都不满足时为 `pc_i + 4`（顺序越过） | a/b 时 `ras_i`，否则 NONE | 0 |
-| e | 出口为 BR 或 JAL，类型相同，但 `pred.cfi_target != pc_i + imm` | `pc_i + imm` | `ras_i` | `T_i==BR` |
+| e | 出口为 BR 或 JAL，类型相同，但 `pred.cfi_target != pc_i + imm`；或出口为 JAL、类型相同、`pred.ras_action != ras_i`（U9） | `pc_i + imm` | `ras_i` | `T_i==BR` |
 | f | 出口为 JALR，类型相同，`pred.ras_action != ras_i` | `ras_i` 为 pop 且 `count!=0`：`top_addr`；否则保持 `pred.next_pc` | `ras_i` | 0 |
 
 不修正：BR 方向（无法知道）；普通 JALR 的目标（等执行，前端基线 4.3）；栈空时的 return（b 不触发，等执行）。
+
+取指异常（U10）：块内项 `exc_valid=1` 时（含整块取指异常与非法半字），该项及其后的项都不参与 a～f 判定，不产生修正；异常项的 `exc_valid/exc_cause/exc_tval` 原样交付，`pred_taken/predicted_next_pc` 按 4.4 未修正规则给出。若第一个异常项之前的项已触发修正，按正常修正处理（截断在该项，异常项不交付）。
 
 修正请求字段：`src=REDIR_PREDECODE`，`ftq_id`，`slot=s_i`，`kill_self=0`，`target_pc` 见表，`hist_branch_pc=pc_i`，`hist_target_pc=target`，`ras_push_addr = pc_i + 4`。
 
 ### 4.3 时序（寄存器式请求）
 
-- 周期 N：F1 呈现块 X 并计算修正。X 被 fetch buffer 接收的那一拍（握手成功），F1 只写出 `slot <= s_i` 的指令，其中被修正指令的 `pred_taken/predicted_next_pc` 改为修正后的值；同一沿把修正请求锁存到 `pd_req_q`。
+- 周期 N：F1 呈现块 X 并计算修正。X 被 fetch buffer 接收的那一拍（握手成功），F1 只写出 `slot <= s_i` 的指令，其中被修正指令的 `predicted_next_pc` 改为修正后 target，`pred_taken` 按修正种类给出（U8）：a、b、e、f 为 1；c 为 0；d 在重算命中 a 或 b 时为 1，顺序越过时为 0。`pred_taken` 只由修正种类决定，不得用“target 是否等于 `pc_i+4`”推断（taken 分支的目标可以恰为 `pc_i+4`）。同一沿把修正请求锁存到 `pd_req_q`。
 - 周期 N+1：`predecode_o = pd_req_q`。仲裁器在本拍决定胜负；`pd_req_q` 在 N+1 沿无条件清除（胜出则已生效；败给更老的请求时 X 已被杀）。
 - 周期 N 若 `kill_i.valid` 且 X 被该边界杀掉，X 不交付、不锁存请求（现有 `!kill_i.valid` 阻塞握手的写法可保留）。
 - N+1 拍 F1 正在呈现的年轻块 Y 被本次 kill 阻塞并在沿上清除（第 6.2 节）。
@@ -188,7 +190,7 @@ L7a 只有 32 位指令（RV64I，`.option norvc`），每块最多 4 条，起�
 - 接入 `predecode_i`、`slow_i`。四路请求统一按 D24：sys 最高；其余按 `(ftq_id, slot)` 相对 `ftq_head_i` 的程序年龄选最老；同位置 `EXEC > PREDECODE > SLOW`（`redirect_src_e` 编码）。
 - 抽出年龄比较函数到 `o3_types_pkg`：`fe_age(id, slot, head)` 与 `fe_killed_by(kill, id, slot, head)`，供仲裁器、FTQ、返回队列、fetch buffer 共用，避免各自实现。
 - busy 期间可被更老请求替换的规则扩展到四路（现有只对 exec，`:107–128`）。
-- 赢家输出 `winner_o` 已存在；本级增加 `winner_valid_src` 事件：`PE_SLOW_OVERRIDE`、`PE_PREDECODE_REDIRECT`、`PE_REDIRECT_EXEC`、`PE_REDIRECT_SYS` 各在对应来源成为赢家的拍加 1；`PE_RECOVER_CYCLE` 在 `recover_busy_o` 期间每拍加 1。
+- 赢家输出 `winner_o` 已存在；本级增加 `winner_valid_src` 事件：`PE_SLOW_OVERRIDE`、`PE_PREDECODE_REDIRECT`、`PE_REDIRECT_EXEC`、`PE_REDIRECT_SYS` 各在对应来源**新请求被接受的那一拍**加 1（即 `accept_*` 拍；恢复期间 `winner_o` 保持 `recover_q` 供历史/RAS 修复，不重复计数，U13）；`PE_RECOVER_CYCLE` 在 `recover_busy_o` 期间每拍加 1，且只由仲裁器产生（`ras.sv` 的同名增量删除）。
 - 后端不因 predecode/slow 赢家清空自身：`backend.sv:92` 的 `fe_redirect_i` 当前未使用，保持不用。
 
 ## 6. 其余改动
@@ -196,7 +198,7 @@ L7a 只有 32 位指令（RV64I，`.option norvc`），每块最多 4 条，起�
 ### 6.1 FTQ
 
 1. `ftq_pred_brief_t` 增加 `ras_ckpt_t ras_ckpt`；brief 读口输出该项的 `ras_ckpt`。
-2. 新增项字段 `slow_next_pc`（`slow_i` 写入时记录 `slow_i.pred.next_pc`）与 `final_next_pc`（分配时 = 快预测 next；`slow_i` 写入时更新；**任何**赢家 `kill_self=0` 且 `ftq_id` 为本项时 = 赢家 `target_pc`）。为此 FTQ 增加输入 `winner_i`（仲裁器 `winner_o`）。现有 exec 修正写 `final_pred` 的逻辑（`:465–476`）保留。
+2. 新增项字段 `slow_next_pc`（`slow_i` 写入时记录 `slow_i.pred.next_pc`）与 `final_next_pc`（分配时 = 快预测 next；`slow_i` 写入时更新；**任何**赢家 `kill_self=0` 且 `ftq_id` 为本项时 = 赢家 `target_pc`，写入时机为该赢家被接受的拍，U13）。为此 FTQ 增加输入 `winner_i`（仲裁器 `winner_o`）。现有 exec 修正写 `final_pred` 的逻辑（`:465–476`）保留。
 3. 训练握手成功（区域提交并送训练）时产生提交口径事件：
    - `PE_CMT_REGION`：+1
    - `fast_ok = fast_pred.next_pc == final_next_pc`，`slow_ok = slow_next_pc == final_next_pc`
@@ -212,7 +214,7 @@ D24 要求只清除比边界年轻的项。慢覆盖与预解码修正的边界�
 
 | 模块 | 时钟沿上的行为 |
 | --- | --- |
-| `fetch_return_queue` | 槽内块若 `fe_killed_by(kill, id, slot=0, head)` 为真才清；否则保留（含 pending 响应的身份） |
+| `fetch_return_queue` | 槽内块若 `fe_killed_by(kill, id, slot=0, head)` 为真才清；否则保留（含 pending 响应的身份）。kill 拍：阻塞新预留（入队）与出队；**被保留的槽照常接收与其身份匹配的 ICache 响应**，被清除的槽丢弃该响应（U7） |
 | `ifu_f0` | L7a 无内部状态（直通），不变 |
 | `ifu_f1` | 只有 `pd_req_q`，见 4.3 |
 | `fetch_buffer` | 逐项按 `(ftq_id, slot)` 判定，只清年轻项；`kill.all` 全清 |
@@ -234,7 +236,7 @@ kill 拍仍阻塞上述模块的握手（现有写法），不需要在 kill 拍
 | `cycle`/`instret`/`hpmcounter3～31` | 0xC00～0xC1F | 只读别名（M 模式可读）；写为非法指令 |
 
 - 事件编号：`mhpmevent[15:8]` 为来源，`[7:0]` 为该来源内的事件号。来源 1 = 前端 `fe_perf_evt_e`，来源 2 = 后端 `be_perf_evt_e`。值为 0 或不存在的事件不计数。
-- 计数：每拍 `counter += inc(event)`，增量可大于 1。同拍 CSR 写入优先，该拍增量丢弃。CSR 读返回本拍旧值。
+- 计数：每拍 `counter += inc(event)`，增量可大于 1。CSR 读返回本拍旧值。写优先只作用于被写的那个计数器（U11）：写某个 `mcycle`/`minstret`/`mhpmcounterN` 时，该计数器本拍取写入值、丢弃本拍增量，其他计数器照常计数；写 `mhpmevent`/`mcountinhibit` 时，本拍仍按旧配置计数，新配置从下一拍生效。
 - 连线：`frontend` 汇总各子模块 `perf_o`（按事件相加）输出 `fe_perf_o`；经 `o3_core` 送入 `backend` → `csr_file` → `hpm_counters`。删除 `frontend_perf_events` 实例化。
 - **事件编号冻结**：`fe_perf_evt_e` 改为显式赋值，以后只追加、不重排。删除 D29 已取消的 `PE_RAS_LOG_FULL`（编号不复用）。L7a 新增与已有事件编号如下（来源 1）：
 
@@ -288,6 +290,19 @@ kill 拍仍阻塞上述模块的握手（现有写法），不需要在 kill 拍
 | U5 | `mcycle`/`minstret` 迁入 `hpm_counters` | 迁入 | `mcountinhibit` 统一管理，csr_file 只做地址分派 |
 | U6 | 提交分类口径 | 用 `final_next_pc` 判快/慢对错（6.1） | 只看最终走对的路径，分母清楚；推测口径另由 `PE_FAST_SLOW_DISAGREE` 给出 |
 
+修订（2026-10-06，Codex 审阅发现的边界行为，用户确认）：
+
+| # | 问题 | 决定 | 理由 |
+| --- | --- | --- | --- |
+| U7 | kill 拍返回队列被保留的槽是否收响应 | 收；被清除的槽丢弃（6.2） | ICache 响应只来一次，保留 pending 身份却丢响应会永久等待 |
+| U8 | 修正后的 `pred_taken` | a/b/e/f=1，c=0，d 视重算结果（4.3） | 按修正种类判定；target 恰为 `pc+4` 的 taken 分支不能被误判为不跳 |
+| U9 | 同类型 JAL、目标相同但 `ras_action` 不同 | 纳入 e 条，发修正（4.2） | 否则错误 push/漏 push 不被执行级发现，RAS 被悄悄污染 |
+| U10 | 已有取指异常的项 | 到首个异常项停止扫描，不修正，异常字段原样交付（4.2） | 异常项指令字为 0 或非法半字，解码会制造假 CFI；该项提交时 trap 清空流水 |
+| U11 | CSR 写优先的范围与生效拍 | 只覆盖被写计数器；配置写下一拍生效（6.3） | 配置用寄存器输出即可，不需旁路；差一拍不影响统计 |
+| U12 | 8 个计数器容纳不下全部指标 | 分两组事件配置运行（9.2） | 仿真确定，两组只差 `mhpmevent` 写入值，CSR 指令条数与时序相同 |
+| U13 | 恢复周期与赢家事件重复计数 | `PE_RECOVER_CYCLE` 只由仲裁器产生，删除 `ras.sv` 增量；赢家事件与 FTQ `final_next_pc` 按接受拍（5、6.1） | 单一来源；`winner_o` 在恢复期间保持有效，按电平计数会重复 |
+| U14 | 失败项能否提交、继续 | 两档门禁（9.3），T05a～T05d 统一适用 | 正确性 bug 带到后级更难查；预测精度只影响性能 |
+
 ## 9. 验收（手写定向 testbench）
 
 ### 9.1 模块级 cocotb
@@ -296,11 +311,11 @@ kill 拍仍阻塞上述模块的握手（现有写法），不需要在 kill 拍
 | --- | --- | --- |
 | `sim/cocotb/bpu` | 改写 | 空表顺序预测；训练 taken BR 后 uBTB 命中、慢核对一致不覆盖；填满 33 个区域挤出 uBTB 后快顺序、慢覆盖（检查 N+2 的 `override_o` 各字段）；call 区域 push、return 区域快预测取 RAS 栈顶；`hold`/FTQ 不就绪期间不重复 RAS/历史动作；kill 后在途查询不产生 `slow_o` |
 | `sim/cocotb/bpu_slow_check` | 新 | 表驱动：entry 槽屏蔽、owner taken/不 taken、`target_missing`、JALR owner、return 栈空/非空、各覆盖比较项 |
-| `sim/cocotb/ifu_f1` | 扩展 | 4.2 的 a～f 各一例，以及“不修正”三例；截断后只交付 `slot<=s_i`；请求只出现一次且晚一拍；kill 拍不锁存 |
-| `sim/cocotb/redirect_arbiter` | 新 | 四路年龄仲裁、同位置优先级、环形回绕、busy 期间被更老请求替换、赢家事件计数 |
+| `sim/cocotb/ifu_f1` | 扩展 | 4.2 的 a～f 各一例，以及“不修正”三例；e 的 JAL `ras_action` 不同一例（U9）；每例检查 `pred_taken`（U8，含 BR 目标恰为 `pc+4` 的 e 例）；块首项异常与块中项异常各一例（U10）；截断后只交付 `slot<=s_i`；请求只出现一次且晚一拍；kill 拍不锁存 |
+| `sim/cocotb/redirect_arbiter` | 新 | 四路年龄仲裁、同位置优先级、环形回绕、busy 期间被更老请求替换、赢家事件只在接受拍计 1 次（恢复多拍期间不重复，U13）、`PE_RECOVER_CYCLE` 拍数 |
 | `sim/cocotb/fetch_buffer` | 新 | 选择性清除：边界前、边界本身（`kill_self` 0/1）、边界后、`all` |
-| `sim/cocotb/fetch_return_queue` | 扩展 | 槽内块比边界老/等/年轻三种 kill |
-| `sim/cocotb/hpm_counters` | 新 | 事件选择、0 号事件不计、多增量、`mcountinhibit`、写优先、11～31 读 0、只读别名写非法 |
+| `sim/cocotb/fetch_return_queue` | 扩展 | 槽内块比边界老/等/年轻三种 kill；kill 拍同时到达响应：保留槽收下、被清槽丢弃（U7） |
+| `sim/cocotb/hpm_counters` | 新 | 事件选择、0 号事件不计、多增量、`mcountinhibit`、写优先只作用于被写计数器、`mhpmevent`/`mcountinhibit` 写入下一拍生效（U11）、11～31 读 0、只读别名写非法 |
 | `ubtb`、`main_btb`、`tage`、`ras`、`branch_recovery` | 重跑 | 配置改动与字段扩展后不回归（`ftq`、`csr_file` 目前没有 cocotb 目录，由 `bpu`、`hpm_counters` 与整核程序覆盖） |
 
 ### 9.2 整核定向程序
@@ -310,11 +325,20 @@ kill 拍仍阻塞上述模块的握手（现有写法），不需要在 kill 拍
 2. 调用/返回：8 层嵌套调用，返回值逐层校验。
 3. 超过 32 个 taken 区域的大循环（预期 uBTB 装不下、主 BTB 装得下）。
 
-每段前后用 `csrr` 读出 `UBTB_HIT`、`SLOW_OVERRIDE`、`PREDECODE_REDIRECT`、`REDIRECT_EXEC`、`CMT_*`，数值经 trace 可见。程序内只做宽松检查：第 1、2 段稳态下 `REDIRECT_EXEC` 小于分支数的 1/4；第 3 段 `SLOW_OVERRIDE > 0`。数值本身作为首份基线写进报告。
+每段前后用 `csrr` 读出计数器，数值经 trace 可见。共 10 个事件，超过 8 个计数器，按两组事件配置分别运行（U12），程序用汇编宏选择组别，Makefile 目标 `run-l7-predict` 依次跑两组：
+
+| 组 | `mhpmcounter3～10` 的事件 |
+| --- | --- |
+| A | `UBTB_HIT`、`SLOW_OVERRIDE`、`PREDECODE_REDIRECT`、`REDIRECT_EXEC`、`CMT_REGION`、`CMT_MISPRED_REGION` |
+| B | `CMT_REGION`、`CMT_FAST_OK_SLOW_OK`、`CMT_FAST_OK_SLOW_BAD`、`CMT_FAST_BAD_SLOW_OK`、`CMT_FAST_BAD_SLOW_BAD`、`REDIRECT_EXEC` |
+
+两组都采 `CMT_REGION` 与 `REDIRECT_EXEC` 作一致性检查，不一致属于正确性失败：组 B 中四个分类之和等于 `CMT_REGION`，由程序自查（不等写失败 tohost）；两次运行中这两项逐段相等，由 `run-l7-predict` 在两次运行后从 trace 提取比对（不等则目标失败）。报告的数值表注明每列来自哪一组。程序内只做宽松检查：第 1、2 段稳态下 `REDIRECT_EXEC` 小于分支数的 1/4；第 3 段 `SLOW_OVERRIDE > 0`。数值本身作为首份基线写进报告。
 
 并重跑：`make -C sim/o3 run-smoke`、`run-rv64i-instructions`、`run-l3-branch-dense`（均不带 `--spike`）。
 
 ### 9.3 完成标准
 
-- 9.1 与 9.2 全部通过；未通过项记为已知问题，附复现命令，按计划“验收调整”继续推进。
+- 两档门禁（U14，T05a～T05d 统一适用）：
+  - **正确性项，必须全部通过才能提交**：9.1 全部 cocotb 用例；9.2 整核程序 tohost 通过（含两组一致性检查）；`run-smoke`、`run-rv64i-instructions`、`run-l3-branch-dense` 回归。
+  - **性能阈值，未达标可登记后继续**：9.2 的宽松检查（`REDIRECT_EXEC` 小于分支数 1/4、`SLOW_OVERRIDE > 0`）。为此程序中这两项不达标时不写失败 tohost，而是在 trace 中输出标记；报告列为已知性能问题，附复现命令。
 - 交回：提交号、命令、日志、9.2 的计数器数值表。
