@@ -28,6 +28,7 @@
  * - 缺口 2：ALU 独立 RegRead kill 已存在，具名/随机及真实写回仲裁测试见 branch_recovery/wb_alu_kill。
  * - exec_resolve_o 已由 BRU 驱动，解析与 JAL 链接结果写回解耦。
  * - L5 精确 trap/CSR/MRET 已接入，T03 已知问题保留；L6 JALR 已接入，RVC 与完整地址边界待后级。
+ * - L7a B48：FE 与现有 BE 增量接入 CSR/HPM；只连线，不新增后端事件机制，未验证。
  * - 测试：sim/cocotb/backend/、sim/o3/。
  *
  * 主流程已定、RTL 未实现（2026-10-02 框架接线见文件末尾）：B22～B27 串行/屏障/trap/xRET，
@@ -136,7 +137,10 @@ module backend
     input  logic [XLEN-1:0]                  dtcm_init_wdata_i,
     input  logic [7:0]                       dtcm_init_wmask_i,
 
-    // ---------------- 观测 ----------------
+    // ---------------- B48 前端事件输入；计数状态在 CSR/HPM ----------------
+    input  o3_types_pkg::fe_perf_t            fe_perf_i,
+
+    // ---------------- 旧性能观测兼容口（读值为 0，使用架构 CSR） ----------------
     input  logic                             perf_rd_valid_i,
     input  logic [$clog2(o3_types_pkg::BE_PERF_NUM)-1:0] perf_rd_idx_i,
     output logic [CFG.perf.counter_bits-1:0] perf_rd_data_o,
@@ -168,6 +172,7 @@ module backend
     o3_types_pkg::trap_req_t trap_req, trap_update;
     o3_types_pkg::vaddr_t trap_target, trap_redirect_pc, committed_next_pc;
     logic [63:0] csr_write_value;
+    o3_types_pkg::be_perf_t perf_commit, perf_lsu, perf_dcache, be_perf;
     logic serial_retire, gate_block_cycle;
     logic [$clog2(MACHINE_WIDTH+1)-1:0] gate_pass_count;
 `ifdef ENABLE_RETIRE_INFO
@@ -227,18 +232,28 @@ module backend
         .block_younger_cycle_i(gate_block_cycle),.irq_take_i(1'b0),.trap_req_o(trap_req),
         .trap_redirect_valid_i(trap_redirect_valid),.trap_redirect_pc_i(trap_redirect_pc),
         .rsv_clear_valid_o(),.rsv_clear_reason_o(),.wfi_retire_o(),.wfi_stall_i(1'b0),.isolate_i(1'b0),
-        .flush_all_o(global_flush),.perf_o());
+        .flush_all_o(global_flush),.perf_o(perf_commit));
     trap_ctrl #(.CFG(CFG)) u_trap_ctrl (
         .clk(clk),.rst(rst),.req_i(trap_req),.csr_update_valid_o(trap_update_valid),.csr_update_o(trap_update),
         .csr_target_pc_i(trap_target),.csr_update_done_i(trap_done),
         .redirect_valid_o(trap_redirect_valid),.redirect_pc_o(trap_redirect_pc));
     csr_file #(.CFG(CFG)) u_csr_file (
         .clk(clk),.rst(rst),.req_valid_i(csr_req_valid),.req_i(csr_req),.resp_o(csr_resp),
+        .fe_perf_i(fe_perf_i),.be_perf_i(be_perf),
         .retire_count_i(retire_count_this_cycle),.write_value_o(csr_write_value),.fp_retire_i('0),.frm_o(),.fs_o(),
         .trap_update_valid_i(trap_update_valid),.trap_update_i(trap_update),.trap_target_pc_o(trap_target),.trap_update_done_o(trap_done),
         .irq_m_ext_i(1'b0),.irq_m_timer_i(1'b0),.irq_m_soft_i(1'b0),.irq_s_ext_i(1'b0),.irq_view_o(),.irq_take_o(),.irq_cause_o(),
         .fe_csr_o(fe_csr_o),.pmp_o(t_pmp),.dmmu_csr_o(t_dmmu_csr),.priv_o());
     assign fe_pmp_o=t_pmp;
+
+    // Existing producers are connected without deriving new BE events. Their
+    // current tie-offs remain zero until their owning level implements them.
+    always_comb begin
+        be_perf = '0;
+        if (!rst)
+            for (int evt = 0; evt < o3_types_pkg::BE_PERF_NUM; evt++)
+                be_perf[evt] = perf_commit[evt] + perf_lsu[evt] + perf_dcache[evt];
+    end
 
     localparam int BACKEND_PREG_IDX_WIDTH = PREG_IDX_WIDTH;   // 两域共用 preg 字段宽度（o3_types_pkg::PREG_W）
     localparam int BACKEND_ROB_IDX_WIDTH  = $clog2(NUM_ROB_ENTRIES);
@@ -1179,7 +1194,8 @@ module backend
         .t_exc_valid_o(lsu_exc_valid),.t_exc_rob_idx_o(lsu_exc_idx),.t_exc_o(lsu_exc),
         .t_csr_i(t_dmmu_csr), .t_pmp_i(t_pmp), .t_sfence_i(t_sfence),
         .t_dc_ld_req_valid_o(t_dc_ld_req_valid), .t_dc_ld_req_ready_i(t_dc_ld_req_ready),
-        .t_dc_ld_req_o(t_dc_ld_req), .t_dc_ld_resp_i(t_dc_ld_resp)
+        .t_dc_ld_req_o(t_dc_ld_req), .t_dc_ld_resp_i(t_dc_ld_resp),
+        .t_perf_o(perf_lsu)
     );
 
     // 分支单元（原样迁出到 branch_unit；内部例化 branch_execute_unit）。
@@ -1938,7 +1954,7 @@ module backend
     assign t_rsv_clear_valid = 1'b0;
     assign t_rsv_clear_reason = o3_types_pkg::RSV_CLR_SC; // valid=0；合法编码无事件
     assign fatal_o = 1'b0; // platform fatal isolation belongs to L11
-    assign perf_rd_data_o = '0; // CSR cost counters are internal until L7
+    assign perf_rd_data_o = '0; // Legacy observation port; use B48 counter CSRs.
     always_ff @(posedge clk) if (!rst) assert (!fe_pmp_o.update && !t_pmp.update);
 
     dcache #(.CFG(CFG)) u_dcache (
@@ -1965,7 +1981,7 @@ module backend
         .l2_wb_valid_o(l2_wb_valid_o), .l2_wb_ready_i(l2_wb_ready_i),
         .l2_wb_line_paddr_o(l2_wb_line_paddr_o), .l2_wb_data_o(l2_wb_data_o),
         .l2_wb_error_i(l2_wb_error_i),
-        .idle_o(), .fatal_o(t_dc_fatal), .perf_o()
+        .idle_o(), .fatal_o(t_dc_fatal), .perf_o(perf_dcache)
     );
 
     // 冻结 §4.4：R 仍广播；M 是唯一恢复 block，资源回压保持独立。

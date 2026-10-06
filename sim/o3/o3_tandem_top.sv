@@ -131,6 +131,26 @@ module o3_tandem_top
         assign tandem_mem_data_o[lane] = retire_info[lane].mem.data;
     end
 
+    l7_event_checks l7_checks (
+        .clk_i(clk_i),.rst_i(rst_i),
+        .fe_sources_i('{u_core.u_frontend.perf_bpu,u_core.u_frontend.perf_ftq,
+            u_core.u_frontend.perf_arb,u_core.u_frontend.perf_rq,u_core.u_frontend.perf_f0,
+            u_core.u_frontend.perf_f1,u_core.u_frontend.perf_ibuf,u_core.u_frontend.perf_icache,
+            u_core.u_frontend.perf_pf}),
+        .be_sources_i('{u_core.u_backend.perf_commit,u_core.u_backend.perf_lsu,u_core.u_backend.perf_dcache}),
+        .fe_frontend_i(u_core.u_frontend.fe_perf_o),.fe_core_i(u_core.fe_perf),
+        .fe_backend_i(u_core.u_backend.fe_perf_i),.fe_csr_i(u_core.u_backend.u_csr_file.fe_perf_i),
+        .fe_hpm_i(u_core.u_backend.u_csr_file.u_hpm_counters.fe_perf_i),
+        .be_backend_i(u_core.u_backend.be_perf),.be_hpm_i(u_core.u_backend.u_csr_file.u_hpm_counters.be_perf_i),
+        .req_valid_i(u_core.u_backend.csr_req_valid),.req_i(u_core.u_backend.csr_req),
+        .trap_i(u_core.u_backend.trap_update_valid),.retired_i(u_core.u_backend.retire_count_this_cycle),
+        .cycle_i(u_core.u_backend.u_csr_file.u_hpm_counters.mcycle_q),
+        .instret_i(u_core.u_backend.u_csr_file.u_hpm_counters.minstret_q),
+        .counters_i(u_core.u_backend.u_csr_file.u_hpm_counters.counter_q),
+        .selectors_i(u_core.u_backend.u_csr_file.u_hpm_counters.event_q),
+        .inhibit_i(u_core.u_backend.u_csr_file.u_hpm_counters.inhibit_q),
+        .accepted_i(u_core.u_frontend.redirect_o),.busy_i(u_core.u_frontend.recover_busy));
+
     int unsigned debug_cycle_q;
     always_ff @(posedge clk_i) begin
         if (rst_i) debug_cycle_q <= 0;
@@ -335,3 +355,5 @@ module o3_axi_ram #(
                         <= init_data_i[8*byte_idx +: 8];
     end
 endmodule
+
+`include "sim/o3/l7_event_checks.sv"

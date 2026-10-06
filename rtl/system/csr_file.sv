@@ -17,10 +17,11 @@
  *   软件写 fflags/frm/fcsr 在 CSR 串行更新点置 Dirty。FS=Off 时 FP 指令非法由译码/执行按既有规则
  *   报告。dynamic rm 读取程序顺序正确的 frm（frm 写入串行化，B15/B22）。
  *
- * 细节待定：实现的 CSR 集合与 WARL 细节；计数器与 time 来源；CSR 内部拍数（允许拆多拍，外部串行
+ * 细节待定：后续特权级 CSR 集合与 WARL 细节；time 来源；CSR 内部拍数（允许拆多拍，外部串行
  * 边界不变）。
  *
- * 当前实现状态：闭环简化（L5）：M/Bare 单 hart；后续级的中断/S/U/FP 接口显式 tie-off。
+ * 当前实现状态：闭环简化（L7a）：M/Bare 单 hart；后续级的中断/S/U/FP 接口显式 tie-off。
+ * - B48 M-mode HPM / mcycle / minstret 由 hpm_counters 统一持有；L7a 新增行为未验证。
  *
  * 逐周期说明（目标）：
  * - 周期 N：req_valid_i 时组合给出读值与合法性；trap_update_valid_i 时组合给出入口/返回 PC。
@@ -42,6 +43,8 @@ module csr_file
     output csr_resp_t       resp_o,
 
     input logic [$clog2(o3_cfg_pkg::O3_CFG.core.commit_width+1)-1:0] retire_count_i,
+    input  fe_perf_t        fe_perf_i,
+    input  be_perf_t        be_perf_i,
     output logic [63:0] write_value_o,
     input  fp_retire_evt_t  fp_retire_i,         // B40
     output logic [o3_isa_pkg::FRM_W-1:0]    frm_o,
@@ -70,9 +73,17 @@ module csr_file
 );
     logic mie_bit_q, mpie_q;
     logic [63:0] mie_q, mtvec_q, mscratch_q, mepc_q, mcause_q, mtval_q;
-    logic [63:0] mcycle_q, minstret_q, old_value, modify_value;
-    logic implemented;
+    logic [63:0] old_value, modify_value, hpm_write_value;
+    logic implemented, hpm_implemented;
+    csr_resp_t hpm_resp;
     localparam logic [63:0] MISA = 64'h8000000000001100; // RV64IM, Zicsr/Zifencei have no letter bit.
+
+    hpm_counters #(.NUM_HPM(o3_cfg_pkg::O3_CFG.core.hpm_counters)) u_hpm_counters (
+        .clk_i(clk), .rst_i(rst),
+        .req_valid_i(req_valid_i && !trap_update_valid_i), .req_i(req_i),
+        .implemented_o(hpm_implemented), .resp_o(hpm_resp), .write_value_o(hpm_write_value),
+        .retire_count_i(retire_count_i), .fe_perf_i(fe_perf_i), .be_perf_i(be_perf_i)
+    );
     always_comb begin
         implemented = 1'b1;
         old_value = '0;
@@ -86,10 +97,11 @@ module csr_file
             12'h342: old_value = mcause_q;
             12'h343: old_value = mtval_q;
             12'h344: old_value = '0; // no software-pending writable bits in M-only L5
-            12'hb00,12'hc00: old_value = mcycle_q;
-            12'hb02,12'hc02: old_value = minstret_q;
             12'hf11,12'hf12,12'hf13,12'hf14: old_value = '0;
-            default: implemented = 1'b0;
+            default: begin
+                implemented = hpm_implemented;
+                old_value = hpm_resp.rdata;
+            end
         endcase
         modify_value = req_i.wdata;
         if (req_i.op == CSROP_RS) modify_value = old_value | req_i.wdata;
@@ -103,7 +115,7 @@ module csr_file
             12'h344: write_value_o = '0;
             12'h305: write_value_o = (modify_value & ~64'd3) | (modify_value[1:0]==1 ? 64'd1 : 64'd0);
             12'h341: write_value_o = modify_value & ~64'd3;
-            default: ;
+            default: if (hpm_implemented) write_value_o = hpm_write_value;
         endcase
         resp_o = '0;
         resp_o.valid = req_valid_i;
@@ -124,10 +136,7 @@ module csr_file
         if (rst) begin
             mie_bit_q <= 0; mpie_q <= 0; mie_q <= 0;
             mtvec_q <= 64'h200; mscratch_q <= 0; mepc_q <= 0; mcause_q <= 0; mtval_q <= 0;
-            mcycle_q <= 0; minstret_q <= 0;
         end else begin
-            mcycle_q <= mcycle_q + 1;
-            minstret_q <= minstret_q + 64'(retire_count_i);
             if (trap_update_valid_i) begin
                 assert (!req_valid_i && (trap_update_i.is_xret || retire_count_i==0));
                 if (trap_update_i.is_xret) begin mie_bit_q <= mpie_q; mpie_q <= 1; end
@@ -146,8 +155,6 @@ module csr_file
                     12'h341: mepc_q <= write_value_o;
                     12'h342: mcause_q <= write_value_o;
                     12'h343: mtval_q <= write_value_o;
-                    12'hb00: mcycle_q <= write_value_o;
-                    12'hb02: minstret_q <= write_value_o;
                     default: ;
                 endcase
             end

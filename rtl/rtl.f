@@ -43,7 +43,6 @@ rtl/frontend/ifu_f0.sv
 rtl/frontend/ifu_f1.sv
 rtl/frontend/redirect_arbiter.sv
 rtl/frontend/frontend_sync_ctrl.sv
-rtl/frontend/frontend_perf_events.sv
 rtl/frontend/icache.sv
 rtl/frontend/frontend.sv
 
@@ -95,6 +94,7 @@ rtl/backend/rob.sv
 
 // ---------- 10. 后端总装 ----------
 rtl/backend/rename_entry_gate.sv
+rtl/system/hpm_counters.sv
 rtl/system/csr_file.sv
 rtl/system/trap_ctrl.sv
 rtl/system/commit_ctrl.sv

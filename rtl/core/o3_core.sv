@@ -6,6 +6,7 @@
  *   全工程参数只来自 o3_cfg_pkg::O3_CFG，本层不写数值。
  * - 连接前后端合同：fetch_entry_t 交付、bru_resolve_t 执行解析、sys_redirect_t、ftq_commit_t、
  *   系统同步握手、CSR 派生状态、ITLB→共享 PTW。
+ * - L7a B48：前端事件增量经 fe_perf 连入后端 CSR/HPM，新增行为未验证。
  * - 连接 L1I/L1D ↔ L2、L2 ↔ DDR AXI、SD DMA 行事务入口。
  *
  * 当前实现状态：闭环简化（L4）。
@@ -108,6 +109,7 @@ module o3_core
     sys_redirect_t  sys_redirect;
     ftq_commit_t    ftq_commit [COMMIT_W];
     redirect_req_t  fe_redirect;
+    fe_perf_t       fe_perf;
     logic           sync_valid, sync_ready, sync_done;
     fe_sync_req_t   sync_req;
     logic           ptw_idle;
@@ -159,6 +161,7 @@ module o3_core
         .l2_resp_i(l1i_resp), .l2_resp_ready_o(l1i_resp_ready),
         .l1i_recall_valid_i(l1i_recall_valid), .l1i_recall_ready_o(l1i_recall_ready),
         .l1i_recall_i(l1i_recall), .l1i_recall_resp_o(l1i_recall_resp),
+        .fe_perf_o(fe_perf),
         .perf_rd_valid_i(1'b0), .perf_rd_idx_i('0), .perf_rd_data_o(),
         .perf_clear_i(1'b0), .perf_snapshot_i(1'b0)
     );
@@ -168,6 +171,7 @@ module o3_core
         .fetch_entry_i(be_fetch_entry), .fetch_valid_i(fe_deliver_valid), .fetch_ready_o(be_fetch_ready),
         .exec_resolve_o(exec_resolve), .sys_redirect_o(sys_redirect), .ftq_commit_o(ftq_commit),
         .fe_redirect_i(fe_redirect),
+        .fe_perf_i(fe_perf),
         .fe_sync_valid_o(sync_valid), .fe_sync_ready_i(sync_ready),
         .fe_sync_o(sync_req), .fe_sync_done_i(sync_done),
         .ptw_idle_o(ptw_idle),

@@ -3,7 +3,7 @@ TOPLEVEL_LANG := verilog
 COCOTB_TOPLEVEL := csr_file_tb_top
 COCOTB_TEST_MODULES := test_csr_file
 REPO_ROOT := $(abspath ../../..)
-VERILOG_SOURCES := $(REPO_ROOT)/rtl/common/o3_isa_pkg.sv $(REPO_ROOT)/rtl/common/o3_cfg_pkg.sv $(REPO_ROOT)/rtl/common/o3_types_pkg.sv $(REPO_ROOT)/rtl/common/o3_pkg.sv $(REPO_ROOT)/rtl/system/csr_file.sv $(CURDIR)/csr_file_tb_top.sv
+VERILOG_SOURCES := $(REPO_ROOT)/rtl/common/o3_isa_pkg.sv $(REPO_ROOT)/rtl/common/o3_cfg_pkg.sv $(REPO_ROOT)/rtl/common/o3_types_pkg.sv $(REPO_ROOT)/rtl/common/o3_pkg.sv $(REPO_ROOT)/rtl/system/hpm_counters.sv $(REPO_ROOT)/rtl/system/csr_file.sv $(CURDIR)/csr_file_tb_top.sv
 TEST_SEED ?= 1
 export TEST_SEED
 EXTRA_ARGS += --timing -Wno-fatal --assert

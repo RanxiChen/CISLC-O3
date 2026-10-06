@@ -175,3 +175,14 @@ L6_ELF ?= $(BUILD_DIR)/l6_smoke.elf
 run-l6-smoke:
 	$(RISCV_GCC) -march=rv64im_zicsr_zifencei -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(REPO_ROOT)/verification/riscv-tests/l5/link.ld $(SIM_DIR)/tests/l6_smoke.S -o $(L6_ELF)
 	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) --spike --image $(L6_ELF) --trace $(BUILD_DIR)/l6_smoke.jsonl --tohost-address 0x801ff000 --max-cycles 20000 --max-retires 2000
+
+# L7a: handwritten program, two groups with identical measured code layout.
+# Performance thresholds are markers; correctness/consistency failures fail make.
+.PHONY: run-l7-predict
+run-l7-predict:
+	$(RISCV_GCC) -DGROUP_A -march=rv64im_zicsr -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l7_predict.S -o $(BUILD_DIR)/l7_predict_a.elf
+	$(RISCV_GCC) -DGROUP_B -march=rv64im_zicsr -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l7_predict.S -o $(BUILD_DIR)/l7_predict_b.elf
+	python3 $(SIM_DIR)/check_l7_layout.py --a $(BUILD_DIR)/l7_predict_a.elf --b $(BUILD_DIR)/l7_predict_b.elf --output $(BUILD_DIR)/l7_layout.json
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK --image $(BUILD_DIR)/l7_predict_a.elf --trace $(BUILD_DIR)/l7_predict_a.jsonl --tohost-address 0x801ff000 --max-cycles 1500000 --max-retires 150000
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK --image $(BUILD_DIR)/l7_predict_b.elf --trace $(BUILD_DIR)/l7_predict_b.jsonl --tohost-address 0x801ff000 --max-cycles 1500000 --max-retires 150000
+	python3 $(SIM_DIR)/check_l7_predict.py --a $(BUILD_DIR)/l7_predict_a.jsonl --b $(BUILD_DIR)/l7_predict_b.jsonl --layout $(BUILD_DIR)/l7_layout.json --output $(BUILD_DIR)/l7_predict_summary.json

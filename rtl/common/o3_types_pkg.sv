@@ -1134,26 +1134,51 @@ package o3_types_pkg;
         fuse_role_e          fuse_role;          // B34：融合成员仍各自退休
     } rob_commit_t;
 
-    // 后端性能事件（B10 + B12/B13 建议的观测）。逻辑口径，不是 CSR 编码。
+    // Frozen source-2 event numbers (mhpmevent[7:0]); append, never reorder.
+    // Zero is disabled. Existing producers retain their current event semantics.
     typedef enum int unsigned {
-        BE_RENAME_STALL_PREG, BE_RENAME_STALL_ROB, BE_RENAME_STALL_LQ, BE_RENAME_STALL_SQ,
-        BE_RENAME_STALL_CKPT, BE_RENAME_STALL_RDQ,
-        BE_BRANCH_READY_WAIT_READPORT, BE_BRANCH_RESULT_BLOCKED, BE_RESOLUTION_STALL_CYCLE,
-        BE_MISPREDICT, BE_MUL_RESULT_BLOCKED, BE_DIV_BUSY_CYCLE,
-        BE_DC_BANK_CONFLICT, BE_DC_MSHR_FULL, BE_DC_HIT_UNDER_MISS, BE_SQ_FORWARD, BE_SQ_WAIT,
-        BE_PTW_WALK, BE_WALK_CACHE_HIT, BE_DPF_ISSUED, BE_DPF_USEFUL,
-        BE_DMA_LINE_TXN, BE_DMA_LINE_LOCK_CYCLE, BE_DMA_CONFLICT_LOAD, BE_DMA_CONFLICT_STORE,
-        BE_DMA_CONFLICT_CYCLE, BE_DMA_WAIT_DCACHE_CYCLE, BE_ROB_HEAD_DMA_WAIT_CYCLE,
-        BE_ROB_FULL_CYCLE, BE_SQ_FULL_CYCLE,
+        BE_RENAME_STALL_PREG = 'h01,
+        BE_RENAME_STALL_ROB = 'h02,
+        BE_RENAME_STALL_LQ = 'h03,
+        BE_RENAME_STALL_SQ = 'h04,
+        BE_RENAME_STALL_CKPT = 'h05,
+        BE_RENAME_STALL_RDQ = 'h06,
+        BE_BRANCH_READY_WAIT_READPORT = 'h07,
+        BE_BRANCH_RESULT_BLOCKED = 'h08,
+        BE_RESOLUTION_STALL_CYCLE = 'h09,
+        BE_MISPREDICT = 'h0a,
+        BE_MUL_RESULT_BLOCKED = 'h0b,
+        BE_DIV_BUSY_CYCLE = 'h0c,
+        BE_DC_BANK_CONFLICT = 'h0d,
+        BE_DC_MSHR_FULL = 'h0e,
+        BE_DC_HIT_UNDER_MISS = 'h0f,
+        BE_SQ_FORWARD = 'h10,
+        BE_SQ_WAIT = 'h11,
+        BE_PTW_WALK = 'h12,
+        BE_WALK_CACHE_HIT = 'h13,
+        BE_DPF_ISSUED = 'h14,
+        BE_DPF_USEFUL = 'h15,
+        BE_DMA_LINE_TXN = 'h16,
+        BE_DMA_LINE_LOCK_CYCLE = 'h17,
+        BE_DMA_CONFLICT_LOAD = 'h18,
+        BE_DMA_CONFLICT_STORE = 'h19,
+        BE_DMA_CONFLICT_CYCLE = 'h1a,
+        BE_DMA_WAIT_DCACHE_CYCLE = 'h1b,
+        BE_ROB_HEAD_DMA_WAIT_CYCLE = 'h1c,
+        BE_ROB_FULL_CYCLE = 'h1d,
+        BE_SQ_FULL_CYCLE = 'h1e,
         // B22：CSR 串行化成本
-        BE_CSR_RETIRED, BE_CSR_WAIT_EMPTY_CYCLE, BE_CSR_BLOCK_YOUNGER_CYCLE,
+        BE_CSR_RETIRED = 'h1f,
+        BE_CSR_WAIT_EMPTY_CYCLE = 'h20,
+        BE_CSR_BLOCK_YOUNGER_CYCLE = 'h21,
         // B23：FENCE.I 次数与 L1D 数据维护周期
-        BE_FENCEI_RETIRED, BE_FENCEI_DCACHE_EVICT_CYCLE,
+        BE_FENCEI_RETIRED = 'h22,
+        BE_FENCEI_DCACHE_EVICT_CYCLE = 'h23,
         // B31：跨 line 非对齐正式陷入次数（trap 接受握手计一次）
-        BE_MISALIGNED_CROSSLINE_TRAP,
+        BE_MISALIGNED_CROSSLINE_TRAP = 'h24,
         // B34：MULH+MUL 融合对数（观测，口径待定）
-        BE_MUL_FUSED_PAIR,
-        BE_PERF_NUM
+        BE_MUL_FUSED_PAIR = 'h25,
+        BE_PERF_NUM = 'h26
     } be_perf_evt_e;
 
     localparam int BE_PERF_INC_W = $clog2(RENAME_W + 1);

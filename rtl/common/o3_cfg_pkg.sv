@@ -52,6 +52,8 @@ package o3_cfg_pkg;
         int unsigned xlate_epoch_bits;
         // 已定 4：每拍 ROB 提交宽度，与 rename 一致（B42）。
         int unsigned commit_width;
+        // 已定 8：M-mode mhpmcounter3～10；特权访问与 Sscofpmf 在 L10（B48）。
+        int unsigned hpm_counters;
         // 待定：PMP 项数（D28 未定数量）。
         int unsigned pmp_entries;
     } core_cfg_t;
@@ -277,6 +279,7 @@ package o3_cfg_pkg;
             asid_bits:         16,
             xlate_epoch_bits:  8,
             commit_width:      4,
+            hpm_counters:      8,
             pmp_entries:       16
         },
         fe: '{

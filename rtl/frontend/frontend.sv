@@ -21,12 +21,11 @@
  *   frontend_sync_ctrl（D25～D28）：FENCE.I / SFENCE.VMA / satp / PMP 的前端部分；
  *     整个同步序列由后端 commit_ctrl 编排（2026-10-02 确认），前端不发起 DCache clean。
  *   L2 inclusive 回收（B41）：recall_* 直通 ICache 的维护入口，不经过 demand 流水。
- *   frontend_perf_events（D21）：事件计数。
+ *   fe_perf_o → o3_core → backend → csr_file → hpm_counters（B48）：事件计数。
  *
  * 本模块负责：子模块之间的连线、kill/hold 广播、对外端口。不承担任何状态。
  *
  * 需要补充实现的机制（本模块内）：
- * - 各子模块 perf 增量合并到 frontend_perf_events（当前未连接）。
  * - pmp_i.update 由 frontend_sync_ctrl 在 D28 同步序列中转发（当前组合替换，序列未实现）。
  *
  * 对外接口中“未设计”的部分（端口只是占位，不代表合同已定）：
@@ -42,8 +41,9 @@
  *   branch_resolution_t 直接驱动整体 kill）已被替换。各子模块保留的旧合同端口在此不连接。
  * - o3_core 已连接本模块的 L1I/L2 端口。
  *
- * 当前实现状态：闭环简化（L4）。直线整数取指经 ICache/L2/AXI 能交付后端；
- * 分支恢复、特权翻译、预取及系统同步仍待后级。
+ * 当前实现状态：闭环简化（L7a，T05c/d RTL 已实现，新增行为未验证）。
+ * - 快/慢预测、F1 寄存式修正与执行纠错均接入 D24；B48 事件按增量汇总。
+ * - RVC、特权翻译、预取及完整系统同步仍待后级；返回队列保持单槽。
  * 测试：sim/cocotb/backend/；sim/o3/。
  *
  * 逐周期说明（目标，连线层面）：
@@ -104,7 +104,10 @@ module frontend
     input  l1_recall_req_t  l1i_recall_i,
     output l1i_recall_resp_t l1i_recall_resp_o,
 
-    // ---------------- 性能计数读取（ABI 未设计） ----------------
+    // ---------------- B48 每拍事件增量（架构计数状态由 CSR/HPM 持有） ----------------
+    output fe_perf_t        fe_perf_o,
+
+    // 旧观测接口保留为零值兼容口；计数读写通过架构 CSR 完成。
     input  logic            perf_rd_valid_i,
     input  logic [$clog2(PE_NUM)-1:0] perf_rd_idx_i,
     output logic [CFG.perf.counter_bits-1:0] perf_rd_data_o,
@@ -208,7 +211,7 @@ module frontend
     logic            f0_sync_clear;
     pmp_state_t      pmp_to_icache;
 
-    // 性能事件（各子模块增量合并：未实现）
+    // 性能事件；BPU 内部已合并 RAS/slow，顶层不重复计数。
     fe_perf_t        perf_bpu, perf_ftq, perf_arb, perf_rq, perf_f0, perf_f1,
                      perf_ibuf, perf_icache, perf_pf, perf_sum;
 
@@ -320,7 +323,7 @@ module frontend
         .rst_i               (rst_i),
         .sys_i               (sys_redirect_i),
         .exec_i              (exec_resolve_i),
-        .predecode_i         ('0), // T05c connects the registered F1 request
+        .predecode_i         (f1_predecode),
         .slow_i              (bpu_override),
         .ftq_head_i          (ftq_head_id),
         .winner_o            (arb_winner),
@@ -417,7 +420,7 @@ module frontend
         .sfence_i            (sync_sfence),
         .kill_i              (fe_kill),
         .hold_i              (sync_hold),
-        .perf_o              (perf_pf)
+        .perf_o              () // Prefetcher remains a shell; its events are zero in L7a.
     );
 
     // ============================================================
@@ -500,16 +503,19 @@ module frontend
         .f0_clear_o        (f0_sync_clear)
     );
 
-    // 未实现：perf_sum = 各子模块 perf 增量按事件相加。
-    frontend_perf_events #(.CFG(CFG)) u_frontend_perf_events (
-        .clk_i     (clk_i),
-        .rst_i     (rst_i),
-        .evt_i     (perf_sum),
-        .rd_valid_i(perf_rd_valid_i),
-        .rd_idx_i  (perf_rd_idx_i),
-        .rd_data_o (perf_rd_data_o),
-        .clear_i   (perf_clear_i),
-        .snapshot_i(perf_snapshot_i)
-    );
+    // The unimplemented prefetcher has no driven perf output. Do not let an
+    // undriven shell contaminate every event; spec 6.3 leaves those events zero.
+    assign perf_pf = '0;
+    always_comb begin
+        perf_sum = '0;
+        if (!rst_i) begin
+            for (int evt = 0; evt < PE_NUM; evt++)
+                perf_sum[evt] = perf_bpu[evt] + perf_ftq[evt] + perf_arb[evt]
+                    + perf_rq[evt] + perf_f0[evt] + perf_f1[evt]
+                    + perf_ibuf[evt] + perf_icache[evt] + perf_pf[evt];
+        end
+    end
+    assign fe_perf_o = perf_sum;
+    assign perf_rd_data_o = '0;
 
 endmodule
