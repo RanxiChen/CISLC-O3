@@ -4,7 +4,7 @@
 
 依据：[v1 计划](../O3-v1-plan.md) 第 3 节 L7（2026-10-06 拆为 L7a/L7b）及“验收调整”；[前端基线](../design/CISLC-O3-FRONTEND-DESIGN-BASELINE.md) D01～D35（重点 D02、D05～D09、D22～D24、D29～D32）；[后端基线](../design/CISLC-O3-BACKEND-DESIGN-BASELINE.md) B48。
 
-**状态：已冻结（2026-10-06，用户确认 U1～U6 按推荐值；同日修订补充 U7～U14，见第 8 节）。** 本文是阶段二唯一实施依据；spec 未覆盖的行为先提问，不得自行补设计。本轮只读代码、写文档，未改 RTL、未运行仿真。
+**状态：已冻结（2026-10-06，用户确认 U1～U6 按推荐值；同日两轮修订补充 U7～U21，见第 8 节）。** 本文是阶段二唯一实施依据；spec 未覆盖的行为先提问，不得自行补设计。本轮只读代码、写文档，未改 RTL、未运行仿真。
 
 ---
 
@@ -31,7 +31,7 @@
 | 模块 | 现状 | L7a 要做 |
 | --- | --- | --- |
 | `bpu.sv` | L1 简化：顺序 16B，不实例化任何预测器（`:111–154`）；保留旧 32B 合同（`:156–201`） | 第 2 节：实例化并接通全部子模块；删除旧合同（B46） |
-| `ubtb.sv` | 已实现：全相联、提交训练、全局轮转、只为 taken 分配；组合单拍（`:1–25`） | 只改配置为 32 项（D30）；预留位（2.6） |
+| `ubtb.sv` | 已实现：全相联、提交训练、全局轮转；组合单拍（`:1–25`）。**偏离 D30**：只有 not-taken BR 提交的新区域也会分配项（`:153–155`） | 改配置为 32 项（D30）；预留位（2.6）；新项只为 taken CFI 分配（2.4，U18） |
 | `main_btb.sv` | 已实现：组相联、单目标、提交训练；N 拍查、N+1 出结果（`:30–37`） | 改配置；预留位 |
 | `tage.sv` | 已实现：base + 6 表，N 查、N+2 出结果（`:22–26`），meta 编码 provider/alt | 改配置 |
 | `ras.sv` | 已实现：寄存器栈、单拍操作与恢复、ckpt 输出；不做 x1/x5 解码（`:33`） | 只删除 `PE_RECOVER_CYCLE` 增量（`:182`，U13）；x1/x5 解码在 F1 与后端 |
@@ -87,7 +87,7 @@ RAS 动作（`alloc_fire` 沿）：`op_valid = cfi_valid && ras_action != RAS_NO
 
 ### 2.4 训练分发
 
-`train_ready_o = ubtb.train_ready_o && main_btb.train_ready_o && tage.train_ready_o`；三张表的 `train_valid_i = train_valid_i && train_ready_o`，同一 `train_i` 广播。三张表各自按已实现规则更新，不改训练规则。
+`train_ready_o = ubtb.train_ready_o && main_btb.train_ready_o && tage.train_ready_o`；三张表的 `train_valid_i = train_valid_i && train_ready_o`，同一 `train_i` 广播。三张表各自按已实现规则更新，不改训练规则，唯一例外是 uBTB 的分配条件（U18）：未命中的区域只有 `train_i.cfi_valid && cfi_type != CFI_NONE`（有 taken CFI）时才分配新项；只有 not-taken BR 提交的区域不分配。已命中的项仍按现有规则接受 not-taken 训练（`br_mask` 累加等）。替换规则不变。
 
 ### 2.5 组合环约束（必须遵守）
 
@@ -113,8 +113,9 @@ RAS 动作（`alloc_fire` 沿）：`op_valid = cfi_valid && ras_action != RAS_NO
    - 候选 taken 槽：`cand = (br & tage.taken_mask) | jal`；另外，若 `o >= e` 且 `btb.cfi_type == CFI_JALR`，`o` 也是候选（JALR 无 mask，恒 taken）。
    - 取最低的候选槽 `c`。
    - `c` 不存在：P = 顺序。
-   - `c == o`：P 在 `o` 退出。`cfi_type/ras_action = btb` 的值；`cfi_target = btb.target`；若 `ras_action ∈ {POP, POP_PUSH}` 且 `ras_ckpt.count != 0`，`cfi_target = ras_ckpt.top_addr`。`next_pc = cfi_target`。
-   - `c != o`（`c` 没有目标）：`raw_pred_taken=1`、`target_missing=1`，P = 顺序（第 4.3 节；推荐理由见 U1）。
+   - 记 `owner_ok = btb.cfi_type != CFI_NONE`（项有已安装的目标归属；首次只提交 not-taken BR 的项 `cfi_type=CFI_NONE`、`target=0`，见 `main_btb.sv:186–197`，U17）。
+   - `c == o && owner_ok`：P 在 `o` 退出。`cfi_type/ras_action = btb` 的值；`cfi_target = btb.target`；若 `ras_action ∈ {POP, POP_PUSH}` 且 `ras_ckpt.count != 0`，`cfi_target = ras_ckpt.top_addr`。`next_pc = cfi_target`。
+   - `c != o` 或 `!owner_ok`（`c` 没有目标）：`raw_pred_taken=1`、`target_missing=1`，P = 顺序（第 4.3 节；推荐理由见 U1）。
    - P 的 `br_mask/jal_mask` 取 `br/jal`；`tage_meta` 取 TAGE `meta`。
 3. P 的 `region_base/entry_slot` 与 `fast` 相同。
 
@@ -162,9 +163,16 @@ L7a 只有 32 位指令（RV64I，`.option norvc`），每块最多 4 条，起�
 | e | 出口为 BR 或 JAL，类型相同，但 `pred.cfi_target != pc_i + imm`；或出口为 JAL、类型相同、`pred.ras_action != ras_i`（U9） | `pc_i + imm` | `ras_i` | `T_i==BR` |
 | f | 出口为 JALR，类型相同，`pred.ras_action != ras_i` | `ras_i` 为 pop 且 `count!=0`：`top_addr`；否则保持 `pred.next_pc` | `ras_i` | 0 |
 
-不修正：BR 方向（无法知道）；普通 JALR 的目标（等执行，前端基线 4.3）；栈空时的 return（b 不触发，等执行）。
+判定细则（U19）：
+- **位置**：指令 `i` 占槽 `[s_i, s_i+1]`。“早于出口”指 `s_i < pred.cfi_slot`（含 `i` 覆盖出口槽、即 `s_i+1 == pred.cfi_slot` 的情况）或 `pred.cfi_valid=0`；“出口指令”指 `s_i == pred.cfi_slot` 的指令。
+- **实际 taken 目标 `A(i)`**：`T_i=JAL` 时为 `pc_i+imm`；`T_i=JALR`、`ras_i ∈ {POP, POP_PUSH}` 且 `brief.ras_ckpt.count != 0` 时为 `ras_ckpt.top_addr`；其余情况 `A(i)` 不存在。a、b 即“早于出口且 `A(i)` 存在”。
+- **d 的重算**只复用 `A(i)` 的类型、RAS 与目标条件，不复用 a/b 的位置条件：`A(i)` 存在则 target=`A(i)`、ras_fix=`ras_i`；否则 target=`pc_i+4`、ras_fix=NONE。
+- **同一指令多条成立时的优先级**：a/b > c > d > e > f。例：预测出口 slot 1、slot 0 为 JAL（覆盖 slot 1），a 与 c 同时成立，按 a 修正到 JAL 目标；若 slot 0 为非 CFI 或 BR，a/b 不成立，按 c 修正到 `pc_0+4`。
+- **扫描顺序**：按程序顺序逐条判定，第一条有任一规则成立的指令产生唯一一次修正。
 
-取指异常（U10）：块内项 `exc_valid=1` 时（含整块取指异常与非法半字），该项及其后的项都不参与 a～f 判定，不产生修正；异常项的 `exc_valid/exc_cause/exc_tval` 原样交付，`pred_taken/predicted_next_pc` 按 4.4 未修正规则给出。若第一个异常项之前的项已触发修正，按正常修正处理（截断在该项，异常项不交付）。
+不修正：BR 方向（无法知道）；普通 JALR 的目标（等执行，前端基线 4.3）；栈空时 return 的**目标**（b 不触发，d 顺序越过，等执行）。栈空不影响 f：类型同为 JALR 而 `ras_action` 不同时，f 仍修正 RAS 动作，target 保持 `pred.next_pc`。
+
+取指异常（U10）：块内项 `exc_valid=1` 时（含整块取指异常与非法半字），该项及其后的项都不参与 a～f 判定，不产生修正；异常项的 `exc_valid/exc_cause/exc_tval` 原样交付，`pred_taken/predicted_next_pc` 按 4.4 未修正规则给出。第一个异常项之后的项不交付：异常项成为本块最后交付项并置 `ftq_last`（U20）。若异常项之前的项已触发修正，按正常修正截断在该项，异常项不交付。
 
 修正请求字段：`src=REDIR_PREDECODE`，`ftq_id`，`slot=s_i`，`kill_self=0`，`target_pc` 见表，`hist_branch_pc=pc_i`，`hist_target_pc=target`，`ras_push_addr = pc_i + 4`。
 
@@ -231,7 +239,7 @@ kill 拍仍阻塞上述模块的握手（现有写法），不需要在 kill 拍
 | --- | --- | --- |
 | `mcycle` / `minstret` | 0xB00 / 0xB02 | 读写；分别受 `mcountinhibit.CY`(bit0) / `IR`(bit2) 暂停 |
 | `mhpmcounter3～31` | 0xB03～0xB1F | 3～10 读写 64 位；11～31 读 0、写忽略 |
-| `mhpmevent3～31` | 0x323～0x33F | 3～10 的 [15:0] 可写；[63:58]（Sscofpmf 位）L7a 读 0；其余位读 0；11～31 读 0 |
+| `mhpmevent3～31` | 0x323～0x33F | 3～10 的 [15:0] 可写；[63:58]（Sscofpmf 位）L7a 读 0；其余位读 0；11～31 读 0、写忽略（不报非法，U21） |
 | `mcountinhibit` | 0x320 | bit0、bit2、bit3～10 可写，其余读 0 |
 | `cycle`/`instret`/`hpmcounter3～31` | 0xC00～0xC1F | 只读别名（M 模式可读）；写为非法指令 |
 
@@ -303,6 +311,18 @@ kill 拍仍阻塞上述模块的握手（现有写法），不需要在 kill 拍
 | U13 | 恢复周期与赢家事件重复计数 | `PE_RECOVER_CYCLE` 只由仲裁器产生，删除 `ras.sv` 增量；赢家事件与 FTQ `final_next_pc` 按接受拍（5、6.1） | 单一来源；`winner_o` 在恢复期间保持有效，按电平计数会重复 |
 | U14 | 失败项能否提交、继续 | 两档门禁（9.3），T05a～T05d 统一适用 | 正确性 bug 带到后级更难查；预测精度只影响性能 |
 
+第二轮修订（2026-10-06，Codex 复审）：
+
+| # | 问题 | 决定 | 理由 |
+| --- | --- | --- | --- |
+| U15 | 门禁范围与分步实施冲突 | 失败处理政策统一；测试范围按各步任务书，完整验收在 T05d（9.3） | 前几步尚未实现慢核对、F1、HPM，不能要求其测试通过 |
+| U16 | CMT 分类和缺少共同采样边界 | 用 `mcountinhibit` 暂停全部 HPM 后读取，再恢复；两组边界相同（9.2） | 连续 `csrr` 之间仍有训练握手，读到的总数与分类会错开 |
+| U17 | 主 BTB 命中但无已安装目标 | `c==o` 还须 `cfi_type != CFI_NONE`，否则按 U1 `target_missing`（3.1） | 首次 not-taken 训练只装 mask，`target=0` 不能被采用 |
+| U18 | uBTB 现有分配条件与 D30 不符 | 新项只为 taken CFI 分配；已有项仍接受 not-taken 训练（2.4） | D30 已确认“只为 taken 分配”；不纠正会让无目标项挤占 32 项 |
+| U19 | d 重算条件、同指令多规则优先级、栈空 return 与 f | 定义 `A(i)`；d 不复用位置条件；优先级 a/b > c > d > e > f；栈空只免目标补算，f 照常（4.2） | 消除字面矛盾，保证实现唯一 |
+| U20 | 异常项之后是否交付 | 不交付，异常项置 `ftq_last`（4.2） | 异常项提交即 trap，后续项无用；明确 `ftq_last` 位置 |
+| U21 | `mhpmevent11～31` 写行为 | 读 0、写忽略（6.3） | 与 `mhpmcounter11～31` 一致；只读别名写仍非法 |
+
 ## 9. 验收（手写定向 testbench）
 
 ### 9.1 模块级 cocotb
@@ -310,13 +330,13 @@ kill 拍仍阻塞上述模块的握手（现有写法），不需要在 kill 拍
 | 目录 | 新/改 | 用例 |
 | --- | --- | --- |
 | `sim/cocotb/bpu` | 改写 | 空表顺序预测；训练 taken BR 后 uBTB 命中、慢核对一致不覆盖；填满 33 个区域挤出 uBTB 后快顺序、慢覆盖（检查 N+2 的 `override_o` 各字段）；call 区域 push、return 区域快预测取 RAS 栈顶；`hold`/FTQ 不就绪期间不重复 RAS/历史动作；kill 后在途查询不产生 `slow_o` |
-| `sim/cocotb/bpu_slow_check` | 新 | 表驱动：entry 槽屏蔽、owner taken/不 taken、`target_missing`、JALR owner、return 栈空/非空、各覆盖比较项 |
-| `sim/cocotb/ifu_f1` | 扩展 | 4.2 的 a～f 各一例，以及“不修正”三例；e 的 JAL `ras_action` 不同一例（U9）；每例检查 `pred_taken`（U8，含 BR 目标恰为 `pc+4` 的 e 例）；块首项异常与块中项异常各一例（U10）；截断后只交付 `slot<=s_i`；请求只出现一次且晚一拍；kill 拍不锁存 |
+| `sim/cocotb/bpu_slow_check` | 新 | 表驱动：entry 槽屏蔽、owner taken/不 taken、`target_missing`、无 owner 项（`cfi_type=CFI_NONE`）上 slot 0 被 TAGE 判 taken 时为 `target_missing` 而非采用 `target=0`（U17）、JALR owner、return 栈空/非空、各覆盖比较项 |
+| `sim/cocotb/ifu_f1` | 扩展 | 4.2 的 a～f 各一例，以及“不修正”三例；e 的 JAL `ras_action` 不同一例（U9）；a 与 c 同时成立一例、d 重算命中 `A(i)` 与顺序越过各一例、栈空 return 的 f 一例（U19）；每例检查 `pred_taken`（U8，含 BR 目标恰为 `pc+4` 的 e 例）；块首项异常与块中项异常各一例，检查异常后不交付、`ftq_last` 在异常项（U10、U20）；截断后只交付 `slot<=s_i`；请求只出现一次且晚一拍；kill 拍不锁存 |
 | `sim/cocotb/redirect_arbiter` | 新 | 四路年龄仲裁、同位置优先级、环形回绕、busy 期间被更老请求替换、赢家事件只在接受拍计 1 次（恢复多拍期间不重复，U13）、`PE_RECOVER_CYCLE` 拍数 |
 | `sim/cocotb/fetch_buffer` | 新 | 选择性清除：边界前、边界本身（`kill_self` 0/1）、边界后、`all` |
 | `sim/cocotb/fetch_return_queue` | 扩展 | 槽内块比边界老/等/年轻三种 kill；kill 拍同时到达响应：保留槽收下、被清槽丢弃（U7） |
-| `sim/cocotb/hpm_counters` | 新 | 事件选择、0 号事件不计、多增量、`mcountinhibit`、写优先只作用于被写计数器、`mhpmevent`/`mcountinhibit` 写入下一拍生效（U11）、11～31 读 0、只读别名写非法 |
-| `ubtb`、`main_btb`、`tage`、`ras`、`branch_recovery` | 重跑 | 配置改动与字段扩展后不回归（`ftq`、`csr_file` 目前没有 cocotb 目录，由 `bpu`、`hpm_counters` 与整核程序覆盖） |
+| `sim/cocotb/hpm_counters` | 新 | 事件选择、0 号事件不计、多增量、`mcountinhibit`、写优先只作用于被写计数器、`mhpmevent`/`mcountinhibit` 写入下一拍生效（U11）、11～31 读 0、`mhpmcounter/mhpmevent11～31` 写忽略（U21）、只读别名写非法 |
+| `ubtb`、`main_btb`、`tage`、`ras`、`branch_recovery`、`csr_file` | 重跑 | 配置改动与字段扩展后不回归；`ubtb` 增加“只提交 not-taken BR 的新区域不分配”一例（U18）；`main_btb` 现有“无目标 owner”用例保留；`csr_file` 已有 cocotb，`mcycle`/`minstret` 迁入 `hpm_counters`（U5）后若原用例依赖旧实现细节，按 6.3 行为更新期望值（`ftq` 目前没有 cocotb 目录，由 `bpu` 与整核程序覆盖） |
 
 ### 9.2 整核定向程序
 
@@ -332,13 +352,20 @@ kill 拍仍阻塞上述模块的握手（现有写法），不需要在 kill 拍
 | A | `UBTB_HIT`、`SLOW_OVERRIDE`、`PREDECODE_REDIRECT`、`REDIRECT_EXEC`、`CMT_REGION`、`CMT_MISPRED_REGION` |
 | B | `CMT_REGION`、`CMT_FAST_OK_SLOW_OK`、`CMT_FAST_OK_SLOW_BAD`、`CMT_FAST_BAD_SLOW_OK`、`CMT_FAST_BAD_SLOW_BAD`、`REDIRECT_EXEC` |
 
-两组都采 `CMT_REGION` 与 `REDIRECT_EXEC` 作一致性检查，不一致属于正确性失败：组 B 中四个分类之和等于 `CMT_REGION`，由程序自查（不等写失败 tohost）；两次运行中这两项逐段相等，由 `run-l7-predict` 在两次运行后从 trace 提取比对（不等则目标失败）。报告的数值表注明每列来自哪一组。程序内只做宽松检查：第 1、2 段稳态下 `REDIRECT_EXEC` 小于分支数的 1/4；第 3 段 `SLOW_OVERRIDE > 0`。数值本身作为首份基线写进报告。
+采样边界（U16，两组相同）：
+- 每次采样：`csrw mcountinhibit` 置 bit3～10（暂停全部 HPM；`mcycle`/`minstret` 不暂停）→ 依次 `csrr` 读出 `mhpmcounter3～10` 存入内存 → `csrw mcountinhibit, 0` 恢复。暂停写入按 U11 下一拍生效；由于 CSR 指令在后端串行执行，暂停之后的 `csrr` 必然在生效之后，不需要额外等待。所有 HPM 在同一拍停、同一拍启，因此每次训练握手的 `CMT_REGION` 与分类增量要么同时计入，要么同时不计入，分类和与总数严格相等。
+- 两组程序的测量部分逐条指令相同，只有 `mhpmevent` 的写入值不同：每个事件号用单条 `li`（`addi`，值 < 0x800）装载，保证指令条数与地址不变。
+- 组别相关的自查与性能标记全部放在**最后一个测量窗口结束之后**的代码段，并位于程序文本末尾，不改变测量段的 PC 布局；`.data` 布局两组相同。
+- 组 A 检查：第 1、2 段 `REDIRECT_EXEC` 阈值、第 3 段 `SLOW_OVERRIDE > 0`（性能项，见 9.3）。组 B 检查：分类和等于 `CMT_REGION`（正确性项）。
+
+两组都采 `CMT_REGION` 与 `REDIRECT_EXEC` 作一致性检查，不一致属于正确性失败：组 B 中四个分类之和等于 `CMT_REGION`，由程序自查（不等写失败 tohost）；两次运行中这两项逐段相等，由 `run-l7-predict` 在两次运行后从 trace 提取比对（不等则目标失败）。报告的数值表注明每列来自哪一组。程序内的宽松检查（只在组 A 做）：第 1、2 段稳态下 `REDIRECT_EXEC` 小于分支数的 1/4；第 3 段 `SLOW_OVERRIDE > 0`。数值本身作为首份基线写进报告。
 
 并重跑：`make -C sim/o3 run-smoke`、`run-rv64i-instructions`、`run-l3-branch-dense`（均不带 `--spike`）。
 
 ### 9.3 完成标准
 
-- 两档门禁（U14，T05a～T05d 统一适用）：
+- 门禁范围（U15）：下述两档**失败处理政策**对 T05a～T05d 统一适用；但每一步的**测试范围**按该步任务书，只覆盖已实现的部分，并加上前序步骤已通过用例与三个整核回归的不回归。9.1、9.2 的完整验收只在最后一步（T05d）执行。
+- 两档门禁（U14）：
   - **正确性项，必须全部通过才能提交**：9.1 全部 cocotb 用例；9.2 整核程序 tohost 通过（含两组一致性检查）；`run-smoke`、`run-rv64i-instructions`、`run-l3-branch-dense` 回归。
   - **性能阈值，未达标可登记后继续**：9.2 的宽松检查（`REDIRECT_EXEC` 小于分支数 1/4、`SLOW_OVERRIDE > 0`）。为此程序中这两项不达标时不写失败 tohost，而是在 trace 中输出标记；报告列为已知性能问题，附复现命令。
 - 交回：提交号、命令、日志、9.2 的计数器数值表。
