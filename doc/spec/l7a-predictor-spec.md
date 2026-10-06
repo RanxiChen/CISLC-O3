@@ -4,7 +4,7 @@
 
 依据：[v1 计划](../O3-v1-plan.md) 第 3 节 L7（2026-10-06 拆为 L7a/L7b）及“验收调整”；[前端基线](../design/CISLC-O3-FRONTEND-DESIGN-BASELINE.md) D01～D35（重点 D02、D05～D09、D22～D24、D29～D32）；[后端基线](../design/CISLC-O3-BACKEND-DESIGN-BASELINE.md) B48。
 
-**状态：已冻结（2026-10-06，用户确认 U1～U6 按推荐值；同日两轮修订补充 U7～U21，见第 8 节）。** 本文是阶段二唯一实施依据；spec 未覆盖的行为先提问，不得自行补设计。本轮只读代码、写文档，未改 RTL、未运行仿真。
+**状态：已冻结（2026-10-06，用户确认 U1～U6 按推荐值；同日三轮修订补充 U7～U23，见第 8 节）。** 本文是阶段二唯一实施依据；spec 未覆盖的行为先提问，不得自行补设计。本轮只读代码、写文档，未改 RTL、未运行仿真。
 
 ---
 
@@ -165,6 +165,7 @@ L7a 只有 32 位指令（RV64I，`.option norvc`），每块最多 4 条，起�
 
 判定细则（U19）：
 - **位置**：指令 `i` 占槽 `[s_i, s_i+1]`。“早于出口”指 `s_i < pred.cfi_slot`（含 `i` 覆盖出口槽、即 `s_i+1 == pred.cfi_slot` 的情况）或 `pred.cfi_valid=0`；“出口指令”指 `s_i == pred.cfi_slot` 的指令。
+- **c～f 的共同前提**：仅在 `pred.cfi_valid=1` 时适用（`pred.cfi_valid=0` 时 `cfi_slot` 无意义，只有 a/b 可触发修正）；c 只判断覆盖出口槽的指令（起点在出口槽或 `s_i+1 == pred.cfi_slot`），d/e/f 只判断出口指令（U22）。
 - **实际 taken 目标 `A(i)`**：`T_i=JAL` 时为 `pc_i+imm`；`T_i=JALR`、`ras_i ∈ {POP, POP_PUSH}` 且 `brief.ras_ckpt.count != 0` 时为 `ras_ckpt.top_addr`；其余情况 `A(i)` 不存在。a、b 即“早于出口且 `A(i)` 存在”。
 - **d 的重算**只复用 `A(i)` 的类型、RAS 与目标条件，不复用 a/b 的位置条件：`A(i)` 存在则 target=`A(i)`、ras_fix=`ras_i`；否则 target=`pc_i+4`、ras_fix=NONE。
 - **同一指令多条成立时的优先级**：a/b > c > d > e > f。例：预测出口 slot 1、slot 0 为 JAL（覆盖 slot 1），a 与 c 同时成立，按 a 修正到 JAL 目标；若 slot 0 为非 CFI 或 BR，a/b 不成立，按 c 修正到 `pc_0+4`。
@@ -281,7 +282,7 @@ kill 拍仍阻塞上述模块的握手（现有写法），不需要在 kill 拍
 - `cfi_is_rvc`、`edge` 只预留、恒 0。
 
 不做：
-- 不改 uBTB/BTB/TAGE 的训练与替换规则（D30：不加新机制）。
+- 不改 uBTB/BTB/TAGE 的训练与替换规则（D30：不加新机制），唯一例外是 2.4 中 uBTB 分配条件的纠正（U18，使 RTL 符合 D30）。
 - 不做 Sscofpmf、`mcounteren/scounteren`、S/U 访问（L10），不做 OpenSBI/设备树（L11）。
 - 不做系统重定向的 committed 预测上下文（前端 16.4 未闭合项）；sys 重定向沿用 L5 现有处理。
 - 不跑 Spike、ACT4、访存类 cocotb（`dcache`、`l2_cache`、`load_queue`、`store_queue`、`load_store_unit*`）。
@@ -323,6 +324,13 @@ kill 拍仍阻塞上述模块的握手（现有写法），不需要在 kill 拍
 | U20 | 异常项之后是否交付 | 不交付，异常项置 `ftq_last`（4.2） | 异常项提交即 trap，后续项无用；明确 `ftq_last` 位置 |
 | U21 | `mhpmevent11～31` 写行为 | 读 0、写忽略（6.3） | 与 `mhpmcounter11～31` 一致；只读别名写仍非法 |
 
+第三轮修订（2026-10-06，Codex 复审）：
+
+| # | 问题 | 决定 | 理由 |
+| --- | --- | --- | --- |
+| U22 | c～f 的共同前提 | 仅 `pred.cfi_valid=1` 时适用；c 判覆盖出口槽的指令，d/e/f 判出口指令（4.2） | 无出口时 `cfi_slot` 可能为默认 0，字面实现会误用 |
+| U23 | 计数起点与统计口径 | 初始化暂停→配置→清零→统一恢复；一律用每段差值；第 2 段重复 100 次；阈值分母为动态 CFI 条数（9.2） | 分类与总数须同起点；“稳态”“分支数”原文未定义 |
+
 ## 9. 验收（手写定向 testbench）
 
 ### 9.1 模块级 cocotb
@@ -342,23 +350,26 @@ kill 拍仍阻塞上述模块的握手（现有写法），不需要在 kill 拍
 
 新增 `sim/o3/tests/l7_predict.S`（`.option norvc`，以 tohost 判通过/失败），Makefile 目标 `run-l7-predict`，**不带 `--spike`**：
 1. 条件分支循环：1000 次，内含交替 taken 的分支；校验累加结果。
-2. 调用/返回：8 层嵌套调用，返回值逐层校验。
+2. 调用/返回：8 层嵌套调用，返回值逐层校验；整条调用链重复 100 次。
 3. 超过 32 个 taken 区域的大循环（预期 uBTB 装不下、主 BTB 装得下）。
 
-每段前后用 `csrr` 读出计数器，数值经 trace 可见。共 10 个事件，超过 8 个计数器，按两组事件配置分别运行（U12），程序用汇编宏选择组别，Makefile 目标 `run-l7-predict` 依次跑两组：
+每段前后各采样一次（采样方法见下），数值经 trace 可见。共 10 个事件，超过 8 个计数器，按两组事件配置分别运行（U12），程序用汇编宏选择组别，Makefile 目标 `run-l7-predict` 依次跑两组：
 
 | 组 | `mhpmcounter3～10` 的事件 |
 | --- | --- |
 | A | `UBTB_HIT`、`SLOW_OVERRIDE`、`PREDECODE_REDIRECT`、`REDIRECT_EXEC`、`CMT_REGION`、`CMT_MISPRED_REGION` |
 | B | `CMT_REGION`、`CMT_FAST_OK_SLOW_OK`、`CMT_FAST_OK_SLOW_BAD`、`CMT_FAST_BAD_SLOW_OK`、`CMT_FAST_BAD_SLOW_BAD`、`REDIRECT_EXEC` |
 
-采样边界（U16，两组相同）：
+采样边界（U16、U23，两组相同）：
+- 初始化（程序开头、第 1 段之前，一次）：`csrw mcountinhibit` 置 bit3～10 → 写全部 `mhpmevent3～10` → 全部 `mhpmcounter3～10` 写 0 → `csrw mcountinhibit, 0` 统一恢复。保证所有 HPM 从同一拍、同一起点开始计数。
 - 每次采样：`csrw mcountinhibit` 置 bit3～10（暂停全部 HPM；`mcycle`/`minstret` 不暂停）→ 依次 `csrr` 读出 `mhpmcounter3～10` 存入内存 → `csrw mcountinhibit, 0` 恢复。暂停写入按 U11 下一拍生效；由于 CSR 指令在后端串行执行，暂停之后的 `csrr` 必然在生效之后，不需要额外等待。所有 HPM 在同一拍停、同一拍启，因此每次训练握手的 `CMT_REGION` 与分类增量要么同时计入，要么同时不计入，分类和与总数严格相等。
 - 两组程序的测量部分逐条指令相同，只有 `mhpmevent` 的写入值不同：每个事件号用单条 `li`（`addi`，值 < 0x800）装载，保证指令条数与地址不变。
 - 组别相关的自查与性能标记全部放在**最后一个测量窗口结束之后**的代码段，并位于程序文本末尾，不改变测量段的 PC 布局；`.data` 布局两组相同。
 - 组 A 检查：第 1、2 段 `REDIRECT_EXEC` 阈值、第 3 段 `SLOW_OVERRIDE > 0`（性能项，见 9.3）。组 B 检查：分类和等于 `CMT_REGION`（正确性项）。
 
-两组都采 `CMT_REGION` 与 `REDIRECT_EXEC` 作一致性检查，不一致属于正确性失败：组 B 中四个分类之和等于 `CMT_REGION`，由程序自查（不等写失败 tohost）；两次运行中这两项逐段相等，由 `run-l7-predict` 在两次运行后从 trace 提取比对（不等则目标失败）。报告的数值表注明每列来自哪一组。程序内的宽松检查（只在组 A 做）：第 1、2 段稳态下 `REDIRECT_EXEC` 小于分支数的 1/4；第 3 段 `SLOW_OVERRIDE > 0`。数值本身作为首份基线写进报告。
+**统计口径**：报告数值、程序自查与两组比对一律使用**每段差值**（段后采样减段前采样）。
+
+两组都采 `CMT_REGION` 与 `REDIRECT_EXEC` 作一致性检查，不一致属于正确性失败：组 B 中每段四个分类差值之和等于该段 `CMT_REGION` 差值，由程序自查（不等写失败 tohost）；两次运行中这两项的每段差值相等，由 `run-l7-predict` 在两次运行后从 trace 提取比对（不等则目标失败）。报告的数值表注明每列来自哪一组。程序内的宽松检查（只在组 A 做）：第 1、2 段整段 `REDIRECT_EXEC` 差值小于该段动态执行的 CFI 条数（BR + JAL + JALR，由程序作者按程序结构算出、写成常数）的 1/4；第 3 段 `SLOW_OVERRIDE` 差值 > 0。重复执行使冷启动误预测占比足够小，不单独划分稳态窗口。数值本身作为首份基线写进报告。
 
 并重跑：`make -C sim/o3 run-smoke`、`run-rv64i-instructions`、`run-l3-branch-dense`（均不带 `--spike`）。
 
@@ -367,5 +378,5 @@ kill 拍仍阻塞上述模块的握手（现有写法），不需要在 kill 拍
 - 门禁范围（U15）：下述两档**失败处理政策**对 T05a～T05d 统一适用；但每一步的**测试范围**按该步任务书，只覆盖已实现的部分，并加上前序步骤已通过用例与三个整核回归的不回归。9.1、9.2 的完整验收只在最后一步（T05d）执行。
 - 两档门禁（U14）：
   - **正确性项，必须全部通过才能提交**：9.1 全部 cocotb 用例；9.2 整核程序 tohost 通过（含两组一致性检查）；`run-smoke`、`run-rv64i-instructions`、`run-l3-branch-dense` 回归。
-  - **性能阈值，未达标可登记后继续**：9.2 的宽松检查（`REDIRECT_EXEC` 小于分支数 1/4、`SLOW_OVERRIDE > 0`）。为此程序中这两项不达标时不写失败 tohost，而是在 trace 中输出标记；报告列为已知性能问题，附复现命令。
+  - **性能阈值，未达标可登记后继续**：9.2 组 A 的宽松检查（`REDIRECT_EXEC` 差值小于动态 CFI 条数的 1/4、`SLOW_OVERRIDE` 差值 > 0）。为此程序中这两项不达标时不写失败 tohost，而是在 trace 中输出标记；报告列为已知性能问题，附复现命令。
 - 交回：提交号、命令、日志、9.2 的计数器数值表。
