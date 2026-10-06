@@ -48,20 +48,16 @@ T05a 全部用例；三个整核回归。
 
 ## T05c：F1 预解码修正
 
-内容：
-- 先写 spec 9.2 的 `sim/o3/tests/l7_predict.S` 三段程序与 Makefile 目标 `run-l7-predict`，**本步不含计数器采样**，只做结果校验（tohost）。
-  理由：现有三个整核回归没有循环、每条分支只执行一次，覆盖不到训练后的预测、慢覆盖与选择性清除路径。
-  先在 T05b 代码上跑通，再开始 F1 改动；若此时失败，属于 T05b 的问题，停下报告。
-- 第 4 节全部（4.2 a～f 与 U19、U22 判定细则，U8 `pred_taken`，U10/U20 异常，4.3 寄存式请求）；
-  把 `ifu_f1.predecode_o` 接到仲裁器。
+内容：第 4 节全部（4.2 a～f 与 U19、U22 判定细则，U8 `pred_taken`，U10/U20 异常，4.3 寄存式请求）；
+把 `ifu_f1.predecode_o` 接到仲裁器。
 
-测试：扩展 `sim/cocotb/ifu_f1`（spec 9.1 所列全部用例）；T05a、T05b 全部用例；三个整核回归；`run-l7-predict`（结果校验）。
+测试：扩展 `sim/cocotb/ifu_f1`（spec 9.1 所列全部用例）；T05a、T05b 全部用例；三个整核回归。
 
 ## T05d：HPM 计数器与完整验收
 
 内容：6.3 全部（新增 `hpm_counters.sv`、`mcycle`/`minstret` 迁入、CSR 地址与行为、U11、U21；
 `frontend` 汇总 `fe_perf_o` → `o3_core` → `backend` → `csr_file`；删除 `frontend_perf_events` 实例化与 `rtl.f` 条目）；
-在 T05c 的 `l7_predict.S` 上加入 9.2 的计数器采样（两组运行、U16/U23 采样与差值口径）。
+9.2 整核程序 `l7_predict.S` 与 `run-l7-predict`（两组运行、U16/U23 采样与差值口径）。
 
 测试：spec 9.1、9.2 完整验收（含 `hpm_counters`、`csr_file`）；三个整核回归。
 报告附 9.2 计数器差值表（注明组别）与性能阈值结果。
