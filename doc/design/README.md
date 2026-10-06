@@ -6,7 +6,7 @@
 | 文件 | 内容 |
 |---|---|
 | [`CISLC-O3-FRONTEND-DESIGN-BASELINE.md`](CISLC-O3-FRONTEND-DESIGN-BASELINE.md) | 前端决策 D01–D29：预测、FTQ、ICache、恢复、系统同步 |
-| [`CISLC-O3-BACKEND-DESIGN-BASELINE.md`](CISLC-O3-BACKEND-DESIGN-BASELINE.md) | 后端决策 B01–B47：重命名、发射执行、访存、缓存层次、提交/异常/CSR、Linux 平台；B42–B47 为 2026-10-05 v1 实施计划决定 |
+| [`CISLC-O3-BACKEND-DESIGN-BASELINE.md`](CISLC-O3-BACKEND-DESIGN-BASELINE.md) | 后端决策 B01–B48：重命名、发射执行、访存、缓存层次、提交/异常/CSR、Linux 平台；B42–B47 为 2026-10-05 v1 实施计划决定，B48 为性能计数器 ABI |
 
 ## 规则
 

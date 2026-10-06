@@ -1,6 +1,6 @@
 # CISLC-O3 后端设计基线与决策记录
 
-更新日期：2026-10-05。**最新：第 36 节 B42～B47（v1 实施计划确认，见 [`../O3-v1-plan.md`](../O3-v1-plan.md)）；B01 改为四宽；B16/B17/B19/B20 已移入附录 A。**
+更新日期：2026-10-06。**最新：第 37 节 B48（性能计数器 Zihpm + Sscofpmf）；B45 已暂停。此前：第 36 节 B42～B47（v1 实施计划确认，见 [`../O3-v1-plan.md`](../O3-v1-plan.md)）；B01 改为四宽；B16/B17/B19/B20 已移入附录 A。**
 
 原更新日期：2026-10-02。目标工程：`/home/chen/work/CISLC-O3`。本文暂存于 Flow，仅记录设计与只读源码核对；不代表 RTL、编译、仿真、时序或 FPGA 验证完成。
 
@@ -229,6 +229,8 @@ A 扩展分为 AMO 与 LR/SC；reservation 不是乱序调度的保留站。首�
 ## 12. B10：事件计数与性能归因（已确认加入）
 
 首版使用硬件计数器，仿真增加事件轨迹；不立即引入大容量硬件逐事件日志。读取、清零、统一快照接口需保留，ABI/位宽待定。
+
+> 2026-10-06：读取 ABI 由 B48 确定为 RISC-V Zihpm + Sscofpmf，本节事件进入统一事件编号表，见第 37 节。
 
 | 逻辑事件 | 口径 |
 | --- | --- |
@@ -686,6 +688,8 @@ CSRFile 承接 M/S pending、enable、delegation、trap entry/return 及软件 S
 
 ### 36.4 B45：Spike 逐条比对作为每级门禁
 
+> 2026-10-06 用户决定暂停：L6 之后不再运行 Spike 比对，推迟到 FPGA 阶段，见 `O3-v1-plan.md` 第 3 节“验收调整”。
+
 - 从 L5 起，每一级的验收都包含与 Spike 的逐条退休比对：PC、指令、整数/浮点写回值、访存地址与数据、异常 cause/tval、CSR 写入，差异为 0。
 - 比对按提交顺序进行；长延迟结果晚到时按目的寄存器关联。比较不一致时停止并输出两侧状态、周期和前若干条退休记录。
 - 这是对乱序核正确性和实现 agent 幻觉的主要防线，不能以“ACT4 通过”替代。
@@ -701,6 +705,32 @@ CSRFile 承接 M/S pending、enable、delegation、trap entry/return 及软件 S
 - 复用 Breeze 的 Chisel 组件时，手工翻译为可读的 SystemVerilog，不直接使用 Chisel 生成的 Verilog。
 - 验证：以同一提交的 Chisel 生成 Verilog 为参照。寄存器结构一致的模块用 Yosys `eqy` 做形式化等价检查；结构不一致的用 Verilator 并排运行两份 RTL、随机激励逐拍比较输出。参照 Verilog 只用于验证，不进入 `rtl/`。
 - 组件清单与所属级见 `O3-v1-plan.md` 第 4 节。
+
+## 37. B48：性能计数器采用 RISC-V Zihpm + Sscofpmf，供 Linux perf 使用（2026-10-06，已定）
+
+用户确认：计数器从一开始就按 RISC-V 标准实现，SoC 完成后用 Linux `perf` 读取；Sscofpmf（溢出中断采样）也在 v1 实现。本节取代 B10、B22、B23 及前端第 12.1 节中“读取地址、清零、快照、溢出规则待定”的部分，事件口径不变。
+
+### 37.1 软件可见接口
+
+- 沿用现有 `mcycle`/`minstret`；新增可编程计数器 `mhpmcounter3`～`mhpmcounter(3+N-1)` 及对应 `mhpmevent`，N 参数化，首版 N=8。其余 `mhpmcounter`/`mhpmevent` 只读为 0（标准允许）。
+- `mhpmevent` 低位为事件号，0 表示不计数；事件号全核统一编号（前端、后端、访存、DMA 等事件均进入同一张表），一个事件每拍可加大于 1 的增量（同拍多事件不丢失）。
+- `mcountinhibit` 逐个暂停计数器；`mcounteren`/`scounteren` 控制 S/U 模式对 `cycle`/`instret`/`hpmcounterN` 的读取权限。
+- Sscofpmf：`mhpmevent` 高位 OF(63)、MINH(62)、SINH(61)、UINH(60) 可写；无 H 扩展，VSINH/VUINH 只读为 0。计数器从全 1 回绕且 OF=0 时置 OF 并挂起本地计数溢出中断 LCOFI（`mip`/`mie` 第 13 位，可经 `mideleg` 委托给 S 模式）；`scountovf`（0xDA0）给出各计数器 OF 位的只读视图，受 `mcounteren` 屏蔽。
+- 软件路径：Linux `riscv_pmu_sbi` → SBI PMU → OpenSBI 配置 `mhpmevent`；事件号与计数器的对应关系写在设备树 `riscv,pmu` 节点。`perf stat` 用于计数，`perf record` 依靠 LCOFI 采样。
+
+### 37.2 分级实现
+
+| 级 | 内容 |
+| --- | --- |
+| L7 | M 模式 Zihpm：`mhpmcounter3～10`、`mhpmevent3～10`、`mcountinhibit`；事件选择器；接入前端预测事件（uBTB lookup/hit、快慢比较四类、慢覆盖、target_missing、预解码/执行重定向、RAS）。冻结事件编号表 |
+| L8～L10 | 各级把本级事件加入编号表；L10 随 S/U 模式加入 `mcounteren`/`scounteren`、用户态读权限、Sscofpmf 的 OF/模式过滤位、`scountovf` 与 LCOFI 中断及委托 |
+| L11 | OpenSBI PMU 与设备树配置；在 FPGA 上用 `perf stat` 与 `perf record` 验证 |
+
+### 37.3 已知边界
+
+- 采样中断不是精确归因：`perf record` 记录的是中断进入时的 PC，可能与触发溢出的事件相隔若干条指令（skid）。首版接受，不做精确事件采样。
+- 一次只能同时观测 N 种事件；需要更多事件时分多次运行。
+- 计数器加法器、事件选择器的面积与时序在 L11 综合时核对。
 
 ## 附录 A：已被取代的历史决策
 
