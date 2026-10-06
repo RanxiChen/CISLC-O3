@@ -13,7 +13,13 @@
   - 性能阈值（只在 T05d 出现）未达标：登记为已知问题后继续。
   - 正确性项修不好：不提交 RTL，停下报告失败用例与复现命令。
 - 每步结束：提交（`feat(frontend|system): ...`，可多次提交），写 `doc/tasks/O3-T05<x>-report.md`
-  （提交号、逐项命令与 exit code、日志目录 `/home/chen/FUN/CISLC-O3-runs/<日期>-t05<x>-<sha>/`、未做项），然后**停下等用户确认再进入下一步**。
+  （提交号、逐项命令与 exit code、日志目录 `/home/chen/FUN/CISLC-O3-runs/<日期>-t05<x>-<sha>/`、未做项）。
+  T05a、T05b 每步结束后停下等用户确认。
+- **T05c、T05d 连续执行（2026-10-06 用户决定，提速）**：T05c 门禁通过、提交后直接进入 T05d，不等确认；
+  只有正确性项修不好、或遇到 spec 未覆盖的行为时才停下。T05c、T05d 合写一份报告 `O3-T05cd-report.md`。
+- 精简流程：开发迭代时只重跑受影响的套件；提交前跑一次完整门禁即可。
+  报告只需提交号、命令、exit code、用例数、日志目录、失败与修复记录、未做项；
+  不需要逐文件 SHA256 清单、源码归档或 attempt 目录说明。
 
 ## T05a：基础设施与选择性清除
 
@@ -42,16 +48,20 @@ T05a 全部用例；三个整核回归。
 
 ## T05c：F1 预解码修正
 
-内容：第 4 节全部（4.2 a～f 与 U19、U22 判定细则，U8 `pred_taken`，U10/U20 异常，4.3 寄存式请求）；
-把 `ifu_f1.predecode_o` 接到仲裁器。
+内容：
+- 先写 spec 9.2 的 `sim/o3/tests/l7_predict.S` 三段程序与 Makefile 目标 `run-l7-predict`，**本步不含计数器采样**，只做结果校验（tohost）。
+  理由：现有三个整核回归没有循环、每条分支只执行一次，覆盖不到训练后的预测、慢覆盖与选择性清除路径。
+  先在 T05b 代码上跑通，再开始 F1 改动；若此时失败，属于 T05b 的问题，停下报告。
+- 第 4 节全部（4.2 a～f 与 U19、U22 判定细则，U8 `pred_taken`，U10/U20 异常，4.3 寄存式请求）；
+  把 `ifu_f1.predecode_o` 接到仲裁器。
 
-测试：扩展 `sim/cocotb/ifu_f1`（spec 9.1 所列全部用例）；T05a、T05b 全部用例；三个整核回归。
+测试：扩展 `sim/cocotb/ifu_f1`（spec 9.1 所列全部用例）；T05a、T05b 全部用例；三个整核回归；`run-l7-predict`（结果校验）。
 
 ## T05d：HPM 计数器与完整验收
 
 内容：6.3 全部（新增 `hpm_counters.sv`、`mcycle`/`minstret` 迁入、CSR 地址与行为、U11、U21；
 `frontend` 汇总 `fe_perf_o` → `o3_core` → `backend` → `csr_file`；删除 `frontend_perf_events` 实例化与 `rtl.f` 条目）；
-9.2 整核程序 `l7_predict.S` 与 `run-l7-predict`（两组运行、U16/U23 采样与差值口径）。
+在 T05c 的 `l7_predict.S` 上加入 9.2 的计数器采样（两组运行、U16/U23 采样与差值口径）。
 
 测试：spec 9.1、9.2 完整验收（含 `hpm_counters`、`csr_file`）；三个整核回归。
 报告附 9.2 计数器差值表（注明组别）与性能阈值结果。
