@@ -5,6 +5,7 @@
  * 每项累积已提交 BR/JAL mask，并只保存最近一次提交 taken CFI 的目标。
  * 条件分支的目标所有者另有 2-bit 饱和方向计数器：首次 taken 安装为弱 taken，
  * 此后 owner 再 taken 加一、owner 已提交但未 taken 减一。JAL/JALR 恒预测 taken。
+ * 新区域只为 taken CFI 分配；已命中项仍累积 not-taken BR 训练。
  * 空项优先、满表按全局 round-robin 替换；stall 不影响独立的提交训练。
  *
  * 不实现：多目标、历史相关快方向、显式表失效、完整地址 tag 和别名检测。
@@ -62,6 +63,8 @@ module ubtb
         ras_action_e ras_action;
         vaddr_t      target;
         logic [1:0]  br_ctr;
+        logic        cfi_is_rvc; // L7b reserved
+        logic        \edge ;       // L7b reserved
     } ubtb_entry_t;
 
     ubtb_entry_t entry_q [ENTRIES];
@@ -134,6 +137,8 @@ module ubtb
                     pred_o.cfi_type = selected.cfi_type;
                     pred_o.ras_action = selected.ras_action;
                     pred_o.raw_pred_taken = 1'b1;
+                    pred_o.cfi_is_rvc = selected.cfi_is_rvc;
+                    pred_o.\edge  = selected.\edge ;
                     pred_o.cfi_target = selected.target;
                     pred_o.next_pc = selected.target;
                 end
@@ -176,6 +181,8 @@ module ubtb
 
             updated = '0;
             if (matched) updated = entry_q[selected_idx];
+            updated.cfi_is_rvc = 1'b0;
+            updated.\edge  = 1'b0;
             updated.tag = train_tag;
             updated.br_mask |= train_i.br_commit_mask;
             if (train_i.cfi_valid && train_i.cfi_type != CFI_NONE) begin
@@ -202,10 +209,12 @@ module ubtb
                 // 没有 taken CFI 但 owner BR 确实提交，才让该方向计数器退一步。
                 updated.br_ctr = ctr_dec(updated.br_ctr);
             end
-            entry_q[selected_idx] <= updated;
-            valid_q[selected_idx] <= 1'b1;
-            if (!matched && !found_empty)
-                replace_q <= ptr_t'((selected_idx + 1) % ENTRIES);
+            if (matched || (train_i.cfi_valid && train_i.cfi_type != CFI_NONE)) begin
+                entry_q[selected_idx] <= updated;
+                valid_q[selected_idx] <= 1'b1;
+                if (!matched && !found_empty)
+                    replace_q <= ptr_t'((selected_idx + 1) % ENTRIES);
+            end
         end
     end
 

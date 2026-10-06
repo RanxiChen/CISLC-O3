@@ -83,6 +83,8 @@ class Bench:
     def check(self, actual: Observed, inputs: Inputs, phase: str) -> None:
         hit, ready, pred, lookup_inc, hit_inc = self.model.visible(inputs)
         expected = Observed(hit, ready, pred, lookup_inc, hit_inc)
+        assert int(self.dut.reserved_rvc_o.value) == 0
+        assert int(self.dut.reserved_edge_o.value) == 0
         context = f"seed={self.seed} cycle={self.cycle} {phase} inputs={inputs}"
         assert actual == expected, f"{context}: got={actual}, expected={expected}"
 
@@ -132,11 +134,11 @@ async def directed_contract(dut):
     assert not out.hit and out.pred.entry_slot == 1
     assert out.pred.next_pc == a + region and out.lookup_inc == 1
 
-    # Committed NT branch occupies an entry, but owns no target.
+    # U18: a new region containing only committed NT BRs must not allocate.
     await b.step(Inputs(train=Train(valid=True, pc=a, br_commit_mask=1 << 3)))
     _, out = await b.step(Inputs(query_valid=True, query_pc=a))
-    assert out.hit and out.pred.br_mask == 1 << 3
-    assert not out.pred.cfi_valid and out.hit_inc == 1
+    assert not out.hit and out.pred.br_mask == 0
+    assert not out.pred.cfi_valid and out.hit_inc == 0
 
     # First taken BR installs weak-taken; a later entry may not jump backwards
     # to an owner slot that lies before its own entry slot.
@@ -262,3 +264,29 @@ async def seeded_transactions(dut):
             stall=rng.random() < 0.15,
             train=train,
         ))
+
+
+@cocotb.test()
+async def not_taken_new_regions_do_not_evict(dut):
+    b = await new_bench(dut, 18)
+    assert b.model.entries == 32
+    bases = [0x6000 + n * b.model.region_bytes for n in range(b.model.entries)]
+    for n, pc in enumerate(bases):
+        await b.step(Inputs(train=Train(valid=True, pc=pc, cfi_valid=True,
+                                        cfi_type=CFI_JAL, target=0x9000+n*16)))
+    fresh = bases[-1] + b.model.region_bytes
+    for slot in range(b.model.slots):
+        await b.step(Inputs(train=Train(valid=True, pc=fresh, br_commit_mask=1 << slot)))
+    _, out = await b.step(Inputs(query_valid=True, query_pc=fresh))
+    assert not out.hit
+    for pc in bases:
+        _, out = await b.step(Inputs(query_valid=True, query_pc=pc))
+        assert out.hit, "not-taken-only training evicted a taken region"
+    # No-allocation training must not advance the global replacement pointer.
+    await b.step(Inputs(train=Train(valid=True, pc=fresh, cfi_valid=True,
+                                    cfi_type=CFI_JAL, target=0xA000)))
+    _, out = await b.step(Inputs(query_valid=True, query_pc=bases[0]))
+    assert not out.hit
+    for pc in bases[1:]:
+        _, out = await b.step(Inputs(query_valid=True, query_pc=pc))
+        assert out.hit

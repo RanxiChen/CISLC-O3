@@ -49,7 +49,7 @@ class RasModel:
         underflow = pop and count == 0
         overflow = action == PUSH and count == self.depth
         return (int(push) | (int(pop) << 1) | (int(underflow) << 2)
-                | (int(overflow) << 3) | (int(inp.recover) << 4))
+                | (int(overflow) << 3))
 
     def advance(self, inp: Inputs):
         if inp.reset:

@@ -128,6 +128,8 @@ class UbtbModel:
         index = next((i for i, e in enumerate(self.table) if e is not None
                       and e.tag == tag), None)
         matched = index is not None
+        if not matched and not (t.cfi_valid and t.cfi_type != CFI_NONE):
+            return
         if index is None:
             index = next((i for i, e in enumerate(self.table) if e is None), None)
             if index is None:

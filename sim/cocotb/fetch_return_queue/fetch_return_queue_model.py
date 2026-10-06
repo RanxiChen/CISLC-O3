@@ -16,6 +16,11 @@ class Inputs:
     brief_id: int = 0
     deq_ready: bool = False
     kill: bool = False
+    kill_all: bool = False
+    kill_self: bool = False
+    kill_id: int = 0
+    kill_slot: int = 0
+    head: int = 0
 
 
 @dataclass
@@ -26,7 +31,8 @@ class Entry:
 
 
 class ReturnModel:
-    def __init__(self):
+    def __init__(self, depth=32):
+        self.depth = depth
         self.entry: Entry | None = None
 
     def visible(self, i: Inputs):
@@ -38,7 +44,12 @@ class ReturnModel:
         return ready, brief_read, bool(deq), e
 
     def tick(self, i: Inputs):
-        if i.rst or i.kill:
+        idx_mask = self.depth - 1
+        younger = self.entry is not None and (
+            ((self.entry.ftq_id & idx_mask) - (i.head & idx_mask)) % self.depth
+            > ((i.kill_id & idx_mask) - (i.head & idx_mask)) % self.depth)
+        at_boundary = self.entry is not None and self.entry.ftq_id == i.kill_id and i.kill_slot == 0
+        if i.rst or (i.kill and (i.kill_all or younger or (i.kill_self and at_boundary))):
             self.entry = None
             return
         ready, _, deq, _ = self.visible(i)

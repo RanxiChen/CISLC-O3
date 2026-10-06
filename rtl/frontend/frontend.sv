@@ -359,6 +359,7 @@ module frontend
         .deq_o               (rq_deq),
         .deq_brief_o         (rq_deq_brief),
         .kill_i              (fe_kill),
+        .ftq_head_i          (ftq_head_id),
         .perf_o              (perf_rq)
     );
 
@@ -456,7 +457,7 @@ module frontend
     fetch_buffer #(.CFG(CFG)) u_fetch_buffer (
         .clk_i               (clk_i),
         .rst_i               (rst_i),
-        // L2 执行重定向：未交付项均年轻，kill 整体清空；预解码选择性保留待后级。
+        // Redirect kill selectively retains entries at or before its boundary.
         .flush_i             (1'b0),
         .enq_entry_i         (f1_out),
         .enq_valid_i         (f1_valid),
@@ -465,6 +466,7 @@ module frontend
         .deq_valid_o         (deliver_valid_o),
         .deq_ready_i         (deliver_ready_i),
         .kill_i              (fe_kill),
+        .ftq_head_i          (ftq_head_id),
         .perf_o              (perf_ibuf),
         .icache_req_allowed_o()
     );

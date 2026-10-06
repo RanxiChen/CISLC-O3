@@ -182,7 +182,6 @@ module ras
             perf_o[PE_RAS_POP] = PERF_INC_W'(do_pop);
             perf_o[PE_RAS_UNDERFLOW] = PERF_INC_W'(underflow);
             perf_o[PE_RAS_OVERFLOW] = PERF_INC_W'(overflow);
-            perf_o[PE_RECOVER_CYCLE] = PERF_INC_W'(recover_valid_i);
         end
     end
 endmodule

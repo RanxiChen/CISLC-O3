@@ -79,6 +79,8 @@ module main_btb
         cfi_type_e   cfi_type;
         ras_action_e ras_action;
         vaddr_t      target;
+        logic        cfi_is_rvc; // L7b reserved
+        logic        \edge ;       // L7b reserved
     } btb_entry_t;
 
     btb_entry_t entry_q [SETS][WAYS];
@@ -122,6 +124,8 @@ module main_btb
                     resp_o.cfi_slot = s1_entry_q[way].cfi_slot;
                     resp_o.cfi_type = s1_entry_q[way].cfi_type;
                     resp_o.ras_action = s1_entry_q[way].ras_action;
+                    resp_o.cfi_is_rvc = s1_entry_q[way].cfi_is_rvc;
+                    resp_o.\edge  = s1_entry_q[way].\edge ;
                     resp_o.target = s1_entry_q[way].target;
                 end
             end
@@ -185,6 +189,8 @@ module main_btb
 
                 updated = '0;
                 if (matched) updated = entry_q[train_set][selected_way];
+                updated.cfi_is_rvc = 1'b0;
+                updated.\edge  = 1'b0;
                 updated.tag = train_tag;
                 updated.br_mask |= train_i.br_commit_mask;
                 if (train_i.cfi_valid && (train_i.cfi_type != CFI_NONE)) begin

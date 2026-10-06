@@ -1,64 +1,11 @@
 /**
- * Frontend Fetch Buffer（指令 buffer）
- *
- * 作用（目标，第 10 节、第 16.2 节）：
- * - F1 之后的指令 buffer：合并多个 FTQ 块的有效指令，承担超过四条的留存、不足四条的
- *   跨块合并与回压，按序每拍最多向后端交付 4 条。
- *
- * 需要补充实现的机制：
- * - 按 D24 取消边界选择性失效（kill_i）：F1 预解码修正获胜时，buffer 中已有指令比
- *   修正位置更老，必须保留；只清除比边界年轻的项。执行/系统重定向时 buffer 内全部
- *   比出错指令年轻，可整体清除。年龄判断使用 ftq_id + slot，相对 FTQ 最老项处理回绕。
- * - D25：FENCE.I 同步时清除旧路径内容（kill_i.all）。
- * - 交付事件统计：后端愿意接收时不足四条的周期、后端回压周期（第 12.2 节），perf_o。
- *
- * 细节待定：深度（CFG.fetch.ibuf_depth）；入队宽度 = F1 每拍输出数（CFG.fetch.f1_width）。
- *
- * 当前实现状态：闭环简化（L2 执行重定向）。
- * - flush_i 或 kill_i.valid 整体清空。对已经执行的分支，buffer 中未交付项都比它年轻，
- *   因而整体清空满足本级合同。
- * - 预解码修正所需的按 ftq_id+slot 选择性保留仍未实现；该来源本级保持无效。
- * - icache_req_allowed_o 是旧串行 IFU 的节流合同；目标路径由返回队列预留控制取指，
- *   目标总装不再连接该端口，迁移后删除。
- * - 参数已改为由 CFG 推导，模块不再有默认值；entry 类型改为 o3_types_pkg::fetch_entry_t。
- *
- * 当前已经实现：
- * - 独立的前后端交界取指缓冲。
- * - 入队端每拍最多接收 ENQ_WIDTH 条来自 IFU 的 `fetch_entry_t`。
- * - 出队端每拍最多向后端提供 DEQ_WIDTH 条 `fetch_entry_t`。
- * - 内部队列紧凑存储，只写入有效 lane，不在队列中保留 bubble。
- * - 出队支持 partial group：只要队列非空即可向后端拉高 valid，
- *   不足 DEQ_WIDTH 的 lane 会输出 `valid=0` 的空 entry。
- * - 额外输出 `icache_req_allowed_o`，当前表示至少保留
- *   ICACHE_REQ_FREE_THRESHOLD 个空位，用来指导 IFU 是否继续向 ICache 发请求。
- *
- * 当前没有实现：
- * - 不做 redirect 精确清除。
- * - 不做按 FTQ index 或分支恢复的选择性失效。
- * - 不单独解释预测语义；`ftq_idx/ftq_last/predicted_next_pc`随公共
- *   `fetch_entry_t`原样存取。
- *
- * 后续扩展入口：
- * - 后续可把 `icache_req_allowed_o` 的阈值和 IFU/ICache 在飞请求数量绑定。
- * - 后续可增加 redirect/flush metadata，实现错误路径条目的精确清除。
- * - 后续增加更丰富预测元数据时继续通过公共entry合同迁移。
- *
- * 测试：sim/cocotb/branch_recovery/ 覆盖执行重定向整体清空；原顺序交付由整核门禁覆盖。
- *
- * 逐周期说明：
- * - 周期 N 组合阶段：
- *   1) 根据 `count_q` 计算剩余空间、入队 ready、ICache request 允许信号。
- *   2) 若 `count_q != 0`，出队端 `deq_valid_o=1`。
- *   3) 从 `head_q` 开始组合读出最多 DEQ_WIDTH 条 entry；
- *      若队列条目不足 DEQ_WIDTH，剩余 lane 输出 `valid=0` 的空 entry。
- * - 周期 N 上升沿：
- *   1) 若 `flush_i=1`，清空 head/tail/count。
- *   2) 否则若入队 fire，按 lane 顺序只写入有效 entry，tail 前进有效条数。
- *   3) 若出队 fire，head 前进本拍实际出队条数。
- *   4) count 同时加上入队条数并减去出队条数。
- * - 周期 N+1：
- *   1) 后端看到更新后的队头 entry。
- *   2) IFU 看到更新后的 `enq_ready_o` 和 `icache_req_allowed_o`。
+ * Compact FIFO between F1 and the backend. Enqueue skips invalid lanes;
+ * dequeue delivers up to CFG.fetch.deliver_width entries in program order.
+ * D24 kill blocks both handshakes for the cycle and retains only entries at
+ * or before the boundary (kill_self includes the boundary; all clears all).
+ * Survivors keep every fetch_entry_t field and are compacted at the edge.
+ * flush_i clears all entries. Capacity and widths come from CFG.
+ * Tests: sim/cocotb/fetch_buffer/ and sim/cocotb/branch_recovery/.
  */
 module fetch_buffer
     import o3_types_pkg::*;
@@ -83,8 +30,9 @@ module fetch_buffer
 
     output logic               icache_req_allowed_o,   // 旧合同，迁移后删除
 
-    // 目标：D24 取消边界选择性失效（未实现）
+    // D24: selectively retain entries at or before the redirect boundary.
     input  fe_kill_t           kill_i,
+    input  ftq_id_t            ftq_head_i,
     output fe_perf_t           perf_o
 );
 
@@ -127,9 +75,11 @@ module fetch_buffer
     end
 
     assign free_count = COUNT_WIDTH'(DEPTH) - count_q;
-    assign enq_ready_o = free_count >= COUNT_WIDTH'(ENQ_WIDTH);
+    assign enq_ready_o = !rst_i && !flush_i && !kill_i.valid
+                         && free_count >= COUNT_WIDTH'(ENQ_WIDTH);
     assign icache_req_allowed_o = free_count >= COUNT_WIDTH'(ICACHE_REQ_FREE_THRESHOLD);
-    assign deq_valid_o = count_q != '0;
+    assign deq_valid_o = !rst_i && !flush_i && !kill_i.valid && count_q != '0;
+    assign perf_o = '0;
     assign deq_count = (count_q >= COUNT_WIDTH'(DEQ_WIDTH))
                      ? COUNT_WIDTH'(DEQ_WIDTH)
                      : count_q;
@@ -147,10 +97,24 @@ module fetch_buffer
     end
 
     always_ff @(posedge clk_i) begin
-        if (rst_i || flush_i || kill_i.valid) begin
+        if (rst_i || flush_i) begin
             head_q  <= '0;
             tail_q  <= '0;
             count_q <= '0;
+        end else if (kill_i.valid) begin
+            int unsigned kept;
+            kept = 0;
+            // Compact survivors in program order; no enqueue/dequeue on kill.
+            for (int offset = 0; offset < DEPTH; offset++) begin
+                if (offset < int'(count_q)
+                    && !fe_killed_by(kill_i, entries_q[ptr_add(head_q, offset)].ftq_id,
+                                    entries_q[ptr_add(head_q, offset)].slot, ftq_head_i)) begin
+                    entries_q[ptr_add(head_q, kept)] <= entries_q[ptr_add(head_q, offset)];
+                    kept++;
+                end
+            end
+            tail_q <= ptr_add(head_q, kept);
+            count_q <= COUNT_WIDTH'(kept);
         end else begin
             if (enq_fire) begin
                 int unsigned write_idx;

@@ -174,6 +174,7 @@ module branch_recovery_tb_top
         fb_enq_valid = '0;
         fb_enq[0].valid = fb_enq_valid_i;
         fb_enq[0].pc = vaddr_t'(39'h8000_0040);
+        fb_enq[0].ftq_id.idx = FTQ_IDX_W'(1);
         fb_enq_valid[0] = fb_enq_valid_i;
     end
     fetch_buffer #(.CFG(o3_cfg_pkg::O3_CFG.fe)) u_fetch_buffer (
@@ -182,7 +183,7 @@ module branch_recovery_tb_top
         .deq_entry_o(fb_deq), .deq_valid_o(fb_deq_valid_o), .deq_ready_i(1'b0),
         .icache_req_allowed_o(fb_icache_unused),
         .kill_i('{valid:fb_kill_i, all:1'b0, ftq_id:'0, slot:'0, kill_self:1'b0}),
-        .perf_o(fb_perf_unused)
+        .ftq_head_i('0), .perf_o(fb_perf_unused)
     );
 
     renamed_uop_t alu_issue;

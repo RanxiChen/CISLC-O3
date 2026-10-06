@@ -23,7 +23,10 @@ module fetch_return_queue_tb_top
     output logic [VADDR_W-1:0] deq_region_base_o,
     output logic [REGION_BYTES*8-1:0] deq_data_o,
     output logic [$bits(ftq_id_t)-1:0] deq_brief_id_o,
-    input logic kill_valid_i,
+    input logic kill_valid_i, kill_all_i, kill_self_i,
+    input logic [$bits(ftq_id_t)-1:0] kill_ftq_id_i, ftq_head_i,
+    input logic [SLOT_W-1:0] kill_slot_i,
+    output logic [31:0] cfg_ftq_depth_o,
     output logic [31:0] cfg_region_bytes_o
 );
     icache_req_t req;
@@ -46,6 +49,10 @@ module fetch_return_queue_tb_top
         brief.ftq_id = ftq_id_t'(brief_ftq_id_i);
         kill = '0;
         kill.valid = kill_valid_i;
+        kill.all = kill_all_i;
+        kill.kill_self = kill_self_i;
+        kill.ftq_id = ftq_id_t'(kill_ftq_id_i);
+        kill.slot = kill_slot_i;
     end
     fetch_return_queue #(.CFG(O3_CFG.fe)) dut (
         .clk_i(clk_i), .rst_i(rst_i),
@@ -55,11 +62,12 @@ module fetch_return_queue_tb_top
         .ftq_brief_rd_id_o(brief_rd_id_o), .ftq_brief_i(brief),
         .deq_valid_o(deq_valid_o), .deq_ready_i(deq_ready_i),
         .deq_o(deq), .deq_brief_o(deq_brief),
-        .kill_i(kill), .perf_o()
+        .kill_i(kill), .ftq_head_i(ftq_id_t'(ftq_head_i)), .perf_o()
     );
     assign deq_ftq_id_o = deq.ftq_id;
     assign deq_region_base_o = deq.region_base;
     assign deq_data_o = deq.data;
     assign deq_brief_id_o = deq_brief.ftq_id;
+    assign cfg_ftq_depth_o = FTQ_DEPTH;
     assign cfg_region_bytes_o = O3_CFG.fe.fetch.region_bytes;
 endmodule

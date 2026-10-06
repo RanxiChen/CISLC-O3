@@ -27,7 +27,7 @@
  * - 为 L1 实现：单槽预留，按 ftq_id/rq_idx 接收阻塞 ICache 响应，
  *   等 FTQ brief.slow_done 后按序交给 F0；第二笔 demand 被回压。
  * - 闭环简化：ICache 单未决；D15/D17 待 L4 ICache 非阻塞后补齐
- *   （8 项、killed 保留、代际回绕）。L1 的 kill 直接清槽，迟到响应靠身份比较丢弃。
+ *   （8 项、killed 保留、代际回绕）。L7a 的 kill 按 FTQ 年龄选择性清槽，迟到响应靠身份比较丢弃。
  * - 仍未实现：多未决乱序回填和性能事件（显式 tie-off）。
  * - 测试：sim/cocotb/fetch_return_queue/
  *
@@ -67,6 +67,7 @@ module fetch_return_queue
     output ftq_pred_brief_t deq_brief_o,
 
     input  fe_kill_t        kill_i,
+    input  ftq_id_t         ftq_head_i,
 
     output fe_perf_t        perf_o
 );
@@ -100,7 +101,7 @@ module fetch_return_queue
     // visible to F0 once FTQ reports its prediction complete. The slot is
     // available again only on the edge after F0 accepts the block.
     always_ff @(posedge clk_i) begin
-        if (rst_i || kill_i.valid) begin
+        if (rst_i || (occupied_q && fe_killed_by(kill_i, ftq_id_q, fetch_slot_t'(0), ftq_head_i))) begin
             occupied_q <= 1'b0;
             data_ready_q <= 1'b0;
             ftq_id_q <= '0;

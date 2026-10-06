@@ -295,12 +295,12 @@ package o3_cfg_pkg;
                 train_queue_depth: 4
             },
             ubtb: '{
-                entries:  16,
+                entries:  32,
                 tag_bits: 12
             },
             btb: '{
-                sets:     64,
-                ways:     2,
+                sets:     512,
+                ways:     4,
                 tag_bits: 16
             },
             tage: '{
@@ -308,9 +308,9 @@ package o3_cfg_pkg;
                 event_window: 128,
                 fold_shift:   2,
                 hist_len:     '{4, 8, 16, 32, 64, 128},
-                index_bits:   '{7, 7, 7, 7, 7, 7},
+                index_bits:   '{10, 10, 10, 10, 10, 10},
                 tag_bits:     '{8, 8, 8, 8, 8, 8},
-                base_entries: 512,
+                base_entries: 2048,
                 ctr_bits:     3,
                 useful_bits:  2,
                 meta_bits:    128

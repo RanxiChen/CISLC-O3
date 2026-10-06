@@ -172,6 +172,8 @@ package o3_types_pkg;
         logic        target_missing;  // taken 但无匹配目标，沿顺序路径（第 4.3 节）
         vaddr_t      cfi_target;
         vaddr_t      next_pc;         // 实际采用的下一区域入口
+        logic        cfi_is_rvc;       // L7b reserved; L7a always zero
+        logic        \edge ;             // L7b reserved; L7a always zero
     } bpu_pred_t;
 
     // 主 BTB 两拍查询结果（第 4.2 节）。
@@ -183,6 +185,8 @@ package o3_types_pkg;
         cfi_type_e   cfi_type;
         ras_action_e ras_action;
         vaddr_t      target;
+        logic        cfi_is_rvc;       // L7b reserved; L7a always zero
+        logic        \edge ;             // L7b reserved; L7a always zero
     } btb_resp_t;
 
     // TAGE 三拍查询结果：8 槽位方向（D04）。
@@ -215,6 +219,8 @@ package o3_types_pkg;
         ras_action_e ras_action;
         vaddr_t      cfi_target;
         logic        mispredicted;
+        logic        cfi_is_rvc;       // L7b reserved; L7a always zero
+        logic        \edge ;             // L7b reserved; L7a always zero
     } bpu_train_t;
 
     // ============================================================
@@ -383,6 +389,25 @@ package o3_types_pkg;
         logic        kill_self;
     } fe_kill_t;
 
+    // Program age relative to the live FTQ head. Generation identifies a
+    // dynamic entry; it is not an age counter. Slots order instructions within it.
+    function automatic int unsigned fe_age(
+        input ftq_id_t id, input fetch_slot_t slot, input ftq_id_t head
+    );
+        int unsigned region_age;
+        region_age = (int'(id.idx) + FTQ_DEPTH - int'(head.idx)) % FTQ_DEPTH;
+        return region_age * REGION_SLOTS + int'(slot);
+    endfunction
+
+    function automatic logic fe_killed_by(
+        input fe_kill_t kill, input ftq_id_t id,
+        input fetch_slot_t slot, input ftq_id_t head
+    );
+        return kill.valid && (kill.all
+            || fe_age(id, slot, head) > fe_age(kill.ftq_id, kill.slot, head)
+            || (kill.kill_self && id == kill.ftq_id && slot == kill.slot));
+    endfunction
+
     // ============================================================
     // 翻译：ITLB ↔ 共享 PTW（B07：PTW 共享 DCache；D26/D27）
     // ============================================================
@@ -525,24 +550,52 @@ package o3_types_pkg;
     // 性能事件（D21，第 12 节）
     // ============================================================
     // 每个事件每拍给出增量（同拍多事件不能被一个 Boolean 丢掉）。
-    // 事件名为逻辑口径，不是已冻结的 CSR 编码；完整清单按第 12.2 节逐步补齐。
+    // Frozen source-1 event numbers (mhpmevent[7:0]); zero means disabled.
     localparam int PERF_INC_W = $clog2(REGION_SLOTS + 1);
 
     typedef enum int unsigned {
-        PE_UBTB_LOOKUP, PE_UBTB_HIT,
-        PE_FAST_SLOW_DISAGREE, PE_SLOW_OVERRIDE,
-        PE_TAGE_COND_PRED, PE_TARGET_MISSING,
-        PE_RAS_PUSH, PE_RAS_POP, PE_RAS_UNDERFLOW, PE_RAS_OVERFLOW, PE_RAS_LOG_FULL,
-        PE_FTQ_FULL_CYCLE, PE_FTQ_EMPTY_CYCLE,
-        PE_ICACHE_DEMAND_HIT, PE_ICACHE_DEMAND_MISS, PE_ICACHE_MSHR_MERGE,
-        PE_ICACHE_REFILL_WAIT_CYCLE, PE_ICACHE_BANK_CONFLICT,
-        PE_ITLB_HIT, PE_ITLB_MISS, PE_XLATE_REUSE,
-        PE_PF_CANDIDATE, PE_PF_ISSUED, PE_PF_FILTERED, PE_PF_THROTTLED,
-        PE_RQ_FULL_CYCLE, PE_RQ_HEAD_WAIT_SLOW_CYCLE, PE_RQ_HEAD_WAIT_DATA_CYCLE,
-        PE_IFU_CROSS_REGION, PE_PREDECODE_REDIRECT,
-        PE_DELIVER_LT4_BACKEND_READY_CYCLE, PE_BACKEND_BACKPRESSURE_CYCLE,
-        PE_REDIRECT_EXEC, PE_REDIRECT_SYS, PE_RECOVER_CYCLE,
-        PE_NUM
+        PE_UBTB_LOOKUP = 'h01,
+        PE_UBTB_HIT = 'h02,
+        PE_BTB_HIT = 'h03,
+        PE_FAST_SLOW_DISAGREE = 'h04,
+        PE_SLOW_OVERRIDE = 'h05,
+        PE_TARGET_MISSING = 'h06,
+        PE_PREDECODE_REDIRECT = 'h07,
+        PE_REDIRECT_EXEC = 'h08,
+        PE_REDIRECT_SYS = 'h09,
+        PE_RECOVER_CYCLE = 'h0a,
+        PE_RAS_PUSH = 'h0b,
+        PE_RAS_POP = 'h0c,
+        PE_RAS_UNDERFLOW = 'h0d,
+        PE_RAS_OVERFLOW = 'h0e,
+        PE_CMT_REGION = 'h0f,
+        PE_CMT_FAST_OK_SLOW_OK = 'h10,
+        PE_CMT_FAST_OK_SLOW_BAD = 'h11,
+        PE_CMT_FAST_BAD_SLOW_OK = 'h12,
+        PE_CMT_FAST_BAD_SLOW_BAD = 'h13,
+        PE_CMT_MISPRED_REGION = 'h14,
+        PE_FTQ_FULL_CYCLE = 'h15,
+        PE_TAGE_COND_PRED = 'h20,
+        PE_FTQ_EMPTY_CYCLE = 'h21,
+        PE_ICACHE_DEMAND_HIT = 'h22,
+        PE_ICACHE_DEMAND_MISS = 'h23,
+        PE_ICACHE_MSHR_MERGE = 'h24,
+        PE_ICACHE_REFILL_WAIT_CYCLE = 'h25,
+        PE_ICACHE_BANK_CONFLICT = 'h26,
+        PE_ITLB_HIT = 'h27,
+        PE_ITLB_MISS = 'h28,
+        PE_XLATE_REUSE = 'h29,
+        PE_PF_CANDIDATE = 'h2a,
+        PE_PF_ISSUED = 'h2b,
+        PE_PF_FILTERED = 'h2c,
+        PE_PF_THROTTLED = 'h2d,
+        PE_RQ_FULL_CYCLE = 'h2e,
+        PE_RQ_HEAD_WAIT_SLOW_CYCLE = 'h2f,
+        PE_RQ_HEAD_WAIT_DATA_CYCLE = 'h30,
+        PE_IFU_CROSS_REGION = 'h31,
+        PE_DELIVER_LT4_BACKEND_READY_CYCLE = 'h32,
+        PE_BACKEND_BACKPRESSURE_CYCLE = 'h33,
+        PE_NUM = 'h34
     } fe_perf_evt_e;
 
     typedef logic [PE_NUM-1:0][PERF_INC_W-1:0] fe_perf_t;
