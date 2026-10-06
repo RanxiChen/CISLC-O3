@@ -130,6 +130,7 @@ rob #(.CFG(CFG), .COMPLETE_WIDTH(COMPLETE_WIDTH)) dut (
 .retire_ftq_idx_o(retire_ftq_idx_o),
 .retire_ftq_slot_o(retire_ftq_slot_o),
 .retire_ftq_last_o(retire_ftq_last_o),
+.t_alloc_inst_len_i('{default:3'd4}),
 .t_alloc_exc_i(t_alloc_exc_i),
 .t_alloc_ext_i(t_alloc_ext_i),
 .t_exc_valid_i(t_exc_valid_i),

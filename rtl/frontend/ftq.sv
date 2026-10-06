@@ -207,6 +207,7 @@ module ftq
         logic slow_done, demand_issued, pf_issued, commit_last;
         slot_mask_t resolved_br, resolved_taken, committed_br, committed_taken;
         logic actual_cfi_valid, mispredicted;
+        logic actual_cfi_is_rvc, actual_cfi_is_edge;
         fetch_slot_t actual_cfi_slot;
         cfi_type_e actual_cfi_type;
         ras_action_e actual_ras_action;

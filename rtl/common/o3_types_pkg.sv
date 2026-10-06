@@ -268,8 +268,8 @@ package o3_types_pkg;
         logic [ILEN-1:0]  instruction;
         logic [2:0]       inst_len;
         logic             is_rvc;
-        logic             crosses_region; // 后半字来自下一个顺序区域
-        ftq_id_t          ftq_id;         // 归属：起始半字所在区域
+        logic             is_edge;        // 起点在前一区域，归属后半字所在区域
+        ftq_id_t          ftq_id;         // edge 归属后半字所在区域，其余归属起始半字所在区域
         fetch_slot_t      slot;
         logic             exc_valid;
         exception_cause_t exc_cause;
@@ -292,6 +292,7 @@ package o3_types_pkg;
         logic [ILEN-1:0]  instruction;
         logic [2:0]       inst_len;
         logic             is_rvc;
+        logic             is_edge;
         logic             exception_valid;
         exception_cause_t exception_cause;
         logic [XLEN-1:0]  exception_tval;

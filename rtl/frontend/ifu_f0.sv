@@ -84,7 +84,7 @@ module ifu_f0
                 out_o[slot].instruction = in_i.data[16*slot +: ILEN];
                 out_o[slot].inst_len = 3'd4;
                 out_o[slot].is_rvc = 1'b0;
-                out_o[slot].crosses_region = 1'b0;
+                out_o[slot].is_edge = 1'b0;
                 out_o[slot].ftq_id = in_i.ftq_id;
                 out_o[slot].slot = fetch_slot_t'(slot);
                 if (in_i.exc_valid) begin

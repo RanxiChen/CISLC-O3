@@ -161,6 +161,7 @@ module backend
     o3_types_pkg::exc_info_t rob_alloc_exc [MACHINE_WIDTH-1:0], lsu_exc, rob_exec_exc;
     o3_types_pkg::uop_ext_t rob_alloc_ext [MACHINE_WIDTH-1:0];
     logic [PC_WIDTH-1:0] rob_meta_pc [MACHINE_WIDTH-1:0];
+    logic [2:0] rob_meta_inst_len [MACHINE_WIDTH-1:0];
     logic [31:0] rob_meta_instruction [MACHINE_WIDTH-1:0];
     o3_types_pkg::preg_t rob_meta_src1 [MACHINE_WIDTH-1:0];
     logic [4:0] rob_meta_rs1 [MACHINE_WIDTH-1:0];
@@ -193,6 +194,7 @@ module backend
                 cause:renamed_uop[lane].exception_cause,tval:renamed_uop[lane].exception_tval};
             rob_alloc_ext[lane]=renamed_uop[lane].ext;
             rob_meta_pc[lane]=renamed_uop[lane].pc;
+            rob_meta_inst_len[lane]=renamed_uop[lane].inst_len;
             rob_meta_instruction[lane]=renamed_uop[lane].instruction;
             rob_meta_src1[lane]=renamed_uop[lane].src1_preg;
             rob_meta_rs1[lane]=renamed_uop[lane].rs1;
@@ -986,7 +988,7 @@ module backend
         .alloc_instruction_i(rob_alloc_instruction),
 `endif
         .t_alloc_exc_i(rob_alloc_exc),.t_alloc_ext_i(rob_alloc_ext),
-        .t_alloc_pc_i(rob_meta_pc),.t_alloc_instruction_i(rob_meta_instruction),.t_alloc_src1_i(rob_meta_src1),.t_alloc_rs1_i(rob_meta_rs1),
+        .t_alloc_inst_len_i(rob_meta_inst_len),.t_alloc_pc_i(rob_meta_pc),.t_alloc_instruction_i(rob_meta_instruction),.t_alloc_src1_i(rob_meta_src1),.t_alloc_rs1_i(rob_meta_rs1),
         .t_exc_valid_i(rob_exc_valid),.t_exc_idx_i(rob_exc_idx),.t_exc_i(rob_exec_exc),
         .t_head_valid_o(head_valid),.t_head_o(rob_head_info),.t_head_serial_done_i(head_serial_done),
         .t_commit_o(rob_commit),.t_flush_all_i(global_flush),.t_commit_block_i(rob_commit_block),

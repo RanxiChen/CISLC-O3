@@ -76,7 +76,7 @@ module csr_file
     logic [63:0] old_value, modify_value, hpm_write_value;
     logic implemented, hpm_implemented;
     csr_resp_t hpm_resp;
-    localparam logic [63:0] MISA = 64'h8000000000001100; // RV64IM, Zicsr/Zifencei have no letter bit.
+    localparam logic [63:0] MISA = 64'h8000000000001104; // RV64IMC, Zicsr/Zifencei have no letter bit.
 
     hpm_counters #(.NUM_HPM(o3_cfg_pkg::O3_CFG.core.hpm_counters)) u_hpm_counters (
         .clk_i(clk), .rst_i(rst),
@@ -114,7 +114,7 @@ module csr_file
             12'h304: write_value_o = modify_value & 64'h888;
             12'h344: write_value_o = '0;
             12'h305: write_value_o = (modify_value & ~64'd3) | (modify_value[1:0]==1 ? 64'd1 : 64'd0);
-            12'h341: write_value_o = modify_value & ~64'd3;
+            12'h341: write_value_o = modify_value & ~64'd1;
             default: if (hpm_implemented) write_value_o = hpm_write_value;
         endcase
         resp_o = '0;
@@ -141,7 +141,7 @@ module csr_file
                 assert (!req_valid_i && (trap_update_i.is_xret || retire_count_i==0));
                 if (trap_update_i.is_xret) begin mie_bit_q <= mpie_q; mpie_q <= 1; end
                 else begin
-                    mepc_q <= 64'(trap_update_i.epc) & ~64'd3;
+                    mepc_q <= 64'(trap_update_i.epc) & ~64'd1;
                     mcause_q <= 64'(trap_update_i.cause) | (64'(trap_update_i.is_interrupt)<<63);
                     mtval_q <= trap_update_i.tval;
                     mpie_q <= mie_bit_q; mie_bit_q <= 0;
