@@ -186,3 +186,8 @@ run-l7-predict:
 	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK --image $(BUILD_DIR)/l7_predict_a.elf --trace $(BUILD_DIR)/l7_predict_a.jsonl --tohost-address 0x801ff000 --max-cycles 1500000 --max-retires 150000
 	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK --image $(BUILD_DIR)/l7_predict_b.elf --trace $(BUILD_DIR)/l7_predict_b.jsonl --tohost-address 0x801ff000 --max-cycles 1500000 --max-retires 150000
 	python3 $(SIM_DIR)/check_l7_predict.py --a $(BUILD_DIR)/l7_predict_a.jsonl --b $(BUILD_DIR)/l7_predict_b.jsonl --layout $(BUILD_DIR)/l7_layout.json --output $(BUILD_DIR)/l7_predict_summary.json
+
+.PHONY: run-l7b-rvc
+run-l7b-rvc:
+	$(RISCV_GCC) -march=rv64imc_zicsr -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l7b_rvc.S -o $(BUILD_DIR)/l7b_rvc.elf
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK --image $(BUILD_DIR)/l7b_rvc.elf --trace $(BUILD_DIR)/l7b_rvc.jsonl --tohost-address 0x801ff000 --max-cycles 200000 --max-retires 30000

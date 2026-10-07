@@ -8,7 +8,12 @@ module ifu_f0_tb_top
     input logic [REGION_BYTES*8-1:0] block_data_i,
     input logic [$bits(ftq_id_t)-1:0] ftq_id_i,
     input logic [SLOT_W-1:0] entry_slot_i,
-    input logic cfi_valid_i,
+    input logic cfi_valid_i, cfi_edge_i,
+    input logic trunc_i,
+    input logic [SLOT_W-1:0] trunc_slot_i,
+    output logic out_beat_valid_o,out_last_o,out_edge_pend_o,
+    output logic [F0_SLOTS-1:0] out_edge_o,out_rvc_o,
+    output logic [F0_SLOTS*ILEN-1:0] out_raw_flat_o,
     input logic [SLOT_W-1:0] cfi_slot_i,
     input logic kill_valid_i, sync_clear_i,
     input logic exc_valid_i,
@@ -41,19 +46,25 @@ module ifu_f0_tb_top
         brief_in.ftq_id = ftq_id_t'(ftq_id_i);
         brief_in.pred.entry_slot = entry_slot_i;
         brief_in.pred.cfi_valid = cfi_valid_i;
+        brief_in.pred.is_edge=cfi_edge_i;
+        brief_in.pred.region_base=region_base_i;
         brief_in.pred.cfi_slot = cfi_slot_i;
         kill = '0;
-        kill.valid = kill_valid_i;
+        kill.valid = kill_valid_i;kill.all=1;
     end
     ifu_f0 #(.CFG(O3_CFG.fe)) dut (
         .clk_i(clk_i), .rst_i(rst_i),
         .in_valid_i(in_valid_i), .in_ready_o(in_ready_o),
         .in_i(block_in), .in_brief_i(brief_in),
-        .out_valid_o(out_valid_o), .out_ready_i(out_ready_i),
+        .out_valid_o(out_valid_o),.out_beat_valid_o(out_beat_valid_o),.out_last_o(out_last_o),.out_edge_pend_o(out_edge_pend_o),
+        .trunc_i(trunc_i),.trunc_slot_i(trunc_slot_i),.ftq_head_i('0), .out_ready_i(out_ready_i),
         .out_o(inst_out), .out_brief_o(brief_out),
         .kill_i(kill), .sync_clear_i(sync_clear_i), .perf_o()
     );
     for (genvar slot = 0; slot < F0_SLOTS; slot++) begin : flatten
+        assign out_edge_o[slot]=inst_out[slot].is_edge;
+        assign out_rvc_o[slot]=inst_out[slot].is_rvc;
+        assign out_raw_flat_o[slot*ILEN +: ILEN]=inst_out[slot].raw_instruction;
         assign out_exc_o[slot] = inst_out[slot].exc_valid;
         assign out_tval_flat_o[slot*XLEN +: XLEN] = inst_out[slot].exc_tval;
         assign out_cause_flat_o[slot*6 +: 6] = 6'(inst_out[slot].exc_cause);

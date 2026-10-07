@@ -67,10 +67,11 @@ def slow_prediction(fast, btb, tage, ras, slots=8):
             if chosen == btb['cfi_slot'] and btb['cfi_type'] != 0:
                 target = ras['top_addr'] if btb['ras_action'] in (2, 3) and ras['count'] else btb['target']
                 p.update(cfi_valid=1, cfi_slot=chosen, cfi_type=btb['cfi_type'],
-                         ras_action=btb['ras_action'], cfi_target=target, next_pc=target)
+                         ras_action=btb['ras_action'], cfi_target=target, next_pc=target,
+                         cfi_is_rvc=btb['cfi_is_rvc'],is_edge=btb['is_edge'])
             else:
                 p['target_missing'] = 1
     disagree = p['cfi_valid'] != fast['cfi_valid'] or (
-        any(p[k] != fast[k] for k in ('cfi_slot', 'cfi_type', 'ras_action', 'next_pc'))
+        any(p[k] != fast[k] for k in ('cfi_slot', 'cfi_type', 'ras_action', 'next_pc','cfi_is_rvc','is_edge'))
         if p['cfi_valid'] else p['next_pc'] != fast['next_pc'])
     return p, int(disagree)

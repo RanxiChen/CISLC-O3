@@ -9,6 +9,7 @@ from bpu_model import Records, encode, decode
 class Bench:
     def __init__(self, d):
         self.d = d
+        self.variable_fields=False
         self.r = Records(addr=len(d.boot_pc_i), idw=len(d.alloc_ftq_id_i),
                          folds=int(d.cfg_fold_w_o.value), history=int(d.cfg_history_w_o.value))
         self.incw = int(d.cfg_perf_inc_w_o.value)
@@ -19,8 +20,9 @@ class Bench:
         d, r = self.d, self.r
         p = decode(r.pred, int(d.pred_bits_o.value))
         slow = decode(r.pred, int(d.slow_pred_bits_o.value))
-        assert p['cfi_is_rvc'] == p['is_edge'] == 0
-        assert slow['cfi_is_rvc'] == slow['is_edge'] == 0
+        if not self.variable_fields:
+            assert p['cfi_is_rvc'] == p['is_edge'] == 0
+            assert slow['cfi_is_rvc'] == slow['is_edge'] == 0
         perf = int(d.perf_bits_o.value)
         return dict(pred=p, hist=decode(r.hist, int(d.snapshot_bits_o.value)),
                     ras=decode(r.ras, int(d.ras_bits_o.value)),
@@ -193,3 +195,18 @@ async def eviction_slow_override_and_inflight_kill(d):
     for _ in range(3):
         _,view=await b.step(hold=True)
         assert not view['slow_valid'] and not view['req']['valid']
+
+@cocotb.test()
+async def compressed_and_edge_call_training_and_return_address(d):
+    b=await bench(d);b.variable_fields=True
+    for rvc,edge,slot,push in ((1,0,2,0x4006),(0,1,0,0x4002)):
+        await b.reset(0x4000)
+        t=dict(region_base=0x4000,cfi_valid=1,cfi_type=2,cfi_slot=slot,
+               cfi_target=0x5000,ras_action=1,cfi_is_rvc=rvc,is_edge=edge)
+        for _ in range(2):await b.step(train=t)
+        before,after=await b.step(ready=True,fid=11)
+        assert before['pred']['cfi_is_rvc']==rvc and before['pred']['is_edge']==edge
+        assert after['ras']['count']==1 and after['ras']['top_addr']==push
+        _,slow=await b.step(hold=True)
+        assert slow['slow_valid'] and slow['slow']['cfi_is_rvc']==rvc and slow['slow']['is_edge']==edge
+        assert not slow['disagree']

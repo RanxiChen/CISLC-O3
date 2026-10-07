@@ -1,108 +1,146 @@
-/**
- * IFU F0 —— 长度识别、跨块拼接、RVC 展开
- *
- * 作用：
- * - 消费返回队列出队的 16B 原始块，按 FTQ 最终预测的有效范围（入口槽位到选中出口）
- *   识别每条指令起始与长度，RVC 展开为规范 32 位指令。
- * - 区域末尾开始的 32 位指令跨块时，保存前半字，等待顺序地址的下一块后半字再拼接。
- * - 保留原 PC、原始长度、归属 FTQ 身份与起始槽位（第 3.3、10 节）。
- *
- * 目标机制：
- * - 已定：32 位指令的后半字不能被当作独立指令或分支槽位（第 3.1 节）。
- * - 已定：跨块只拼接顺序地址的后半字；即使该指令预测会跳转，也不能用预测目标处的
- *   数据代替（第 3.3 节）。
- * - 已定：选中跳转之后的槽位不属于本次动态路径。
- * - 已定（D25）：FENCE.I 等同步时清除残留半字；kill_i 按 D24 边界清除。
- * - 正常跨块拼接由本级保存前半字并消费下一顺序块完成，不是待发明机制（第 13 节）。
- *
- * 细节待定：
- * - 每拍最多处理槽位数 F0_SLOTS；超过下游宽度时的保存方式（第 10 节）。
- * - 跨块补半字的辅助请求（预测出口在本块，但后半字需要顺序下一块）如何占用
- *   返回队列和 FTQ 资源、与普通顺序请求合并的规则（第 3.3 节）。
- * - 后半字取指异常如何携带原指令 PC 与故障地址（第 3.3 节）。
- * - 非法 RVC 编码的异常 tval 内容。
- *
- * 当前实现状态：闭环简化（L5）
- * - RV64I 的 IALIGN=32：每个对齐指令位置都交给 F1，非法短编码不能被丢弃。
- * - 取指错误携带故障 PC/cause，原始字节不可用时 instruction=0。
- * - 闭环简化：RVC 与跨块拼接待 L2 后补（偏离第 3.3 节目标）；
- *   L1 镜像只有 32 位指令。当前为组合直通，受 F1 ready 回压。
- * - 仍未实现：RVC 展开、跨块半字暂存和性能事件（显式 tie-off）。
- * - 测试：sim/cocotb/ifu_f0/
- *
- * 目标周期行为：
- * - 周期 N 组合：in_valid_i 时识别本块指令，生成 out_*；跨块时不输出该指令。
- * - 周期 N 上升沿：out 握手后接受下一块；保存跨块前半字。
- * - 周期 N+1：F1 看到 F0 输出寄存（寄存边界待定）。
- *
+/** L7b F0: four compacted instructions per beat, first-beat block consumption,
+ * retained remainder, and a pending halfword owned by the following region.
+ * All state changes require a beat handshake; truncation uses the same age
+ * boundary as a normal kill, including slot-7 preservation of pend_q.
  */
-module ifu_f0
-    import o3_types_pkg::*;
-#(
+module ifu_f0 import o3_types_pkg::*; #(
     parameter o3_cfg_pkg::frontend_cfg_t CFG
-) (
-    input  logic            clk_i,
-    input  logic            rst_i,
-
-    input  logic            in_valid_i,
-    output logic            in_ready_o,
-    input  rq_out_t         in_i,
-    input  ftq_pred_brief_t in_brief_i,
-
-    output logic [F0_SLOTS-1:0] out_valid_o,
-    input  logic            out_ready_i,
-    output f0_inst_t        out_o [F0_SLOTS],
-    output ftq_pred_brief_t out_brief_o,
-
-    input  fe_kill_t        kill_i,
-    input  logic            sync_clear_i,   // D25：清除残留半字
-
-    output fe_perf_t        perf_o
+)(
+    input logic clk_i,rst_i,
+    input logic in_valid_i,output logic in_ready_o,
+    input rq_out_t in_i,input ftq_pred_brief_t in_brief_i,
+    output logic [F0_SLOTS-1:0] out_valid_o,input logic out_ready_i,
+    output f0_inst_t out_o[F0_SLOTS],output ftq_pred_brief_t out_brief_o,
+    output logic out_beat_valid_o,out_last_o,out_edge_pend_o,
+    input logic trunc_i,input fetch_slot_t trunc_slot_i,
+    input fe_kill_t kill_i,input ftq_id_t ftq_head_i,
+    input logic sync_clear_i,output fe_perf_t perf_o
 );
-    assign in_ready_o = !rst_i && !kill_i.valid && !sync_clear_i && out_ready_i;
-    assign out_brief_o = in_valid_i ? in_brief_i : '0;
-    assign perf_o = '0;
+    typedef struct packed {
+        logic valid;
+        rq_out_t block_data;
+        ftq_pred_brief_t brief;
+        fetch_slot_t pos;
+    } hold_t;
+    typedef struct packed {
+        logic valid;
+        logic [15:0] halfword;
+        ftq_id_t ftq_id;
+        vaddr_t region_base;
+    } pend_t;
+    hold_t hold_q,hold_d;
+    pend_t pend_q,pend_d;
+    rq_out_t current_block;
+    ftq_pred_brief_t current_brief;
+    fe_kill_t trunc_boundary;
+    logic active,edge_start,finished,save_half,fire;
+    int pos[F0_SLOTS+1];
+    logic stopped[F0_SLOTS+1],pending_seen[F0_SLOTS+1];
+    logic [15:0] halfword[F0_SLOTS];
+    logic [31:0] expanded[F0_SLOTS];
+    logic legal[F0_SLOTS];
+    int exit_pos;
 
-    // L1 has four aligned 32-bit instructions per 16B block. A halfword is
-    // an instruction start only when it is at or after entry_slot, matches
-    // the entry's 32-bit phase, and has both halfwords in this region.
-    // Unsupported short encodings occupy an IALIGN=32 position and trap;
-    // dropping them would let a younger instruction retire across the fault.
-    always_comb begin
-        out_valid_o = '0;
-        for (int slot = 0; slot < F0_SLOTS; slot++) begin
-            out_o[slot] = '0;
-            if (!rst_i && !kill_i.valid && !sync_clear_i && in_valid_i
-                && slot >= int'(in_brief_i.pred.entry_slot)
-                && ((slot - int'(in_brief_i.pred.entry_slot)) % 2 == 0)
-                && slot + 1 < REGION_SLOTS
-                && (!in_brief_i.pred.cfi_valid
-                    || slot <= int'(in_brief_i.pred.cfi_slot))) begin
-                out_valid_o[slot] = 1'b1;
-                out_o[slot].pc = in_i.region_base + vaddr_t'(2 * slot);
-                out_o[slot].raw_instruction = in_i.data[16*slot +: ILEN];
-                out_o[slot].instruction = in_i.data[16*slot +: ILEN];
-                out_o[slot].inst_len = 3'd4;
-                out_o[slot].is_rvc = 1'b0;
-                out_o[slot].is_edge = 1'b0;
-                out_o[slot].ftq_id = in_i.ftq_id;
-                out_o[slot].slot = fetch_slot_t'(slot);
-                if (in_i.exc_valid) begin
-                    out_o[slot].raw_instruction = '0;
-                    out_o[slot].instruction = '0;
-                    out_o[slot].exc_valid = 1'b1;
-                    out_o[slot].exc_cause = in_i.exc_cause;
-                    out_o[slot].exc_tval = XLEN'(out_o[slot].pc);
-                end else if (in_i.data[16*slot +: 2] != 2'b11) begin
-                    // Raw instruction length is encoded even when C is absent.
-                    // No RVC expansion or execution; preserve the illegal halfword.
-                    out_o[slot].raw_instruction = ILEN'(in_i.data[16*slot +: 16]);
-                    out_o[slot].instruction = out_o[slot].raw_instruction;
-                    out_o[slot].exc_valid = 1'b1;
-                    out_o[slot].exc_cause = o3_isa_pkg::EXCEPTION_CAUSE_ILLEGAL_INSTRUCTION;
-                    out_o[slot].exc_tval = XLEN'(out_o[slot].raw_instruction);
+    assign current_block=hold_q.valid ? hold_q.block_data:in_i;
+    assign current_brief=hold_q.valid ? hold_q.brief:in_brief_i;
+    assign active=(hold_q.valid || in_valid_i) && !rst_i && !kill_i.valid && !sync_clear_i;
+    assign out_beat_valid_o=active;
+    assign out_brief_o=active ? current_brief:'0;
+    assign in_ready_o=out_ready_i && !hold_q.valid && !kill_i.valid && !sync_clear_i && !rst_i;
+    assign fire=active && out_ready_i;
+    assign perf_o='0;
+    assign edge_start=!hold_q.valid && pend_q.valid
+        && current_block.region_base==pend_q.region_base+vaddr_t'(REGION_BYTES)
+        && current_brief.pred.entry_slot==0;
+    assign pos[0]=hold_q.valid ? int'(hold_q.pos)
+        : (edge_start ? -1:int'(current_brief.pred.entry_slot));
+    assign stopped[0]=!active;
+    assign pending_seen[0]=0;
+    assign exit_pos=current_brief.pred.is_edge ? -1:int'(current_brief.pred.cfi_slot);
+
+    for(genvar lane=0;lane<F0_SLOTS;lane++) begin: decode_lane
+        assign halfword[lane]=(pos[lane]>=0 && pos[lane]<REGION_SLOTS)
+            ? 16'(current_block.data >> (16*pos[lane])):16'b0;
+        rvc_expander expand(.in_i(halfword[lane]),.out_o(expanded[lane]),.legal_o(legal[lane]));
+        always_comb begin
+            int end_pos;
+            logic edge_inst,short_inst;
+            end_pos=pos[lane];edge_inst=pos[lane]<0;short_inst=!edge_inst && halfword[lane][1:0]!=2'b11;
+            out_o[lane]='0;out_valid_o[lane]=0;
+            pos[lane+1]=pos[lane];stopped[lane+1]=stopped[lane];
+            pending_seen[lane+1]=pending_seen[lane];
+            if(!stopped[lane] && pos[lane]<REGION_SLOTS) begin
+                if(!current_block.exc_valid && pos[lane]==REGION_SLOTS-1 && !short_inst) begin
+                    // The first half belongs to the next region; no instruction here.
+                    stopped[lane+1]=1;pending_seen[lane+1]=1;
+                end else begin
+                    out_valid_o[lane]=1;
+                    out_o[lane].ftq_id=current_block.ftq_id;
+                    out_o[lane].slot=edge_inst ? '0:fetch_slot_t'(pos[lane]);
+                    out_o[lane].is_edge=edge_inst;
+                    out_o[lane].pc=current_block.region_base
+                        +vaddr_t'(2*pos[lane]);
+                    out_o[lane].is_rvc=short_inst;
+                    out_o[lane].inst_len=short_inst ? 3'd2:3'd4;
+                    end_pos=edge_inst ? 0:pos[lane]+(short_inst ? 0:1);
+                    pos[lane+1]=end_pos+1;
+                    if(edge_inst) begin
+                        out_o[lane].instruction={current_block.data[15:0],pend_q.halfword};
+                        out_o[lane].raw_instruction=out_o[lane].instruction;
+                    end else if(short_inst) begin
+                        out_o[lane].instruction=expanded[lane];
+                        out_o[lane].raw_instruction={16'b0,halfword[lane]};
+                        if(!legal[lane]) begin
+                            out_o[lane].exc_valid=1;
+                            out_o[lane].exc_cause=o3_isa_pkg::EXCEPTION_CAUSE_ILLEGAL_INSTRUCTION;
+                            out_o[lane].exc_tval=XLEN'(halfword[lane]);
+                        end
+                    end else begin
+                        out_o[lane].instruction=32'(current_block.data >> (16*pos[lane]));
+                        out_o[lane].raw_instruction=out_o[lane].instruction;
+                    end
+                    if(current_block.exc_valid) begin
+                        out_o[lane].instruction='0;out_o[lane].raw_instruction='0;
+                        out_o[lane].inst_len='0;out_o[lane].is_rvc=0;
+                        out_o[lane].exc_valid=1;out_o[lane].exc_cause=current_block.exc_cause;
+                        out_o[lane].exc_tval=edge_inst ? XLEN'(current_block.region_base):XLEN'(out_o[lane].pc);
+                    end
+                    stopped[lane+1]=out_o[lane].exc_valid || end_pos>=REGION_SLOTS-1
+                        || (current_brief.pred.cfi_valid && end_pos>=exit_pos);
                 end
             end
         end
+    end
+    // Can save the final halfword without using a fifth instruction lane.
+    assign save_half=active && !current_block.exc_valid
+        && (pending_seen[F0_SLOTS] || (!stopped[F0_SLOTS] && pos[F0_SLOTS]==REGION_SLOTS-1
+            && current_block.data[(REGION_SLOTS-1)*16 +: 2]==2'b11));
+    assign finished=stopped[F0_SLOTS] || pos[F0_SLOTS]>=REGION_SLOTS || save_half;
+    assign out_last_o=active && finished;
+    assign out_edge_pend_o=save_half;
+    always_comb begin
+        hold_d=hold_q;pend_d=pend_q;
+        trunc_boundary='{valid:trunc_i,all:1'b0,ftq_id:current_block.ftq_id,
+            slot:trunc_slot_i,kill_self:1'b0};
+        if(fire) begin
+            if(!hold_q.valid) pend_d.valid=0;
+            hold_d.valid=!finished;
+            if(!finished) begin
+                hold_d.block_data=current_block;hold_d.brief=current_brief;
+                hold_d.pos=fetch_slot_t'(pos[F0_SLOTS]);
+            end
+            if(save_half) pend_d='{valid:1'b1,halfword:current_block.data[REGION_BYTES*8-16 +: 16],
+                ftq_id:current_block.ftq_id,region_base:current_block.region_base};
+            if(current_block.exc_valid) pend_d.valid=0;
+        end
+        if(hold_d.valid && (fe_killed_by(kill_i,hold_d.block_data.ftq_id,hold_d.pos,ftq_head_i)
+            || fe_killed_by(trunc_boundary,hold_d.block_data.ftq_id,hold_d.pos,ftq_head_i))) hold_d.valid=0;
+        if(pend_d.valid && (fe_killed_by(kill_i,pend_d.ftq_id,fetch_slot_t'(REGION_SLOTS-1),ftq_head_i)
+            || fe_killed_by(trunc_boundary,pend_d.ftq_id,fetch_slot_t'(REGION_SLOTS-1),ftq_head_i))) pend_d.valid=0;
+        if(sync_clear_i) begin hold_d='0;pend_d='0;end
+    end
+    always_ff @(posedge clk_i) begin
+        if(rst_i) begin hold_q<='0;pend_q<='0;end
+        else begin hold_q<=hold_d;pend_q<=pend_d;end
     end
 endmodule

@@ -387,6 +387,9 @@ module ftq
                 entries_d[resolve_i.ftq_id.idx].actual_cfi_type = resolve_i.cfi_type;
                 entries_d[resolve_i.ftq_id.idx].actual_ras_action = resolve_i.ras_action;
                 entries_d[resolve_i.ftq_id.idx].actual_cfi_target = resolve_i.actual_target;
+                entries_d[resolve_i.ftq_id.idx].actual_cfi_is_rvc = resolve_i.inst_len==2;
+                entries_d[resolve_i.ftq_id.idx].actual_cfi_is_edge = resolve_i.branch_pc
+                    ==entries_d[resolve_i.ftq_id.idx].fast_pred.region_base-vaddr_t'(2);
             end
             entries_d[resolve_i.ftq_id.idx].mispredicted |= resolve_i.mispredict;
         end
@@ -403,6 +406,12 @@ module ftq
                     entries_d[commit_i[lane].ftq_id.idx].committed_br[commit_i[lane].slot] = 1'b1;
                     entries_d[commit_i[lane].ftq_id.idx].committed_taken[commit_i[lane].slot] =
                         entries_d[commit_i[lane].ftq_id.idx].resolved_taken[commit_i[lane].slot];
+                end
+                // Program-order retirement closes every older (possibly empty) region.
+                for(int age=0;age<DEPTH;age++) begin
+                    if(age<int'(count_d) && entries_d[add_idx(head_d,age)].valid
+                        && age*REGION_SLOTS<fe_age(commit_i[lane].ftq_id,'0,entries_d[head_d].id))
+                        entries_d[add_idx(head_d,age)].commit_last=1;
                 end
                 if (commit_i[lane].region_last)
                     entries_d[commit_i[lane].ftq_id.idx].commit_last = 1'b1;
@@ -427,6 +436,8 @@ module ftq
                 train_d.cfi_type = entries_d[head_d].actual_cfi_type;
                 train_d.ras_action = entries_d[head_d].actual_ras_action;
                 train_d.cfi_target = entries_d[head_d].actual_cfi_target;
+                train_d.cfi_is_rvc=entries_d[head_d].actual_cfi_is_rvc;
+                train_d.is_edge=entries_d[head_d].actual_cfi_is_edge;
                 train_d.mispredicted = entries_d[head_d].mispredicted;
                 train_state_d = TRAIN_SEND;
             end

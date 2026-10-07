@@ -7,7 +7,7 @@ VERILOG_SOURCES := \
   $(REPO_ROOT)/rtl/common/o3_isa_pkg.sv \
   $(REPO_ROOT)/rtl/common/o3_cfg_pkg.sv \
   $(REPO_ROOT)/rtl/common/o3_types_pkg.sv \
-  $(REPO_ROOT)/rtl/frontend/ifu_f0.sv \
+  $(REPO_ROOT)/rtl/frontend/rvc_expander.sv $(REPO_ROOT)/rtl/frontend/ifu_f0.sv \
   $(CURDIR)/ifu_f0_tb_top.sv
 SIM_BUILD := $(CURDIR)/sim_build/$(if $(filter 1,$(WAVES)),waves,plain)
 COCOTB_RESULTS_FILE := $(CURDIR)/results.xml

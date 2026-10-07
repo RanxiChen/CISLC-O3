@@ -28,8 +28,8 @@ module l7_recovery_tb_top import o3_types_pkg::*; import o3_cfg_pkg::*; (
   valid='0;
   for(int s=0;s<F0_SLOTS;s++) items[s]='0;
   for(int n=0;n<2;n++) begin
-   valid[2*n]=n<int'(count_i);
-   items[2*n]='{pc:base_i+64'(4*n),instruction:(n==0?word0_i:word1_i),
+   valid[n]=n<int'(count_i);
+   items[n]='{pc:base_i+64'(4*n),instruction:(n==0?word0_i:word1_i),
     raw_instruction:(n==0?word0_i:word1_i),inst_len:3'd4,
     ftq_id:id_i,slot:fetch_slot_t'(2*n),default:'0};
   end
@@ -44,7 +44,8 @@ module l7_recovery_tb_top import o3_types_pkg::*; import o3_cfg_pkg::*; (
   for(int e=0;e<PE_NUM;e++) sum_perf[e]=arb_perf[e]+fb_perf[e]+f1_perf[e];
  end
  ifu_f1 #(.CFG(O3_CFG.fe)) f1(.clk_i(clk_i),.rst_i(rst_i),.in_i(items),
-  .in_valid_i(valid),.in_ready_o(f1_ready_o),.in_brief_i('0),.out_o(f1_entries),
+  .in_valid_i(valid),.in_beat_valid_i(|valid),.in_last_i(1'b1),.in_edge_pend_i(1'b0),
+  .trunc_o(),.trunc_slot_o(),.in_ready_o(f1_ready_o),.in_brief_i('0),.out_o(f1_entries),
   .out_valid_o(f1_valid),.out_ready_i(fb_ready&&!stall_i),.predecode_o(pd),
   .kill_i(boundary),.perf_o(f1_perf));
  redirect_arbiter #(.CFG(O3_CFG.fe)) arb(.clk_i(clk_i),.rst_i(rst_i),

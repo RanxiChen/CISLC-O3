@@ -60,6 +60,7 @@ module bpu_slow_check
                     pred.cfi_valid = 1'b1;
                     pred.cfi_slot = chosen;
                     pred.cfi_type = btb_i.cfi_type;
+                    pred.cfi_is_rvc=btb_i.cfi_is_rvc;pred.is_edge=btb_i.is_edge;
                     pred.ras_action = btb_i.ras_action;
                     pred.cfi_target = btb_i.target;
                     if ((btb_i.ras_action == RAS_POP || btb_i.ras_action == RAS_POP_PUSH)
@@ -72,6 +73,7 @@ module bpu_slow_check
         disagree = (pred.cfi_valid != fast_i.cfi_valid)
                  || (pred.cfi_valid && (pred.cfi_slot != fast_i.cfi_slot
                      || pred.cfi_type != fast_i.cfi_type || pred.ras_action != fast_i.ras_action
+                     || pred.cfi_is_rvc != fast_i.cfi_is_rvc || pred.is_edge != fast_i.is_edge
                      || pred.next_pc != fast_i.next_pc))
                  || (!pred.cfi_valid && pred.next_pc != fast_i.next_pc);
         slow_o = '0;
@@ -89,10 +91,11 @@ module bpu_slow_check
             override_o.slot = pred.cfi_valid ? pred.cfi_slot : fetch_slot_t'(REGION_SLOTS-1);
             override_o.target_pc = pred.next_pc;
             override_o.hist_inject = pred.cfi_valid && pred.cfi_type == CFI_BR;
-            override_o.hist_branch_pc = pred.region_base + vaddr_t'(2 * int'(pred.cfi_slot));
+            override_o.hist_branch_pc = (pred.is_edge ? pred.region_base-vaddr_t'(2) : pred.region_base+vaddr_t'(2*int'(pred.cfi_slot)));
             override_o.hist_target_pc = pred.cfi_target;
             override_o.ras_fix = pred.cfi_valid ? pred.ras_action : RAS_NONE;
-            override_o.ras_push_addr = pred.region_base + vaddr_t'(2 * int'(pred.cfi_slot) + 4);
+            override_o.ras_push_addr = (pred.is_edge ? pred.region_base-vaddr_t'(2) : pred.region_base+vaddr_t'(2*int'(pred.cfi_slot)))
+                +vaddr_t'(pred.cfi_is_rvc ? 2:4);
             perf_o[PE_BTB_HIT] = PERF_INC_W'(btb_i.hit);
             perf_o[PE_TARGET_MISSING] = PERF_INC_W'(pred.target_missing);
             perf_o[PE_FAST_SLOW_DISAGREE] = PERF_INC_W'(disagree);

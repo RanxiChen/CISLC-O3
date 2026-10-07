@@ -5,7 +5,7 @@ import random
 import cocotb
 from cocotb.triggers import ReadOnly, Timer
 from ifu_f1_model import (CFI_BR, CFI_JAL, CFI_JALR, CFI_NONE, NOP, RAS_NONE, RAS_POP,
-                          RAS_POP_PUSH, RAS_PUSH, Inputs, Pred, addi, block, branch,
+                          RAS_POP_PUSH, RAS_PUSH, Inputs, Item, Pred, addi, block, branch,
                           decode, evaluate, jal, jalr)
 
 BASE = 0x8000_1000      # 16B-aligned region; slot s is at BASE + 2*s
@@ -43,6 +43,10 @@ class Bench:
         tval_bits = len(d.in_exc_tval_flat_i) // slots
         by_slot = {it.slot: it for it in i.items}
         get = lambda attr: [getattr(by_slot[s], attr) if s in by_slot else 0 for s in range(slots)]
+        d.beat_valid_i.value=int(bool(i.items) or i.beat)
+        d.last_i.value=int(i.last);d.edge_pend_i.value=int(i.edge_pend)
+        d.in_len_flat_i.value=pack(get('inst_len'),3)
+        d.in_edge_i.value=sum(1<<s for s,it in by_slot.items() if it.edge)
         d.rst_i.value = int(i.rst)
         d.in_valid_i.value = sum(1 << s for s in by_slot)
         d.in_pc_flat_i.value = pack(get("pc"), pc_bits)
@@ -52,6 +56,8 @@ class Bench:
         d.in_exc_cause_flat_i.value = pack(get("cause"), cause_bits)
         d.in_exc_tval_flat_i.value = pack(get("tval"), tval_bits)
         p = i.pred
+        d.brief_base_i.value=p.base;d.brief_id_i.value=p.ftq_id
+        d.brief_rvc_i.value=int(p.rvc);d.brief_edge_i.value=int(p.edge)
         d.brief_cfi_valid_i.value = int(p.cfi_valid)
         d.brief_cfi_slot_i.value = p.cfi_slot
         d.brief_cfi_type_i.value = p.cfi_type
@@ -114,7 +120,7 @@ class Bench:
         ready, out, req = evaluate(i, self.width)
         self.check_request(ctx)
         self.check_entries(out, ready, ctx)
-        fire = ready and bool(out)
+        fire = ready and (bool(i.items) or i.beat)
         self.pending = req if fire else None
         await Timer(1, unit="ns")
         d.clk_i.value = 1
@@ -494,3 +500,33 @@ async def pending_request_resets_at_clock_edge(dut):
     await b.step(Inputs(rst=True), "request still registered before reset edge")
     await b.step(Inputs(rst=True), "request cleared after reset edge")
     await b.step(Inputs(), "reset release has no stale request")
+
+@cocotb.test()
+async def l7b_length_edge_and_empty_beats(d):
+    b=Bench(d);await b.reset()
+    # A compressed call expands to JALR but must push pc+2; same action with
+    # a predicted four-byte length is still a RAS mismatch.
+    it=Item(0,BASE,jalr(1,7),ftq_id=3,inst_len=2)
+    await b.case('compressed call length mismatch',Inputs(items=(it,),
+        pred=Pred(True,0,CFI_JALR,RAS_PUSH,next_pc=FAR,rvc=False)),
+        exp_lanes=1,exp_req={'target':FAR,'push_addr':BASE+2,'ras_fix':RAS_PUSH})
+    # Edge belongs to the second region at slot 0, PC two bytes before base.
+    edge=Item(0,BASE-2,branch(2,3,20),ftq_id=4,edge=True)
+    await b.case('edge exit matches',Inputs(items=(edge,),
+        pred=Pred(True,0,CFI_BR,cfi_target=BASE+18,next_pc=BASE+18,edge=True)),exp_lanes=1)
+    for note,item,pred in [
+        ('predicted edge absent',Item(0,BASE,NOP,4),Pred(True,0,CFI_BR,edge=True,next_pc=FAR)),
+        ('slot zero is edge tail',edge,Pred(True,0,CFI_BR,cfi_target=BASE+18,next_pc=FAR))]:
+        await b.case(note,Inputs(items=(item,),pred=pred),exp_lanes=1,exp_taken=False,
+            exp_next=item.pc+4,exp_req={'target':item.pc+4})
+    # c-prime must register even though there are no delivery lanes.
+    await b.case('empty c-prime',Inputs(beat=True,edge_pend=True,
+        pred=Pred(True,7,CFI_JAL,next_pc=FAR,base=BASE,ftq_id=5)),
+        exp_lanes=0,exp_req={'slot':7,'ftq_id':5,'target':BASE+16})
+    for last in (False,True):
+        out,_=await b.step(Inputs(items=block(BASE,(NOP,)*4,7),last=last),'two-beat last marker')
+        assert out[-1]['last']==last
+    # RVC sequential successor and direct BR target retain two-byte length.
+    rv=Item(2,BASE+4,NOP,inst_len=2)
+    await b.case('RVC false CFI',Inputs(items=(rv,),pred=Pred(True,2,CFI_BR,next_pc=FAR)),
+        exp_lanes=1,exp_taken=False,exp_next=BASE+6,exp_req={'target':BASE+6})

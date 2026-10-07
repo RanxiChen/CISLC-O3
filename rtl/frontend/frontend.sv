@@ -194,7 +194,8 @@ module frontend
     rq_out_t         rq_deq;
     ftq_pred_brief_t rq_deq_brief;
     logic [F0_SLOTS-1:0] f0_valid;
-    logic            f0_ready;
+    logic            f0_ready, f0_beat_valid, f0_last, f0_edge_pend, f1_trunc;
+    fetch_slot_t f1_trunc_slot;
     f0_inst_t        f0_inst [F0_SLOTS];
     ftq_pred_brief_t f0_brief;
     fetch_entry_t    f1_out [F1_W];
@@ -437,6 +438,8 @@ module frontend
         .out_ready_i (f0_ready),
         .out_o       (f0_inst),
         .out_brief_o (f0_brief),
+        .out_beat_valid_o(f0_beat_valid),.out_last_o(f0_last),.out_edge_pend_o(f0_edge_pend),
+        .trunc_i(f1_trunc),.trunc_slot_i(f1_trunc_slot),.ftq_head_i(ftq_head_id),
         .kill_i      (fe_kill),
         .sync_clear_i(f0_sync_clear),
         .perf_o      (perf_f0)
@@ -446,6 +449,7 @@ module frontend
         .clk_i       (clk_i),
         .rst_i       (rst_i),
         .in_valid_i  (f0_valid),
+        .in_beat_valid_i(f0_beat_valid),.in_last_i(f0_last),.in_edge_pend_i(f0_edge_pend),
         .in_ready_o  (f0_ready),
         .in_i        (f0_inst),
         .in_brief_i  (f0_brief),
@@ -453,6 +457,7 @@ module frontend
         .out_valid_o (f1_valid),
         .out_ready_i (f1_ready),
         .predecode_o (f1_predecode),
+        .trunc_o(f1_trunc),.trunc_slot_o(f1_trunc_slot),
         .kill_i      (fe_kill),
         .perf_o      (perf_f1)
     );

@@ -4,13 +4,21 @@ module ifu_f1_tb_top
     import o3_types_pkg::*;
 (
     input logic clk_i, rst_i,
-    input logic [F0_SLOTS-1:0] in_valid_i,
-    input logic [F0_SLOTS*VADDR_W-1:0] in_pc_flat_i,
-    input logic [F0_SLOTS*ILEN-1:0] in_inst_flat_i,
-    input logic [F0_SLOTS*$bits(ftq_id_t)-1:0] in_id_flat_i,
-    input logic [F0_SLOTS-1:0] in_exc_valid_i,
-    input logic [F0_SLOTS*$bits(exception_cause_t)-1:0] in_exc_cause_flat_i,
-    input logic [F0_SLOTS*XLEN-1:0] in_exc_tval_flat_i,
+    input logic beat_valid_i,last_i,edge_pend_i,
+    input logic [REGION_SLOTS*3-1:0] in_len_flat_i,
+    input logic [REGION_SLOTS-1:0] in_edge_i,
+    input logic brief_rvc_i,brief_edge_i,
+    input logic [VADDR_W-1:0] brief_base_i,
+    input logic [$bits(ftq_id_t)-1:0] brief_id_i,
+    output logic trunc_o,
+    output fetch_slot_t trunc_slot_o,
+    input logic [REGION_SLOTS-1:0] in_valid_i,
+    input logic [REGION_SLOTS*VADDR_W-1:0] in_pc_flat_i,
+    input logic [REGION_SLOTS*ILEN-1:0] in_inst_flat_i,
+    input logic [REGION_SLOTS*$bits(ftq_id_t)-1:0] in_id_flat_i,
+    input logic [REGION_SLOTS-1:0] in_exc_valid_i,
+    input logic [REGION_SLOTS*$bits(exception_cause_t)-1:0] in_exc_cause_flat_i,
+    input logic [REGION_SLOTS*XLEN-1:0] in_exc_tval_flat_i,
     input logic brief_cfi_valid_i, brief_raw_taken_i,
     input logic [SLOT_W-1:0] brief_cfi_slot_i,
     input logic [1:0] brief_cfi_type_i, brief_ras_action_i,
@@ -36,12 +44,18 @@ module ifu_f1_tb_top
     output logic [31:0] cfg_f1_width_o
 );
     f0_inst_t in_inst [F0_SLOTS];
+    logic [F0_SLOTS-1:0] compact_valid;
     fetch_entry_t out_inst [F1_W];
     ftq_pred_brief_t brief;
     redirect_req_t predecode;
     fe_kill_t kill;
     always_comb begin
+        int count;
+        count=0;
         brief = '0;
+        brief.ftq_id=ftq_id_t'(brief_id_i);
+        brief.pred.region_base=brief_base_i;
+        brief.pred.cfi_is_rvc=brief_rvc_i;brief.pred.is_edge=brief_edge_i;
         brief.pred.cfi_valid = brief_cfi_valid_i;
         brief.pred.cfi_slot = brief_cfi_slot_i;
         brief.pred.cfi_type = cfi_type_e'(brief_cfi_type_i);
@@ -53,27 +67,34 @@ module ifu_f1_tb_top
         brief.ras_ckpt.top_addr = brief_ras_top_i;
         kill = '0;
         kill.valid = kill_valid_i;
-        for (int slot = 0; slot < F0_SLOTS; slot++) begin
-            in_inst[slot] = '0;
-            in_inst[slot].pc = in_pc_flat_i[slot*VADDR_W +: VADDR_W];
-            in_inst[slot].instruction = in_inst_flat_i[slot*ILEN +: ILEN];
-            in_inst[slot].raw_instruction = in_inst_flat_i[slot*ILEN +: ILEN];
-            in_inst[slot].inst_len = 3'd4;
-            in_inst[slot].ftq_id =
+        for(int lane=0;lane<F0_SLOTS;lane++) in_inst[lane]='0;
+        compact_valid='0;
+        for (int slot = 0; slot < REGION_SLOTS; slot++) begin
+          if(in_valid_i[slot] && count<F0_SLOTS) begin
+            compact_valid[count]=1;
+            in_inst[count].pc = in_pc_flat_i[slot*VADDR_W +: VADDR_W];
+            in_inst[count].instruction = in_inst_flat_i[slot*ILEN +: ILEN];
+            in_inst[count].raw_instruction = in_inst_flat_i[slot*ILEN +: ILEN];
+            in_inst[count].inst_len = in_len_flat_i[slot*3 +: 3];
+            in_inst[count].is_rvc = in_inst[count].inst_len==2;
+            in_inst[count].is_edge = in_edge_i[slot];
+            in_inst[count].ftq_id =
                 ftq_id_t'(in_id_flat_i[slot*$bits(ftq_id_t) +: $bits(ftq_id_t)]);
-            in_inst[slot].slot = fetch_slot_t'(slot);
-            in_inst[slot].exc_valid = in_exc_valid_i[slot];
-            in_inst[slot].exc_cause = exception_cause_t'(
+            in_inst[count].slot = fetch_slot_t'(slot);
+            in_inst[count].exc_valid = in_exc_valid_i[slot];
+            in_inst[count].exc_cause = exception_cause_t'(
                 in_exc_cause_flat_i[slot*$bits(exception_cause_t) +: $bits(exception_cause_t)]);
-            in_inst[slot].exc_tval = in_exc_tval_flat_i[slot*XLEN +: XLEN];
+            in_inst[count].exc_tval = in_exc_tval_flat_i[slot*XLEN +: XLEN];
+            count++;
+          end
         end
     end
     ifu_f1 #(.CFG(O3_CFG.fe)) dut (
         .clk_i(clk_i), .rst_i(rst_i),
-        .in_valid_i(in_valid_i), .in_ready_o(in_ready_o),
+        .in_valid_i(compact_valid),.in_beat_valid_i(beat_valid_i),.in_last_i(last_i),.in_edge_pend_i(edge_pend_i), .in_ready_o(in_ready_o),
         .in_i(in_inst), .in_brief_i(brief),
         .out_o(out_inst), .out_valid_o(out_valid_o), .out_ready_i(out_ready_i),
-        .predecode_o(predecode), .kill_i(kill), .perf_o()
+        .predecode_o(predecode),.trunc_o(trunc_o),.trunc_slot_o(trunc_slot_o), .kill_i(kill), .perf_o()
     );
     for (genvar lane = 0; lane < F1_W; lane++) begin : flatten
         assign entry_valid_o[lane] = out_inst[lane].valid;

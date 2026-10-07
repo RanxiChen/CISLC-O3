@@ -94,7 +94,8 @@ module bpu
         .clk_i(clk_i), .rst_i(rst_i),
         .push_valid_i(alloc_fire && alloc_pred_o.cfi_valid &&
                       alloc_pred_o.cfi_type == CFI_BR && !alloc_pred_o.target_missing),
-        .push_branch_pc_i(alloc_pred_o.region_base + vaddr_t'(2 * int'(alloc_pred_o.cfi_slot))),
+        .push_branch_pc_i((alloc_pred_o.is_edge ? alloc_pred_o.region_base-vaddr_t'(2)
+            : alloc_pred_o.region_base+vaddr_t'(2*int'(alloc_pred_o.cfi_slot)))),
         .push_target_pc_i(alloc_pred_o.cfi_target), .cur_o(alloc_snapshot_o),
         .restore_valid_i(hist_restore_valid_i), .restore_snapshot_i(hist_restore_snapshot_i),
         .restore_inject_i(hist_restore_inject_i),
@@ -105,7 +106,9 @@ module bpu
         .clk_i(clk_i), .rst_i(rst_i),
         .op_valid_i(alloc_fire && alloc_pred_o.cfi_valid && alloc_pred_o.ras_action != RAS_NONE),
         .op_action_i(alloc_pred_o.ras_action),
-        .op_push_addr_i(alloc_pred_o.region_base + vaddr_t'(2 * int'(alloc_pred_o.cfi_slot) + 4)),
+        .op_push_addr_i((alloc_pred_o.is_edge ? alloc_pred_o.region_base-vaddr_t'(2)
+            : alloc_pred_o.region_base+vaddr_t'(2*int'(alloc_pred_o.cfi_slot)))
+            +vaddr_t'(alloc_pred_o.cfi_is_rvc ? 2:4)),
         .top_o(ras_top), .top_valid_o(ras_top_valid), .ckpt_o(alloc_ras_ckpt_o),
         .recover_valid_i(ras_recover_valid_i), .recover_id_i(ras_recover_id_i),
         .recover_ckpt_i(ras_recover_ckpt_i), .recover_fix_i(ras_fix_i),

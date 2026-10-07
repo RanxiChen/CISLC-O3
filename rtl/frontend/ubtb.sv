@@ -63,8 +63,8 @@ module ubtb
         ras_action_e ras_action;
         vaddr_t      target;
         logic [1:0]  br_ctr;
-        logic        cfi_is_rvc; // L7b reserved
-        logic        is_edge;       // L7b reserved
+        logic        cfi_is_rvc; // L7b actual instruction length/edge
+        logic        is_edge;       // L7b actual instruction length/edge
     } ubtb_entry_t;
 
     ubtb_entry_t entry_q [ENTRIES];
@@ -181,8 +181,8 @@ module ubtb
 
             updated = '0;
             if (matched) updated = entry_q[selected_idx];
-            updated.cfi_is_rvc = 1'b0;
-            updated.is_edge = 1'b0;
+            updated.cfi_is_rvc = train_i.cfi_is_rvc;
+            updated.is_edge = train_i.is_edge;
             updated.tag = train_tag;
             updated.br_mask |= train_i.br_commit_mask;
             if (train_i.cfi_valid && train_i.cfi_type != CFI_NONE) begin

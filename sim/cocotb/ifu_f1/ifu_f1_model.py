@@ -68,6 +68,8 @@ class Item:
     exc: bool = False
     cause: int = 0
     tval: int = 0
+    inst_len: int = 4
+    edge: bool = False
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,10 @@ class Pred:
     raw_taken: bool = False
     ras_count: int = 0
     ras_top: int = 0
+    rvc: bool = False
+    edge: bool = False
+    base: int = 0
+    ftq_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -90,6 +96,9 @@ class Inputs:
     pred: Pred = field(default_factory=Pred)
     ready: bool = True
     kill: bool = False
+    last: bool = True
+    edge_pend: bool = False
+    beat: bool = False
 
 
 def block(base, words, ftq_id=0, start_slot=0, exc=None):
@@ -111,13 +120,16 @@ def evaluate(i: Inputs, width: int):
     p = i.pred
     out, req = [], None
     for item in sorted(i.items, key=lambda it: it.slot):
-        if len(out) == width or (p.cfi_valid and item.slot > p.cfi_slot):
+        if len(out) == width:
             break
         s, pc = item.slot, item.pc
-        seq = (pc + 4) & PC_MASK
-        is_exit = p.cfi_valid and s == p.cfi_slot
-        covers = p.cfi_valid and (s == p.cfi_slot or s + 1 == p.cfi_slot)
-        earlier = (not p.cfi_valid) or s < p.cfi_slot
+        seq = (pc + item.inst_len) & PC_MASK
+        start = -1 if item.edge else s
+        end = start + (1 if item.inst_len == 4 else 0)
+        exit_pos = -1 if p.edge else p.cfi_slot
+        is_exit = p.cfi_valid and start == exit_pos
+        covers = p.cfi_valid and end >= exit_pos
+        earlier = (not p.cfi_valid) or start < exit_pos
         entry = {"pc": pc, "word": item.word, "ftq_id": item.ftq_id, "slot": s,
                  "exc": item.exc, "cause": item.cause, "tval": item.tval,
                  "taken": is_exit, "next_pc": p.next_pc if is_exit else seq, "last": False}
@@ -137,9 +149,9 @@ def evaluate(i: Inputs, width: int):
             elif is_exit and t != p.cfi_type:                            # d
                 fix = (True, actual, ras, False) if actual is not None else (False, seq, RAS_NONE, False)
             elif is_exit and t in (CFI_BR, CFI_JAL) and (
-                    p.cfi_target != direct or (t == CFI_JAL and p.ras_action != ras)):  # e
+                    p.cfi_target != direct or (t == CFI_JAL and (p.ras_action != ras or (ras in (RAS_PUSH,RAS_POP_PUSH) and p.rvc != (item.inst_len==2))))):  # e
                 fix = (True, direct, ras, t == CFI_BR)
-            elif is_exit and t == CFI_JALR and p.ras_action != ras:      # f
+            elif is_exit and t == CFI_JALR and (p.ras_action != ras or (ras in (RAS_PUSH,RAS_POP_PUSH) and p.rvc != (item.inst_len==2))):      # f
                 fix = (True, actual if actual is not None else p.next_pc, ras, False)
         if fix is not None:
             entry["taken"], entry["next_pc"] = fix[0], fix[1]
@@ -149,6 +161,9 @@ def evaluate(i: Inputs, width: int):
         out.append(entry)
         if fix is not None or item.exc or covers:
             break
-    if out:
+    if req is None and i.last and i.edge_pend and p.cfi_valid and not p.edge and p.cfi_slot==7 and not (out and out[-1]['exc']):
+        req={'src':REDIR_PREDECODE,'ftq_id':p.ftq_id,'slot':7,'kill_self':0,'target':p.base+16,
+             'hist_inject':0,'hist_branch':0,'hist_target':0,'ras_fix':0,'push_addr':0}
+    if out and (i.last or req):
         out[-1]["last"] = True
     return ready, out, req

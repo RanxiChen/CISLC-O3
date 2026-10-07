@@ -18,7 +18,7 @@ class Bench:
         return [(x >> (e*self.incw)) & ((1<<self.incw)-1) for e in range(0x0f,0x16)]
     async def step(self, *, rst=False, alloc=None, ckpt=None, slow=None, fid=0,
                    winner=None, kill=False, commit=False, resolve=None, ready=False,
-                   all_=False,self_=False,slot=6):
+                   all_=False,self_=False,slot=6,last=True):
         d,r=self.d,self.r
         d.clk_i.value=0
         values=dict(rst_i=rst,alloc_valid_i=alloc is not None,alloc_bits_i=encode(r.pred,alloc or {}),
@@ -26,7 +26,7 @@ class Bench:
             slow_id_i=fid,slow_bits_i=encode(r.pred,slow or {}),brief_id_i=fid,
             kill_valid_i=kill,kill_all_i=all_,kill_self_i=self_,kill_id_i=fid,kill_slot_i=slot,
             winner_bits_i=encode(r.req,winner or {}),resolve_bits_i=encode(r.resolve,resolve or {}),
-            commit_valid_i=commit,commit_id_i=fid,commit_slot_i=slot,train_ready_i=ready)
+            commit_valid_i=commit,commit_last_i=last,commit_id_i=fid,commit_slot_i=slot,train_ready_i=ready)
         for n,v in values.items():getattr(d,n).value=int(v)
         await Timer(1,unit='ns')
         before=self.events()
@@ -108,3 +108,31 @@ async def exec_fix_mispred_event_and_full_cycle(d):
     assert int(d.alloc_ready_o.value)==0 and events[-1]==0
     _,events=await b.step(alloc=fast)
     assert events[-1]==1, 'FTQ-full counts an actual blocked allocation attempt'
+
+@cocotb.test()
+async def empty_regions_release_and_actual_instruction_flags(d):
+    b=await bench(d)
+    for length,edge in ((2,False),(4,True)):
+        await b.step(rst=True)
+        empty,_=await b.step(alloc=dict(region_base=0x4000,next_pc=0x4010))
+        target,_=await b.step(alloc=dict(region_base=0x4010,next_pc=0x4020))
+        await b.step(fid=target,resolve=dict(valid=1,ftq_id=target,slot=0,
+            branch_pc=0x400e if edge else 0x4010,inst_len=length,cfi_type=2,
+            actual_taken=1,actual_target=0x5000))
+        # Empty older region has no commit of its own.
+        await b.step(fid=target,commit=True,slot=0,last=False)
+        # Even a non-last commit closes the older empty region.
+        for _ in range(4):
+            await b.step()
+            if int(d.train_valid_o.value):break
+        assert int(d.train_valid_o.value)
+        assert decode(b.r.train,int(d.train_bits_o.value))['region_base']==0x4000
+        await b.step(fid=target,commit=True,slot=0)
+        seen=[]
+        for _ in range(16):
+            if int(d.train_valid_o.value):seen.append(decode(b.r.train,int(d.train_bits_o.value)))
+            await b.step(ready=True)
+            if len(seen)==2:break
+        assert len(seen)==2 and [t['region_base'] for t in seen]==[0x4000,0x4010]
+        assert not seen[0]['cfi_valid']
+        assert seen[1]['cfi_is_rvc']==(length==2) and seen[1]['is_edge']==edge

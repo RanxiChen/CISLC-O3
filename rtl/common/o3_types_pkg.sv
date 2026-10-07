@@ -172,8 +172,8 @@ package o3_types_pkg;
         logic        target_missing;  // taken 但无匹配目标，沿顺序路径（第 4.3 节）
         vaddr_t      cfi_target;
         vaddr_t      next_pc;         // 实际采用的下一区域入口
-        logic        cfi_is_rvc;       // L7b reserved; L7a always zero
-        logic        is_edge;             // L7b reserved; L7a always zero
+        logic        cfi_is_rvc;       // L7b: actual compressed length and edge ownership
+        logic        is_edge;             // L7b: actual compressed length and edge ownership
     } bpu_pred_t;
 
     // 主 BTB 两拍查询结果（第 4.2 节）。
@@ -185,8 +185,8 @@ package o3_types_pkg;
         cfi_type_e   cfi_type;
         ras_action_e ras_action;
         vaddr_t      target;
-        logic        cfi_is_rvc;       // L7b reserved; L7a always zero
-        logic        is_edge;             // L7b reserved; L7a always zero
+        logic        cfi_is_rvc;       // L7b: actual compressed length and edge ownership
+        logic        is_edge;             // L7b: actual compressed length and edge ownership
     } btb_resp_t;
 
     // TAGE 三拍查询结果：8 槽位方向（D04）。
@@ -219,8 +219,8 @@ package o3_types_pkg;
         ras_action_e ras_action;
         vaddr_t      cfi_target;
         logic        mispredicted;
-        logic        cfi_is_rvc;       // L7b reserved; L7a always zero
-        logic        is_edge;             // L7b reserved; L7a always zero
+        logic        cfi_is_rvc;       // L7b: actual compressed length and edge ownership
+        logic        is_edge;             // L7b: actual compressed length and edge ownership
     } bpu_train_t;
 
     // ============================================================

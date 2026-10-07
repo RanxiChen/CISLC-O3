@@ -65,7 +65,7 @@ package o3_cfg_pkg;
         int unsigned region_bytes;        // 已定 16：16B 对齐预测/取指区域，8 个半字槽位（D03）
         int unsigned deliver_width;       // 已定 4：按序每拍最多交付 4 条（第 16.2 节）
         int unsigned return_queue_depth;  // 暂定 8：原始返回队列，参数化并测量占用（D15）
-        int unsigned f0_slots;            // 待定：F0 每拍最多处理的槽位数（第 10 节）
+        int unsigned f0_slots;            // D35：F0 每拍最多输出的指令条数
         int unsigned f1_width;            // 待定：F1 每拍写入指令 buffer 的最大条数（第 10 节）
         int unsigned ibuf_depth;          // 待定：指令 buffer 深度（第 10 节、第 13 节第 6 条）
         // 现状沿用的旧串行 IFU 节流阈值；目标路径由返回队列预留控制取指，
@@ -287,7 +287,7 @@ package o3_cfg_pkg;
                 region_bytes:            16,
                 deliver_width:           4,
                 return_queue_depth:      8,
-                f0_slots:                8,
+                f0_slots:                4,
                 f1_width:                4,
                 ibuf_depth:              16,
                 ibuf_req_free_threshold: 8

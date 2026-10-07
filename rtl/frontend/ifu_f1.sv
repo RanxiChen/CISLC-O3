@@ -1,33 +1,10 @@
-/**
- * IFU F1 —— 预解码、直接目标核对、预测修正
- *
- * 作用：
- * - 对 F0 输出的指令预解码控制流类型，计算 branch/JAL 的直接目标，与 FTQ 最终预测
- *   （选中 CFI 槽位、类型、目标、RAS 动作）核对。
- * - 发现预测错误（类型错误、目标错误、预测了不存在的分支、漏掉 JAL 等）时发出
- *   D24 预解码修正请求，并截断本块中被修正出口之后的指令。
- * - 生成 fetch_entry_t（含 ftq_id、slot、pred_taken、predicted_next_pc）写入指令 buffer。
- *
- * 目标机制：
- * - 已定：BTB 中的类型信息是预测信息，最终需要预解码验证（第 3.2 节）。
- * - 已定：后续预解码可计算 branch/JAL 的直接目标并修正（第 4.3 节）；普通 JALR
- *   无可用目标时等待执行得出真实目标。
- * - 已定：同位置优先级执行 > 预解码 > 慢预测（D24）。
- * - 已定：有效目标必须属于当前选中 CFI；一个 BTB target 不能冒充其他槽位（第 14 节）。
- * - 修正请求的历史动作遵守 D09：只有修正后为 taken 条件分支才 hist_inject。
- *
- * 当前实现状态：闭环简化（L7a，RTL 已实现，新增行为未验证）。
- * - 按冻结 spec 4.2 的 a～f 扫描真实 32 位指令；第一处修正或异常截断交付。
- * - RAS 使用本区域入口 checkpoint，普通 JALR 目标与 BR 方向仍由执行级确定。
- * - 预解码请求仅在交付握手沿锁存，下一拍送仲裁器；赢家事件由仲裁器计数。
- * - RVC、跨块拼接和变长指令属于 L7b。
- * - 测试：sim/cocotb/ifu_f1/ 仍为旧合同，扩展与运行由后续测试阶段完成。
- *
- * 目标周期行为：
- * - 周期 N 组合：生成截断后的交付项与 pd_req；回压时不修改状态。
- * - 周期 N 上升沿：交付握手成功时锁存 pd_req_q，修正项保留且 kill_self=0。
- * - 周期 N+1：predecode_o=pd_req_q，不组合依赖 kill；仲裁后沿上无条件清请求。
- *
+/** L7b F1: predecode expanded instructions with actual lengths and edge position.
+ * The first a-f correction or exception truncates delivery. c-prime also works
+ * on an empty beat. trunc_o clears F0's unsent state on the handshake edge;
+ * the correction request is registered and never combinationally gated by kill.
+ * RAS corrections use the region-entry checkpoint. Winner events belong to
+ * redirect_arbiter; this module's performance increments remain zero.
+ * Tests: sim/cocotb/ifu_f1 and sim/cocotb/l7_recovery.
  */
 module ifu_f1
     import o3_types_pkg::*;
@@ -38,6 +15,7 @@ module ifu_f1
     input  logic            rst_i,
 
     input  logic [F0_SLOTS-1:0] in_valid_i,
+    input  logic in_beat_valid_i, in_last_i, in_edge_pend_i,
     output logic            in_ready_o,
     input  f0_inst_t        in_i [F0_SLOTS],
     input  ftq_pred_brief_t in_brief_i,
@@ -47,6 +25,8 @@ module ifu_f1
     input  logic            out_ready_i,
 
     output redirect_req_t   predecode_o,
+    output logic trunc_o,
+    output fetch_slot_t trunc_slot_o,
 
     input  fe_kill_t        kill_i,
 
@@ -101,11 +81,14 @@ module ifu_f1
     // Do not gate this registered request with kill_i: it is an arbiter input,
     // and that arbiter produces kill_i combinationally (spec 2.5).
     assign predecode_o = pd_req_q;
+    assign trunc_o = in_ready_o && in_beat_valid_i && pd_req.valid;
+    assign trunc_slot_o = pd_req.slot;
     // PE_PREDECODE_REDIRECT belongs to the arbiter's accept edge (U13).
     assign perf_o = '0;
 
     always_comb begin
         int unsigned count;
+        int start_pos, end_pos, exit_pos;
         logic stop_scan;
         decoded_cfi_t decoded;
         logic is_exit, covers_exit, earlier, return_target_valid;
@@ -114,6 +97,8 @@ module ifu_f1
         ras_action_e fix_ras;
 
         count = 0;
+        start_pos=0;end_pos=0;
+        exit_pos=in_brief_i.pred.is_edge ? -1:int'(in_brief_i.pred.cfi_slot);
         stop_scan = 1'b0;
         pd_req = '0;
         decoded = '0;
@@ -130,18 +115,15 @@ module ifu_f1
         fix_ras = RAS_NONE;
         out_valid_o = '0;
         for (int lane = 0; lane < F1_W; lane++) out_o[lane] = '0;
-        if (!rst_i && !kill_i.valid) begin
+        if (!rst_i && !kill_i.valid && in_beat_valid_i) begin
             for (int slot = 0; slot < F0_SLOTS; slot++) begin
-                if (in_valid_i[slot] && count < F1_W && !stop_scan
-                    && (!in_brief_i.pred.cfi_valid
-                        || in_i[slot].slot <= in_brief_i.pred.cfi_slot)) begin
+                if (in_valid_i[slot] && count < F1_W && !stop_scan) begin
                     decoded = decode_cfi(in_i[slot]);
-                    is_exit = in_brief_i.pred.cfi_valid
-                              && in_i[slot].slot == in_brief_i.pred.cfi_slot;
-                    covers_exit = is_exit || (in_brief_i.pred.cfi_valid
-                        && int'(in_i[slot].slot) + 1 == int'(in_brief_i.pred.cfi_slot));
-                    earlier = !in_brief_i.pred.cfi_valid
-                              || in_i[slot].slot < in_brief_i.pred.cfi_slot;
+                    start_pos=in_i[slot].is_edge ? -1:int'(in_i[slot].slot);
+                    end_pos=start_pos+(in_i[slot].inst_len==4 ? 1:0);
+                    is_exit = in_brief_i.pred.cfi_valid && start_pos==exit_pos;
+                    covers_exit = in_brief_i.pred.cfi_valid && end_pos>=exit_pos;
+                    earlier = !in_brief_i.pred.cfi_valid || start_pos<exit_pos;
                     return_target_valid = decoded.type_id == CFI_JALR
                         && decoded.ras_action inside {RAS_POP, RAS_POP_PUSH}
                         && in_brief_i.ras_ckpt.count != '0;
@@ -151,7 +133,7 @@ module ifu_f1
                     fix_valid = 1'b0;
                     fix_taken = 1'b0;
                     fix_hist = 1'b0;
-                    fix_target = in_i[slot].pc + vaddr_t'(4);
+                    fix_target = in_i[slot].pc + vaddr_t'(in_i[slot].inst_len);
                     fix_ras = RAS_NONE;
 
                     // Ordered a/b > c > d > e > f (U19). No rule examines an
@@ -175,14 +157,18 @@ module ifu_f1
                         end else if (is_exit && decoded.type_id inside {CFI_BR, CFI_JAL}
                             && (in_brief_i.pred.cfi_target != decoded.direct_target
                                 || (decoded.type_id == CFI_JAL
-                                    && in_brief_i.pred.ras_action != decoded.ras_action))) begin // e
+                                    && (in_brief_i.pred.ras_action != decoded.ras_action
+                                        || (decoded.ras_action inside {RAS_PUSH,RAS_POP_PUSH}
+                                            && in_brief_i.pred.cfi_is_rvc != in_i[slot].is_rvc))))) begin // e
                             fix_valid = 1'b1;
                             fix_taken = 1'b1;
                             fix_target = decoded.direct_target;
                             fix_ras = decoded.ras_action;
                             fix_hist = decoded.type_id == CFI_BR;
                         end else if (is_exit && decoded.type_id == CFI_JALR
-                            && in_brief_i.pred.ras_action != decoded.ras_action) begin // f
+                            && (in_brief_i.pred.ras_action != decoded.ras_action
+                                || (decoded.ras_action inside {RAS_PUSH,RAS_POP_PUSH}
+                                    && in_brief_i.pred.cfi_is_rvc != in_i[slot].is_rvc))) begin // f
                             fix_valid = 1'b1;
                             fix_taken = 1'b1;
                             fix_target = return_target_valid ? actual_target : in_brief_i.pred.next_pc;
@@ -196,6 +182,7 @@ module ifu_f1
                     out_o[count].instruction = in_i[slot].instruction;
                     out_o[count].inst_len = in_i[slot].inst_len;
                     out_o[count].is_rvc = in_i[slot].is_rvc;
+                    out_o[count].is_edge = in_i[slot].is_edge;
                     out_o[count].exception_valid = in_i[slot].exc_valid;
                     out_o[count].exception_cause = in_i[slot].exc_cause;
                     out_o[count].exception_tval = in_i[slot].exc_tval;
@@ -203,7 +190,7 @@ module ifu_f1
                     out_o[count].slot = in_i[slot].slot;
                     out_o[count].pred_taken = fix_valid ? fix_taken : is_exit;
                     out_o[count].predicted_next_pc = fix_valid ? fix_target
-                        : (is_exit ? in_brief_i.pred.next_pc : in_i[slot].pc + vaddr_t'(4));
+                        : (is_exit ? in_brief_i.pred.next_pc : in_i[slot].pc + vaddr_t'(in_i[slot].inst_len));
                     if (fix_valid) begin
                         pd_req.valid = 1'b1;
                         pd_req.src = REDIR_PREDECODE;
@@ -215,14 +202,23 @@ module ifu_f1
                         pd_req.hist_branch_pc = in_i[slot].pc;
                         pd_req.hist_target_pc = fix_target;
                         pd_req.ras_fix = fix_ras;
-                        pd_req.ras_push_addr = in_i[slot].pc + vaddr_t'(4);
+                        pd_req.ras_push_addr = in_i[slot].pc + vaddr_t'(in_i[slot].inst_len);
                     end
                     out_valid_o[count] = 1'b1;
                     count++;
                     stop_scan = fix_valid || in_i[slot].exc_valid || covers_exit;
                 end
             end
-            if (count != 0) out_o[count-1].ftq_last = 1'b1;
+            // c-prime can apply to an empty beat; no output instruction is required.
+            if (!pd_req.valid && in_last_i && in_edge_pend_i
+                && in_brief_i.pred.cfi_valid && !in_brief_i.pred.is_edge
+                && in_brief_i.pred.cfi_slot==fetch_slot_t'(REGION_SLOTS-1)
+                && !(count!=0 && out_o[count-1].exception_valid)) begin
+                pd_req.valid=1;pd_req.src=REDIR_PREDECODE;
+                pd_req.ftq_id=in_brief_i.ftq_id;pd_req.slot=fetch_slot_t'(REGION_SLOTS-1);
+                pd_req.target_pc=in_brief_i.pred.region_base+vaddr_t'(REGION_BYTES);
+            end
+            if (count != 0 && (in_last_i || pd_req.valid)) out_o[count-1].ftq_last = 1'b1;
         end
     end
 
@@ -232,7 +228,7 @@ module ifu_f1
         if (rst_i) pd_req_q <= '0;
         else begin
             pd_req_q <= '0;
-            if (in_ready_o && (|out_valid_o) && pd_req.valid) pd_req_q <= pd_req;
+            if (in_ready_o && in_beat_valid_i && pd_req.valid) pd_req_q <= pd_req;
         end
     end
 endmodule

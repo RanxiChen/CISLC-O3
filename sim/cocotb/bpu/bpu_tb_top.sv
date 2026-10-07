@@ -93,7 +93,7 @@ module ftq_training_tb_top
     input logic [SLOT_W-1:0] kill_slot_i,
     input logic [$bits(redirect_req_t)-1:0] winner_bits_i,
     input logic [$bits(bru_resolve_t)-1:0] resolve_bits_i,
-    input logic commit_valid_i,
+    input logic commit_valid_i, commit_last_i,
     input logic [$bits(ftq_id_t)-1:0] commit_id_i,
     input logic [SLOT_W-1:0] commit_slot_i,
     input logic train_ready_i,
@@ -112,7 +112,7 @@ module ftq_training_tb_top
     always_comb begin
         for (int i=0; i<COMMIT_W; i++) commits[i] = '0;
         commits[0] = '{valid:commit_valid_i, ftq_id:ftq_id_t'(commit_id_i),
-                       slot:commit_slot_i, region_last:1'b1};
+                       slot:commit_slot_i, region_last:commit_last_i};
         slow = '0;
         slow.valid = slow_valid_i;
         slow.ftq_id = ftq_id_t'(slow_id_i);

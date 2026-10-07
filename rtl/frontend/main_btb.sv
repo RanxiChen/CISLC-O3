@@ -79,8 +79,8 @@ module main_btb
         cfi_type_e   cfi_type;
         ras_action_e ras_action;
         vaddr_t      target;
-        logic        cfi_is_rvc; // L7b reserved
-        logic        is_edge;       // L7b reserved
+        logic        cfi_is_rvc; // L7b actual instruction length/edge
+        logic        is_edge;       // L7b actual instruction length/edge
     } btb_entry_t;
 
     btb_entry_t entry_q [SETS][WAYS];
@@ -189,8 +189,8 @@ module main_btb
 
                 updated = '0;
                 if (matched) updated = entry_q[train_set][selected_way];
-                updated.cfi_is_rvc = 1'b0;
-                updated.is_edge = 1'b0;
+                updated.cfi_is_rvc = train_i.cfi_is_rvc;
+                updated.is_edge = train_i.is_edge;
                 updated.tag = train_tag;
                 updated.br_mask |= train_i.br_commit_mask;
                 if (train_i.cfi_valid && (train_i.cfi_type != CFI_NONE)) begin

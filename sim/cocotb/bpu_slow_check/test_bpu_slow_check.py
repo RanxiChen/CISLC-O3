@@ -37,9 +37,13 @@ async def candidates_targets_and_overrides(d):
     p, _ = slow_prediction(fast0, owner, {'taken_mask':4}, {'count':0})
     cases.append(('exact match', p, owner, {'taken_mask':4}, {}))
     for field, value in [('cfi_valid',0), ('cfi_slot',4), ('cfi_type',2),
-                         ('ras_action',1), ('next_pc',0x9000)]:
+                         ('ras_action',1), ('next_pc',0x9000), ('cfi_is_rvc',1), ('is_edge',1)]:
         cases.append((f'compare {field}', dict(p, **{field:value}), owner, {'taken_mask':4}, {}))
     cases.append(('sequential next differs', {'next_pc':0x9010}, {}, {}, {}))
+    for rvc,edge in ((1,0),(0,1)):
+        cases.append(('L7b length/edge owner',{},
+            {'hit':1,'jal_mask':1,'cfi_slot':0,'cfi_type':2,'ras_action':1,
+             'target':0x3000,'cfi_is_rvc':rvc,'is_edge':edge},{},{}))
     rng = random.Random(517)
     for _ in range(100):
         cases.append(('entry/candidate enumeration', {'entry_slot':rng.randrange(8)},
@@ -78,8 +82,8 @@ async def candidates_targets_and_overrides(d):
                         slot=expected['cfi_slot'] if expected['cfi_valid'] else 7,
                         target_pc=expected['next_pc'],
                         hist_inject=int(bool(expected['cfi_valid'] and expected['cfi_type']==1)),
-                        hist_branch_pc=0x1000+2*expected['cfi_slot'],
+                        hist_branch_pc=0x1000-2 if expected['is_edge'] else 0x1000+2*expected['cfi_slot'],
                         hist_target_pc=expected['cfi_target'],
                         ras_fix=expected['ras_action'] if expected['cfi_valid'] else 0,
-                        ras_push_addr=0x1000+2*expected['cfi_slot']+4)
+                        ras_push_addr=(0x1000-2 if expected['is_edge'] else 0x1000+2*expected['cfi_slot'])+(2 if expected['cfi_is_rvc'] else 4))
                     assert req == decode(r.req, encode(r.req, wanted)), name
