@@ -1,6 +1,6 @@
 # O3-T09：L8a 实施与分层验证记录
 
-日期：2026-10-07。第 1 步 RTL 静态门禁已完成；本轮续作 M1 通过，M2 因冻结等待契约冲突停止。前半部分保留第 1 步历史记录，第 2 步结果见文末；本文不是 L8a 总验收声明。
+日期：2026-10-07。第 1 步 RTL 静态门禁已完成；M1 已通过；M2 的冻结等待契约冲突已由用户批准 X11（eb1432c）解决，继续分层验证。前半部分保留第 1 步历史记录，第 2 步结果见文末；本文不是 L8a 总验收声明。
 
 ## 基线与源码
 
@@ -163,14 +163,14 @@ M1 开发失败/处理：首次 Makefile 缺少 ISA 包（候选 `7e8b77e8`，ex
 该候选没有接受到本地分支，清理候选范围后在 `9457476b` 完整重跑上述三项。
 环境自动审批拒绝 `rm -rf` 残留产物（要求更安全方式），使用移动保留产物完成移除。
 
-### M2：停止，无通过提交
+### M2：X11 批准后继续
 
 失败用例快照提交 `e4b4882746c9ab257571288bc2f31e0fe54800a9`，
 `test(dcache): record blocked L8a M2 writeback capacity regression`。
 该提交保留测试与复现，不声明 M2 通过；没有保留生产 RTL 改动。
 现有 DCache 的三个用例全部迁移到新接口并保留；新增 23 项 L8a 用例。
 先以 1 MSHR 开发基础覆盖，再以 4 MSHR 增加并发、资源与 RFO 覆盖。
-遇到下面的冻结行为冲突后停止，尚未满足 spec 12.2～12.7 中 M2 的整层通过要求，不能以部分通过代替本层门禁。
+此前遇到下面的冻结行为冲突而停止。用户随后批准 X11（eb1432c）：WB 满判 WB_LINE、等 wb_free；MSHR_FULL 仍只等待 mshr_free。以下失败表与诊断记录按历史原样保留。
 
 所有运行仍在 `cloud_chen@47.111.104.2:22`，hostname、工具版本同 M1；
 每次重新读取主机配置并预检成功，available 磁盘 116～120 GiB、内存 23～27 GiB。
@@ -188,7 +188,7 @@ M1 开发失败/处理：首次 Makefile 缺少 ISA 包（候选 `7e8b77e8`，ex
 | `a3ee7fd789856f170549029e95ea3c87e104348e` | 同上，诊断性原因修正 | 2 | 0/1 | `m2-wb-capacity-reason-fix` |
 | `e4b4882746c9ab257571288bc2f31e0fe54800a9` | `make -C sim/cocotb/dcache MSHRS=4` | 2 | 25/26，0 skip | `m2-stop-snapshot-full` |
 
-#### 首个失败点、修复尝试与当前判断
+#### X11 批准前的首个失败点与诊断（历史证据）
 
 用例 `wb_capacity_full_wait_contract`：填满 8 路同组行；延迟两个 victim Put 的
 PutAck，再依次完成两次替换 miss。INSTALL 后 MSHR 已全部释放，两个 WB 仍有效。
@@ -254,7 +254,7 @@ M2 自行决定：
   涉及 `test_dcache.py`、`test_l8a_dcache.py`。没有删除其他已有 cocotb 套件。
 - 在停止条件下将失败回归单独提交以便审核，提交标题明确 blocked，未提交 M2 pass。
 
-### 当前停止点、未执行项与证据边界
+### X11 批准前的停止点与证据边界（历史）
 
 停在 M2，触发任务书/用户规定的“需要改变冻结 spec 行为则停止”条件。
 M1 通过；M2 未完成，M3～M6 未开始，无上层提交。没有 M5→M6 周期/退休对比、
@@ -267,3 +267,83 @@ LOOP 的 L8/模块验收行未更新。DMA/AMO/MMIO、Spike/ACT4/litmus、formal
 PPA、FPGA/运行时仍没有本次验证证据；没有运行被排除的目标。
 全部接受提交只留本地，没有推送 origin，没有开始 L8b。
 原有未跟踪 AGENTS.md、BPU XML、sim/o3/__pycache__ 保留并排除在提交外。
+
+
+## X11 批准后的续作
+
+用户批准的 X11 位于 `doc/spec/l8a-nonblocking-mem-spec.md` 第 5.4、6.1、14 节，
+提交 `eb1432c07ff1dc0adcea21ea21779db6eb65a414`。指定
+`wb_capacity_full_wait_contract` 改为断言 `WB_LINE`，放行 PutAck 后断言
+`wb_free` 到达、没有伪造 `mshr_free`，随后重发并逐值比较完成替换。
+这是跟随修订后的 spec 改期望，原失败/诊断证据未删除。其余已有用例与断言未改，
+生产 RTL 未改。新增单 MSHR 真满/释放与 probe 等待 PS 写完用例补齐覆盖。
+
+### M2 与 spec 第 12 节逐项核对
+
+下表引用 `sim/cocotb/dcache/` 的用例函数；1/4 表示两种配置均执行，4 表示
+用例前置条件明确要求四 MSHR，只在四项配置执行且没有修改其断言。
+MSHR=1 的 reserve 按 spec 2/5.5 视为 0，单项补例检查普通 load 可分配唯一项。
+
+| spec M2 行要求 | 定向用例 | MSHRS |
+| --- | --- | --- |
+| 两管道不同 bank 同拍命中 | dual_different_bank_hit | 1/4 |
+| 同 bank 不同组 BANK | same_bank_different_set_replay | 1/4 |
+| Miss(k) → install{k} | miss_install_and_replay | 1/4 |
+| 同行合并、一笔 GetS | same_line_merge_one_get | 1/4 |
+| 四条不同行在途 | four_lines_in_flight_and_full_wakeup | 4 |
+| 真满 MSHR_FULL → mshr_free | four_lines_in_flight_and_full_wakeup / single_mshr_full_waits_on_mshr_free | 4 / 1 |
+| 普通不能用预留末项、队头可以 | reserved_last_mshr_head_only | 4 |
+| drain E → PS → M | drain_hit_e_ps_to_m | 1/4 |
+| drain S → GetM → AckE | drain_shared_upgrade_acke | 1/4 |
+| drain 未命中 GetM | drain_miss_getm | 1/4 |
+| 脏 victim 带数据 Put | dirty_capacity_victim_is_written_back_before_refill（原用例） | 1/4 |
+| 干净 victim 不带数据 Put | clean_victim_put_without_data | 1/4 |
+| WB 同行重放、wb_free | wb_line_replay_until_ack | 1/4 |
+| X11 WB 容量满重放、PutAck 唤醒后替换 | wb_capacity_full_wait_contract | 1/4 |
+| Inv / Down 打在 M 行 | inv_m_dirty_response / down_m_dirty_response | 1/4 |
+| probe 压住 WAIT/INSTALL、PS | probe_waits_for_grant_install / probe_waits_for_ps_write | 1/4 |
+| SNAP | refill_snapshot_replay | 1/4 |
+| S0 store 冲突 | s0_store_word_conflict | 1/4 |
+| PTW 读命中/未命中 | ptw_read_miss_and_hit | 1/4 |
+| PTE A/D 成功/mismatch | pte_ad_compare_success_and_mismatch | 1/4 |
+| RFO 发出/预留拦截/同行放弃 | rfo_issue_reserve_drop_and_same_line_drop | 4 |
+| refill err、行保持 I | refill_error_install_err_keeps_i | 1/4 |
+| PA 高位异常、原 VA | pa_high_bits_access_fault | 1/4 |
+| 取消不改 PLRU/MSHR | cancellation_keeps_plru_and_mshr | 1/4 |
+
+另保留 empty_line_recall_pipeline 的 24 次规模与
+word_banks_refill_store_probe_and_hit_under_miss 的原 byte golden、非对齐 store 值。
+新增 wrapper 观察点只读，不驱动 DUT 状态；Makefile 仅按配置选择适用用例。
+
+
+### M2 完整通过与提交
+
+M2 提交 `7feffd313f6de5cf98744836b3f047252698ada7`，
+`test(memsys): L8a test layer M2 pass`，生产 RTL 未改。
+该准确 SHA 完整执行 M2 后重跑全部 M1；模块退休数 N/A。
+
+本轮每项执行前重新读取共享主机配置。首选 cloud_chen SSH 在 8 秒连接超时后
+返回 255（`connect to host 47.111.104.2 port 22: Connection timed out`），
+退回 Alan，hostname `chen-System-Product-Name`；Verilator 5.050（conda-forge）、
+cocotb 2.1.0；免密 SSH、`cislc-o3` 环境成功；可用磁盘 14～15 GiB、available
+内存约 55 GiB。实际 host `chen@localhost:2286 via clawbot`。
+SHA cwd `/home/chen/FUN/20261007-t09-7feffd31`，证据根
+`/home/chen/FUN/cislc-o3-t09-evidence/t09/7feffd31/`，各 item 包含
+manifest（主机/SSH 失败和成功预检/版本/SHA/cwd/完整命令）、exit、run.log、results.xml。
+没有外网下载；Git 对象仅通过独立临时 transfer bare repo 传给执行主机，未推 origin。
+
+| item | make 命令（另加该 item 的 SIM_BUILD / COCOTB_RESULTS_FILE） | exit | 通过/总数 |
+| --- | --- | --- | --- |
+| m2-x11-final-one | `make -C sim/cocotb/dcache MSHRS=1` | 0 | 25/25，0 skip |
+| m2-x11-final-four | `make -C sim/cocotb/dcache MSHRS=4` | 0 | 27/27，0 skip |
+| m1-x11-pressure | `make -C sim/cocotb/l2_home` | 0 | 12/12 |
+| m1-x11-slot-full | `make -C sim/cocotb/l2_home SETS=4 WAYS=2 SLOTS=2 COCOTB_TESTCASE=slot_full_backpressure_and_resume` | 0 | 1/1 |
+| m1-x11-default | `make -C sim/cocotb/l2_home SETS=512 WAYS=8 SLOTS=8` | 0 | 10/10 |
+
+X11 两种配置 witness 均为 cycle 289、`status=REPLAY reason=WB_LINE MSHR_busy=0 WB_busy=3`；
+PutAck 在 289/290 各产生 `wb_free=1,mshr_free=0`，重发完成并匹配 golden。
+M1 压力随机保留种子 51/52，每种子 2000 已握手 D Get/Put + 500 I Read。
+
+基础设施记录：第一次 cloud 超时后旧传输 helper 遗漏 Alan 的 `-J clawbot`，
+Git 连接 localhost:2286 refused；发生于仿真前。补齐跳板并初始化独立 bare repo 后恢复。
+开发候选 `a8d2c218` 的单 MSHR 24/24 通过；随后补齐 PS hold 覆盖并在接受 SHA 重跑。
