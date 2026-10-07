@@ -1,53 +1,39 @@
-/**
- *
- * 【2026-10-02 位置】已移到 rtl/common/：前端 ICache 与数据侧 LSU/PTW 各自实例化（参数 CFG 仍取前端配置中的
- * PMP 项数来源 core.pmp_entries）。数据侧需要读/写/执行三类权限与 PTW 页表访问检查（B06）；
- * 当前端口只按取指执行权限描述，数据侧权限输入待补。
- * PMP 检查 —— S2 范围匹配，S3 优先级与权限汇总
- *
- * 作用：
- * - 对取指物理地址检查 PMP 执行权限（第 8 节）。
- * - 将范围计算与优先级/权限汇总分开两级，避免串在一级（第 8 节时序分工目标）。
- * - PMP 有效修改时更新范围预解码派生状态（D28）。
- *
- * 目标机制：
- * - 已定：S2 PMP 范围匹配候选；S3 优先级与权限汇总（第 8 节）。
- * - 已定：预解码/配置派生状态可在 CSR 修改时更新（cfg_i.update）。
- * - 已定（D28）：ICache 数据保留，命中仍必须通过当前 PMP 权限检查；旧请求迟到返回
- *   按取消标记隔离。
- * - 已定（B06）：PMP 成功不能替代页表权限检查。
- *
- * 细节待定：
- * - PMP 项数（core.pmp_entries）；派生状态更新需要几拍以及期间的取指阻塞方式。
- * - 访问跨 PMP 区域边界（16B 请求）的判定方式。
- *
- * 当前实现状态：空壳。只有端口与注释，没有任何逻辑，输出未驱动。
- *
- * 目标周期行为：
- * - 周期 N（S2）：s2_valid_i 时对各项计算匹配候选，寄存。
- * - 周期 N+1（S3）：按优先级与特权级汇总，s3_allow_o / s3_fault_o 有效。
- *
- * 本阶段不写测试代码和仿真代码。
+/** L10 X11: S2 samples range candidates; S3 picks the lowest matching entry.
+ * N: match every byte against frozen CSR state. Edge N: register candidates
+ * and permissions. N+1: priority/permission result; stall preserves that item.
+ * Current implementation: target implementation. Tests: sim/cocotb/pmp_checker/.
  */
-module pmp_checker
-    import o3_types_pkg::*;
-#(
+module pmp_checker import o3_types_pkg::*; #(
     parameter o3_cfg_pkg::frontend_cfg_t CFG
-) (
-    input  logic       clk_i,
-    input  logic       rst_i,
-
-    input  logic       s2_valid_i,
-    input  paddr_t     s2_paddr_i,
-    input  logic       stall_i,
-
-    output logic       s3_valid_o,
-    output logic       s3_allow_o,
-    output logic       s3_fault_o,       // 映射为 instruction access fault
-
-    input  pmp_state_t cfg_i,
-    input  logic [1:0] priv_i,
-    output logic       cfg_update_done_o
-);
-    // 未实现：范围预解码、匹配、优先级与权限汇总。
+)(input logic clk_i,rst_i,s2_valid_i, input paddr_t s2_paddr_i,
+  input logic stall_i, input logic [6:0] bytes_i,
+  input logic read_i,write_i,exec_i,
+  output logic s3_valid_o,s3_allow_o,s3_fault_o,
+  input pmp_state_t cfg_i, input logic [1:0] priv_i,
+  output logic cfg_update_done_o);
+    logic [PMP_N-1:0] match_q,allow_q;
+    logic default_q;
+    assign cfg_update_done_o=cfg_i.update;
+    always_comb begin
+        s3_allow_o=default_q;
+        for (int n=PMP_N-1;n>=0;n--) if(match_q[n]) s3_allow_o=allow_q[n];
+        s3_fault_o=s3_valid_o && !s3_allow_o;
+    end
+    always_ff @(posedge clk_i) begin
+        if(rst_i) begin s3_valid_o<=0; match_q<=0; allow_q<=0; default_q<=0; end
+        else if(!stall_i) begin
+            s3_valid_o<=s2_valid_i; default_q<=priv_i==PRIV_M;
+            for(int n=0;n<PMP_N;n++) begin
+                match_q[n]<=cfg_i.entries[n].cfg[4:3]!=0 &&
+                    {1'b0,s2_paddr_i}<pmp_upper(cfg_i,n) &&
+                    ({1'b0,s2_paddr_i}+57'(bytes_i))>pmp_lower(cfg_i,n);
+                allow_q[n]<={1'b0,s2_paddr_i}>=pmp_lower(cfg_i,n) &&
+                    ({1'b0,s2_paddr_i}+57'(bytes_i))<=pmp_upper(cfg_i,n) &&
+                    ((priv_i==PRIV_M && !cfg_i.entries[n].cfg[7]) ||
+                     ((!read_i || cfg_i.entries[n].cfg[0]) &&
+                      (!write_i || cfg_i.entries[n].cfg[1]) &&
+                      (!exec_i || cfg_i.entries[n].cfg[2])));
+            end
+        end
+    end
 endmodule

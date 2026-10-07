@@ -30,6 +30,7 @@ class Tb:
         for n in ["clk", "req_valid_i", "write_i", "op_i", "addr_i", "data_i",
                   "retired_i", "fe_perf_i", "be_perf_i"]:
             getattr(d, n).value = 0
+        d.priv_i.value = 3
         d.rst.value = 1
         await self.edge()
         d.rst.value = 0
@@ -299,13 +300,13 @@ async def read_returns_old_value_and_rmw(d):
 
 
 @cocotb.test()
-async def mhpmevent_warl_low16_only(d):
+async def mhpmevent_warl_selector_and_sscofpmf(d):
     tb = await setup(d)
     for n in range(3, 11):
         _, ill, _ = await tb.access(hpme(n), RW, MASK64)
         assert ill == 0
         v = (await tb.peek(hpme(n)))[0]
-        assert v == 0xFFFF, (n, hex(v))
+        assert v == 0xF00000000000FFFF, (n, hex(v))
 
 
 @cocotb.test()
@@ -425,3 +426,54 @@ async def inhibit_every_hpm_and_reset_live_state(d):
         assert (await tb.peek(hpmc(n)))[0] == 0
         assert (await tb.peek(hpme(n)))[0] == 0
     assert (await tb.peek(MINHIBIT))[0] == 0
+
+@cocotb.test()
+async def sscofpmf_privilege_filter_and_overflow(d):
+    tb=await setup(d)
+    for priv,bit in ((3,62),(1,61),(0,60)):
+        d.priv_i.value=priv
+        await tb.access(hpme(3),RW,(1<<bit)|0x0101)
+        await tb.access(hpmc(3),RW,100)
+        tb.drive_perf({1:1});await tb.cycles(3)
+        assert (await tb.peek(hpmc(3)))[0]==100
+        tb.drive_perf();await tb.access(hpme(3),RW,0x0101)
+        tb.drive_perf({1:1});await tb.cycles(2);tb.drive_perf()
+        assert (await tb.peek(hpmc(3)))[0]==102
+    await tb.access(hpmc(3),RW,MASK64)
+    tb.drive_perf({1:1});await settle();assert int(d.overflow_o.value)==1
+    await tb.edge();tb.drive_perf()
+    assert (await tb.peek(hpmc(3)))[0]==0
+    assert (await tb.peek(hpme(3)))[0]==(1<<63)|0x0101
+    assert int(d.ovf_o.value)==8
+    await tb.access(hpmc(3),RW,MASK64);tb.drive_perf({1:1})
+    await settle();assert int(d.overflow_o.value)==0 # OF suppresses repeated LCOFIP requests
+    await tb.edge();tb.drive_perf()
+
+
+@cocotb.test()
+async def overflow_uses_software_of_and_old_configuration(d):
+    tb=await setup(d)
+    # Old OF / software OF cover clear-on-wrap, suppress-on-write and sticky OF.
+    for old_of,software_of in ((0,0),(1,0),(0,1),(1,1)):
+        tb.drive_perf()
+        await tb.access(hpme(3),RW,(old_of<<63)|0x0101)
+        await tb.access(hpmc(3),RW,MASK64)
+        tb.drive_perf({1:1})
+        d.req_valid_i.value=1;d.write_i.value=1;d.addr_i.value=hpme(3)
+        d.op_i.value=RW;d.data_i.value=(software_of<<63)|(1<<62)|0x0202
+        await settle()
+        assert int(d.overflow_o.value)==(not software_of),(old_of,software_of)
+        await tb.edge();tb.drive_perf();d.req_valid_i.value=0;d.write_i.value=0
+        assert (await tb.peek(hpmc(3)))[0]==0  # old FE event counts despite new MINH
+        assert (await tb.peek(hpme(3)))[0]==(1<<63)|(1<<62)|0x0202
+        assert int(d.ovf_o.value)&8
+    tb.drive_perf()
+    await tb.access(hpme(3),RW,0x0101)
+    await tb.access(hpmc(3),RW,MASK64)
+    tb.drive_perf({1:1})
+    d.req_valid_i.value=1;d.write_i.value=1;d.addr_i.value=hpmc(3)
+    d.op_i.value=RW;d.data_i.value=99
+    await settle();assert int(d.overflow_o.value)==0
+    await tb.edge();tb.drive_perf();d.req_valid_i.value=0;d.write_i.value=0
+    assert (await tb.peek(hpmc(3)))[0]==99
+    assert (await tb.peek(hpme(3)))[0]==0x0101

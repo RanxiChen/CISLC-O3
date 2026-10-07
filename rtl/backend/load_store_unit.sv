@@ -1,4 +1,3 @@
-// L9 RTL implemented; lint/functional validation deferred (2026-10-07).
 /**
  * 本次实现（O3-T03）：L5：集成实例以只读 Store probe 确认访问权限；访问错误精确 cause 5/7，flush 隔离迟到返回。
  *
@@ -12,16 +11,16 @@
  * - FLW/FLD 写 FP preg；FSW/FSD 使用 FP 数据源，进入既有 SQ（B15）。
  * - 精确同步异常：page fault、PMP/PMA 拒绝、对齐/边界错误保留原指令身份报告 ROB；故障 VA 与 PA 分开（B06）。
  * - 依赖（B32 已定）：更老 store 地址未知时 load 等依赖解除，不以固定超时越过；首版无推测越过。
- * - 非对齐（B31 已定）：普通可缓存标量访问同 line 内硬件支持，跨 line 报地址非对齐异常（异常身份
- *   带 crossline_misalign 标志到提交端计数）；MMIO 不走拆分；A 扩展自然对齐。
+ * - 非对齐（B49）：同 line 内硬件支持；跨 line/跨页拆分留 L8。
+ *   当前旧跨 line 异常路径仍保留，T08a 不扩展该路径；A 扩展自然对齐。
  * - A/D（B36 已定）：TLB 命中且权限、A/D 满足时走原流水，不新增流水级；store 遇 D=0 标记 needs_D。
  * - 总原则（2026-10-02）：常规 load/store 流水不为一致性/A/D/LR/SC/回收增加流水级或组合检查，
  *   慢路径都在旁侧。
  * 待定：AGU 管线条数与 load/store 组合。
  * O3-T02: ENABLE_RETIRE_INFO adds held load address/size observation only.
- * 当前实现状态：闭环简化（L5）。单发射、单 Load 在途；DTCM 或已接线 DCache，
+ * 当前实现状态：闭环简化（L10 T08a）。单发射、单 Load 在途；DTCM 或已接线 DCache，
  * SQ 查询命中完整覆盖时转发；一个依赖等待 replay 槽让 blocked load 让出执行级，
- * SQ 变化后重查。访问错误交给精确 trap；尚无 DTLB/PMP/PMA、多 load pending、MMIO/AMO。
+ * SQ 变化后重查。访问错误交给精确 trap；Bare 数据范围按有效特权检查 PMP/PMA；DTLB 在 T08b、多 load pending/MMIO/AMO 在后级。
  * 测试：sim/cocotb/load_store_unit/；整核 sim/o3/。
  * Single-issue Load/Store execution unit with DTCM and external memory
  *
@@ -33,7 +32,7 @@
  *
  * 周期N组合阶段完成AGU、依赖判断和memory仲裁；上升沿锁存pending/load result；
  * 周期N+1可看到DTCM响应；外部响应在任意后续周期握手。错误路径pending响应会由
- * LQ generation和branch mask共同丢弃。本阶段没有MSHR/PMA/MMU/精确访问异常。
+ * LQ generation和branch mask共同丢弃。PMP/PMA 失败在发送内存与 SQ 转发前交付原 VA 的精确访问异常。
  */
 module load_store_unit
     import o3_pkg::*;
@@ -176,7 +175,13 @@ module load_store_unit
     logic [63:0] pending_addr_q;
     logic store_probe, store_probe_fire, store_local, bad_address;
     assign store_local=access_in_dtcm(mem_uop_i.base_value+mem_uop_i.imm_value,size_mask(mem_uop_i.mem_size));
-    assign bad_address=USE_DCACHE && (effective_addr >> o3_types_pkg::PADDR_W)!=0;
+    // T08a Bare: effective privilege includes MPRV only in M; protection
+    // checks every byte before either forwarding, SQ address completion or DCache.
+    assign bad_address=USE_DCACHE &&
+        (!(o3_types_pkg::pma_main(effective_addr,1<<int'(work_uop.mem_size)) ||
+           o3_types_pkg::pma_dtcm(effective_addr,1<<int'(work_uop.mem_size))) ||
+         !o3_types_pkg::pmp_allow(t_pmp_i,o3_types_pkg::paddr_t'(effective_addr),
+             1<<int'(work_uop.mem_size),t_csr_i.priv_eff,work_uop.is_load,work_uop.is_store,1'b0));
     assign store_probe=CHECK_STORE_ACCESS && USE_DCACHE && work_uop.valid && work_uop.is_store
                        && !store_local && !pending_valid_q && !killed(work_uop.branch_mask) && !bad_address;
     assign store_probe_fire=store_probe && !sq_drain_valid_i && t_dc_ld_req_ready_i[0];
@@ -301,7 +306,7 @@ module load_store_unit
     assign sq_query_mask_o = access_mask;
 
     assign load_can_forward = lq_execute_valid_o && !pending_valid_q && !sq_query_block_i
-                            && sq_query_forward_valid_i
+                            && sq_query_forward_valid_i && !bad_address
                             && (!load_result_q.valid || load_result_ready_i);
     assign load_can_request = lq_execute_valid_o && !sq_query_block_i
                             && !sq_query_forward_valid_i && !pending_valid_q

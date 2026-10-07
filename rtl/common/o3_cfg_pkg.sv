@@ -40,6 +40,11 @@ package o3_cfg_pkg;
     // ------------------------------------------------------------
     // core 公共宽度
     // ------------------------------------------------------------
+    // L10 X12 physical map; the exclusive ends permit full-range checking.
+    parameter logic [63:0] PMA_MAIN_BASE=64'h80000000;
+    parameter logic [63:0] PMA_MAIN_END=64'h100000000;
+    parameter logic [63:0] PMA_DTCM_BASE=64'h11000000;
+    parameter logic [63:0] PMA_DTCM_END=64'h11040000;
     typedef struct packed {
         // 待定：RV64GC/Linux 下 Sv39 有效虚拟地址为 39 位符号扩展；PC/目标寄存
         // 保存 39、40 还是 64 位，以及非规范地址的异常检查方式未定（B12 第 4 条）。
@@ -54,7 +59,7 @@ package o3_cfg_pkg;
         int unsigned commit_width;
         // 已定 8：M-mode mhpmcounter3～10；特权访问与 Sscofpmf 在 L10（B48）。
         int unsigned hpm_counters;
-        // 待定：PMP 项数（D28 未定数量）。
+        // L10 frozen X11: 16 entries, G=0, OFF/TOR/NA4/NAPOT.
         int unsigned pmp_entries;
     } core_cfg_t;
 

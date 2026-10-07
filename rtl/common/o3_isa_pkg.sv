@@ -19,7 +19,10 @@ package o3_isa_pkg;
     parameter int FRM_W          = 3;
     parameter int CSR_ADDR_W     = 12;
 
+    localparam logic [1:0] PRIV_U=2'b00, PRIV_S=2'b01, PRIV_M=2'b11;
     typedef logic [5:0] exception_cause_t;
+    localparam exception_cause_t IRQ_SSI=1, IRQ_MSI=3, IRQ_STI=5, IRQ_MTI=7,
+        IRQ_SEI=9, IRQ_MEI=11, IRQ_LCOFI=13;
     localparam exception_cause_t EXCEPTION_CAUSE_INST_ADDR_MISALIGNED  = exception_cause_t'(0);
     localparam exception_cause_t EXCEPTION_CAUSE_INST_ACCESS_FAULT     = exception_cause_t'(1);
     localparam exception_cause_t EXCEPTION_CAUSE_ILLEGAL_INSTRUCTION   = exception_cause_t'(2);

@@ -6,7 +6,7 @@
  * INT destinations x0 retain their routing domain with rd_write_en=0, so FP flags
  * still complete through the INT domain. Illegal instructions carry no execution semantics.
  * Dynamic rm and FS checks occur at rename entry after serialized CSR state changes.
- * 当前实现状态：闭环简化（L9）；T07b arithmetic enabled, lint/测试未运行。
+ * 当前实现状态：闭环简化（L10 T08a）；SRET/SFENCE 编码与源身份已接入，合法性在提交端。
  * Pure combinational decode in N; downstream queue captures only on accepted transfer.
  * Existing CSR/system serialization and M-extension decode are retained.
  */
@@ -491,10 +491,18 @@ module decoder
                     case (decode_i.instruction)
                         32'h00000073: begin decode_o.ext.sys_op=o3_types_pkg::SYSOP_ECALL; decode_o.illegal_instruction=0; end
                         32'h00100073: begin decode_o.ext.sys_op=o3_types_pkg::SYSOP_EBREAK; decode_o.illegal_instruction=0; end
+                        32'h10200073: begin decode_o.ext.sys_op=o3_types_pkg::SYSOP_SRET; decode_o.illegal_instruction=0; end
                         32'h30200073: begin decode_o.ext.sys_op=o3_types_pkg::SYSOP_MRET; decode_o.illegal_instruction=0; end
                         32'h10500073: begin decode_o.ext.sys_op=o3_types_pkg::SYSOP_WFI; decode_o.illegal_instruction=0; end
                         default: ;
                     endcase
+                    if (funct7==7'b0001001 && decode_i.instruction[11:7]==0) begin
+                        decode_o.ext.sys_op=o3_types_pkg::SYSOP_SFENCE_VMA;
+                        decode_o.ext.sfence_rs1_x0=decode_i.instruction[19:15]==0;
+                        decode_o.ext.sfence_rs2_x0=decode_i.instruction[24:20]==0;
+                        decode_o.rs1_read_en=1;decode_o.rs2_read_en=1;
+                        decode_o.illegal_instruction=0;
+                    end
                 end
                 if (!decode_o.illegal_instruction) begin
                     decode_o.ext.serialize=1; decode_o.ext.block_younger=1;

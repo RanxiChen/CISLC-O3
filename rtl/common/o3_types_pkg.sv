@@ -37,6 +37,16 @@ package o3_types_pkg;
     import o3_isa_pkg::EXCEPTION_CAUSE_STORE_ACCESS_FAULT;
     import o3_isa_pkg::EXCEPTION_CAUSE_ECALL_U;
     import o3_isa_pkg::EXCEPTION_CAUSE_ECALL_S;
+    import o3_isa_pkg::PRIV_U;
+    import o3_isa_pkg::PRIV_S;
+    import o3_isa_pkg::PRIV_M;
+    import o3_isa_pkg::IRQ_SSI;
+    import o3_isa_pkg::IRQ_MSI;
+    import o3_isa_pkg::IRQ_STI;
+    import o3_isa_pkg::IRQ_MTI;
+    import o3_isa_pkg::IRQ_SEI;
+    import o3_isa_pkg::IRQ_MEI;
+    import o3_isa_pkg::IRQ_LCOFI;
     import o3_isa_pkg::EXCEPTION_CAUSE_ECALL_M;
     import o3_isa_pkg::EXCEPTION_CAUSE_INST_PAGE_FAULT;
     import o3_isa_pkg::EXCEPTION_CAUSE_LOAD_PAGE_FAULT;
@@ -452,7 +462,8 @@ package o3_types_pkg;
     // CSR 派生状态 → 前端
     // ============================================================
     typedef struct packed {
-        logic [1:0]   priv;           // 当前取指特权级；切换流程未设计
+        logic [1:0]   priv;           // architectural privilege, L10
+        logic         adue;
         logic [3:0]   satp_mode;
         asid_t        satp_asid;
         logic [43:0]  satp_ppn;
@@ -468,6 +479,69 @@ package o3_types_pkg;
         logic                    update; // 有效修改脉冲：更新范围预解码派生状态（D28）
         pmp_entry_t [PMP_N-1:0]  entries;
     } pmp_state_t;
+
+    // L10 PMP range arithmetic is shared by the pipelined fetch checker and
+    // the Bare LSU. Exclusive 57-bit bounds represent the entire PA space.
+    // G=2: preserve raw storage, expose mode-dependent architectural bits.
+    function automatic logic [53:0] pmp_addr_read(input pmp_entry_t entry);
+        if (entry.cfg[4:3]==2'b11) return entry.addr | 54'd1;
+        return entry.addr & ~54'd3;
+    endfunction
+    function automatic logic [56:0] pmp_lower(input pmp_state_t cfg, input int idx);
+        logic [53:0] encoded;
+        logic [56:0] addr, mask;
+        int ones;
+        encoded=pmp_addr_read(cfg.entries[idx]);
+        addr={1'b0,encoded,2'b0}; ones=0; mask=0;
+        case (cfg.entries[idx].cfg[4:3])
+            2'b01: return idx==0 ? 57'd0 : {1'b0,(cfg.entries[idx-1].addr & ~54'd3),2'b0};
+            2'b11: begin
+                for (int n=0;n<54;n++) if (n==ones && encoded[n]) ones++;
+                mask=(57'd1 << (ones+3))-1;
+                return addr & ~mask;
+            end
+            default: return addr;
+        endcase
+    endfunction
+    function automatic logic [56:0] pmp_upper(input pmp_state_t cfg, input int idx);
+        logic [53:0] encoded;
+        int ones;
+        encoded=pmp_addr_read(cfg.entries[idx]); ones=0;
+        case (cfg.entries[idx].cfg[4:3])
+            2'b01: return {1'b0,(cfg.entries[idx].addr & ~54'd3),2'b0};
+            2'b11: begin
+                for (int n=0;n<54;n++) if (n==ones && encoded[n]) ones++;
+                // NAPOT can encode ranges larger than the physical address space.
+                if (ones>=53) return 57'd1 << 56;
+                return pmp_lower(cfg,idx)+(57'd1 << (ones+3));
+            end
+            default: return pmp_lower(cfg,idx);
+        endcase
+    endfunction
+    function automatic logic pmp_allow(input pmp_state_t cfg, input paddr_t addr,
+        input int unsigned bytes, input logic [1:0] priv, input logic rd,wr,ex);
+        logic [56:0] lo,hi,start_addr,end_addr;
+        start_addr={1'b0,addr}; end_addr=start_addr+57'(bytes);
+        for (int n=0;n<PMP_N;n++) begin
+            lo=pmp_lower(cfg,n); hi=pmp_upper(cfg,n);
+            if (cfg.entries[n].cfg[4:3]!=0 && start_addr<hi && end_addr>lo)
+                return start_addr>=lo && end_addr<=hi &&
+                    ((priv==PRIV_M && !cfg.entries[n].cfg[7]) ||
+                     ((!rd || cfg.entries[n].cfg[0]) && (!wr || cfg.entries[n].cfg[1]) &&
+                      (!ex || cfg.entries[n].cfg[2])));
+        end
+        return priv==PRIV_M;
+    endfunction
+    function automatic logic pma_main(input logic [63:0] addr, input int unsigned bytes);
+        logic [64:0] last_addr;
+        last_addr={1'b0,addr}+65'(bytes);
+        return addr>=o3_cfg_pkg::PMA_MAIN_BASE && last_addr<=65'(o3_cfg_pkg::PMA_MAIN_END);
+    endfunction
+    function automatic logic pma_dtcm(input logic [63:0] addr, input int unsigned bytes);
+        logic [64:0] last_addr;
+        last_addr={1'b0,addr}+65'(bytes);
+        return addr>=o3_cfg_pkg::PMA_DTCM_BASE && last_addr<=65'(o3_cfg_pkg::PMA_DTCM_END);
+    endfunction
 
     // 前端系统同步请求（D25～D28）。由 commit_ctrl 统一编排（2026-10-02 确认）：
     // 前端 frontend_sync_ctrl 只负责前端部分（停取指/预取、隔离旧请求、ICache/ITLB/PMP 派生
@@ -739,6 +813,8 @@ package o3_types_pkg;
         logic                      csr_use_imm;  // CSRRWI/CSRRSI/CSRRCI
         logic [CSR_ADDR_W-1:0]     csr_addr;
         sys_op_e                   sys_op;
+        logic                      sfence_rs1_x0;
+        logic                      sfence_rs2_x0;
         logic                      serialize;    // 需在 ROB 队头串行执行
         // B22/B23/B24/B38：Decode→Rename 串行阻塞。1 表示本条之后的年轻指令在其退休前不得进入
         // Rename（CSR、FENCE、FENCE.I、SFENCE.VMA、WFI 等）。与 serialize 分开：前者管年轻放行，
@@ -945,6 +1021,10 @@ package o3_types_pkg;
     // 数据侧翻译与权限上下文（CSR 派生）。MPRV/SUM/MXR 等的精确来源随 CSR 设计闭合（未设计）。
     typedef struct packed {
         logic [1:0]   priv_eff;      // 有效访存特权级（考虑 MPRV）
+        logic [1:0]   priv;
+        logic         mprv;
+        logic [1:0]   mpp;
+        logic         adue;
         logic         sum;
         logic         mxr;
         logic [3:0]   satp_mode;
@@ -1081,7 +1161,7 @@ package o3_types_pkg;
     // - 同步异常：epc = 故障指令 PC；故障指令本身不退休，trap 拍无正常退休。
     // - 中断：epc = committed_next_pc（B37），ROB 为空时同样成立；不得用推测取指 PC 代替。
     // - xRET：合法队首 MRET/SRET 由自身正常退休触发，可与退休同拍。
-    // - crossline_misalign：B31 计数用，原因随异常身份由 LSU 带到提交端，只在 trap 接受握手计一次。
+    // - crossline_misalign：既有跨 line 异常计数用（B49 拆分待 L8），原因随异常身份由 LSU 带到提交端，只在 trap 接受握手计一次。
     typedef struct packed {
         logic             valid;
         logic             is_xret;
@@ -1140,7 +1220,7 @@ package o3_types_pkg;
         // B37：本条实际退休后的下一架构 PC。普通指令 = 原始 PC + 真实指令长度；控制流 = 真实后继
         // PC（由 BRU 解析写回 ROB）。同拍多条退休取最后一条实际退休指令的 succ_pc。
         vaddr_t              succ_pc;
-        logic                crossline_misalign; // B31：异常原因为跨 line 非对齐
+        logic                crossline_misalign; // 旧跨 line 异常身份；B49 拆分待 L8
         fuse_role_e          fuse_role;          // B34：融合成员仍各自退休
     } rob_commit_t;
 
@@ -1184,7 +1264,7 @@ package o3_types_pkg;
         // B23：FENCE.I 次数与 L1D 数据维护周期
         BE_FENCEI_RETIRED = 'h22,
         BE_FENCEI_DCACHE_EVICT_CYCLE = 'h23,
-        // B31：跨 line 非对齐正式陷入次数（trap 接受握手计一次）
+        // 旧跨 line 非对齐正式陷入次数（B49 拆分待 L8）（trap 接受握手计一次）
         BE_MISALIGNED_CROSSLINE_TRAP = 'h24,
         // B34：MULH+MUL 融合对数（观测，口径待定）
         BE_MUL_FUSED_PAIR = 'h25,

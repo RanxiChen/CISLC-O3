@@ -53,6 +53,16 @@ module o3_tandem_top
     logic [AXI_DATA_W-1:0] wdata, rdata;
     logic [AXI_DATA_W/8-1:0] wstrb;
 
+    logic [63:0] mtime_q;
+    integer irq_m_soft_at,irq_m_timer_at,irq_m_ext_at,irq_s_ext_at;
+    initial begin
+        irq_m_soft_at=-1;irq_m_timer_at=-1;irq_m_ext_at=-1;irq_s_ext_at=-1;
+        void'($value$plusargs("irq_m_soft_at=%d",irq_m_soft_at));
+        void'($value$plusargs("irq_m_timer_at=%d",irq_m_timer_at));
+        void'($value$plusargs("irq_m_ext_at=%d",irq_m_ext_at));
+        void'($value$plusargs("irq_s_ext_at=%d",irq_s_ext_at));
+    end
+    always_ff @(posedge clk_i) if(rst_i) mtime_q<=0; else mtime_q<=mtime_q+1;
     o3_core u_core (
         .clk_i(clk_i), .rst_i(rst_i), .reset_pc_i(reset_pc_i),
         .m_axi_awvalid(awvalid), .m_axi_awready(awready), .m_axi_awid(awid),
@@ -67,8 +77,11 @@ module o3_tandem_top
         .m_axi_rvalid(rvalid), .m_axi_rready(rready), .m_axi_rid(rid),
         .m_axi_rdata(rdata), .m_axi_rresp(rresp), .m_axi_rlast(rlast),
         .dma_req_valid_i(1'b0), .dma_req_ready_o(), .dma_req_i('0), .dma_resp_o(),
-        .irq_m_ext_i(1'b0), .irq_m_timer_i(1'b0),
-        .irq_m_soft_i(1'b0), .irq_s_ext_i(1'b0),
+        .mtime_i(mtime_q),
+        .irq_m_ext_i(irq_m_ext_at>=0 && mtime_q>=64'(irq_m_ext_at)),
+        .irq_m_timer_i(irq_m_timer_at>=0 && mtime_q>=64'(irq_m_timer_at)),
+        .irq_m_soft_i(irq_m_soft_at>=0 && mtime_q>=64'(irq_m_soft_at)),
+        .irq_s_ext_i(irq_s_ext_at>=0 && mtime_q>=64'(irq_s_ext_at)),
         .dtcm_init_valid_i(dtcm_init_valid_i), .dtcm_init_addr_i(dtcm_init_addr_i),
         .dtcm_init_wdata_i(dtcm_init_wdata_i), .dtcm_init_wmask_i(dtcm_init_wmask_i),
         .fatal_o(fatal_o), .inclusion_err_o(inclusion_err_o),
@@ -131,7 +144,7 @@ module o3_tandem_top
         assign tandem_mem_data_o[lane] = retire_info[lane].mem.data;
     end
 
-    l7_event_checks l7_checks (
+    l10_event_checks l7_checks (
         .clk_i(clk_i),.rst_i(rst_i),
         .fe_sources_i('{u_core.u_frontend.perf_bpu,u_core.u_frontend.perf_ftq,
             u_core.u_frontend.perf_arb,u_core.u_frontend.perf_rq,u_core.u_frontend.perf_f0,
@@ -148,6 +161,7 @@ module o3_tandem_top
         .instret_i(u_core.u_backend.u_csr_file.u_hpm_counters.minstret_q),
         .counters_i(u_core.u_backend.u_csr_file.u_hpm_counters.counter_q),
         .selectors_i(u_core.u_backend.u_csr_file.u_hpm_counters.event_q),
+        .priv_i(u_core.u_backend.priv),
         .inhibit_i(u_core.u_backend.u_csr_file.u_hpm_counters.inhibit_q),
         .accepted_i(u_core.u_frontend.redirect_o),.busy_i(u_core.u_frontend.recover_busy));
 
@@ -356,4 +370,4 @@ module o3_axi_ram #(
     end
 endmodule
 
-`include "sim/o3/l7_event_checks.sv"
+`include "sim/o3/tests/l10_event_checks.sv"

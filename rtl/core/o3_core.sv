@@ -9,7 +9,7 @@
  * - L7a B48：前端事件增量经 fe_perf 连入后端 CSR/HPM，新增行为未验证。
  * - 连接 L1I/L1D ↔ L2、L2 ↔ DDR AXI、SD DMA 行事务入口。
  *
- * 当前实现状态：闭环简化（L4）。
+ * 当前实现状态：闭环简化（L10 T08a）：平台 IRQ/mtime 接 CSR，中断与 WFI 在核内处理。
  * - ICache → L2 → AXI 的直线整数取指路径能经后端退休；ITCM 已移除。
  * - L2 对当前有效的 L1I 行保持 inclusive；L1D 尚无数据阵列或有效行。
  * - DMA、并发 L2 miss、实际 L1D 数据路径及其他系统机制仍待后级。
@@ -75,6 +75,7 @@ module o3_core
     output dma_resp_t       dma_resp_o,
 
     // ---------------- 中断（进入后端 csr_file 的 mip，B26/B29/B38） ----------------
+    input logic [63:0] mtime_i,
     input  logic            irq_m_ext_i,
     input  logic            irq_m_timer_i,
     input  logic            irq_m_soft_i,
@@ -185,7 +186,7 @@ module o3_core
         .l2_wb_error_i(l1d_wb_error),
         .l1d_probe_valid_i(l1d_probe_valid), .l1d_probe_ready_o(l1d_probe_ready),
         .l1d_probe_i(l1d_probe), .l1d_probe_resp_o(l1d_probe_resp),
-        .irq_m_ext_i(irq_m_ext_i), .irq_m_timer_i(irq_m_timer_i),
+        .mtime_i(mtime_i),.irq_m_ext_i(irq_m_ext_i), .irq_m_timer_i(irq_m_timer_i),
         .irq_m_soft_i(irq_m_soft_i), .irq_s_ext_i(irq_s_ext_i),
         .l2_fatal_i(l2_fatal), .fatal_o(fatal_o),
         .dtcm_init_valid_i(dtcm_init_valid_i), .dtcm_init_addr_i(dtcm_init_addr_i),

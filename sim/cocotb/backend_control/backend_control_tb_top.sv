@@ -43,7 +43,7 @@ module backend_control_tb_top import o3_types_pkg::*; import o3_pkg::*; (
  .l2_wb_error_i('0),
  .l1d_probe_valid_i('0),
  .l1d_probe_i('0),
- .irq_m_ext_i('0),
+ .mtime_i(64'd0),.irq_m_ext_i('0),
  .irq_m_timer_i('0),
  .irq_m_soft_i('0),
  .irq_s_ext_i('0),

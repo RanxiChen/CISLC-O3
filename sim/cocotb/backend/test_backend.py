@@ -90,6 +90,9 @@ async def long_branch_program_ftq_recycles_and_wrong_path_readback(dut):
         dut.clk_i.value=1;await Timer(5,unit='ns')
         if len(retired)==len(expected):break
     assert len(retired)==len(expected),(cycle,len(retired))
-    assert int(dut.correct_resolve_count_o.value)==40
-    assert int(dut.mispredict_count_o.value)==80
+    # L7's live predictor changes the L3 sequential-predictor split. The clean
+    # f0f4106 pre-L10 Alan baseline is exactly 80 correct / 40 mispredictions;
+    # retain exact counts and every existing PC/instruction/register-data check.
+    assert int(dut.correct_resolve_count_o.value)==80
+    assert int(dut.mispredict_count_o.value)==40
     assert int(dut.load_replay_count_o.value)>0

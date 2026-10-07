@@ -3,6 +3,9 @@ module icache_tb_top
 (
     input logic clk,
     input logic rst,
+    input logic [1:0] priv_i,
+    input logic [127:0] pmpcfg_i,
+    input logic [863:0] pmpaddr_i,
     input logic req_valid,
     output logic req_ready,
     input logic [VADDR_W-1:0] req_pc,
@@ -42,6 +45,14 @@ module icache_tb_top
     l2_resp_t l2_resp;
     l1_recall_req_t recall_req;
     l1i_recall_resp_t recall_resp;
+    pmp_state_t pmp;
+    always_comb begin
+        pmp='0;
+        for(int n=0;n<PMP_N;n++) begin
+            pmp.entries[n].cfg=pmpcfg_i[n*8+:8];
+            pmp.entries[n].addr=pmpaddr_i[n*54+:54];
+        end
+    end
     assign req = '{region_base:req_pc, ftq_id:req_ftq_id,
                    rq_idx:req_rq_idx, epoch:'0};
     assign l2_resp = '{valid:l2_resp_valid, txn_id:'0,
@@ -75,7 +86,7 @@ module icache_tb_top
         .ptw_req_valid_o(), .ptw_req_ready_i(1'b0), .ptw_req_o(), .ptw_resp_i('0),
         .l2_req_valid_o(l2_req_valid), .l2_req_ready_i(l2_req_ready),
         .l2_req_o(l2_req), .l2_resp_i(l2_resp), .l2_resp_ready_o(l2_resp_ready),
-        .csr_i('0), .pmp_i('0), .pmp_update_done_o(),
+        .csr_i('{priv:priv_i,default:'0}), .pmp_i(pmp), .pmp_update_done_o(),
         .sfence_i('0), .sfence_done_o(),
         .inv_all_i(inv_all), .inv_done_o(inv_done), .idle_o(idle),
         .recall_valid_i(recall_valid), .recall_ready_o(recall_ready),

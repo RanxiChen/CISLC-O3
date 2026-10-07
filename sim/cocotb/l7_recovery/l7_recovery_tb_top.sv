@@ -66,7 +66,7 @@ module l7_recovery_tb_top import o3_types_pkg::*; import o3_cfg_pkg::*; (
  csr_file #(.CFG(O3_CFG.be)) csr(.clk(clk_i),.rst(rst_i),.req_valid_i(csr_valid_i),
   .req_i(csr_req),.resp_o(csr_resp),.retire_count_i('0),.fe_perf_i(sum_perf),.be_perf_i('0),
   .write_value_o(),.fp_retire_i('0),.frm_o(),.fs_o(),.trap_update_valid_i(1'b0),
-  .trap_update_i('0),.trap_target_pc_o(),.trap_update_done_o(),.irq_m_ext_i(1'b0),
+  .trap_update_i('0),.trap_target_pc_o(),.trap_update_done_o(),.mtime_i(64'd0),.status_o(),.irq_m_ext_i(1'b0),
   .irq_m_timer_i(1'b0),.irq_m_soft_i(1'b0),.irq_s_ext_i(1'b0),.irq_view_o(),
   .irq_take_o(),.irq_cause_o(),.fe_csr_o(),.pmp_o(),.dmmu_csr_o(),.priv_o());
  for(genvar n=0;n<DELIVER_W;n++) begin

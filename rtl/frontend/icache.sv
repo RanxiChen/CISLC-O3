@@ -2,7 +2,7 @@
  * ICache: 64B whole-line interleaving over two banks, with an S0-S3
  * synchronous lookup pipeline (D10-D14).
  *
- * 当前实现状态：闭环简化（L4，缓存取指闭环）
+ * 当前实现状态：闭环简化（L10 T08a，Bare 缓存取指）
  * - S0 samples a demand and starts banked tag/data reads. S1 holds
  *   the synchronous results; S2 registers tag comparisons; S3 selects data
  *   and returns the original FTQ/RQ identity. Uncontended hits accept one
@@ -14,10 +14,9 @@
  *   the full line, then publishes valid and responds. Independent hits can
  *   pass a pending miss (D13/D14). MSHR count/merge capacity remains below
  *   the provisional CFG count; a second miss waits in S3.
- * - The L1 physical-address mode still bypasses ITLB, PMP and PMA.
- *   Translation and protection must join S1-S3 before privileged execution;
- *   no claim is made that those checks are implemented. Prefetch, recall,
- *   epoch retirement and performance events are also pending. Inclusive
+ * - L10 T08a: Bare physical addresses pass through real PMP S2/S3 and PMA.
+ *   Cached hits repeat protection checks; faults do not allocate an MSHR.
+ *   ITLB translation joins in T08b; prefetch remains disabled. Inclusive
  *   L2 recall drains lookup stages and invalidates the exact resident line.
  * - Tests: sim/cocotb/icache/. Whole-core closure: sim/o3/.
  *
@@ -240,6 +239,22 @@ module ICache
     end
 
     logic s3_recent_hit, s3_cache_hit, s3_hit, m_resp;
+    logic pmp_valid,pmp_allow_result,pmp_fault;
+    logic pma_exec,pma_cached,pma_exists,pma_fault_q,s3_fault;
+    pmp_checker #(.CFG(CFG)) u_pmp_checker(.clk_i(clk),.rst_i(rst),
+        .s2_valid_i(s2_valid_q),.s2_paddr_i(paddr_t'(s2_meta_q.req.region_base)),
+        .stall_i(!s3_ready),.bytes_i(7'(FETCH_BYTES)),.read_i(1'b0),.write_i(1'b0),.exec_i(1'b1),
+        .s3_valid_o(pmp_valid),.s3_allow_o(pmp_allow_result),.s3_fault_o(pmp_fault),
+        .cfg_i(pmp_i),.priv_i(csr_i.priv),.cfg_update_done_o(pmp_update_done_o));
+    pma_checker #(.CFG(CFG)) u_pma_checker(.paddr_i(s2_meta_q.req.region_base),.bytes_i(7'(FETCH_BYTES)),
+        .exec_ok_o(pma_exec),.cacheable_o(pma_cached),.exists_o(pma_exists),.read_ok_o(),.write_ok_o());
+    always_ff @(posedge clk) begin
+        if(rst || inv_all_i) pma_fault_q<=0;
+        else if(s3_ready) pma_fault_q<=!pma_exec;
+    end
+    assign s3_fault=pmp_fault || pma_fault_q;
+    // N S2 range/PMA checks; edge N latches candidates alongside way matches;
+    // N+1 S3 permission has priority over hit or allocation of a demand MSHR.
     word_data_t s3_selected_data;
     paddr_t s3_line;
     assign s3_line = line_addr(s3_meta_q.req.region_base);
@@ -260,7 +275,7 @@ module ICache
 
     // An active miss does not occupy the lookup pipeline. A later miss waits
     // at S3 if the single MSHR is busy, propagating backpressure losslessly.
-    assign s3_ready = !s3_valid_q || (!m_resp && (s3_hit || mstate_q == M_IDLE));
+    assign s3_ready = !s3_valid_q || (!m_resp && (s3_hit || s3_fault || mstate_q == M_IDLE));
     assign s2_ready = !s2_valid_q || s3_ready;
     assign s1_ready = !s1_valid_q || s2_ready;
     assign req_ready_o = !rst && !inv_all_i && !recall_valid_i && s1_ready
@@ -327,11 +342,13 @@ module ICache
             resp_o.data = m_data_q[m_req_q.region_base[5:4]*DATA_W +: DATA_W];
             resp_o.exc_valid = m_error_q;
             resp_o.exc_cause = o3_isa_pkg::EXCEPTION_CAUSE_INST_ACCESS_FAULT;
-        end else if (s3_valid_q && s3_hit) begin
+        end else if (s3_valid_q && (s3_hit || s3_fault)) begin
             resp_o.valid = 1'b1;
             resp_o.rq_idx = s3_meta_q.req.rq_idx;
             resp_o.ftq_id = s3_meta_q.req.ftq_id;
             resp_o.data = s3_selected_data;
+            resp_o.exc_valid=s3_fault;
+            resp_o.exc_cause=EXCEPTION_CAUSE_INST_ACCESS_FAULT;
         end
     end
 
@@ -392,7 +409,7 @@ module ICache
 
             case (mstate_q)
                 M_IDLE: begin
-                    if (s3_valid_q && !s3_hit && s3_ready && !inv_all_i) begin
+                    if (s3_valid_q && !s3_hit && !s3_fault && s3_ready && !inv_all_i) begin
                         m_req_q <= s3_meta_q.req;
                         m_line_q <= line_addr(s3_meta_q.req.region_base);
                         m_bank_q <= s3_meta_q.bank;
@@ -452,7 +469,7 @@ module ICache
     assign pf_resp_o = '0;
     assign ptw_req_valid_o = 1'b0;
     assign ptw_req_o = '0;
-    assign pmp_update_done_o = 1'b0;
+
     assign sfence_done_o = 1'b0;
     assign perf_o = '0;
 endmodule

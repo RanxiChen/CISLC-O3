@@ -1,5 +1,5 @@
 /**
- * 本次实现（O3-T03）：L5：FENCE.I 等 ICache idle，发一次全失效，等确认后完成；S/U/PMP 同步待 L10。
+ * T08a：FENCE.I 保留全失效；PMP/SATP 停取指并等 idle，保留缓存数据。
  * 前端系统同步控制 —— FENCE.I / SFENCE.VMA / satp / PMP 的前端部分
  *
  * 归属（2026-10-02 确认）：系统同步由后端 commit_ctrl 统一编排，本模块只执行前端部分：
@@ -22,7 +22,7 @@
  *
  * 细节待定：各步骤拍数、失效遍历方式、与 sys_redirect 同拍关系的信号编码。
  *
- * 当前实现状态：闭环简化（L5）：FENCE.I 最小同步通路已实现。
+ * 当前实现状态：闭环简化（L10 T08a）：PMP/SATP kind 已区分；SFENCE 在 T08b。
  *
  * 目标周期行为：
  * - 周期 N：sync_req_valid_i && sync_req_ready_o 握手，上升沿锁存请求，hold_o 在 N+1 起为 1。
@@ -62,19 +62,20 @@ module frontend_sync_ctrl
 );
     typedef enum logic [1:0] {IDLE,WAIT_IDLE,WAIT_INV,DONE} state_t;
     state_t state_q;
+    sys_redirect_kind_e kind_q;
     assign sync_req_ready_o=state_q==IDLE;
     assign hold_o=state_q!=IDLE;
-    assign icache_inv_all_o=state_q==WAIT_IDLE && icache_idle_i;
+    assign icache_inv_all_o=state_q==WAIT_IDLE && icache_idle_i && kind_q==SYS_FENCE_I;
     assign sync_done_o=state_q==DONE;
     assign f0_clear_o=state_q==DONE;
-    assign sfence_o='0; assign pmp_update_o=0; // L10
+    assign sfence_o='0; assign pmp_update_o=state_q==WAIT_IDLE && icache_idle_i && kind_q==SYS_PMP; // T08a: CSR-derived permissions change without invalidating ICache.
     // N request capture; drain in-flight reads before invalidation. Edge of INV
     // clears cache tags; next INV acknowledgement leads to a one-cycle DONE.
     always_ff @(posedge clk_i) begin
-        if (rst_i) state_q<=IDLE;
+        if (rst_i) begin state_q<=IDLE;kind_q<=SYS_FENCE_I;end
         else case (state_q)
-            IDLE: if (sync_req_valid_i) state_q<=WAIT_IDLE;
-            WAIT_IDLE: if (icache_idle_i) state_q<=WAIT_INV;
+            IDLE: if (sync_req_valid_i) begin state_q<=WAIT_IDLE;kind_q<=sync_req_i.kind;end
+            WAIT_IDLE: if (icache_idle_i) state_q<=kind_q==SYS_FENCE_I ? WAIT_INV : DONE;
             WAIT_INV: if (icache_inv_done_i) state_q<=DONE;
             DONE: state_q<=IDLE;
             default: state_q<=IDLE;

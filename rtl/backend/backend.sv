@@ -9,7 +9,7 @@
  * Split pinned CVFPU opgroups use killed identity slots and stable held results;
  * FP/INT writeback and ROB flags share the actual grant event. Retirement merges flags/Dirty.
  * FLW/FLD and FSW/FSD use the existing L3 LSU/SQ path; FP RVC expands upstream.
- * 当前实现状态：闭环简化（L9），T07a/T07b RTL 已接入，lint/功能测试未运行。
+ * 当前实现状态：闭环简化（L10 T08a）：当前特权、IRQ、WFI、mtime、PMP/PMA 已接通。
  * B33 early wakeup for FP FUs is deferred to performance work; actual writes wake FP consumers.
  * B42 single-cycle rename/map-table bypass retained; R1/R2 split awaits timing evidence.
  * Existing L5/L8 limitations (including MRET and memory concurrency/maintenance) remain.
@@ -17,7 +17,7 @@
  * N edge: accepted prefix allocates atomically; granted IQ entries enter RegRead;
  * held results write PRF/ready/ROB; actual retirement updates committed maps and CSR FP state.
  * N+1: queues/tables expose updated identities, readiness and operands.
- * Tests and lint are deferred by the user's 2026-10-07 instruction. See O3-T07-report.md.
+ * T08a module/core validation is recorded in O3-T08-report.md; Sv39/A-D in T08b/c.
  */
 `ifdef O3_SIM
 `include "dpi_functions.svh"
@@ -91,6 +91,7 @@ module backend
     output o3_types_pkg::dc_probe_resp_t     l1d_probe_resp_o,
 
     // ---------------- 中断（B26/B29：进入 csr_file 的 mip；WFI 唤醒见 B38） ----------------
+    input logic [63:0] mtime_i,
     input  logic                             irq_m_ext_i,
     input  logic                             irq_m_timer_i,
     input  logic                             irq_m_soft_i,
@@ -191,6 +192,13 @@ module backend
     logic [63:0] csr_write_value;
     o3_types_pkg::be_perf_t perf_commit, perf_lsu, perf_dcache, be_perf;
     logic serial_retire, gate_block_cycle;
+    logic wfi_retire,wfi_stall,irq_take;
+    logic [1:0] priv;
+    logic [63:0] csr_status;
+    o3_types_pkg::irq_view_t irq_view;
+    o3_isa_pkg::exception_cause_t irq_cause;
+    wfi_ctrl #(.CFG(CFG)) u_wfi_ctrl(.clk(clk),.rst(rst),.wfi_retire_i(wfi_retire),
+        .irq_i(irq_view),.debug_req_i(1'b0),.sleeping_o(),.stall_o(wfi_stall));
     logic [$clog2(MACHINE_WIDTH+1)-1:0] gate_pass_count;
 `ifdef ENABLE_RETIRE_INFO
     o3_pkg::retire_info_t csr_observe_q [NUM_ROB_ENTRIES];
@@ -236,7 +244,7 @@ module backend
     rename_entry_gate #(.CFG(CFG)) u_rename_entry_gate (
         .clk(clk),.rst(rst),.uop_i(rename_uop_head),.count_i(uopq_deq_count),.pair_head_i(fuse_pair_head),
         .pass_count_o(gate_pass_count),.accepted_count_i(rename_accept_count),
-        .serial_retire_i(serial_retire),.flush_i(backend_block),.wfi_stall_i(1'b0),.isolate_i(1'b0),
+        .serial_retire_i(serial_retire),.flush_i(backend_block),.wfi_stall_i(wfi_stall),.isolate_i(1'b0),
         .block_younger_cycle_o(gate_block_cycle));
     commit_ctrl #(.CFG(CFG)) u_commit_ctrl (
         .clk(clk),.rst(rst),.boot_pc_i(boot_pc_i),.commit_i(rob_commit),
@@ -247,9 +255,9 @@ module backend
         .sq_committed_empty_i(t_sq_committed_empty),.dcache_clean_all_o(),.dcache_clean_all_done_i(1'b0),.dcache_clean_all_busy_i(1'b0),
         .sfence_o(),.sfence_done_i(1'b0),.st_d_req_valid_o(),.st_d_req_ready_i(1'b0),.st_d_done_i(1'b0),
         .csr_req_valid_o(csr_req_valid),.csr_req_o(csr_req),.csr_resp_i(csr_resp),.csr_operand_i(prf_rd_data[0]),
-        .block_younger_cycle_i(gate_block_cycle),.irq_take_i(1'b0),.trap_req_o(trap_req),
+        .block_younger_cycle_i(gate_block_cycle),.irq_take_i(irq_take),.irq_cause_i(irq_cause),.priv_i(priv),.status_i(csr_status),.trap_req_o(trap_req),
         .trap_redirect_valid_i(trap_redirect_valid),.trap_redirect_pc_i(trap_redirect_pc),
-        .rsv_clear_valid_o(),.rsv_clear_reason_o(),.wfi_retire_o(),.wfi_stall_i(1'b0),.isolate_i(1'b0),
+        .rsv_clear_valid_o(),.rsv_clear_reason_o(),.wfi_retire_o(wfi_retire),.wfi_stall_i(wfi_stall),.isolate_i(1'b0),
         .flush_all_o(global_flush),.perf_o(perf_commit));
     trap_ctrl #(.CFG(CFG)) u_trap_ctrl (
         .clk(clk),.rst(rst),.req_i(trap_req),.csr_update_valid_o(trap_update_valid),.csr_update_o(trap_update),
@@ -260,8 +268,8 @@ module backend
         .fe_perf_i(fe_perf_i),.be_perf_i(be_perf),
         .retire_count_i(retire_count_this_cycle),.write_value_o(csr_write_value),.fp_retire_i(fp_retire),.frm_o(fp_frm),.fs_o(fp_fs),
         .trap_update_valid_i(trap_update_valid),.trap_update_i(trap_update),.trap_target_pc_o(trap_target),.trap_update_done_o(trap_done),
-        .irq_m_ext_i(1'b0),.irq_m_timer_i(1'b0),.irq_m_soft_i(1'b0),.irq_s_ext_i(1'b0),.irq_view_o(),.irq_take_o(),.irq_cause_o(),
-        .fe_csr_o(fe_csr_o),.pmp_o(t_pmp),.dmmu_csr_o(t_dmmu_csr),.priv_o());
+        .mtime_i(mtime_i),.status_o(csr_status),.irq_m_ext_i(irq_m_ext_i),.irq_m_timer_i(irq_m_timer_i),.irq_m_soft_i(irq_m_soft_i),.irq_s_ext_i(irq_s_ext_i),.irq_view_o(irq_view),.irq_take_o(irq_take),.irq_cause_o(irq_cause),
+        .fe_csr_o(fe_csr_o),.pmp_o(t_pmp),.dmmu_csr_o(t_dmmu_csr),.priv_o(priv));
     assign fe_pmp_o=t_pmp;
 
     // Existing producers are connected without deriving new BE events. Their
@@ -654,7 +662,6 @@ module backend
 
             assign decoded_exception = fetch_entry_q[i].exception_valid
                                      || decode_out[i].illegal_instruction
-                                     || decode_out[i].ext.sys_op==o3_types_pkg::SYSOP_ECALL
                                      || decode_out[i].ext.sys_op==o3_types_pkg::SYSOP_EBREAK;
             assign decoded_uop[i].valid          = decode_valid && fetch_entry_q[i].valid;
             assign decoded_uop[i].instruction_id = fetch_instruction_id_q[i];
@@ -670,8 +677,7 @@ module backend
                                                   && decoded_exception;
             assign decoded_uop[i].exception_cause = fetch_entry_q[i].exception_valid
                                                    ? fetch_entry_q[i].exception_cause
-                                                   : (decode_out[i].ext.sys_op==o3_types_pkg::SYSOP_ECALL ? o3_isa_pkg::EXCEPTION_CAUSE_ECALL_M
-                                                      : decode_out[i].ext.sys_op==o3_types_pkg::SYSOP_EBREAK ? o3_isa_pkg::EXCEPTION_CAUSE_BREAKPOINT
+                                                   : (decode_out[i].ext.sys_op==o3_types_pkg::SYSOP_EBREAK ? o3_isa_pkg::EXCEPTION_CAUSE_BREAKPOINT
                                                       : o3_isa_pkg::EXCEPTION_CAUSE_ILLEGAL_INSTRUCTION);
             assign decoded_uop[i].exception_tval = fetch_entry_q[i].exception_valid
                                                   ? fetch_entry_q[i].exception_tval
@@ -2189,7 +2195,7 @@ module backend
     assign t_rsv_clear_reason = o3_types_pkg::RSV_CLR_SC; // valid=0；合法编码无事件
     assign fatal_o = 1'b0; // platform fatal isolation belongs to L11
     assign perf_rd_data_o = '0; // Legacy observation port; use B48 counter CSRs.
-    always_ff @(posedge clk) if (!rst) assert (!fe_pmp_o.update && !t_pmp.update);
+    // L10: PMP changes are now real CSR updates, synchronized by commit_ctrl.
 
     dcache #(.CFG(CFG)) u_dcache (
         .clk(clk), .rst(rst),
