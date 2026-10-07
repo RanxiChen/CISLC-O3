@@ -347,3 +347,50 @@ M1 压力随机保留种子 51/52，每种子 2000 已握手 D Get/Put + 500 I R
 基础设施记录：第一次 cloud 超时后旧传输 helper 遗漏 Alan 的 `-J clawbot`，
 Git 连接 localhost:2286 refused；发生于仿真前。补齐跳板并初始化独立 bare repo 后恢复。
 开发候选 `a8d2c218` 的单 MSHR 24/24 通过；随后补齐 PS hold 覆盖并在接受 SHA 重跑。
+
+### M3 完整通过与提交
+
+M3 接受提交 `d5ca88f85609c57ad7d9013e8f255156abae982d`，`test(memsys): L8a test layer M3 pass`。
+执行候选为 `76dc7f31894b813ed2dee2409ca14687e0b35130`（标题明确候选、未预先声明通过）；
+提交前核对接受提交与候选的完整 Git tree 相同：`2a1f148d3224d602ed4b282bc14fe7eaa6cde748`。生产 RTL 未修改。
+准确候选 cwd `/home/chen/FUN/20261007-t09-76dc7f31`，实际执行 Alan；
+每项运行前重读主机配置，cloud_chen 均连接超时 exit 255，Alan 环境预检成功，
+Verilator 5.050 / cocotb 2.1.0 / Python 3.12.12。证据根
+`/home/chen/FUN/cislc-o3-t09-evidence/t09/76dc7f31/`，每项保存 manifest、exit、run.log、results.xml。
+
+顺序严格为 MSHRS 1→4，各配置 pressure→default、RFO 0→1。
+每项两个种子 61/62，各准确完成 2000 CPU load/STA/drain 操作及 500 I Read；
+最终所有已写行另做 golden readback（因此日志 loads/STA/drains 合计包含额外收尾操作）。
+独立 architectural golden 与 AXI backing 分开；检查 permission、credit、脏数据、
+channel stall stability、每周期目录状态与 duplicate tag，静止后检查目录/物理副本一致性。
+MISS/FULL/WB_LINE 按 S2 判定后的 install/mshr_free/wb_free 事件重发。
+
+| item | exit | 通过/总数 | seed 61/62 周期数 |
+| --- | --- | --- | --- |
+| m3-events-pressure-m1-r0 | 0 | 2/2，0 skip | 65722 / 65113 |
+| m3-events-pressure-m1-r1 | 0 | 2/2，0 skip | 65722 / 65113 |
+| m3-events-pressure-m4-r0 | 0 | 2/2，0 skip | 56760 / 56001 |
+| m3-events-pressure-m4-r1 | 0 | 2/2，0 skip | 58284 / 58367 |
+| m3-events-default-m1-r0 | 0 | 2/2，0 skip | 37006 / 37970 |
+| m3-events-default-m1-r1 | 0 | 2/2，0 skip | 37006 / 37970 |
+| m3-events-default-m4-r0 | 0 | 2/2，0 skip | 32822 / 33342 |
+| m3-events-default-m4-r1 | 0 | 2/2，0 skip | 32802 / 32391 |
+
+同一候选完整重跑所有下层：M2 MSHRS=1 25/25、MSHRS=4 27/27；
+M1 pressure 12/12、slot-full 1/1、default 10/10，全部 exit 0、0 skip。
+对应 item 为 `m2-m3-lower-one/four`、`m1-m3-lower-pressure/slot-full/default`。
+M3 命令为 `make -j4 -C sim/cocotb/memsys GEOMETRY=<pressure|default> MSHRS=<1|4> RFO=<0|1>`，
+附各 item 独立 SIM_BUILD、COCOTB_RESULTS_FILE，完整命令见 manifest。
+模块层退休数 N/A；此结果不声明 M4～M6 或 12.8 总门禁通过。
+
+开发记录：初次 wrapper wildcard 连接缺少三个已禁用 DMA 输出，Verilator 编译失败；
+仅补齐显式空接后恢复，未改 RTL。后续把事件观察起点收紧到实际 S2 响应时刻，
+并在上述候选上重跑全部矩阵与下层，保留此前候选日志。
+磁盘整理只对本任务已完成 exit=0 的 build/*.gch 做 gzip，逐文件解压 SHA256 校验后
+删除原 PCH；回收 2408154769 bytes。日志、XML、源码、可执行文件保留，记录位于
+证据根 `t09/gch-compression-manifest.json`。未处理其他任务文件。
+
+自行决定（M3）：public wrapper 复用两个既有 module wrapper；双 CPU lane 保存 VA/id；
+I Read 使用独立客户端，不把 L1I 加入目录；随机 memory agent 将 golden 与 backing 分开。
+MSHRS 是独立 sweep，压力几何保留 2 sets/2 ways/1 WB 与 L2 2 sets/2 ways/2 slots。
+文件为 `sim/cocotb/memsys/{memsys_tb_top.sv,system_agents.py,test_memsys.py,Makefile}`。
