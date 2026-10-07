@@ -203,3 +203,9 @@ run-l9-fp:
 run-l9-fp-smoke:
 	$(RISCV_GCC) -march=rv64imfdc_zicsr -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l9_fp_smoke.S -o $(BUILD_DIR)/l9_fp_smoke.elf
 	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK --image $(BUILD_DIR)/l9_fp_smoke.elf --trace $(BUILD_DIR)/l9_fp_smoke.jsonl --tohost-address 0x801ff000 --max-cycles 100000 --max-retires 10000
+
+# Integer single-slot replay regression: DIV -> old LD -> dependent SD -> young LD.
+.PHONY: run-replay-order
+run-replay-order:
+	$(RISCV_GCC) -march=rv64im_zicsr -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/replay-integer.S -o $(BUILD_DIR)/replay-integer.elf
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK --image $(BUILD_DIR)/replay-integer.elf --trace $(BUILD_DIR)/replay-integer.jsonl --tohost-address 0x801ff000 --max-cycles 20000 --max-retires 1000

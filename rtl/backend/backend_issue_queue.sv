@@ -6,14 +6,17 @@
  * FP: depth CFG.dispatch.fp_iq_depth, oldest-ready dual issue; five RegRead capacities
  * prevent repeated FU selection, at most one INT-source FP candidate per cycle.
  * INT: retains MUL/DIV occupancy constraints and fused-pair handling. MEM: single
- * issue can bypass an unready head, suppressing loads while the replay slot is occupied.
+ * issue lets stores bypass unready entries; loads issue in program order within the IQ,
+ * retaining allow_load_i suppression while the replay slot is occupied.
+ * L3 闭环简化：偏离 B04 非阻塞访存；单 replay 槽下乱序 load 会形成等待环。
+ * L8 换成 Breeze 访存时整体替换此 load 顺序限制；store 选择规则保持不变。
  * Only issue_valid && issue_ready deletes a candidate; denied INT read grants leave it queued.
  * Correct resolution clears masks; misprediction removes dependent younger entries.
  * B33 FP early wakeup is deferred to performance work; actual PRF writes wake FP sources.
- * 当前实现状态：闭环简化（L9）；本次 lint/测试未运行。
+ * 当前实现状态：闭环简化（L9）；MEM 保留上述 L3 简化。
  * N: select stored-ready candidates and form next queue. N edge: delete accepted candidates,
  * update source readiness, compact survivors and append dispatch lanes. N+1: new candidates.
- * Test harness domain/third-source/FU ports need extension in the next validation session.
+ * 测试：sim/cocotb/backend_issue_queue/（MEM load 顺序、store bypass、replay 门控）。
  */
 module backend_issue_queue
     import o3_pkg::*;
@@ -120,9 +123,22 @@ module backend_issue_queue
             int chosen;
             chosen = -1;
             for (int idx = 0; idx < DEPTH; idx++) begin
+                logic older_load;
+                older_load = 1'b0;
+                if (KIND == o3_types_pkg::IQ_MEM && queue_q[idx].is_load) begin
+                    // 队列按程序顺序压紧，queue_q[0] 是最老有效项；沿用 ROB 环形
+                    // 距离比较，跨索引回绕仍按年龄排序。未就绪的旧 load 也必须挡住。
+                    for (int other = 0; other < DEPTH; other++) begin
+                        if (queue_q[other].valid && queue_q[other].is_load
+                         && ((int'(queue_q[other].rob_idx) + CFG.rob.entries - int'(queue_q[0].rob_idx)) % CFG.rob.entries
+                           < (int'(queue_q[idx].rob_idx) + CFG.rob.entries - int'(queue_q[0].rob_idx)) % CFG.rob.entries)) begin
+                            older_load = 1'b1;
+                        end
+                    end
+                end
                 if (!(resolution_valid_i && resolution_mispredict_i) && (chosen < 0) && queue_q[idx].valid && !selected[idx]
                  && (!OLDEST_ONLY || (idx == 0))
-                 && (KIND != o3_types_pkg::IQ_MEM || !queue_q[idx].is_load || allow_load_i)
+                 && (KIND != o3_types_pkg::IQ_MEM || !queue_q[idx].is_load || (allow_load_i && !older_load))
                  && (queue_q[idx].ext.fu_class!=o3_types_pkg::FU_MUL ||
                      (!picked_mul && (queue_q[idx].mdu_fuse.valid ? mul_pair_ready_i:mul_ready_i)))
                  && (queue_q[idx].ext.fu_class!=o3_types_pkg::FU_DIV || (!picked_div && div_ready_i))

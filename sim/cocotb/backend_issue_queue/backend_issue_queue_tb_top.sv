@@ -23,6 +23,7 @@ module backend_issue_queue_tb_top
         enq_uop[0].is_store = enq_store;
         enq_uop[0].is_load = enq_load;
         enq_uop[0].rs1_read_en = enq_wait_src;
+        enq_uop[0].ext.rs1_dom = o3_types_pkg::RD_INT;
         enq_uop[0].src1_preg = PREG_IDX_WIDTH'(1);
         enq_uop[0].rob_idx = enq_rob;
     end
