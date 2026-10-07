@@ -179,11 +179,12 @@ coh_rsp_down_t {op: DATAS/DATAE/ACKE/PUTACK/READDATA/WRITEACK, id, error, data}
 | 命中（tag 匹配、state ≠ I、该路未锁定） | `Hit`，数据按 BL 5.4 节格式化（含 `isFlw` 的 NaN-boxing）；与 SQ 转发结果合并（6.2 节） |
 | 与某 MSHR 同行（任意类型） | `Miss(mshr_id)`，合并，不分配新 MSHR |
 | 与某写回槽同行 | `Replay(WB_LINE)`，等任一写回槽释放 |
+| 未命中，MSHR 可分配，但 victim 需要写回槽而写回槽已满 | `Replay(WB_LINE)`，等任一写回槽释放（X11） |
 | 未命中，可分配（5.5 节） | 分配 MSHR 发 GetS → `Miss(mshr_id)` |
 | 未命中，不可分配 | `Replay(MSHR_FULL)`，等任一 MSHR 释放 |
 
 - `Hit` 时 PLRU 更新为命中路；`Miss` 时不更新，安装时更新。
-- 分配 MSHR 的同拍：选 victim、锁 way；victim 有效时分配写回槽（写回槽满则不分配 MSHR，改判 `Replay(MSHR_FULL)`），victim 的 tag 置 I（同 BL 5.2 节）。
+- 分配 MSHR 的同拍：选 victim、锁 way；victim 有效时分配写回槽（写回槽满则不分配 MSHR，改判 `Replay(WB_LINE)`，X11），victim 的 tag 置 I（同 BL 5.2 节）。
 
 ### 5.5 MSHR（4 项）与写回槽（2 项）
 
@@ -251,7 +252,7 @@ coh_rsp_down_t {op: DATAS/DATAE/ACKE/PUTACK/READDATA/WRITEACK, id, error, data}
 | --- | --- |
 | `MSHR(k)` | `install{k}`；`err=1` 时该 load 收到 access fault（cause 5，tval = 原 VA） |
 | `MSHR_FULL` | 任一 `mshr_free` |
-| `WB_LINE` | 任一 `wb_free` |
+| `WB_LINE`（写回槽同行，或替换时写回槽已满） | 任一 `wb_free` |
 | `CONFLICT`、`SNAP`、`BANK` | 立即可重发 |
 | `TLB_MISS`（已有） | PTW 完成（L10 已有） |
 | `OLDER_STORE_ADDR`（已有，B32） | 该 store 的地址写入 SQ，或该 store 被取消 |
@@ -372,3 +373,4 @@ L1D 新增：`dc_mshr_alloc`、`dc_mshr_merge`、`dc_replay_mshr_full`、`dc_rep
 | X8 | probe 在途 | L2 同时最多向 L1D 发 1 个 SNP（单核时 probe 很少） | 多个：只有 DMA 频繁时才可能有收益 |
 | X9 | 防活锁 | 不锁行，依靠 MRU 安装 + 队头 load 的分配优先 + 看门狗 | 安装后锁住该行，直到等待者重放完：更稳，但要额外的计数与解锁逻辑 |
 | X10 | AXI 位宽 | 仿真阶段 128 位（现有 AXI RAM 模型），L11 随 MIG 改 | 现在就用 512 位：与 MIG 用户接口一致，但仿真模型要改 |
+| X11 | 写回槽满时的重放原因（2026-10-07 M2 发现：原 5.4 判 `MSHR_FULL`，而 6.1 只用 `mshr_free` 唤醒，MSHR 全空闲时 load 永不唤醒） | **已定（用户 2026-10-07 批准）**：判 `WB_LINE`，等任一 `wb_free`；`WB_LINE` 含义扩为“写回槽同行或已满”。唤醒精确，RTL 原本即如此实现 | `MSHR_FULL` 改等 `mshr_free` 或 `wb_free`：可用但有无效唤醒；新增 `WB_FULL`：语义最清，改动最多 |
