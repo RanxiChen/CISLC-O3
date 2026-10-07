@@ -324,7 +324,7 @@ L1D 新增：`dc_mshr_alloc`、`dc_mshr_merge`、`dc_replay_mshr_full`、`dc_rep
 
 ## 12. 实施顺序与门禁
 
-所有命令在 Alan 上运行（cocotb 2.1.0）。格式沿用 T08 报告。
+所有命令在按 `~/leisure/flow/docs/cross-project/simulation-host.md` 选定的仿真主机上运行（首选 cloud_chen，备用 Alan，见任务书）。格式沿用 T08 报告。
 
 ### 12.1 RTL 一次写完
 

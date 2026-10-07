@@ -13,7 +13,12 @@
 - **spec 未覆盖的实现细节**（信号编码、struct 字段顺序、文件内组织、测试脚本写法）：自行决定，写进报告的“自行决定”一节。每条写清问题、决定、依据和涉及文件。
   **需要改变 spec 的行为或 `doc/design/` 的 Bxx/Dxx 时**：停下来问，不改 spec 和 design。
 - **允许改动的文件**：只限 spec 第 0 节列出的。
-- **运行环境**：测试在 Alan 上运行（`source /home/chen/miniforge3/bin/activate cislc-o3`，Verilator 5.050、cocotb 2.1.0），独立运行目录为 `/home/chen/FUN/CISLC-O3-runs/<日期>-t09-<sha>/`。GitHub 访问按 agent.md 3.1 走反向代理，禁止 Git bundle。不跑 Spike、ACT4、litmus，不综合。
+- **仿真主机**：按 `/home/chen/leisure/flow/docs/cross-project/simulation-host.md` 选择，**每次运行前重新读取该文件**，地址、环境路径和规则以文件当前内容为准，不在本任务书里抄写，也不沿用以前记住的值。
+  - 先预检首选主机（当前为 `cloud_chen`，O3 用该文件中的 `o3_environment`）：用 `BatchMode=yes` 加连接超时确认免密 SSH，激活环境，检查 Verilator、cocotb 版本以及磁盘和内存。需要外网时先验证反向代理。
+  - 首选主机的连接、环境或资源不可用时，改用备用主机 Alan，做同样的预检。两台都不可用就报告具体原因，**不在本地跑仿真**。
+  - 预检通过后，同步本任务的准确 SHA，在所选主机 `workspace_root` 下建独立运行目录 `<日期>-t09-<sha>/` 执行。
+  - **测试失败不算主机不可用**：保留失败证据并定位，不能靠换主机或改期望值掩盖。
+  - GitHub 访问走该文件规定的反向代理，禁止 Git bundle。不跑 Spike、ACT4、litmus，不综合。
 - **测试纪律**：
   - 失败就修 RTL。不得放宽断言、黄金值、用例规模或种子数，也不得删除已有用例。
   - 修 RTL 之后，已通过的下层测试要重跑。
@@ -55,6 +60,7 @@
 
 报告包括以下内容：
 
+- 每次运行的实际主机、预检结果（若退回 Alan，写明首选主机失败的原因）、工具版本。
 - 第 1 步与每一层的提交号、命令、exit code、用例数，整核目标再加周期数和退休数，以及日志目录。
 - 失败与修复记录：失败现象 → 根因 → 修了哪个文件 → 回归结果。
 - 自行决定一节。
@@ -77,7 +83,9 @@
 1. 先一次写完全部 RTL：elaborate 通过（含所有调试开关取值），lint 0 errors，然后提交。此时整核回归失败是预期的。
 2. 然后按 M1→M6 逐层加测试，每层通过后提交。失败就修 RTL，不放宽断言、黄金值、规模和种子；修 RTL 后重跑已通过的下层。
 3. Breeze 只复用机制，不逐行翻译；spec 写了按 O3 修改的地方不照搬。实现细节自行决定，写进报告；需要改 spec 或 doc/design 时停下问我。
-4. 只改 spec 第 0 节允许的文件。测试在 Alan 的独立运行目录跑；不跑 Spike/ACT4/litmus，不综合。
+4. 只改 spec 第 0 节允许的文件。仿真主机：每次运行前重新读 /home/chen/leisure/flow/docs/cross-project/simulation-host.md，
+   先预检首选的 cloud_chen，不可用再退回 Alan；两台都不行就报告原因，不在本地跑。测试失败不算主机不可用。
+   报告写明实际用的主机。不跑 Spike/ACT4/litmus，不综合。
 5. 某层的正确性用例修不好：停下，报告失败用例、首个失败点和复现命令。run-l10-vm 保持已知问题，只记录首个失败点是否变化。
 6. M6 通过后，在最终 SHA 上重跑总门禁；更新 doc/LOOP.md 的 L8 行和相关模块行；写 doc/tasks/O3-T09-report.md 并推送，然后停下，不开始 L8b。
 ```
