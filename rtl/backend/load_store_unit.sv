@@ -159,7 +159,8 @@ module load_store_unit import o3_pkg::*; #(
 `endif
             fifo_new[p].load.rob_idx=s2_q[p].r.uop.rob_idx;fifo_new[p].load.lq_idx=s2_q[p].r.uop.lq_idx;
             fifo_new[p].load.dst_preg=s2_q[p].r.uop.dst_preg;fifo_new[p].load.dst_dom=s2_q[p].r.uop.dst_dom;
-            fifo_new[p].load.result=update_o[p].rdata;fifo_new[p].load.branch_mask=s2_q[p].r.uop.branch_mask;
+            fifo_new[p].load.result=update_o[p].rdata;fifo_new[p].load.branch_mask=s2_q[p].r.uop.branch_mask &
+                ~(resolution_valid_i ? (branch_mask_t'(1)<<resolution_tag_i):'0);
             fifo_new[p].load.va=s2_q[p].r.va;fifo_new[p].load.size=s2_q[p].r.uop.mem_size;
             fifo_new[p].exc=update_o[p].exc;
         end

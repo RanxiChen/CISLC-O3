@@ -88,6 +88,10 @@ module store_queue
     o3_types_pkg::ld_wait_e dc_reason_q;
     o3_types_pkg::coh_id_t dc_mshr_q;
     logic dc_drain_fire;
+    logic dc_resp_match;
+    assign dc_resp_match=dc_inflight_q && t_dc_resp_i.valid &&
+        t_dc_resp_i.src==o3_types_pkg::DC_SRC_STORE_DRAIN &&
+        t_dc_resp_i.sq_idx==o3_types_pkg::sq_idx_t'(head_q);
     logic head_dtcm;
     logic head_ready;
 
@@ -110,7 +114,7 @@ module store_queue
             sta_q<='{default:'0};sta_ready_q<='{default:0};sta_wait_q<='{default:0};
             dc_wait_q<=0;dc_reason_q<=o3_types_pkg::LDW_NONE;dc_mshr_q<=0;
         end else begin
-            if(t_dc_resp_i.valid && t_dc_resp_i.status!=o3_types_pkg::DC_OK) begin
+            if(dc_resp_match && t_dc_resp_i.status!=o3_types_pkg::DC_OK) begin
                 dc_wait_q<=1;dc_reason_q<=t_dc_resp_i.reason;dc_mshr_q<=t_dc_resp_i.mshr_id;
                 assert(t_dc_resp_i.status!=o3_types_pkg::DC_ERROR) else $fatal(1,"committed drain access fault");
             end
@@ -146,7 +150,7 @@ module store_queue
                 end
             end
             // A resource wake on the st_retry edge is not lost.
-            if(t_dc_resp_i.valid && t_dc_resp_i.status!=o3_types_pkg::DC_OK) begin
+            if(dc_resp_match && t_dc_resp_i.status!=o3_types_pkg::DC_OK) begin
                 if(t_dc_resp_i.reason==o3_types_pkg::LDW_MSHR && dc_wake_i.valid && dc_wake_i.mshr_id==t_dc_resp_i.mshr_id) dc_wait_q<=0;
                 if(t_dc_resp_i.reason==o3_types_pkg::LDW_MSHR_FULL && dc_wake_i.mshr_free) dc_wait_q<=0;
                 if(t_dc_resp_i.reason==o3_types_pkg::LDW_WB_LINE && dc_wake_i.wb_free) dc_wait_q<=0;
@@ -299,7 +303,7 @@ module store_queue
             logic drain_fire;
             kept=0; drain_fire=dc_drain_fire || (drain_valid_o && drain_ready_i);
             if (DCACHE_DRAIN && t_dc_req_valid_o && t_dc_req_ready_i) dc_inflight_q<=1;
-            if (t_dc_resp_i.valid) dc_inflight_q<=0;
+            if (dc_resp_match) dc_inflight_q<=0;
             for (int entry=0;entry<DEPTH;entry++) begin
                 if (valid_q[entry] && committed_q[entry]) kept++;
                 else begin valid_q[entry]<=0; addr_valid_q[entry]<=0; data_valid_q[entry]<=0; end
@@ -318,7 +322,7 @@ module store_queue
             drain_fire = dc_drain_fire || (drain_valid_o && drain_ready_i);
             if (DCACHE_DRAIN && t_dc_req_valid_o && t_dc_req_ready_i)
                 dc_inflight_q <= 1'b1;
-            if (t_dc_resp_i.valid) dc_inflight_q <= 1'b0;
+            if (dc_resp_match) dc_inflight_q <= 1'b0;
             for (int entry = 0; entry < DEPTH; entry++) begin
                 if (valid_q[entry] && !committed_q[entry]
                  && branch_mask_q[entry][resolution_tag_i]) begin
@@ -366,7 +370,7 @@ module store_queue
             drain_fire = dc_drain_fire || (drain_valid_o && drain_ready_i);
             if (DCACHE_DRAIN && t_dc_req_valid_o && t_dc_req_ready_i)
                 dc_inflight_q <= 1'b1;
-            if (t_dc_resp_i.valid) dc_inflight_q <= 1'b0;
+            if (dc_resp_match) dc_inflight_q <= 1'b0;
 
             if (drain_fire) begin
                 valid_q[head_q] <= 1'b0;
