@@ -1,6 +1,6 @@
-# O3-T09：L8a RTL 实施记录
+# O3-T09：L8a 实施与分层验证记录
 
-日期：2026-10-07。本次交付对应用户的“实现 RTL”请求，范围为任务书第 1 步。M1～M6 留待后续逐层验证；本文不是 L8a 总验收声明。
+日期：2026-10-07。第 1 步 RTL 静态门禁已完成；本轮续作 M1 通过，M2 因冻结等待契约冲突停止。前半部分保留第 1 步历史记录，第 2 步结果见文末；本文不是 L8a 总验收声明。
 
 ## 基线与源码
 
@@ -83,7 +83,7 @@ verilator --cc --assert -Wno-fatal -f rtl/rtl.f \
 | `c41f4a04bc01ed6e2d2c6ce7976398004b8968e3` | 22 项 exit 0；提交前发现相邻 needs_D store 的身份覆盖窗口，以及结构阻塞误记 MSHR_FULL 后可能没有唤醒 | LSU 在 S1 提前保留 D store 身份；DCache 区分立即结构重放与 WB/MSHR 资源等待，并保护 probe tag snapshot；候选 `d18188f` 重跑 |
 | `d18188f252122d76cc2efbd502f513db9847f44d` | 22 项 exit 0；检查原始告警发现基线 SFENCE 完成信号隐式声明及 ICache MSHR 分配/性能记账同块导致组合环告警 | backend 显式声明 `t_sfence_done`；ICache MSHR 的性能计算独立组合块；最终 SHA 重新执行全部 22 项 |
 
-这些修复有静态证据，尚没有 M1～M6 的功能回归证据。
+第 1 步交付时，这些修复只有静态证据，尚没有 M1～M6 的功能回归证据。
 
 候选 `695ae65a323d60eab9973db4ccdf7304fde98ae2` 在上述最后两项修正后也通过全部 22 项（日志目录 `695ae65/`）；暂存差异检查随后清理 `backend.sv` 一行尾随空白，候选 `3e18252109d80d23e5fe7e412021283aa0542550` 完整 22 项 exit 0。原始告警复查显示 ICache 上层仍把事件汇总与分配放在同块，造成 `alloc_valid → mshr_perf → alloc_valid` 的块依赖；再拆分 `icache.sv` 的事件汇总块，最终 RTL SHA 完整重跑，保持证据与接受提交一致。
 
@@ -100,7 +100,7 @@ verilator --cc --assert -Wno-fatal -f rtl/rtl.f \
 | 参数展开方式 | 编译专用 wrapper 从 O3_CFG 构造参数配置，覆盖全部 1～4 MSHR 及压力几何；所有生产逻辑仍由 CFG 控制。依据 spec 2、12.1 节 | `sim/cocotb/memsys/l8a_elab_top.sv` |
 | 被动观察点迁移 | tandem 监视器改接新流水/队列与 L2 性能源；事件观察入口从五个扩为六个，原断言保留。依据 spec 11 节 | `o3_tandem_top.sv`、`l10_event_checks.sv` |
 
-## 后续阶段、已知问题与证据边界
+## 第 1 步交付时的后续阶段、已知问题与证据边界
 
 - M1/M2/M3/M4/M5/M6 均未开始，没有相应 `test(memsys)` 通过提交，也没有第 12.8 节同 SHA 功能总门禁。
 - 没有 M5→M6 周期对比或运行所得的 MSHR 平均占用、RFO 有用次数、bank 冲突统计；RTL 事件入口已加入，但其功能与统计准确性仍需分层测试。
@@ -109,3 +109,161 @@ verilator --cc --assert -Wno-fatal -f rtl/rtl.f \
 - 静态告警尚存；最终分类与计数见门禁记录。不能据 0 errors 声称 0 warnings、无组合环或时序收敛。
 - 未更新 LOOP 为 L8 已验收，未推送到 origin；本次停在用户请求的 RTL 阶段，下一步应从 M1 开始，按任务书顺序推进。
 - 原有未跟踪 `AGENTS.md`、BPU 结果 XML 与 `sim/o3/__pycache__/` 保留，不纳入提交。
+
+## 第 2 步分层执行（2026-10-07 续）
+
+续作基线 `c7f712c6d268cb24e781ea0d13fda4b67c69342e`，分支 `feat/L1-closure`。
+用户本轮要求覆盖任务书的推送措辞：全部提交只留本地，不推 origin。
+
+### M1：已通过
+
+提交 `9457476bc0c63c7878730e65098e6e778a41bf69`，`test(memsys): L8a test layer M1 pass`。
+无 RTL 修复。按用户明确授权删除 `sim/cocotb/l2_cache/` 的七个跟踪文件，
+由 `sim/cocotb/l2_home/` 的新协议测试接替；其残留 XML/pycache 移到本地
+`/tmp/t09-retired-l2-cache-artifacts/`，未纳入提交，其他旧套件保留。
+
+每次执行前重新读取共享配置，首选 cloud_chen 的 SSH/环境/工具/资源均可用，
+无需 Alan。实际主机 `cloud_chen@47.111.104.2:22`，hostname
+`iZbp16rhtg91v96m32vggjZ`，Verilator 5.050、cocotb 2.1.0、Python 3.12.12；
+预检可用磁盘 122～126 GiB、available 内存 23～27 GiB。无外网下载。
+准确提交对象通过专用 SSH transfer bare 仓库同步，不推 origin、不使用 bundle。
+
+M1 同 SHA cwd：`/home/cloud_chen/work/20261007-t09-9457476b`；证据根：
+`/home/cloud_chen/evidence/t09/9457476b/`。每项包含完整命令/实际主机/SHA/cwd/
+预检的 `manifest.json`、`run.log`、`exit`、`results.xml` 与生成模型 `build/`。
+
+| 项目 | 命令（cwd 为上述根目录） | exit | 用例数 | 证据子目录 |
+| --- | --- | --- | --- | --- |
+| 压力几何（2组/2路/2槽） | `make -C sim/cocotb/l2_home` | 0 | 12/12 | `m1-final-pressure` |
+| 慢槽满/恢复辅助几何 | `make -C sim/cocotb/l2_home SETS=4 WAYS=2 SLOTS=2 COCOTB_TESTCASE=slot_full_backpressure_and_resume` | 0 | 1/1 | `m1-final-slot-full` |
+| 默认 L2 几何（额外验证） | `make -C sim/cocotb/l2_home SETS=512 WAYS=8 SLOTS=8` | 0 | 10/10 | `m1-final-default` |
+
+表中各命令还带有指向对应证据子目录的 `SIM_BUILD=<root>/<item>/build` 和
+`COCOTB_RESULTS_FILE=<root>/<item>/results.xml`，准确全文见 manifest。
+13 个不同功能用例，默认几何重复 10 个；没有 skip。非整核测试，退休数 N/A。
+种子 51/52 各完成 2000 笔已握手 D Get/Put + 500 笔并发 I Read，再逐行读取全部
+已写行并精确比对。种子 51：67402 拍，AXI 2165 次读/1060 次写；种子 52：
+66680 拍，AXI 2154 次读/1028 次写。最终逐行验证另增每种子 16 笔 I Read。
+
+M1 自行决定：
+- 独立 architectural golden 和 AXI backing RAM；D 代理只在 E/M 本地写，
+  随 Put/probe 撤销或降级权限。I Read 并发写时检查返回值曾存在于请求区间，
+  流量结束后的逐行回读使用精确黄金值。参考 Breeze a304cc2 机制。
+- monitor 以四链路握手重建单 D 客户端权限，每拍检查目录结构/重复 tag，
+  静止时检查目录与持有副本精确一致；I 不计入目录。wrapper 观察点只读。
+- 用 4组/2路/2槽辅助配置测试 slot-full，因为 2组/2槽压力配置的每槽组保护
+  使第三个不同组请求不可出现；保持压力随机几何与默认生产配置不变。
+- 2000 笔按已握手 D Get/Put 计数，另加 500 I Read，不把本地命中空操作算作事务。
+
+M1 开发失败/处理：首次 Makefile 缺少 ISA 包（候选 `7e8b77e8`，exit 2），
+补齐依赖；cocotb Makefile 不给复杂 TEST_FILTER shell 引号（`c9526bf9`，exit 2），
+使用明确的 COCOTB_TESTCASE 列表。两者均为测试基础设施问题，不改变 RTL/golden。
+本地临时 index 并发冲突在同步/编译前发生，改为每调用独立 index。
+旧套件删除后忽略规则消失，候选 `071f00ef` 的范围核对发现残留生成物进入候选树；
+该候选没有接受到本地分支，清理候选范围后在 `9457476b` 完整重跑上述三项。
+环境自动审批拒绝 `rm -rf` 残留产物（要求更安全方式），使用移动保留产物完成移除。
+
+### M2：停止，无通过提交
+
+失败用例快照提交 `e4b4882746c9ab257571288bc2f31e0fe54800a9`，
+`test(dcache): record blocked L8a M2 writeback capacity regression`。
+该提交保留测试与复现，不声明 M2 通过；没有保留生产 RTL 改动。
+现有 DCache 的三个用例全部迁移到新接口并保留；新增 23 项 L8a 用例。
+先以 1 MSHR 开发基础覆盖，再以 4 MSHR 增加并发、资源与 RFO 覆盖。
+遇到下面的冻结行为冲突后停止，尚未满足 spec 12.2～12.7 中 M2 的整层通过要求，不能以部分通过代替本层门禁。
+
+所有运行仍在 `cloud_chen@47.111.104.2:22`，hostname、工具版本同 M1；
+每次重新读取主机配置并预检成功，available 磁盘 116～120 GiB、内存 23～27 GiB。
+没有因为测试失败更换主机。以下每项 cwd 为
+`/home/cloud_chen/work/20261007-t09-<sha8>`，日志为
+`/home/cloud_chen/evidence/t09/<sha8>/<item>/`；完整 SHA 和完整命令、预检保存在 manifest。
+表中 make 命令都另带该目录的 `SIM_BUILD=.../build` 与
+`COCOTB_RESULTS_FILE=.../results.xml`。全部模块测试的整核退休数为 N/A。
+
+| 源码 SHA | 命令 | exit | 通过/总数 | item |
+| --- | --- | --- | --- | --- |
+| `c332035294a73717d1fbc237f959c1e32f7d14fe` | `make -C sim/cocotb/dcache MSHRS=1` | 0 | 16/16（开发子集） | `m2-one-mshr` |
+| `0393833fde31327c3b44bb7058e4cfdce4e21d31` | `make -C sim/cocotb/dcache MSHRS=4` | 0 | 25/25（新增阻塞用例前） | `m2-four-mshr` |
+| `49331087fa838947ade1b2ba5ca702e9a9817e11` | `make -C sim/cocotb/dcache MSHRS=4 COCOTB_TESTCASE=wb_capacity_full_wait_contract` | 2 | 0/1 | `m2-wb-capacity-baseline` |
+| `a3ee7fd789856f170549029e95ea3c87e104348e` | 同上，诊断性原因修正 | 2 | 0/1 | `m2-wb-capacity-reason-fix` |
+| `e4b4882746c9ab257571288bc2f31e0fe54800a9` | `make -C sim/cocotb/dcache MSHRS=4` | 2 | 25/26，0 skip | `m2-stop-snapshot-full` |
+
+#### 首个失败点、修复尝试与当前判断
+
+用例 `wb_capacity_full_wait_contract`：填满 8 路同组行；延迟两个 victim Put 的
+PutAck，再依次完成两次替换 miss。INSTALL 后 MSHR 已全部释放，两个 WB 仍有效。
+第三次同组替换请求在 S2 返回 REPLAY。隔离复现于 2921 ns，agent 记录 cycle=289
+（采样前 S2 拍 288）：`status=2 reason=6 MSHR_busy=0 WB_busy=3`。
+`reason=6` 是 `WB_LINE`；spec 5.4 明确规定 victim WB 满容量应返回 `MSHR_FULL`（5），
+因此首个断言失败。停点完整套件同样只有该用例失败，重复上述 witness。
+
+复现命令（先按共享配置重新预检并选择主机）：
+
+```bash
+source /home/cloud_chen/setup/activate-o3.sh
+cd /home/cloud_chen/work/20261007-t09-e4b48827
+make -C sim/cocotb/dcache MSHRS=4 COCOTB_TESTCASE=wb_capacity_full_wait_contract \
+  SIM_BUILD=/home/cloud_chen/evidence/t09/e4b48827/m2-repro/build \
+  COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/t09/e4b48827/m2-repro/results.xml
+```
+
+已经实际运行的隔离命令及原始日志见 `49331087/m2-wb-capacity-baseline/manifest.json`
+与 `run.log`；上面给出接受源码的等价复现命令，未把该额外目录声称为已运行证据。
+
+诊断尝试只改 `rtl/lsu/dcache.sv:285`，使满 WB 返回 `LDW_MSHR_FULL`；
+候选 `a3ee7fd7` 首个断言通过。但放行 PutAck 后，cycle 289/290 各出现一次
+`wb_free=1, mshr_free=0`，随后观察 40 拍仍没有 mshr_free；3341 ns、cycle 331
+失败于“spec 6.1 waiter never wakes”。两次 PutAck 已释放全部 WB，MSHR 始终全空。
+原因修正本身不能满足等待契约。
+
+根因：spec 5.5 允许 INSTALL 后立即释放 MSHR，而 WB 保留至 PutAck；
+spec 5.4 将满 WB 归为 MSHR_FULL，spec 6.1 却只允许 mshr_free 唤醒。
+实际 `rtl/backend/load_queue.sv:61,87` 与 DCache 内部等待路径
+`rtl/lsu/dcache.sv:405,470` 也只以 mshr_free 唤醒 MSHR_FULL。
+诊断修正已还原，当前 `dcache.sv` 与 M1 提交完全一致；未修改 spec 或 doc/design，
+未修改断言/黄金值去接受 WB_LINE，也未制造假的 mshr_free 脉冲。
+
+该结果是 DCache + 行为 L2 的等待契约反例（有限延迟 PutAck），
+不是实际 L1D+L2 或整核死锁证明；尚未进入 M3/M5。需要用户确认冻结契约如何修订后继续。
+建议保留 5.4 的 MSHR_FULL 分类，把 6.1 的资源唤醒扩为 `mshr_free || wb_free`，
+并一致更新 LQ/内部等待者；另一可选方案是将 5.4 的 WB 满容量分类改为 WB_LINE。
+两种均改变冻结行为，均未自行实施。
+
+#### 诊断 RTL 修改后的下层回归与停点复测
+
+诊断候选 `a3ee7fd789856f170549029e95ea3c87e104348e` 上完整重跑全部 M1；
+还原诊断修改后的接受源码 `e4b4882746c9ab257571288bc2f31e0fe54800a9` 再次完整重跑。
+命令与 M1 表的三项相同，实际主机同上；各项 manifest 留存完整命令/预检。
+
+| SHA8 | item | exit | 通过/总数 |
+| --- | --- | --- | --- |
+| `a3ee7fd7` | `m1-after-m2-reason-fix-pressure` | 0 | 12/12 |
+| `a3ee7fd7` | `m1-after-m2-reason-fix-slot-full` | 0 | 1/1 |
+| `a3ee7fd7` | `m1-after-m2-reason-fix-default` | 0 | 10/10 |
+| `e4b48827` | `m1-stop-snapshot-pressure` | 0 | 12/12 |
+| `e4b48827` | `m1-stop-snapshot-slot-full` | 0 | 1/1 |
+| `e4b48827` | `m1-stop-snapshot-default` | 0 | 10/10 |
+
+M2 自行决定：
+- wrapper 将生产 struct 接口平铺为 cocotb 可驱动总线，配置参数来自 O3_CFG，
+  内部观察点只读；涉及 `dcache_tb_top.sv`、`Makefile`。
+- 以独立 L2 代理、per-ID 授权、PutAck 与探测建模，并用独立 golden 比较；
+  CPU 按真实 IS→S0→S1→S2 时序刺激，MISS 按 install 事件重放；涉及 `l8a_agents.py`。
+- 原容量用例保留原访问行并增加行数以越过新 8 路容量；其他原值及 24 次空行 probe
+  保留。新增满 WB 用例分别检查冻结 reason 与冻结 wake，不拿普通回放成功掩盖事件缺失；
+  涉及 `test_dcache.py`、`test_l8a_dcache.py`。没有删除其他已有 cocotb 套件。
+- 在停止条件下将失败回归单独提交以便审核，提交标题明确 blocked，未提交 M2 pass。
+
+### 当前停止点、未执行项与证据边界
+
+停在 M2，触发任务书/用户规定的“需要改变冻结 spec 行为则停止”条件。
+M1 通过；M2 未完成，M3～M6 未开始，无上层提交。没有 M5→M6 周期/退休对比、
+run-l8a-mem 的 MSHR 平均占用/RFO 发出与有用次数/bank 冲突统计。
+`run-l10-vm` 未运行，T08 首个失败点是否变化未知。
+
+12.8 总门禁、既有非访存 cocotb 总回归及最终 lint 未执行；第 1 步 22 项静态门禁
+不能替代该总门禁。文档提交仅补报告，未改变停点接受 SHA 的测试/RTL。
+LOOP 的 L8/模块验收行未更新。DMA/AMO/MMIO、Spike/ACT4/litmus、formal、综合、
+PPA、FPGA/运行时仍没有本次验证证据；没有运行被排除的目标。
+全部接受提交只留本地，没有推送 origin，没有开始 L8b。
+原有未跟踪 AGENTS.md、BPU XML、sim/o3/__pycache__ 保留并排除在提交外。
