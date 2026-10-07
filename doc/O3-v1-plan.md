@@ -7,7 +7,7 @@
 在 KCU105 上实现一颗**有规模的单 hart RV64GC 乱序核**，运行 OpenSBI + Linux，带 SD 卡和 FASE 调试。
 
 - 机器宽度统一为 4：解码、重命名、派发、提交均为 4（B42，取代 B01 的六宽重命名）。
-- 其余已定机制不削减：TAGE/uBTB/BTB/RAS 预测与恢复、非阻塞多 MSHR 访存与重放、A 扩展、F/D 与浮点重命名、Sv39 MMU、精确异常、L2 inclusive、SD DMA 协调、性能计数。
+- 其余已定机制不削减：TAGE/uBTB/BTB/RAS 预测与恢复、非阻塞多 MSHR 访存与重放、A 扩展、F/D 与浮点重命名、Sv39 MMU、精确异常、L2 inclusive、SD DMA 协调、性能计数。（L2 与 DMA 协调的实现方式 2026-10-07 改为 Breeze MESI L2 Home，B50。）
 - 自建 SoC（B28），不使用 LiteX；与 Breeze 不共用 SoC。
 
 ## 2. 实施方式
@@ -55,7 +55,7 @@ L0～L4 及 L3 的已有证据见 `LOOP.md`。v1 从 L3 收尾开始。
 | L5 | 接入 Spike 逐条比对；M 模式 CSR、精确异常、ecall/ebreak/illegal、MRET、committed_next_pc | B22、B26、B27、B37、B45 | ACT4 RV64I 全部通过；Spike 比对 0 差异 |
 | L6 | M 扩展（MUL 采用 DSP，DIV 沿用 Breeze radix-4，手工翻译）；完成 FIFO 与提前唤醒；JALR | B13、B33、B34、B43 | ACT4 RV64IM；仿真跑 CoreMark（原定首次 OOC 综合已推迟到 L11，见 2.4） |
 | L7 | （2026-10-06 拆为 L7a 预测器接入 + B48 计数器；L7b RVC、D33～D35）完整预测：uBTB/BTB/TAGE、FTQ 恢复、RAS 快速修复；RVC（手工翻译 Breeze 解压器） | D01～D24、D29～D35、B30、B48 | M 模式 Zihpm 计数器与前端预测事件（B48）；RV64IMC；误预测率与 IPC 基线；Spike 比对 |
-| L8 | 完整非阻塞访存：多 MSHR、重放、同 line 非对齐、跨 line/跨页非对齐硬件拆分（B49）、A 扩展、FENCE/FENCE.I | B03～B05、B09、B23、B31、B32、B35、B49 | RV64IMAC；litmus；死锁 watchdog；随机访存程序 |
+| L8 | 完整非阻塞访存（机制来源 Breeze v1 MESI/L2 Home，按乱序吞吐修改，B50）：多 MSHR、重放、同 line 非对齐、跨 line/跨页非对齐硬件拆分（B49）、A 扩展、FENCE/FENCE.I、硬件 A/D 条件写入口、一致性 DMA 客户端 | B03～B05、B09、B23、B31、B32、B35、B49、B50 | RV64IMAC；litmus；死锁 watchdog；随机访存程序 |
 | L9 | F/D：拆分 CVFPU、FP 重命名、fflags/FS 退休 | B14、B15、B40 | ACT4 RV64GC（用户态） |
 | L10 | S/U 模式、Sv39 MMU（翻译 Breeze MMU 的 TLB/PTW/walk cache，LSU 侧接口按 O3 重新设计）、SFENCE.VMA、satp、PMP、A/D 更新、WFI；计数器 S/U 访问与 Sscofpmf 溢出中断（B48）；`time` CSR 硬件读、Sstc 的 `stimecmp`/`menvcfg.STCE`/STIP 比较（B49）；DTLB/PTW 接口允许一条访存两次翻译（B49） | B06、B07、B24、B36、B38、B49、D25～D28 | 特权测试；riscv-tests p/v 变体 |
 | L11 | SoC：L2 + DDR4（Vivado MIG）+ CLINT/PLIC + UART + SD（AXI Quad SPI）+ SD DMA 协调 + FASE；fatal 隔离；OpenSBI PMU 与 Linux perf（B48）；CLINT `mtime` 接入核、Sstc 中断交付与 OpenSBI/设备树声明（B49） | B08、B28、B29、B39、B41、B44、B49 | 仿真中启动 OpenSBI + Linux；上板启动 Linux，镜像经 SD 卡加载 |
@@ -72,6 +72,7 @@ Breeze 仓库：`/home/chen/leisure/flow`。
 | DIV 数据通路 | `design/src/main/scala/divider/` | 手工翻译；含除零/溢出快速路径与符号恢复 | L6 |
 | RVC 解压 | `design/src/main/scala/frontend/BreezeCompressedDecoder.scala` | 手工翻译 | L7 |
 | AMO 运算 | `design/src/main/scala/cache/` 中的 AMO ALU | 手工翻译 | L8 |
+| L1D / L2 Home / MESI 一致性 | `~/flow-mem` `design/src/main/scala/{l1d,l2,coherence}/` 与 `docs/coherence-l2-rtl-spec.md`、`l1d-rtl-spec.md` | 机制复用（协议、状态机、节拍），按乱序吞吐修改；不做 B47 等价检查（B50） | L8 |
 | CVFPU | `third_party/cvfpu`（已是 SV，含 100 MHz 切分） | 直接复用，按 B14 拆分 | L9 |
 | Sv39 MMU | `docs/breeze-mmu-rtl-spec.md` 与 `design/src/main/scala/mmu/sv39/` | 手工翻译 TLB 阵列、PTW、walk cache；LSU 侧接口按 B04/B06 重做 | L10 |
 | CSRFile 语义 | `design/src/main/scala/core/RegFile.scala` | 按语义重写，B29 | L5 起逐步 |

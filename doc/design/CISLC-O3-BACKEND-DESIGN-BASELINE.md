@@ -1,6 +1,6 @@
 # CISLC-O3 后端设计基线与决策记录
 
-更新日期：2026-10-07。**最新：第 38 节 B49（能由硬件处理的不交给软件 trap：跨 line/跨页非对齐硬件拆分、`time` CSR 硬件读、Sstc；B31 的“跨 line 报异常”部分被取代）。此前：第 37 节 B48（性能计数器 Zihpm + Sscofpmf）；B45 已暂停。此前：第 36 节 B42～B47（v1 实施计划确认，见 [`../O3-v1-plan.md`](../O3-v1-plan.md)）；B01 改为四宽；B16/B17/B19/B20 已移入附录 A。**
+更新日期：2026-10-07。**最新：第 39 节 B50（L8 访存以 Breeze v1 MESI 协议与 L2 Home 为机制来源，按乱序高吞吐修改；B08/B41 的协调方式被取代）。此前：第 38 节 B49（能由硬件处理的不交给软件 trap：跨 line/跨页非对齐硬件拆分、`time` CSR 硬件读、Sstc；B31 的“跨 line 报异常”部分被取代）。此前：第 37 节 B48（性能计数器 Zihpm + Sscofpmf）；B45 已暂停。此前：第 36 节 B42～B47（v1 实施计划确认，见 [`../O3-v1-plan.md`](../O3-v1-plan.md)）；B01 改为四宽；B16/B17/B19/B20 已移入附录 A。**
 
 原更新日期：2026-10-02。目标工程：`/home/chen/work/CISLC-O3`。本文暂存于 Flow，仅记录设计与只读源码核对；不代表 RTL、编译、仿真、时序或 FPGA 验证完成。
 
@@ -175,7 +175,9 @@ R2 分配 ROB/SQ → 地址/数据准备 → 翻译与访问检查 → 执行完
 - stride 地址预取列入本代计划，与值预测分开。先建立需求访问基线；预取需去重、限流、遵守可访问区域，不能读取有副作用的 MMIO，不因预取失败产生普通指令异常。
 - 预取可能占带宽、MSHR 并污染 cache；通过 useful/late/unused 和资源竞争计数评价，不能称为零代价。
 
-## 10. B08：SD DMA 按行 clean+invalidate 协调（已确认首版方案）
+## 10. B08：SD DMA 按行 clean+invalidate 协调（已确认首版方案；2026-10-07 由 B50 取代）
+
+> **2026-10-07 B50：** DMA 改为 Breeze MESI L2 Home 的一致性 DMA 客户端，本节行事务流程不再实施，见第 39 节。
 
 SD DMA 是当前系统需求。第一版只允许一笔 DMA 行协调事务在途；所有 DMA 行事务探测唯一 L1D，不要求多核目录过滤或共享者向量。PTW 和 AMO 不作为另外的缓存客户端。
 
@@ -647,7 +649,9 @@ CSRFile 承接 M/S pending、enable、delegation、trap entry/return 及软件 S
 - 退休写架构 FPR 时置 FS Dirty，不比较新旧数据；退休项带非零 fflags 时也置 Dirty，即使结果写整数寄存器。软件写浮点 CSR 时，在既定串行更新点置 Dirty。
 - 错误路径不更新架构 fflags/Dirty。接好 CSR、trap 与退休事件的互斥，不给普通 FP 执行增加状态阶段。闭合 B15 末尾的 fflags/FS 待落实项。
 
-### 35.10 B41：L2 inclusive 与回收
+### 35.10 B41：L2 inclusive 与回收（2026-10-07 由 B50 取代回收与协调方式）
+
+> **2026-10-07 B50：** L2 的包含关系、替换、回收与 L1 探测改按 Breeze MESI L2 Home 的目录与 probe 机制，见第 39 节；本节“组相联、PLRU”“容量替换不清 LR/SC reservation”“不在普通访问路径增加查询口或流水级”继续有效，其余以第 39 节为准。
 
 - L2 已纳入首版，不是可选的新增模块。采用 inclusive，覆盖 L1I 和 L1D。**2026-10-02 用户同时确认 L2 组相联、PLRU 替换**；框架按 tree-PLRU 落实（每 set ways-1 位，命中与安装时更新，选 victim 时跳过正在回收、在途或受保护的 way，路数取 2 的幂）。
 - L2 淘汰前保护目标行，定向失效两个 L1，协调在途回填，防止旧响应重新安装。L1D 脏副本先交回最新数据再确认失效；inclusive 不代表 L2 数据始终最新。首版每次探测两个 L1，不要求先建精确的 L1 驻留目录。
@@ -771,6 +775,38 @@ CSRFile 承接 M/S pending、enable、delegation、trap entry/return 及软件 S
 - 设计基线：B06（第 8 节）、B31（第 34 节）、B28（第 31 节）已加取代注记。
 - v1 计划：L8 加 B49 跨 line 拆分；L10 加 `time` CSR、Sstc CSR；L11 加 Sstc 中断交付与 OpenSBI 配置；第 5 节删去 Sstc。
 - RTL 头注释中引用 B31“跨 line 报异常”的位置（`load_store_unit.sv`、`dcache.sv`、`dtlb.sv`、`commit_ctrl.sv`、`backend_perf_events.sv`、`rob.sv`、`o3_types_pkg.sv` 的 `crossline_misalign`）随所在模块被 L8/L10 触及时修正，记入 `LOOP.md` 第 4 节。
+
+## 39. B50：L8 访存以 Breeze v1 MESI/L2 Home 为机制来源，按乱序高吞吐修改（2026-10-07，已定方向）
+
+### 39.1 用户决定
+
+- L8 不自行重新设计缓存一致性：采用 Breeze v1 访存子系统（`~/flow-mem`，分支 `feat/v1-mem-skeleton`，参考 `docs/coherence-l2-rtl-spec.md`、`docs/l1d-rtl-spec.md` 与 `design/src/main/scala/{l1d,l2,coherence}/`）的 MESI 协议与 L2 Home 结构。
+- 单核配置 `nCores=1`：客户端为 O3 的 L1D、L1I 与 SD DMA 各一个（Breeze 协议已有这三类客户端，见其 spec 1.1 节）。DMA 一致性由协议保证，取代 B08 的按行 clean+invalidate 协调与 B41 的自建回收/探测方式。
+- **复用层次是机制，不是逐行翻译。** 沿用：协议消息与 MESI 状态、目录、L1D 的 MSHR/写回/probe 状态机、L2 的慢槽/probe 引擎/内存引擎状态机、流水级划分、节拍安排与同拍冲突规则。按乱序核的高吞吐要求修改规模与并发度。
+- 开工时间：Breeze 访存仿真测试稳定后（其 `docs/v1-mem-plan.md` 第 4～7 步）。开工时重新核对当时的 Breeze 提交，并在 L8 spec 中固定参考提交号。
+
+### 39.2 按乱序吞吐修改的已知项
+
+- L1D 非阻塞：多 MSHR、hit-under-miss、同 line 合并；L1D 多笔 Get 同时在途，链路 `id` 宽度、RSP↓ 缓冲深度、L2 慢槽数随之扩展（Breeze v1 锁定 1 个 MSHR，但其结构按 N 写）。
+- 接 O3 的 LQ/SQ、事件重放与精确异常（B03～B05、B32），以及 L9 起的浮点访存。
+- B36 硬件 A/D：L1D 增加“完整 64 位 PTE 比较 + 条件置 A/D”入口（Breeze PTW 只读，A=0 报 page fault，不符合 B49）。
+- B49 跨 line/跨页非对齐硬件拆分；B09/B35 的 AMO 与 LR/SC reservation 接入。
+- L10 的 PTW 访问 L1D 采用与 Breeze `PtwMemIO` 同形的接口（物理地址请求；64 位数据 + 访问错误响应），L8 替换 L1D 时 PTW 侧不改。
+- L1I 不接收 snoop（Breeze 协议如此）；指令与数据写入的同步继续由 FENCE.I（D25）保证，DMA 写入代码页后由软件执行 FENCE.I。
+
+### 39.3 待定（L8 spec 闭合）
+
+| 项 | Breeze v1 | O3 现状 | 待定内容 |
+| --- | --- | --- | --- |
+| 行大小 | 锁定 32B（一行一拍 256 位链路） | 64B（D11，ICache 按 64B） | 保持 64B 并改链路为 512 位或两拍，或 O3 改 32B（牵动 ICache、B31/B49 跨 line 判定） |
+| 物理地址 | 锁定 32 位，PMA 判 ≥2^32 为不存在 | `paddr_bits=56` | 倾向沿用：可缓存区在 4 GiB 以下（KCU105 DDR 满足），≥2^32 由 PMA 判不存在 |
+| MSHR / 慢槽 / 在途上界 | 1 / 2 / Get 1 | cfg 建议 4～8 | 按吞吐与资源定 |
+| L2 容量、路数 | 参数推导 | cfg 现值 | L8 spec 定，L11 综合后调整 |
+
+### 39.4 验证
+
+- B47 的等价检查只适用于逐行翻译的组件，不适用于本节（结构已修改）。L8 用 O3 自己的测试，借用 Breeze 的校验思路：黄金内存逐 load 比对、SWMR 与目录一致性监视、看门狗、极小 cache 压力配置。
+- 验收仍按 2026-10-06 策略：本级机制定向测试 + 整核自查；litmus 与完整一致性测试推迟到 FPGA。
 
 ## 附录 A：已被取代的历史决策
 
