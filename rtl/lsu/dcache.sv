@@ -252,7 +252,10 @@ module dcache import o3_types_pkg::*; #(
             if(decision[p].valid) begin
                 if(s2_q[p].req.exc.valid) decision[p].status=DC_ERROR;
                 else if(s2_q[p].req.translation_miss) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_TLB_MISS;end
-                else if((64'(s2_q[p].req.paddr)>>MEM_PADDR_W)!=0 || (s2_q[p].internal &&
+                // STA checks the store privilege/PMP before ROB completion.
+                // A committed drain preserves that authorization; page-table
+                // clients still perform their physical S-mode PMP check here.
+                else if((64'(s2_q[p].req.paddr)>>MEM_PADDR_W)!=0 || (s2_q[p].internal && s2_q[p].req.src!=DC_SRC_STORE_DRAIN &&
                     !pmp_allow(pmp_i,s2_q[p].req.paddr,1<<int'(s2_q[p].req.size),2'd1,!want_m,want_m,1'b0)) || !pma_main(64'(s2_q[p].req.paddr),1<<int'(s2_q[p].req.size))) begin
                     decision[p].status=DC_ERROR;
                     decision[p].exc='{valid:1'b1,cause:(want_m ? o3_isa_pkg::EXCEPTION_CAUSE_STORE_ACCESS_FAULT:o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ACCESS_FAULT),tval:s2_q[p].req.vaddr};
