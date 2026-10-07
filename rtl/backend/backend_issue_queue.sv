@@ -7,7 +7,7 @@
  * prevent repeated FU selection, at most one INT-source FP candidate per cycle.
  * INT: retains MUL/DIV occupancy constraints and fused-pair handling. MEM: single
  * issue lets stores bypass unready entries; loads issue in program order within the IQ,
- * retaining allow_load_i suppression while the replay slot is occupied.
+ * LQ/SQ replay capacity is arbitrated at IS outside the IQ.
  * L3 闭环简化：偏离 B04 非阻塞访存；单 replay 槽下乱序 load 会形成等待环。
  * L8 换成 Breeze 访存时整体替换此 load 顺序限制；store 选择规则保持不变。
  * Only issue_valid && issue_ready deletes a candidate; denied INT read grants leave it queued.
@@ -24,7 +24,7 @@ module backend_issue_queue
     parameter  o3_cfg_pkg::backend_cfg_t CFG,
     parameter  o3_types_pkg::iq_kind_e KIND,          // 实例选择，无默认值
     localparam int ENQ_WIDTH = CFG.dispatch.width,
-    localparam int ISSUE_WIDTH = (KIND == o3_types_pkg::IQ_INT) ? CFG.exec.num_alu : (KIND == o3_types_pkg::IQ_FP ? 2 : 1),
+    localparam int ISSUE_WIDTH = (KIND == o3_types_pkg::IQ_INT) ? CFG.exec.num_alu : (KIND == o3_types_pkg::IQ_FP ? 2 : (KIND==o3_types_pkg::IQ_MEM ? CFG.lsu.agu_pipes:1)),
     parameter int WAKEUP_WIDTH = CFG.exec.int_prf_write_ports,
     localparam int DEPTH = (KIND == o3_types_pkg::IQ_INT) ? CFG.dispatch.int_iq_depth
                          : (KIND == o3_types_pkg::IQ_MEM) ? CFG.dispatch.mem_iq_depth
@@ -47,7 +47,6 @@ module backend_issue_queue
     input logic [4:0] fp_regread_ready_i,
     output logic [2:0] issue_fp_fu_o [ISSUE_WIDTH-1:0],
     input  logic mul_ready_i, mul_pair_ready_i, div_ready_i,
-    input  logic allow_load_i,  // Memory replay 槽已占用/将占用时仍可选 store
     input  logic wakeup_valid_i [WAKEUP_WIDTH-1:0],
     input  logic [PREG_IDX_WIDTH-1:0] wakeup_preg_i [WAKEUP_WIDTH-1:0],
     output renamed_uop_t [ISSUE_WIDTH-1:0] issue_uop_o,
@@ -123,22 +122,8 @@ module backend_issue_queue
             int chosen;
             chosen = -1;
             for (int idx = 0; idx < DEPTH; idx++) begin
-                logic older_load;
-                older_load = 1'b0;
-                if (KIND == o3_types_pkg::IQ_MEM && queue_q[idx].is_load) begin
-                    // 队列按程序顺序压紧，queue_q[0] 是最老有效项；沿用 ROB 环形
-                    // 距离比较，跨索引回绕仍按年龄排序。未就绪的旧 load 也必须挡住。
-                    for (int other = 0; other < DEPTH; other++) begin
-                        if (queue_q[other].valid && queue_q[other].is_load
-                         && ((int'(queue_q[other].rob_idx) + CFG.rob.entries - int'(queue_q[0].rob_idx)) % CFG.rob.entries
-                           < (int'(queue_q[idx].rob_idx) + CFG.rob.entries - int'(queue_q[0].rob_idx)) % CFG.rob.entries)) begin
-                            older_load = 1'b1;
-                        end
-                    end
-                end
                 if (!(resolution_valid_i && resolution_mispredict_i) && (chosen < 0) && queue_q[idx].valid && !selected[idx]
                  && (!OLDEST_ONLY || (idx == 0))
-                 && (KIND != o3_types_pkg::IQ_MEM || !queue_q[idx].is_load || (allow_load_i && !older_load))
                  && (queue_q[idx].ext.fu_class!=o3_types_pkg::FU_MUL ||
                      (!picked_mul && (queue_q[idx].mdu_fuse.valid ? mul_pair_ready_i:mul_ready_i)))
                  && (queue_q[idx].ext.fu_class!=o3_types_pkg::FU_DIV || (!picked_div && div_ready_i))

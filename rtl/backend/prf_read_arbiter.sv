@@ -16,6 +16,7 @@ module prf_read_arbiter
     localparam int PRF_READ_PORTS  = CFG.exec.int_prf_read_ports,
     localparam int NUM_ROB_ENTRIES = CFG.rob.entries,
     localparam int PORT_W          = $clog2(PRF_READ_PORTS),
+    localparam int P=CFG.lsu.agu_pipes,
     localparam int ROB_W           = $clog2(NUM_ROB_ENTRIES)
 ) (
     input  logic                        issue_block_i,   // 仅 M；正确解析不阻塞
@@ -24,9 +25,9 @@ module prf_read_arbiter
     input  renamed_uop_t [NUM_INT_ALUS-1:0] int_issue_uop_i,
     input  logic [NUM_INT_ALUS-1:0]     int_issue_valid_i,
     input  logic                        alu_regread_ready_i [NUM_INT_ALUS-1:0],
-    input  renamed_uop_t                mem_issue_uop_i,
-    input  logic                        mem_issue_valid_i,
-    input  logic                        mem_accept_i,    // Memory 执行级可接收
+    input  renamed_uop_t [P-1:0] mem_issue_uop_i,
+    input  logic [P-1:0] mem_issue_valid_i,
+    input  logic mem_accept_i[P],    // Memory 执行级可接收
     input  renamed_uop_t                br_issue_uop_i,
     input  logic                        br_issue_valid_i,
     input  logic                        branch_regread_ready_i,
@@ -38,12 +39,12 @@ module prf_read_arbiter
     output logic [PORT_W-1:0] fp_src1_port_o,
 
     output logic [NUM_INT_ALUS-1:0]     int_read_grant_o,
-    output logic                        mem_read_grant_o,
+    output logic [P-1:0] mem_read_grant_o,
     output logic                        branch_read_grant_o,
     output logic [PORT_W-1:0]           int_src1_port_o [NUM_INT_ALUS-1:0],
     output logic [PORT_W-1:0]           int_src2_port_o [NUM_INT_ALUS-1:0],
-    output logic [PORT_W-1:0]           mem_src1_port_o,
-    output logic [PORT_W-1:0]           mem_src2_port_o,
+    output logic [PORT_W-1:0]           mem_src1_port_o[P],
+    output logic [PORT_W-1:0]           mem_src2_port_o[P],
     output logic [PORT_W-1:0]           branch_src1_port_o,
     output logic [PORT_W-1:0]           branch_src2_port_o,
     output logic [PREG_IDX_WIDTH-1:0]   prf_rd_addr_o [PRF_READ_PORTS-1:0]
@@ -57,7 +58,7 @@ module prf_read_arbiter
     // 从老到年轻贪心扫描；一条uop所需的1/2个读口必须原子取得，否则留在IQ。
     always_comb begin
         logic [NUM_INT_ALUS-1:0] considered_int;
-        logic considered_mem;
+        logic [P-1:0] considered_mem;
         logic considered_branch, considered_fp;
         int unsigned read_used;
 
@@ -68,8 +69,8 @@ module prf_read_arbiter
         fp_read_grant_o=0; fp_src1_port_o='0;
         int_src1_port_o = '{default: '0};
         int_src2_port_o = '{default: '0};
-        mem_src1_port_o = '0;
-        mem_src2_port_o = '0;
+        mem_src1_port_o = '{default:'0};
+        mem_src2_port_o = '{default:'0};
         branch_src1_port_o = '0;
         branch_src2_port_o = '0;
         considered_int = '0;
@@ -77,7 +78,7 @@ module prf_read_arbiter
         considered_branch = 1'b0; considered_fp=0;
         read_used = 0;
 
-        for (int choice = 0; choice < NUM_INT_ALUS + 3; choice++) begin
+        for (int choice = 0; choice < NUM_INT_ALUS + P + 2; choice++) begin
             int chosen_kind;
             int chosen_idx;
             int unsigned chosen_age;
@@ -97,12 +98,9 @@ module prf_read_arbiter
                     chosen_age = rob_age(int_issue_uop_i[alu].rob_idx);
                 end
             end
-            if (!issue_block_i && !considered_mem && mem_issue_valid_i
-             && mem_accept_i
-             && ((chosen_kind < 0) || (rob_age(mem_issue_uop_i.rob_idx) < chosen_age))) begin
-                chosen_kind = 1;
-                chosen_idx = 0;
-                chosen_age = rob_age(mem_issue_uop_i.rob_idx);
+            for(int m=0;m<P;m++) if (!issue_block_i && !considered_mem[m] && mem_issue_valid_i[m]
+             && mem_accept_i[m] && ((chosen_kind<0) || rob_age(mem_issue_uop_i[m].rob_idx)<chosen_age)) begin
+                chosen_kind=1;chosen_idx=m;chosen_age=rob_age(mem_issue_uop_i[m].rob_idx);
             end
             if (!issue_block_i && !considered_branch && br_issue_valid_i
              && branch_regread_ready_i
@@ -137,19 +135,19 @@ module prf_read_arbiter
                     end
                 end
             end else if (chosen_kind == 1) begin
-                considered_mem = 1'b1;
-                read_need = int'(mem_issue_uop_i.rs1_read_en)
-                          + int'(mem_issue_uop_i.rs2_read_en && mem_issue_uop_i.ext.rs2_dom!=o3_types_pkg::RD_FP);
+                considered_mem[chosen_idx] = 1'b1;
+                read_need = int'(mem_issue_uop_i[chosen_idx].rs1_read_en)
+                          + int'(mem_issue_uop_i[chosen_idx].rs2_read_en && mem_issue_uop_i[chosen_idx].ext.rs2_dom!=o3_types_pkg::RD_FP);
                 if ((read_used + read_need) <= PRF_READ_PORTS) begin
-                    mem_read_grant_o = 1'b1;
-                    if (mem_issue_uop_i.rs1_read_en) begin
-                        mem_src1_port_o = PORT_W'(read_used);
-                        prf_rd_addr_o[read_used] = mem_issue_uop_i.src1_preg;
+                    mem_read_grant_o[chosen_idx] = 1'b1;
+                    if (mem_issue_uop_i[chosen_idx].rs1_read_en) begin
+                        mem_src1_port_o[chosen_idx] = PORT_W'(read_used);
+                        prf_rd_addr_o[read_used] = mem_issue_uop_i[chosen_idx].src1_preg;
                         read_used++;
                     end
-                    if (mem_issue_uop_i.rs2_read_en && mem_issue_uop_i.ext.rs2_dom!=o3_types_pkg::RD_FP) begin
-                        mem_src2_port_o = PORT_W'(read_used);
-                        prf_rd_addr_o[read_used] = mem_issue_uop_i.src2_preg;
+                    if (mem_issue_uop_i[chosen_idx].rs2_read_en && mem_issue_uop_i[chosen_idx].ext.rs2_dom!=o3_types_pkg::RD_FP) begin
+                        mem_src2_port_o[chosen_idx] = PORT_W'(read_used);
+                        prf_rd_addr_o[read_used] = mem_issue_uop_i[chosen_idx].src2_preg;
                         read_used++;
                     end
                 end

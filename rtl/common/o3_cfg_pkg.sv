@@ -43,14 +43,13 @@ package o3_cfg_pkg;
     // L10 X12 physical map; the exclusive ends permit full-range checking.
     parameter logic [63:0] PMA_MAIN_BASE=64'h80000000;
     parameter logic [63:0] PMA_MAIN_END=64'h100000000;
-    parameter logic [63:0] PMA_DTCM_BASE=64'h11000000;
-    parameter logic [63:0] PMA_DTCM_END=64'h11040000;
     typedef struct packed {
         // 待定：RV64GC/Linux 下 Sv39 有效虚拟地址为 39 位符号扩展；PC/目标寄存
         // 保存 39、40 还是 64 位，以及非规范地址的异常检查方式未定（B12 第 4 条）。
         int unsigned vaddr_bits;
         // 待定：Sv39 物理地址最多 56 位；实现位宽依 KCU105 地址图确定。
         int unsigned paddr_bits;
+        int unsigned mem_paddr_bits;
         // 待定：实现支持的 ASID 位宽（D26 未定）。
         int unsigned asid_bits;
         // 待定：satp 切换与旧请求隔离使用的翻译上下文 epoch 位宽（D27 不固定）。
@@ -126,7 +125,7 @@ package o3_cfg_pkg;
         int unsigned sets;                // 待定：容量未定；16KiB/4-way/64 sets 只是讨论例子（第 8 节）
         int unsigned ways;                // 待定（第 8 节）
         int unsigned mshrs;               // 待定：MSHR 数、合并 fanout、需求/预取份额（第 9.3 节）
-        int unsigned refill_beat_bytes;   // 待定：回填 beat 宽度（第 9.1 节）
+        int unsigned refill_beat_bytes;   // 兼容配置字段，L8a 回填为一拍整行，不参与功能
         int unsigned l2_txn_id_bits;      // 待定：L1I→L2 事务身份宽度（需覆盖 demand 与预取在途数）
     } icache_cfg_t;
 
@@ -209,10 +208,10 @@ package o3_cfg_pkg;
     typedef struct packed {
         int unsigned lq_depth;            // 待定
         int unsigned sq_depth;            // 待定
+        int unsigned mem_pipes;
+        int unsigned ld_result_fifo;
         int unsigned agu_pipes;           // 待定：“1 条 load + 1 条 load/store”只是建议（B03）
         int unsigned lq_gen_bits;         // 待定：LQ 事务身份代际宽度；现有 1 位不足（B04）
-        logic [63:0] dtcm_base;           // 现状沿用 0x1100_0000：DTCM 不在基线中，去留未设计
-        int unsigned dtcm_bytes;          // 现状沿用 256KiB：同上
     } lsu_cfg_t;
 
     typedef struct packed {
@@ -222,7 +221,8 @@ package o3_cfg_pkg;
         int unsigned banks;               // 待定：4 bank、按整行或行内 word 映射均未冻结（B03）
         int unsigned mshrs;               // 待定：8 为建议（B03）
         int unsigned wb_buffers;          // 待定：脏行写回缓冲数
-        int unsigned refill_beat_bytes;   // 待定
+        int unsigned mshr_reserve;
+        bit rfo_enable;
     } dcache_cfg_t;
 
     typedef struct packed {
@@ -239,15 +239,9 @@ package o3_cfg_pkg;
     // tree-PLRU 替换（每 set ways-1 位，命中与安装时更新；选 victim 跳过正在回收/在途/受保护的 way）。
     // 以下规模参数均未冻结。
     typedef struct packed {
-        int unsigned sets;                // 待定
-        int unsigned ways;                // 待定：tree-PLRU 要求 2 的幂
-        int unsigned line_bytes;          // 待定
-        int unsigned mshrs;               // 待定：下级不能成为全局串行瓶颈（B03）
-        int unsigned recall_slots;        // 待定：同时在途的 inclusive 回收事务数（B41）
-        int unsigned wb_buffers;          // 待定：L2→DDR 写回可靠保存位置数；回收启动前预留（B41）
-        int unsigned axi_id_bits;         // 待定
-        int unsigned axi_data_bits;       // 待定
-        int unsigned dma_inflight_lines;  // 已定 1：一笔 DMA 行协调事务在途（B08）
+        int unsigned sets, ways, line_bytes;
+        int unsigned slots, put_buffers, mem_write_buffers;
+        int unsigned axi_id_bits, axi_data_bits;
     } l2_cfg_t;
 
     typedef struct packed {
@@ -284,6 +278,7 @@ package o3_cfg_pkg;
         core: '{
             vaddr_bits:        64,
             paddr_bits:        56,
+            mem_paddr_bits:    32,
             asid_bits:         16,
             xlate_epoch_bits:  8,
             commit_width:      4,
@@ -336,7 +331,7 @@ package o3_cfg_pkg;
                 ways:              4,
                 mshrs:             4,
                 refill_beat_bytes: 16,
-                l2_txn_id_bits:    4
+                l2_txn_id_bits:    2
             },
             itlb: '{
                 entries: 32,
@@ -375,9 +370,9 @@ package o3_cfg_pkg;
             },
             exec: '{
                 num_alu:             2,
-                int_prf_read_ports:  4,
-                int_prf_write_ports: 2,
-                fp_prf_read_ports:   7,
+                int_prf_read_ports:  6,
+                int_prf_write_ports: 3,
+                fp_prf_read_ports:   8,
                 fp_prf_write_ports:  2,
                 mul_stages:          4,
                 mul_result_slots:    8,
@@ -393,18 +388,13 @@ package o3_cfg_pkg;
                 lq_depth:    16,
                 sq_depth:    16,
                 agu_pipes:   2,
-                lq_gen_bits: 8,
-                dtcm_base:   64'h0000_0000_1100_0000,
-                dtcm_bytes:  256 * 1024
+                mem_pipes:   2,
+                ld_result_fifo: 2,
+                lq_gen_bits: 8
             },
             dcache: '{
-                line_bytes:        64,
-                sets:              64,
-                ways:              4,
-                banks:             4,
-                mshrs:             4,
-                wb_buffers:        2,
-                refill_beat_bytes: 16
+                line_bytes:64, sets:64, ways:8, banks:8, mshrs:4,
+                wb_buffers:2, mshr_reserve:1, rfo_enable:1
             },
             mmu: '{
                 dtlb_entries:       32,
@@ -416,15 +406,8 @@ package o3_cfg_pkg;
                 ptw_slots:          1
             },
             l2: '{
-                sets:               256,
-                ways:               4,
-                line_bytes:         64,
-                mshrs:              8,
-                recall_slots:       2,
-                wb_buffers:         4,
-                axi_id_bits:        4,
-                axi_data_bits:      128,
-                dma_inflight_lines: 1
+                sets:512, ways:8, line_bytes:64, slots:8,
+                put_buffers:2, mem_write_buffers:2, axi_id_bits:4, axi_data_bits:128
             },
             perf: '{
                 counter_bits: 64

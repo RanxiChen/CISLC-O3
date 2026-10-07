@@ -93,7 +93,10 @@ package o3_types_pkg;
     localparam int RAS_CNT_W     = $clog2(RAS_DEPTH + 1);
 
     localparam int ICACHE_LINE_BYTES = O3_CFG.fe.icache.line_bytes;
-    localparam int L2_BEAT_BYTES     = O3_CFG.fe.icache.refill_beat_bytes;
+    localparam int MEM_PADDR_W = O3_CFG.core.mem_paddr_bits;
+    localparam int COH_ID_W = O3_CFG.fe.icache.l2_txn_id_bits;
+    localparam int COH_ADDR_W = MEM_PADDR_W-$clog2(ICACHE_LINE_BYTES);
+    localparam int COH_DATA_W = ICACHE_LINE_BYTES*8;
     localparam int L2_TXN_ID_W       = O3_CFG.fe.icache.l2_txn_id_bits;
 
     // 单个上下文全部折叠值 C 的总位宽：sum_i(n_i + 2*t_i - 1)（D22）。
@@ -577,14 +580,8 @@ package o3_types_pkg;
     function automatic logic pma_main(input logic [63:0] addr, input int unsigned bytes);
         logic [64:0] last_addr;
         last_addr={1'b0,addr}+65'(bytes);
-        return addr>=o3_cfg_pkg::PMA_MAIN_BASE && last_addr<=65'(o3_cfg_pkg::PMA_MAIN_END);
+        return bytes>0 && addr>=o3_cfg_pkg::PMA_MAIN_BASE && last_addr<=65'(o3_cfg_pkg::PMA_MAIN_END) && last_addr<=65'h100000000;
     endfunction
-    function automatic logic pma_dtcm(input logic [63:0] addr, input int unsigned bytes);
-        logic [64:0] last_addr;
-        last_addr={1'b0,addr}+65'(bytes);
-        return addr>=o3_cfg_pkg::PMA_DTCM_BASE && last_addr<=65'(o3_cfg_pkg::PMA_DTCM_END);
-    endfunction
-
     // 前端系统同步请求（D25～D28）。由 commit_ctrl 统一编排（2026-10-02 确认）：
     // 前端 frontend_sync_ctrl 只负责前端部分（停取指/预取、隔离旧请求、ICache/ITLB/PMP 派生
     // 状态同步），不再自行发起 DCache clean。FENCE.I 的 SQ drain 与 L1D 脏行扫描在发出本请求前
@@ -602,39 +599,37 @@ package o3_types_pkg;
         L2_PREFETCH = 1'b1
     } l2_req_kind_e;
 
+    // L8a four independent coherence links. One beat carries one 64B line.
+    typedef logic [COH_ADDR_W-1:0] coh_addr_t;
+    typedef logic [COH_ID_W-1:0] coh_id_t;
+    typedef logic [COH_DATA_W-1:0] coh_data_t;
+    typedef enum logic [1:0] {COH_GETS,COH_GETM,COH_READ,COH_MASKWRITE} coh_req_op_e;
+    typedef enum logic [1:0] {COH_PUT,COH_INVACK,COH_DOWNACK} coh_up_op_e;
+    typedef enum logic {COH_INV,COH_DOWN} coh_snp_op_e;
+    typedef enum logic [2:0] {COH_DATAS,COH_DATAE,COH_ACKE,COH_PUTACK,COH_READDATA,COH_WRITEACK} coh_down_op_e;
+    typedef enum logic [1:0] {COH_I,COH_S,COH_E,COH_M} coh_state_e;
+    typedef enum logic [1:0] {DIR_NONE,DIR_SHARED,DIR_UNIQUE} coh_dir_e;
     typedef struct packed {
-        paddr_t                 line_paddr;
-        l2_req_kind_e           kind;
-        logic [L2_TXN_ID_W-1:0] txn_id;
-    } l2_req_t;
-
+        coh_req_op_e op; coh_addr_t addr; coh_id_t id;
+        logic [ICACHE_LINE_BYTES-1:0] mask; coh_data_t data;
+    } coh_req_t;
     typedef struct packed {
-        logic                       valid;
-        logic [L2_TXN_ID_W-1:0]     txn_id;
-        logic [L2_BEAT_BYTES*8-1:0] data;
-        logic                       last;
-        logic                       error;
-    } l2_resp_t;
-
-    // L2 inclusive 回收（B41，2026-10-02 确认）：L2 淘汰某行前定向失效 L1I 与 L1D。
-    // 首版每次两个 L1 都探测，不建 L1 驻留目录；recall_id 区分在途回收事务，旧应答不得
-    // 确认新事务。L1I 无脏数据，只需失效并协调同行在途回填；L1D 应答见 dc_probe_resp_t。
-    // 编码与 recall_id 宽度待定（随 L2 回收槽数 CFG.be.l2.recall_slots 确定）。
-    localparam int L2_RECALL_SLOTS = O3_CFG.be.l2.recall_slots;
-    localparam int L2_RECALL_ID_W  = (L2_RECALL_SLOTS > 1) ? $clog2(L2_RECALL_SLOTS) : 1;
-    typedef logic [L2_RECALL_ID_W-1:0] l2_recall_id_t;
-
+        coh_up_op_e op; logic has_data; coh_addr_t addr; coh_id_t id; coh_data_t data;
+    } coh_rsp_up_t;
+    typedef struct packed {coh_snp_op_e op; logic owner; coh_addr_t addr;} coh_snp_t;
+    typedef struct packed {coh_down_op_e op; coh_id_t id; logic error; coh_data_t data;} coh_rsp_down_t;
+    // The task_kind payload is captured at S0, never reread from a mutable slot.
+    localparam int L2_SLOT_W = $clog2(O3_CFG.be.l2.slots);
+    localparam int L2_WAY_W = $clog2(O3_CFG.be.l2.ways);
+    typedef enum logic [1:0] {L2_EVICT,L2_INSTALL,L2_REPLAY} l2_task_e;
+    typedef enum logic [1:0] {L2_NEED_PROBE,L2_EVICT_DONE,L2_RETRY,L2_FINISHED} l2_done_e;
     typedef struct packed {
-        paddr_t        line_paddr;
-        l2_recall_id_t recall_id;
-    } l1_recall_req_t;
-
-    typedef struct packed {
-        logic          valid;
-        l2_recall_id_t recall_id;
-        // 1：本 L1 已不再持有该行，且同行在途回填已被标记为不可安装（不会迟到重新装回）。
-        logic        quiesced;
-    } l1i_recall_resp_t;
+        logic [1:0] client; coh_req_t req; logic is_probe;
+        logic [L2_WAY_W-1:0] way; logic victim_valid; coh_addr_t victim_addr;
+        coh_snp_op_e probe_op; logic probe_owner;
+        logic [L2_SLOT_W-1:0] slot; l2_task_e task_kind;
+        coh_data_t refill; logic error, collected;
+    } l2_work_t;
 
     // ============================================================
     // 预取（D18/D19）
@@ -1006,49 +1001,38 @@ package o3_types_pkg;
     // Load 等待原因（B04/B32 新共识 1）。保守依赖：更老 store 地址未知时等待该依赖条件解除
     // （地址写入 SQ 或该 store 被取消/提交排出），不能实现成固定拍数超时后无条件越过；
     // 首版不加入未知旧 store 地址下的推测越过与违例恢复。每种原因由对应事件唤醒，避免每拍盲目重试。
-    typedef enum logic [2:0] {
-        LDW_NONE,
-        LDW_OLDER_STORE_ADDR,   // 更老 store 地址未知
-        LDW_OLDER_STORE_DATA,   // 完整覆盖的更老 store 数据未就绪 / 部分覆盖（保守等待）
-        LDW_TLB_MISS,           // 等 PTW
-        LDW_DCACHE,             // MSHR 回填 / bank 冲突 / MSHR 满（细分见 dc_status_e）
-        LDW_DMA_BLOCK,          // DMA 行保护
-        LDW_AD_ORDER            // 更老 store 的 D=0 慢路径未完成，年轻访存不得越过（B36）
+    typedef enum logic [3:0] {
+        LDW_NONE,LDW_OLDER_STORE_ADDR,LDW_OLDER_STORE_DATA,LDW_TLB_MISS,
+        LDW_MSHR,LDW_MSHR_FULL,LDW_WB_LINE,LDW_CONFLICT,LDW_SNAP,LDW_BANK,LDW_AD_ORDER
     } ld_wait_e;
-
+    typedef enum logic [2:0] {DC_OK,DC_MISS_WAIT,DC_REPLAY,DC_ERROR} dc_status_e;
     typedef struct packed {
-        dc_src_e          src;
-        paddr_t           paddr;
-        logic [1:0]       size;          // 1/2/4/8B
-        logic             write;
-        logic [XLEN-1:0]  wdata;
-        logic [7:0]       wmask;
-        amo_op_e          amo_op;
-        lq_tag_t          lq_tag;        // load / replay 身份
-        sq_idx_t          sq_idx;        // store drain 身份
+        dc_src_e src; paddr_t paddr; vaddr_t vaddr; logic [1:0] size;
+        logic write, is_sta, is_signed, is_flw, is_rob_head;
+        logic forward_valid, blocked, translation_miss;
+        logic [XLEN-1:0] forward_data; exc_info_t exc;
+        logic [XLEN-1:0] wdata; logic [7:0] wmask; amo_op_e amo_op;
+        lq_tag_t lq_tag; sq_idx_t sq_idx; rob_idx_t rob_idx; br_mask_t br_mask;
     } dcache_req_t;
-
-    // 区分等待原因，避免盲目重试（B04 6.2 节）。
-    typedef enum logic [2:0] {
-        DC_OK, DC_MISS_WAIT, DC_BANK_CONFLICT, DC_MSHR_FULL, DC_DMA_BLOCK, DC_ERROR
-    } dc_status_e;
-
     typedef struct packed {
-        logic             valid;
-        dc_src_e          src;
-        dc_status_e       status;
-        lq_tag_t          lq_tag;
-        sq_idx_t          sq_idx;
-        logic [XLEN-1:0]  rdata;
-        logic             sc_fail;       // SC 失败返回非零，不是异常（B09）
+        logic valid; dc_src_e src; dc_status_e status; ld_wait_e reason;
+        coh_id_t mshr_id; lq_tag_t lq_tag; sq_idx_t sq_idx;
+        logic [XLEN-1:0] rdata; logic sc_fail; exc_info_t exc;
     } dcache_resp_t;
-
-    // MSHR 回填完成唤醒：等待该行的 load 重查 SQ/cache（B04）。
     typedef struct packed {
-        logic   valid;
-        paddr_t line_paddr;
+        logic valid; coh_id_t mshr_id; logic err, mshr_free, wb_free;
     } dc_wake_t;
-
+    localparam int DC_WAY_W=$clog2(O3_CFG.be.dcache.ways);
+    typedef struct packed {
+        coh_addr_t line_addr; logic is_getm, upgrade;
+        logic [DC_WAY_W-1:0] way; logic wb_wait; coh_id_t wb_id;
+        coh_data_t refill; logic err,grant_e,ack_e;
+    } dc_line_txn_t;
+    typedef enum logic [2:0] {DM_IDLE,DM_WB_READ,DM_SEND,DM_WAIT,DM_INSTALL} dc_mshr_state_e;
+    typedef struct packed {
+        coh_addr_t line_addr; logic has_data; logic [DC_WAY_W-1:0] way;
+        coh_data_t data;
+    } dc_wb_t;
     // TLB 查询结果（DTLB；ITLB 用独立端口，语义相同）。
     typedef struct packed {
         logic             hit;
@@ -1088,33 +1072,6 @@ package o3_types_pkg;
         logic [L2_LINE_BYTES*8-1:0] rdata;
         logic         error;
     } dma_resp_t;
-
-    // L2 → L1D 的维护探测，共用一个维护入口（2026-10-02 确认：常规 load/store 流水不新增
-    // 一致性查询口；探测走维护队列与 bank 仲裁）：
-    // - PROBE_DMA（B08）：行保护 + clean+invalidate；保留读/写意图，DMA 写取得行保护权时才与
-    //   reservation 冲突检查排序（B35）。
-    // - PROBE_RECALL（B41）：L2 inclusive 淘汰前定向失效；脏副本先交回最新数据再确认。
-    //   容量回收不清 LR/SC reservation。
-    typedef enum logic {
-        PROBE_DMA    = 1'b0,
-        PROBE_RECALL = 1'b1
-    } dc_probe_kind_e;
-
-    typedef struct packed {
-        dc_probe_kind_e kind;
-        paddr_t         line_paddr;
-        logic           dma_write;    // 仅 PROBE_DMA 有意义
-        l2_recall_id_t  recall_id;    // 仅 PROBE_RECALL 有意义
-    } dc_probe_req_t;
-
-    // 探测应答不依赖普通 miss 的空闲 MSHR（B41）；dirty_data 只在 had_dirty 时有效。
-    typedef struct packed {
-        logic           valid;
-        dc_probe_kind_e kind;
-        l2_recall_id_t  recall_id;
-        logic           had_dirty;
-        logic [DC_LINE_BYTES*8-1:0] dirty_data;
-    } dc_probe_resp_t;
 
     // ------------------------------------------------------------
     // LR/SC reservation（B35）
@@ -1316,10 +1273,15 @@ package o3_types_pkg;
         BE_PTE_A_UPDATE = 'h27,
         BE_PTE_D_UPDATE = 'h28,
         BE_SFENCE = 'h29,
-        BE_PERF_NUM = 'h2a
+        BE_DC_MSHR_ALLOC = 'h2a, BE_DC_MSHR_MERGE = 'h2b,
+        BE_DC_REPLAY_SNAP = 'h2c, BE_DC_WB_PUT = 'h2d, BE_DC_PROBE = 'h2e,
+        BE_RFO_ISSUED = 'h2f, BE_RFO_DROPPED = 'h30, BE_DC_MSHR_OCCUPANCY = 'h31,
+        BE_L2_HIT = 'h32, BE_L2_MISS = 'h33, BE_L2_SLOT_FULL = 'h34,
+        BE_L2_PROBE = 'h35, BE_L2_WRITEBACK = 'h36, BE_RFO_USEFUL = 'h37,
+        BE_PERF_NUM = 'h38
     } be_perf_evt_e;
 
-    localparam int BE_PERF_INC_W = $clog2(RENAME_W + 1);
+    localparam int BE_PERF_INC_W = $clog2(O3_CFG.be.l2.slots + 1);
     typedef logic [BE_PERF_NUM-1:0][BE_PERF_INC_W-1:0] be_perf_t;
 
 endpackage

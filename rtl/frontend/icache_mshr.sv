@@ -1,72 +1,60 @@
-/**
- * ICache MSHR —— 未完成 miss 跟踪、同 line 合并、回填安装
- *
- * 作用：
- * - 为 demand 与预取 miss 分配行事务，合并同 line 请求，向 L2 发请求，收集回填 beat，
- *   完成后通过 ICache 写口安装整条 line，再唤醒等待该 line 的请求（第 9 节）。
- *
- * 目标机制：
- * - 已定（D13）：回填相关冲突采用等待，保留请求/状态，不靠反复重发。
- * - 已定（D14）：hit under miss；一次 miss 不全局停住 ICache。
- * - 已定（第 9.2 节）：未完整、合法安装的 line 不参与有效命中；完整 line 可用后才
- *   发布 valid；read-during-write 行为必须显式规避或定义。
- * - 已定（第 9.2 节）：refill 必须能继续推进，不被等待该 refill 的 demand 反向堵死。
- * - 已定（D17）：错误路径已发出的 miss 可以完成并安装；返回在返回队列侧丢弃。
- * - 已定（D27）：satp 切换后旧事务允许自然返回，保留身份直到返回完成，不提前复用。
- * - 已定（D25）：FENCE.I 失效前等旧取指/预取在途操作结束，避免失效后再次安装旧数据。
- *
- * 细节待定：
- * - MSHR 数量、合并 fanout、被杀请求所占资源的释放、需求与预取保留份额（第 9.3 节）。
- * - 阻塞粒度（整 bank、set、way 或 line，第 9.2 节）；替换策略。
- * - 回填 beat 宽度（第 9.1 节）。
- *
- * 当前实现状态：空壳。只有端口与注释，没有任何逻辑，输出未驱动。
- *
- * 目标周期行为：
- * - 周期 N：S3 miss 时 alloc_valid_i；已有同 line 项则合并，否则分配新项（满则 alloc_ready_o=0）。
- * - 之后：向 L2 发请求；每个 l2_resp_i beat 写入行缓冲；last 后请求写口安装。
- * - 安装完成拍：fill_done_o 广播 line 地址，ICache 唤醒等待请求重新查询。
- *
- * 本阶段不写测试代码和仿真代码。
- */
-module icache_mshr
-    import o3_types_pkg::*;
-#(
-    parameter o3_cfg_pkg::frontend_cfg_t CFG
-) (
-    input  logic          clk_i,
-    input  logic          rst_i,
-
-    // 分配/合并（来自 S3 miss 或预取）
-    input  logic          alloc_valid_i,
-    output logic          alloc_ready_o,
-    input  paddr_t        alloc_line_paddr_i,
-    input  l2_req_kind_e  alloc_kind_i,
-    output logic          alloc_merged_o,
-
-    // 在途查询：预取过滤用
-    input  paddr_t        probe_line_paddr_i,
-    output logic          probe_inflight_o,
-
-    // L2
-    output logic          l2_req_valid_o,
-    input  logic          l2_req_ready_i,
-    output l2_req_t       l2_req_o,
-    input  l2_resp_t      l2_resp_i,
-    output logic          l2_resp_ready_o,
-
-    // 回填安装（经 ICache 每 bank 写口，与读口冲突时等待）
-    output logic          fill_wr_valid_o,
-    input  logic          fill_wr_ready_i,
-    output paddr_t        fill_wr_line_paddr_o,
-    output logic [ICACHE_LINE_BYTES*8-1:0] fill_wr_data_o,
-    output logic          fill_wr_error_o,
-    output logic          fill_done_o,
-    output paddr_t        fill_done_line_paddr_o,
-
-    output logic          idle_o,          // 无在途事务：FENCE.I/同步等待用
-
-    output fe_perf_t      perf_o
-);
-    // 未实现：MSHR 表项、合并、L2 请求、beat 收集、安装与唤醒。
+/** L8a four Read transactions, whole-line response, merge by physical line.
+ * Accepted requests survive redirects and satp changes. FENCE.I waits idle. */
+module icache_mshr import o3_types_pkg::*; #(
+    parameter o3_cfg_pkg::frontend_cfg_t CFG,localparam int N=CFG.icache.mshrs
+)(input logic clk_i,rst_i,input logic alloc_valid_i,output logic alloc_ready_o,
+    input paddr_t alloc_line_paddr_i,input l2_req_kind_e alloc_kind_i,output logic alloc_merged_o,
+    input paddr_t probe_line_paddr_i,output logic probe_inflight_o,
+    output logic l2_req_valid_o,input logic l2_req_ready_i,output coh_req_t l2_req_o,
+    input logic l2_resp_valid_i,input coh_rsp_down_t l2_resp_i,output logic l2_resp_ready_o,
+    output logic fill_wr_valid_o,input logic fill_wr_ready_i,output paddr_t fill_wr_line_paddr_o,
+    output logic [ICACHE_LINE_BYTES*8-1:0] fill_wr_data_o,output logic fill_wr_error_o,
+    output logic fill_done_o,output paddr_t fill_done_line_paddr_o,
+    output logic idle_o,output fe_perf_t perf_o);
+    typedef enum logic [1:0] {IDLE,SEND,WAIT,FILL} state_t;
+    state_t state_q[N];paddr_t addr_q[N];coh_data_t data_q[N];logic err_q[N];
+    logic send_held_q;int send_q,free_idx,merge_idx,send_idx,fill_idx;
+    always_comb begin
+        free_idx=-1;merge_idx=-1;send_idx=-1;fill_idx=-1;probe_inflight_o=0;idle_o=1;
+        for(int n=0;n<N;n++) begin
+            if(state_q[n]==IDLE && free_idx<0) free_idx=n;
+            if(state_q[n]!=IDLE) begin
+                idle_o=0;if(addr_q[n]==alloc_line_paddr_i) merge_idx=n;
+                if(addr_q[n]==probe_line_paddr_i) probe_inflight_o=1;
+            end
+            if(state_q[n]==SEND && send_idx<0) send_idx=n;
+            if(state_q[n]==FILL && fill_idx<0) fill_idx=n;
+        end
+        alloc_ready_o=merge_idx>=0 || free_idx>=0;alloc_merged_o=merge_idx>=0;
+        l2_req_valid_o=send_held_q;l2_req_o='0;l2_req_o.op=COH_READ;
+        l2_req_o.id=COH_ID_W'(send_q);l2_req_o.addr=coh_addr_t'(addr_q[send_q]>>6);
+        l2_resp_ready_o=1;fill_wr_valid_o=fill_idx>=0;
+        fill_wr_line_paddr_o=fill_idx>=0 ? addr_q[fill_idx]:'0;
+        fill_wr_data_o=fill_idx>=0 ? data_q[fill_idx]:'0;
+        fill_wr_error_o=fill_idx>=0 && err_q[fill_idx];
+        fill_done_o=fill_wr_valid_o && fill_wr_ready_i;fill_done_line_paddr_o=fill_wr_line_paddr_o;
+    end
+    // Event accounting must not feed the allocation-ready dependency cone.
+    always_comb begin
+        perf_o='0;perf_o[PE_ICACHE_MSHR_MERGE]=PERF_INC_W'(alloc_valid_i && alloc_ready_o && alloc_merged_o);
+        for(int n=0;n<N;n++) if(state_q[n]==WAIT) perf_o[PE_ICACHE_REFILL_WAIT_CYCLE]=PERF_INC_W'(1);
+    end
+    always_ff @(posedge clk_i) begin
+        if(rst_i) begin state_q<='{default:IDLE};addr_q<='{default:'0};data_q<='{default:'0};err_q<='{default:0};send_held_q<=0;send_q<=0;end
+        else begin
+            if(alloc_valid_i && alloc_ready_o && !alloc_merged_o) begin
+                assert((64'(alloc_line_paddr_i)>>MEM_PADDR_W)==0);
+                state_q[free_idx]<=SEND;addr_q[free_idx]<=alloc_line_paddr_i;err_q[free_idx]<=0;
+            end
+            if(!send_held_q && send_idx>=0) begin send_held_q<=1;send_q<=send_idx;end
+            if(l2_req_valid_o && l2_req_ready_i) begin send_held_q<=0;state_q[send_q]<=WAIT;end
+            if(l2_resp_valid_i) begin
+                assert(l2_resp_i.op==COH_READDATA && int'(l2_resp_i.id)<N && state_q[l2_resp_i.id]==WAIT);
+                state_q[l2_resp_i.id]<=FILL;data_q[l2_resp_i.id]<=l2_resp_i.data;err_q[l2_resp_i.id]<=l2_resp_i.error;
+            end
+            if(fill_done_o) state_q[fill_idx]<=IDLE;
+            if($past(l2_req_valid_o && !l2_req_ready_i && !rst_i)) assert(l2_req_valid_o && $stable(l2_req_o));
+        end
+    end
+    initial assert(N<=1<<COH_ID_W);
 endmodule

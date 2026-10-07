@@ -5,7 +5,7 @@
  * lose all execution semantics and consume only ROB/RDQ. Original exception identity survives.
  * A 12-entry three-source FP IQ issues at most two requests into five elastic RegRead
  * slots (two FMA, DIVSQRT, MISC, CONV). At most one INT-source FP operation competes
- * for the existing age-ordered integer PRF reads; FP PRF is fixed 7R/2W.
+ * for the existing age-ordered integer PRF reads; FP PRF is fixed 8R/2W.
  * Split pinned CVFPU opgroups use killed identity slots and stable held results;
  * FP/INT writeback and ROB flags share the actual grant event. Retirement merges flags/Dirty.
  * FLW/FLD and FSW/FSD use the existing L3 LSU/SQ path; FP RVC expands upstream.
@@ -27,6 +27,7 @@ module backend
 #(
     parameter  o3_cfg_pkg::backend_cfg_t CFG,
     // 旧代码使用的名字，全部由 CFG 推导
+    localparam int P=CFG.lsu.agu_pipes,
     localparam int DECODE_WIDTH = CFG.decode.width,
     localparam int MACHINE_WIDTH = BACKEND_MACHINE_WIDTH,      // 现有 rename/ROB 分配 lane 数
     localparam int RETIRE_WIDTH = o3_cfg_pkg::O3_CFG.core.commit_width,
@@ -77,18 +78,12 @@ module backend
     // ---------------- L1D ↔ L2（L2 在 o3_core） ----------------
     output logic                             l2_req_valid_o,
     input  logic                             l2_req_ready_i,
-    output o3_types_pkg::l2_req_t            l2_req_o,
-    input  o3_types_pkg::l2_resp_t           l2_resp_i,
-    output logic                             l2_resp_ready_o,
-    output logic                             l2_wb_valid_o,
-    input  logic                             l2_wb_ready_i,
-    output o3_types_pkg::paddr_t             l2_wb_line_paddr_o,
-    output logic [o3_types_pkg::DC_LINE_BYTES*8-1:0] l2_wb_data_o,
-    input  logic                             l2_wb_error_i,        // B39
-    input  logic                             l1d_probe_valid_i,    // DMA 行协调（B08）+ L2 回收（B41）
-    output logic                             l1d_probe_ready_o,
-    input  o3_types_pkg::dc_probe_req_t      l1d_probe_i,
-    output o3_types_pkg::dc_probe_resp_t     l1d_probe_resp_o,
+    output o3_types_pkg::coh_req_t l2_req_o,
+    input logic l2_resp_valid_i,input o3_types_pkg::coh_rsp_down_t l2_resp_i,
+    output logic l2_resp_ready_o,
+    output logic rsp_up_valid_o,input logic rsp_up_ready_i,output o3_types_pkg::coh_rsp_up_t rsp_up_o,
+    input logic snp_valid_i,output logic snp_ready_o,input o3_types_pkg::coh_snp_t snp_i,
+    input o3_types_pkg::be_perf_t l2_perf_i,
 
     // ---------------- 中断（B26/B29：进入 csr_file 的 mip；WFI 唤醒见 B38） ----------------
     input logic [63:0] mtime_i,
@@ -100,12 +95,6 @@ module backend
     // ---------------- fatal（B39） ----------------
     input  o3_types_pkg::fatal_evt_t         l2_fatal_i,           // L2 写回 DDR 失败
     output logic                             fatal_o,
-
-    // ---------------- DTCM 装载（现状沿用，基线未设计） ----------------
-    input  logic                             dtcm_init_valid_i,
-    input  logic [XLEN-1:0]                  dtcm_init_addr_i,
-    input  logic [XLEN-1:0]                  dtcm_init_wdata_i,
-    input  logic [7:0]                       dtcm_init_wmask_i,
 
     // ---------------- B48 前端事件输入；计数状态在 CSR/HPM ----------------
     input  o3_types_pkg::fe_perf_t            fe_perf_i,
@@ -130,8 +119,8 @@ module backend
     // completion ports. Reject a configuration that would silently lose a lane.
     initial begin
         if (CFG.exec.num_fma!=2 || CFG.exec.num_fdivsqrt!=1 || CFG.exec.num_fmisc!=1 ||
-            CFG.exec.num_fconv!=1 || CFG.exec.fp_prf_read_ports!=7 || CFG.exec.fp_prf_write_ports!=2)
-            $error("backend L9 FP topology must match the frozen 2/1/1/1, 7R/2W contract");
+            CFG.exec.num_fconv!=1 || CFG.exec.fp_prf_read_ports!=8 || CFG.exec.fp_prf_write_ports!=2)
+            $error("backend L9 FP topology must match the frozen 2/1/1/1, 8R/2W contract");
     end
     localparam int FP_READ_PORTS=CFG.exec.fp_prf_read_ports;
     localparam int FP_WRITE_PORTS=CFG.exec.fp_prf_write_ports;
@@ -167,11 +156,11 @@ module backend
     logic fp_wr_en [FP_WRITE_PORTS],fp_complete_valid [FP_WRITE_PORTS];
     logic [ROB_IDX_WIDTH-1:0] fp_complete_idx [FP_WRITE_PORTS];
     logic [XLEN-1:0] fp_complete_data [FP_WRITE_PORTS];
-    logic [4:0] fp_complete_fflags [FP_WRITE_PORTS],wb_extra_fflags [6],rob_complete_fflags [NUM_INT_ALUS+11:0];
-    o3_types_pkg::wb_req_t fp_wb_src [6];
-    logic fp_wb_consume [6];
-    load_result_t int_load_result;
-    logic int_load_consume;
+    logic [4:0] fp_complete_fflags [FP_WRITE_PORTS],wb_extra_fflags [6],rob_complete_fflags [NUM_INT_ALUS+2*P+9:0];
+    o3_types_pkg::wb_req_t fp_wb_src [5+P];
+    logic fp_wb_consume [5+P];
+    load_result_t int_load_result[P];
+    logic int_load_consume[P];
 
     logic global_flush, backend_block, rob_commit_block, head_valid, head_serial_done;
     o3_types_pkg::rob_commit_t rob_head_info, rob_commit [RETIRE_WIDTH-1:0];
@@ -254,7 +243,7 @@ module backend
         .commit_block_o(rob_commit_block),.ftq_commit_o(ftq_commit_o),.sq_commit_valid_o(),.sq_commit_idx_o(),
         .fp_retire_o(fp_retire),.committed_next_pc_o(committed_next_pc),.sys_redirect_o(sys_redirect_o),
         .fe_sync_valid_o(fe_sync_valid_o),.fe_sync_ready_i(fe_sync_ready_i),.fe_sync_o(fe_sync_o),.fe_sync_done_i(fe_sync_done_i),
-        .sq_committed_empty_i(t_sq_committed_empty),.dcache_clean_all_o(),.dcache_clean_all_done_i(1'b0),.dcache_clean_all_busy_i(1'b0),
+        .sq_committed_empty_i(t_sq_committed_empty),.dcache_clean_all_o(t_dc_clean_all_req),.dcache_clean_all_done_i(t_dc_clean_all_done),.dcache_clean_all_busy_i(t_dc_clean_all_busy),
         .sfence_o(t_sfence),.sfence_done_i(t_sfence_done),.ptw_idle_i(ptw_idle_o),.sfence_asid_operand_i(prf_rd_data[1]),.st_d_req_valid_o(st_d_valid),.st_d_req_ready_i(st_d_ready),.st_d_done_i(st_d_done),
         .csr_req_valid_o(csr_req_valid),.csr_req_o(csr_req),.csr_resp_i(csr_resp),.csr_operand_i(prf_rd_data[0]),
         .block_younger_cycle_i(gate_block_cycle),.irq_take_i(irq_take),.irq_cause_i(irq_cause),.priv_i(priv),.status_i(csr_status),.trap_req_o(trap_req),
@@ -280,7 +269,7 @@ module backend
         be_perf = '0;
         if (!rst)
             for (int evt = 0; evt < o3_types_pkg::BE_PERF_NUM; evt++)
-                be_perf[evt] = perf_commit[evt] + perf_lsu[evt] + perf_dcache[evt] + perf_ptw[evt] + perf_ad[evt];
+                be_perf[evt] = perf_commit[evt] + perf_lsu[evt] + perf_dcache[evt] + perf_ptw[evt] + perf_ad[evt] + l2_perf_i[evt];
     end
 
     localparam int BACKEND_PREG_IDX_WIDTH = PREG_IDX_WIDTH;   // 两域共用 preg 字段宽度（o3_types_pkg::PREG_W）
@@ -350,7 +339,7 @@ module backend
     logic [ILEN-1:0]           rob_alloc_instruction [MACHINE_WIDTH-1:0];
     logic [REG_ADDR_WIDTH-1:0] rob_alloc_rd          [MACHINE_WIDTH-1:0];
     logic                      rob_alloc_rd_write_en [MACHINE_WIDTH-1:0];
-    logic [XLEN-1:0]           rob_complete_rd_wdata [NUM_INT_ALUS+11:0];
+    logic [XLEN-1:0]           rob_complete_rd_wdata [NUM_INT_ALUS+2*P+9:0];
 `endif
 
     logic [BACKEND_PREG_IDX_WIDTH-1:0] dst_new_preg [MACHINE_WIDTH-1:0];
@@ -392,9 +381,9 @@ module backend
     renamed_uop_t [NUM_INT_ALUS-1:0] int_iq_issue_uop;
     logic [NUM_INT_ALUS-1:0] int_iq_issue_valid;
     logic [NUM_INT_ALUS-1:0] int_iq_issue_ready;
-    renamed_uop_t [0:0] mem_iq_issue_uop;
-    logic [0:0] mem_iq_issue_valid;
-    logic [0:0] mem_iq_issue_ready;
+    renamed_uop_t [P-1:0] mem_iq_issue_uop;
+    logic [P-1:0] mem_iq_issue_valid;
+    logic [P-1:0] mem_iq_issue_ready;
     renamed_uop_t [0:0] br_iq_issue_uop;
     logic [0:0] br_iq_issue_valid;
     logic [0:0] br_iq_issue_ready;
@@ -408,8 +397,8 @@ module backend
     int_issue_pipe_uop_t    alu_issue_q   [NUM_INT_ALUS-1:0];
     int_regread_pipe_uop_t  alu_regread_q [NUM_INT_ALUS-1:0];
     int_execute_result_t    alu_result_q  [NUM_INT_ALUS-1:0];
-    mem_execute_uop_t       mem_execute_q;
-    load_result_t           load_result;
+    mem_execute_uop_t mem_execute_q[P];
+    load_result_t load_result[P];
     // branch_regread_q 已迁入 branch_unit
     branch_result_t         branch_execute_result;
     branch_result_t         branch_result_q;
@@ -417,17 +406,17 @@ module backend
     branch_resolution_t     branch_resolution_i;
 
     logic alu_result_consume [NUM_INT_ALUS-1:0];
-    logic load_result_consume;
+    logic load_result_consume[P];
     logic branch_result_consume,wb_branch_consume;
     // branch_execute_ready 已迁入 branch_unit
     logic branch_regread_ready;
     logic alu_regread_ready [NUM_INT_ALUS-1:0];
     logic [NUM_INT_ALUS-1:0] int_read_grant;
-    logic mem_read_grant;
+    logic [P-1:0] mem_read_grant;
     logic branch_read_grant;
     logic [$clog2(PRF_READ_PORTS)-1:0] int_src1_port [NUM_INT_ALUS-1:0];
     logic [$clog2(PRF_READ_PORTS)-1:0] int_src2_port [NUM_INT_ALUS-1:0];
-    logic [$clog2(PRF_READ_PORTS)-1:0] mem_src1_port, mem_src2_port;
+    logic [$clog2(PRF_READ_PORTS)-1:0] mem_src1_port[P], mem_src2_port[P];
     logic [$clog2(PRF_READ_PORTS)-1:0] branch_src1_port, branch_src2_port;
 
     logic [BACKEND_PREG_IDX_WIDTH-1:0] prf_rd_addr [PRF_READ_PORTS-1:0];
@@ -453,11 +442,11 @@ module backend
     // exec_valid/exec_cmp_true 已迁入 alu_pipe
     logic [XLEN-1:0]                   exec_result  [NUM_INT_ALUS-1:0];
     logic                              preg_ready_q [NUM_PHYS_REGS-1:0];  // preg_ready_table 输出
-    logic                              rob_complete_valid [NUM_INT_ALUS+11:0];
-    logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_complete_idx   [NUM_INT_ALUS+11:0];
-    logic                              wb_complete_valid [NUM_INT_ALUS+1:0];
-    logic [BACKEND_ROB_IDX_WIDTH-1:0]  wb_complete_idx [NUM_INT_ALUS+1:0];
-    logic [XLEN-1:0]                   wb_complete_data [NUM_INT_ALUS+1:0];
+    logic                              rob_complete_valid [NUM_INT_ALUS+2*P+9:0];
+    logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_complete_idx   [NUM_INT_ALUS+2*P+9:0];
+    logic                              wb_complete_valid [NUM_INT_ALUS+P:0];
+    logic [BACKEND_ROB_IDX_WIDTH-1:0]  wb_complete_idx [NUM_INT_ALUS+P:0];
+    logic [XLEN-1:0]                   wb_complete_data [NUM_INT_ALUS+P:0];
     logic                              rob_retire_valid   [RETIRE_WIDTH-1:0];
     logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_retire_idx     [RETIRE_WIDTH-1:0];
     logic [BACKEND_PREG_IDX_WIDTH-1:0] rob_retire_old_dst_preg [RETIRE_WIDTH-1:0];
@@ -476,16 +465,35 @@ module backend
     logic [BACKEND_LANE_COUNT_WIDTH-1:0] lq_release_count;
     logic                              rob_retire_any;
 
-    logic lq_execute_valid, lq_execute_generation, lq_request_fire;
-    logic [BACKEND_LQ_IDX_WIDTH-1:0] lq_execute_idx, lq_request_idx;
-    logic [XLEN-1:0] lq_execute_addr;
-    logic lq_response_valid, lq_response_live;
-    logic [BACKEND_LQ_IDX_WIDTH:0] lq_response_tag;
+    logic lq_capture[P],sq_capture[P],lq_update[P],sq_update[P];
+    lq_replay_t mem_capture[P],lq_replay[P],sq_replay[P];
+    o3_types_pkg::lq_tag_t mem_lq_tag[P];o3_types_pkg::dcache_resp_t mem_update[P];
+    logic lq_replay_valid[P],lq_replay_ready[P],sq_replay_valid[P],sq_replay_ready[P];
+    logic mem_issue_ready[P],mem_issue_load[P],dc_full_busy,dc_internal_busy,ad_wake;
+    o3_types_pkg::dc_wake_t dc_wake;
+    logic mem_exc_valid[P],mem_exc_ready[P];logic [ROB_IDX_WIDTH-1:0] mem_exc_idx[P];
+    o3_types_pkg::exc_info_t mem_exc[P];
+    logic [ROB_IDX_WIDTH-1:0] sq_execute_rob_idx[P];mem_size_t sq_execute_size[P];
+    logic [XLEN-1:0] sq_execute_va[P];
+    logic sq_changed;
+    always_comb begin
+        lsu_exc_valid=0;lsu_exc_idx='0;lsu_exc='0;mem_exc_ready='{default:0};
+        for(int p=0;p<P;p++) begin
+            mem_issue_load[p]=mem_iq_issue_uop[p].is_load;
+            if(mem_exc_valid[p] && (!lsu_exc_valid ||
+                ((int'(mem_exc_idx[p])+NUM_ROB_ENTRIES-int'(rob_head))%NUM_ROB_ENTRIES <
+                 (int'(lsu_exc_idx)+NUM_ROB_ENTRIES-int'(rob_head))%NUM_ROB_ENTRIES))) begin
+                lsu_exc_valid=1;lsu_exc_idx=mem_exc_idx[p];lsu_exc=mem_exc[p];
+            end
+        end
+        for(int p=0;p<P;p++) mem_exc_ready[p]=lsu_exc_valid && mem_exc_idx[p]==lsu_exc_idx && !csr_req_valid;
+        sq_changed=t_sq_dc_resp.valid || branch_resolution_i.valid;
+        for(int p=0;p<P;p++) sq_changed|=sq_execute_valid[p];
+    end
 `ifdef ENABLE_RETIRE_INFO
     retire_info_t rob_retire_observe [RETIRE_WIDTH-1:0];
     retire_mem_t observe_mem_q [NUM_ROB_ENTRIES-1:0];
-    logic [XLEN-1:0] observe_load_addr;
-    logic [1:0] observe_load_size;
+
     // Passive ROB-indexed side table. Allocation clears reused slots; completion
     // captures only live LSU results. M cancels retirement and killed loads never
     // win WB; surviving old results still capture during M. No table bit feeds
@@ -496,19 +504,21 @@ module backend
         end else begin
             for (int lane = 0; lane < MACHINE_WIDTH; lane++)
                 if (rename_fire && rob_req[lane]) observe_mem_q[rob_idx[lane]] <= '0;
-            if (sq_execute_valid) begin
-                observe_mem_q[mem_execute_q.rob_idx].kind <= 2;
-                observe_mem_q[mem_execute_q.rob_idx].addr <= sq_execute_addr;
-                observe_mem_q[mem_execute_q.rob_idx].size <= 2'(mem_execute_q.mem_size);
-                observe_mem_q[mem_execute_q.rob_idx].data <= sq_execute_data;
+            for(int p=0;p<P;p++) begin
+            if (sq_execute_valid[p]) begin
+                observe_mem_q[sq_execute_rob_idx[p]].kind <= 2;
+                observe_mem_q[sq_execute_rob_idx[p]].addr <= sq_execute_addr[p];
+                observe_mem_q[sq_execute_rob_idx[p]].size <= 2'(sq_execute_size[p]);
+                observe_mem_q[sq_execute_rob_idx[p]].data <= sq_execute_data[p];
             end
-            if (load_result.valid && load_result_consume
+            if (load_result[p].valid && load_result_consume[p]
                 && !(branch_resolution_i.valid && branch_resolution_i.mispredict
-                     && load_result.branch_mask[branch_resolution_i.branch_tag])) begin
-                observe_mem_q[load_result.rob_idx].kind <= 1;
-                observe_mem_q[load_result.rob_idx].addr <= observe_load_addr;
-                observe_mem_q[load_result.rob_idx].size <= observe_load_size;
-                observe_mem_q[load_result.rob_idx].data <= load_result.result;
+                     && load_result[p].branch_mask[branch_resolution_i.branch_tag])) begin
+                observe_mem_q[load_result[p].rob_idx].kind <= 1;
+                observe_mem_q[load_result[p].rob_idx].addr <= load_result[p].va;
+                observe_mem_q[load_result[p].rob_idx].size <= 2'(load_result[p].size);
+                observe_mem_q[load_result[p].rob_idx].data <= load_result[p].result;
+            end
             end
         end
     end
@@ -545,14 +555,14 @@ module backend
         end
     end
 `endif
-    logic sq_execute_valid;
-    logic [BACKEND_SQ_IDX_WIDTH-1:0] sq_execute_idx;
-    logic [XLEN-1:0] sq_execute_addr, sq_execute_data;
-    logic [7:0] sq_execute_mask;
-    logic sq_query_valid, sq_query_block, sq_query_forward_valid;
-    logic [BACKEND_ROB_IDX_WIDTH-1:0] sq_query_rob_idx;
-    logic [XLEN-1:0] sq_query_addr, sq_query_forward_data;
-    logic [7:0] sq_query_mask;
+    logic sq_execute_valid[P];
+    logic [BACKEND_SQ_IDX_WIDTH-1:0] sq_execute_idx[P];
+    logic [XLEN-1:0] sq_execute_addr[P], sq_execute_data[P];
+    logic [7:0] sq_execute_mask[P];
+    logic sq_query_valid[P], sq_query_block[P], sq_query_forward_valid[P];
+    logic [BACKEND_ROB_IDX_WIDTH-1:0] sq_query_rob_idx[P];
+    logic [XLEN-1:0] sq_query_addr[P], sq_query_forward_data[P];
+    logic [7:0] sq_query_mask[P];
     logic sq_drain_valid, sq_drain_ready;
     logic [XLEN-1:0] sq_drain_addr, sq_drain_data;
     logic [7:0] sq_drain_mask;
@@ -562,10 +572,9 @@ module backend
     o3_types_pkg::rob_idx_t d_idx;
     o3_types_pkg::vaddr_t d_va;
     o3_types_pkg::sq_idx_t d_sq;
-    logic store_complete_valid;
-    logic [BACKEND_ROB_IDX_WIDTH-1:0] store_complete_rob_idx;
-    logic mem_execute_ready;
-    logic mem_replay_busy, mem_replay_capture;
+    logic store_complete_valid[P];
+    logic [BACKEND_ROB_IDX_WIDTH-1:0] store_complete_rob_idx[P];
+
 
 `ifdef O3_SIM
     logic [63:0] sim_cycle_q;
@@ -867,9 +876,9 @@ module backend
         .int_issue_uop_i      (int_iq_issue_uop),
         .int_issue_valid_i    (int_iq_issue_valid),
         .alu_regread_ready_i  (read_fu_ready),
-        .mem_issue_uop_i      (mem_iq_issue_uop[0]),
-        .mem_issue_valid_i    (mem_iq_issue_valid[0]),
-        .mem_accept_i         (!mem_execute_q.valid || mem_execute_ready),
+        .mem_issue_uop_i      (mem_iq_issue_uop),
+        .mem_issue_valid_i    (mem_iq_issue_valid),
+        .mem_accept_i         (mem_issue_ready),
         .br_issue_uop_i       (br_iq_issue_uop[0]),
         .br_issue_valid_i     (br_iq_issue_valid[0]),
         .branch_regread_ready_i(branch_regread_ready),
@@ -888,7 +897,7 @@ module backend
     );
     always_comb begin
         int_iq_issue_ready = int_read_grant;
-        mem_iq_issue_ready[0] = mem_read_grant;
+        mem_iq_issue_ready = mem_read_grant;
         br_iq_issue_ready[0] = branch_read_grant;
     end
 
@@ -1035,8 +1044,7 @@ module backend
         .clk(clk),.rst(rst || global_flush),.enq_uop_i(fp_iq_enq_uop),.enq_fire_i(dispatch_accept_count!='0),.free_count_o(fp_iq_free_count),
         .preg_ready_i(preg_ready_q),.fp_preg_ready_i(fp_preg_ready),.wakeup_valid_i(iq_wake_valid),.wakeup_preg_i(iq_wake_preg),
         .fp_wakeup_valid_i(fp_wr_en),.fp_wakeup_preg_i(fp_wr_addr),.fp_regread_ready_i(fp_regread_ready),.issue_fp_fu_o(fp_issue_fu),
-        .mul_ready_i(1'b0),.mul_pair_ready_i(1'b0),.div_ready_i(1'b0),.allow_load_i(1'b1),
-        .issue_uop_o(fp_iq_issue_uop),.issue_valid_o(fp_iq_issue_valid),.issue_ready_i(fp_iq_issue_ready),
+        .mul_ready_i(1'b0),.mul_pair_ready_i(1'b0),.div_ready_i(1'b0),.issue_uop_o(fp_iq_issue_uop),.issue_valid_o(fp_iq_issue_valid),.issue_ready_i(fp_iq_issue_ready),
         .resolution_valid_i(branch_resolution_i.valid),.resolution_mispredict_i(branch_resolution_i.mispredict),.resolution_tag_i(branch_resolution_i.branch_tag)
     );
     // Each FU has an elastic RegRead slot. Slot readiness depends on its stored
@@ -1068,7 +1076,7 @@ module backend
             if (fp_iq_issue_uop[lane].ext.rs2_dom==o3_types_pkg::RD_FP) fp_rd_addr[lane*3+1]=fp_iq_issue_uop[lane].src2_preg;
             if (fp_iq_issue_uop[lane].ext.rs3_dom==o3_types_pkg::RD_FP) fp_rd_addr[lane*3+2]=fp_iq_issue_uop[lane].rext.src3_preg;
         end
-        fp_rd_addr[6]=mem_iq_issue_uop[0].src2_preg;
+        for(int p=0;p<P;p++) fp_rd_addr[6+p]=mem_iq_issue_uop[p].src2_preg;
     end
     always_ff @(posedge clk) begin
         if (rst) begin fp_regread_valid_q<='{default:0}; fp_regread_q<='{default:'0}; end
@@ -1122,18 +1130,20 @@ module backend
             fp_wb_src[fu]='{valid:(fp_resp[fu].valid && fp_resp[fu].tag.dst_dom==o3_types_pkg::RD_FP),
                 tag:fp_resp[fu].tag,data:fp_resp[fu].result,fflags:fp_resp[fu].fflags};
         end
-        fp_wb_src[5].valid=load_result.valid && load_result.dst_dom==o3_types_pkg::RD_FP;
-        fp_wb_src[5].tag='{rob_idx:load_result.rob_idx,br_mask:load_result.branch_mask,
-            dst_dom:o3_types_pkg::RD_FP,dst_preg:load_result.dst_preg,dst_write_en:1'b1};
-        fp_wb_src[5].data=load_result.result;
-        int_load_result=load_result;
-        int_load_result.valid=load_result.valid && load_result.dst_dom!=o3_types_pkg::RD_FP;
+        for(int p=0;p<P;p++) begin
+        fp_wb_src[5+p].valid=load_result[p].valid && load_result[p].dst_dom==o3_types_pkg::RD_FP;
+        fp_wb_src[5+p].tag='{rob_idx:load_result[p].rob_idx,br_mask:load_result[p].branch_mask,
+            dst_dom:o3_types_pkg::RD_FP,dst_preg:load_result[p].dst_preg,dst_write_en:1'b1};
+        fp_wb_src[5+p].data=load_result[p].result;
+        int_load_result[p]=load_result[p];
+        int_load_result[p].valid=load_result[p].valid && load_result[p].dst_dom!=o3_types_pkg::RD_FP;
+        end
     end
     always_comb begin
         for (int fu=0;fu<5;fu++) fp_resp_ready[fu]=fp_wb_consume[fu];
         if (fp_resp[3].tag.dst_dom==o3_types_pkg::RD_INT) fp_resp_ready[3]=wb_extra_consume[2];
         if (fp_resp[4].tag.dst_dom==o3_types_pkg::RD_INT) fp_resp_ready[4]=wb_extra_consume[3];
-        load_result_consume=load_result.dst_dom==o3_types_pkg::RD_FP ? fp_wb_consume[5]:int_load_consume;
+        for(int p=0;p<P;p++) load_result_consume[p]=load_result[p].dst_dom==o3_types_pkg::RD_FP ? fp_wb_consume[5+p]:int_load_consume[p];
     end
     fp_writeback_arbiter #(.CFG(CFG)) u_fp_writeback_arbiter (
         .src_i(fp_wb_src),.consume_o(fp_wb_consume),.rob_head_i(rob_head),.resolution_i(branch_resolution_i),.flush_all_i(global_flush),
@@ -1192,7 +1202,7 @@ module backend
         .resolution_tag_i(branch_resolution_i.branch_tag)
     );
 
-    rob #(.CFG(CFG), .COMPLETE_WIDTH(NUM_INT_ALUS + 12)) u_rob (
+    rob #(.CFG(CFG), .COMPLETE_WIDTH(NUM_INT_ALUS + 2*P + 10)) u_rob (
         .clk(clk),
         .rst(rst),
         .alloc_req_i(rob_req),
@@ -1287,19 +1297,13 @@ module backend
     );
 
     load_queue #(.CFG(CFG)) u_load_queue (
-        .clk(clk), .rst(rst || global_flush), .alloc_req_i(lq_alloc_req), .alloc_fire_i(rename_fire),
-        .alloc_rob_idx_i(rob_idx), .alloc_branch_mask_i(rename_branch_mask),
-        .alloc_idx_o(lq_idx), .free_count_o(lq_free_count), .tail_o(lq_tail),
-        .execute_valid_i(lq_execute_valid), .execute_idx_i(lq_execute_idx),
-        .execute_addr_i(lq_execute_addr), .execute_generation_o(lq_execute_generation),
-        .request_fire_i(lq_request_fire), .request_idx_i(lq_request_idx),
-        .response_valid_i(lq_response_valid), .response_tag_i(lq_response_tag),
-        .response_live_o(lq_response_live),
-        .release_count_i(lq_release_count),
-        .resolution_valid_i(branch_resolution_i.valid),
-        .resolution_mispredict_i(branch_resolution_i.mispredict),
-        .resolution_tag_i(branch_resolution_i.branch_tag), .restore_tail_i(restore_lq_tail)
-    );
+        .clk(clk),.rst(rst),.flush_i(global_flush),.alloc_req_i(lq_alloc_req),.alloc_fire_i(rename_fire),
+        .alloc_rob_idx_i(rob_idx),.alloc_branch_mask_i(rename_branch_mask),.alloc_idx_o(lq_idx),.free_count_o(lq_free_count),.tail_o(lq_tail),
+        .capture_valid_i(lq_capture),.capture_i(mem_capture),.capture_tag_o(mem_lq_tag),
+        .update_valid_i(lq_update),.update_i(mem_update),.dc_wake_i(dc_wake),.tlb_wake_i(t_ptw_resp.valid),.sq_change_i(sq_changed),.ad_wake_i(ad_wake),
+        .replay_valid_o(lq_replay_valid),.replay_o(lq_replay),.replay_ready_i(lq_replay_ready),.release_count_i(lq_release_count),
+        .resolution_valid_i(branch_resolution_i.valid),.resolution_mispredict_i(branch_resolution_i.mispredict),
+        .resolution_tag_i(branch_resolution_i.branch_tag),.restore_tail_i(restore_lq_tail));
 
     store_queue #(.CFG(CFG), .DCACHE_DRAIN(1'b1)) u_store_queue (
         .clk(clk), .rst(rst), .alloc_req_i(sq_alloc_req), .alloc_fire_i(rename_fire),
@@ -1320,6 +1324,8 @@ module backend
         .t_dc_req_valid_o(t_sq_dc_req_valid), .t_dc_req_ready_i(t_sq_dc_req_ready),
         .t_dc_req_o(t_sq_dc_req), .t_dc_resp_i(t_sq_dc_resp),
         .t_committed_empty_o(t_sq_committed_empty),
+        .dc_wake_i(dc_wake),.capture_valid_i(sq_capture),.capture_i(mem_capture),.update_valid_i(sq_update),.update_i(mem_update),
+        .tlb_wake_i(t_ptw_resp.valid),.ad_wake_i(ad_wake),.replay_valid_o(sq_replay_valid),.replay_o(sq_replay),.replay_ready_i(sq_replay_ready),
         .resolution_valid_i(branch_resolution_i.valid),
         .resolution_mispredict_i(branch_resolution_i.mispredict),
         .resolution_tag_i(branch_resolution_i.branch_tag), .restore_tail_i(restore_sq_tail)
@@ -1354,7 +1360,7 @@ module backend
         .clk(clk), .rst(rst || global_flush), .enq_uop_i(int_iq_enq_uop),
         .enq_fire_i(dispatch_accept_count != '0), .free_count_o(int_iq_free_count),
         .mul_ready_i(mul_single_ready),.mul_pair_ready_i(mul_pair_ready),.div_ready_i(div_ready),.fp_preg_ready_i(fp_preg_ready),.fp_wakeup_valid_i(fp_wr_en),.fp_wakeup_preg_i(fp_wr_addr),
-        .fp_regread_ready_i(fp_regread_ready),.issue_fp_fu_o(),.preg_ready_i(preg_ready_q), .allow_load_i(1'b1), .wakeup_valid_i(iq_wake_valid),
+        .fp_regread_ready_i(fp_regread_ready),.issue_fp_fu_o(),.preg_ready_i(preg_ready_q), .wakeup_valid_i(iq_wake_valid),
         .wakeup_preg_i(iq_wake_preg), .issue_uop_o(int_iq_issue_uop),
         .issue_valid_o(int_iq_issue_valid), .issue_ready_i(int_iq_issue_ready),
         .resolution_valid_i(branch_resolution_i.valid),
@@ -1367,7 +1373,6 @@ module backend
         .enq_fire_i(dispatch_accept_count != '0), .free_count_o(mem_iq_free_count),
         .mul_ready_i(mul_single_ready),.mul_pair_ready_i(mul_pair_ready),.div_ready_i(div_ready),.fp_preg_ready_i(fp_preg_ready),.fp_wakeup_valid_i(fp_wr_en),.fp_wakeup_preg_i(fp_wr_addr),
         .fp_regread_ready_i(fp_regread_ready),.issue_fp_fu_o(),.preg_ready_i(preg_ready_q),
-        .allow_load_i(!mem_replay_busy && !mem_replay_capture),
         .wakeup_valid_i(iq_wake_valid),
         .wakeup_preg_i(iq_wake_preg), .issue_uop_o(mem_iq_issue_uop),
         .issue_valid_o(mem_iq_issue_valid), .issue_ready_i(mem_iq_issue_ready),
@@ -1380,7 +1385,7 @@ module backend
         .clk(clk), .rst(rst || global_flush), .enq_uop_i(br_iq_enq_uop),
         .enq_fire_i(dispatch_accept_count != '0), .free_count_o(br_iq_free_count),
         .mul_ready_i(mul_single_ready),.mul_pair_ready_i(mul_pair_ready),.div_ready_i(div_ready),.fp_preg_ready_i(fp_preg_ready),.fp_wakeup_valid_i(fp_wr_en),.fp_wakeup_preg_i(fp_wr_addr),
-        .fp_regread_ready_i(fp_regread_ready),.issue_fp_fu_o(),.preg_ready_i(preg_ready_q), .allow_load_i(1'b1), .wakeup_valid_i(iq_wake_valid),
+        .fp_regread_ready_i(fp_regread_ready),.issue_fp_fu_o(),.preg_ready_i(preg_ready_q), .wakeup_valid_i(iq_wake_valid),
         .wakeup_preg_i(iq_wake_preg), .issue_uop_o(br_iq_issue_uop),
         .issue_valid_o(br_iq_issue_valid), .issue_ready_i(br_iq_issue_ready),
         .resolution_valid_i(branch_resolution_i.valid),
@@ -1389,48 +1394,27 @@ module backend
     );
 
     // LSU拥有单发射Memory流水、LQ/SQ依赖查询后的统一memory请求以及可保持的Load结果。
-    load_store_unit #(.CFG(CFG), .USE_DCACHE(1'b1),.CHECK_STORE_ACCESS(1'b1)) u_load_store_unit (
-        .clk(clk), .rst(rst),.flush_all_i(global_flush), .mem_uop_i(mem_execute_q), .mem_ready_o(mem_execute_ready),
-        .lq_execute_valid_o(lq_execute_valid), .lq_execute_idx_o(lq_execute_idx),
-        .lq_execute_addr_o(lq_execute_addr), .lq_execute_generation_i(lq_execute_generation),
-        .lq_request_fire_o(lq_request_fire), .lq_request_idx_o(lq_request_idx),
-        .lq_response_valid_o(lq_response_valid), .lq_response_tag_o(lq_response_tag),
-        .lq_response_live_i(lq_response_live),
-        .sq_execute_valid_o(sq_execute_valid), .sq_execute_idx_o(sq_execute_idx),
-        .sq_execute_addr_o(sq_execute_addr), .sq_execute_data_o(sq_execute_data),
-        .sq_execute_mask_o(sq_execute_mask),
-        .sq_query_valid_o(sq_query_valid), .sq_query_rob_idx_o(sq_query_rob_idx),
-        .sq_query_addr_o(sq_query_addr), .sq_query_mask_o(sq_query_mask),
-        .sq_query_block_i(sq_query_block), .sq_query_forward_valid_i(sq_query_forward_valid),
-        .sq_query_forward_data_i(sq_query_forward_data),
-        .sq_drain_valid_i(sq_drain_valid), .sq_drain_ready_o(sq_drain_ready),
-        .sq_drain_addr_i(sq_drain_addr), .sq_drain_data_i(sq_drain_data),
-        .sq_drain_mask_i(sq_drain_mask),
-        .sq_change_i(sq_execute_valid || (sq_drain_valid && sq_drain_ready)
-                   || t_sq_dc_resp.valid || branch_resolution_i.valid),
-        .replay_busy_o(mem_replay_busy), .replay_capture_o(mem_replay_capture),
-        .store_complete_valid_o(store_complete_valid),
-        .store_complete_rob_idx_o(store_complete_rob_idx),
-        .load_result_o(load_result), .load_result_ready_i(load_result_consume),
-`ifdef ENABLE_RETIRE_INFO
-        .observe_load_addr_o(observe_load_addr), .observe_load_size_o(observe_load_size),
-`endif
-        .resolution_valid_i(branch_resolution_i.valid),
-        .resolution_mispredict_i(branch_resolution_i.mispredict),
-        .resolution_tag_i(branch_resolution_i.branch_tag),
-        .dtcm_init_valid_i(dtcm_init_valid_i), .dtcm_init_addr_i(dtcm_init_addr_i),
-        .dtcm_init_wdata_i(dtcm_init_wdata_i), .dtcm_init_wmask_i(dtcm_init_wmask_i),
-        // 旧合同 ext_* 外部 memory 口不再连接（目标经 DCache/L2）。
-        // 目标合同（t_*）：只连接共享 PTW，其余未接入。
-        .t_ptw_req_valid_o(t_dtlb_ptw_req_valid), .t_ptw_req_ready_i(t_dtlb_ptw_req_ready),
-        .t_ptw_req_o(t_dtlb_ptw_req), .t_ptw_resp_i(t_ptw_resp),
-        .t_exc_valid_o(lsu_exc_valid),.t_exc_rob_idx_o(lsu_exc_idx),.t_exc_o(lsu_exc),
-        .t_csr_i(t_dmmu_csr), .t_pmp_i(t_pmp), .t_sfence_i(t_sfence),.t_sfence_done_o(t_dtlb_sf_done),
-        .t_dc_ld_req_valid_o(t_dc_ld_req_valid), .t_dc_ld_req_ready_i(t_dc_ld_req_ready),
-        .t_dc_ld_req_o(t_dc_ld_req), .t_dc_ld_resp_i(t_dc_ld_resp),
-        .t_d_done_i(st_d_done),.t_d_exc_i(st_d_exc),.t_d_mark_o(d_mark),.t_d_clear_o(d_clear),.t_d_idx_o(d_idx),.t_d_va_o(d_va),.t_d_sq_o(d_sq),.t_rob_head_i(o3_types_pkg::rob_idx_t'(rob_head)),
-        .t_perf_o(perf_lsu)
-    );
+    load_store_unit #(.CFG(CFG)) u_load_store_unit (
+        .clk(clk),.rst(rst),.mem_uop_i(mem_execute_q),.issue_is_load_i(mem_issue_load),.issue_ready_o(mem_issue_ready),
+        .lq_replay_valid_i(lq_replay_valid),.lq_replay_i(lq_replay),.lq_replay_ready_o(lq_replay_ready),
+        .sq_replay_valid_i(sq_replay_valid),.sq_replay_i(sq_replay),.sq_replay_ready_o(sq_replay_ready),
+        .lq_capture_valid_o(lq_capture),.sq_capture_valid_o(sq_capture),.capture_o(mem_capture),.lq_tag_i(mem_lq_tag),
+        .lq_update_valid_o(lq_update),.sq_update_valid_o(sq_update),.update_o(mem_update),
+        .sq_execute_valid_o(sq_execute_valid),.sq_execute_idx_o(sq_execute_idx),.sq_execute_addr_o(sq_execute_addr),
+        .sq_execute_data_o(sq_execute_data),.sq_execute_mask_o(sq_execute_mask),.sq_execute_rob_idx_o(sq_execute_rob_idx),
+        .sq_execute_size_o(sq_execute_size),.sq_execute_va_o(sq_execute_va),
+        .sq_query_valid_o(sq_query_valid),.sq_query_rob_idx_o(sq_query_rob_idx),.sq_query_addr_o(sq_query_addr),.sq_query_mask_o(sq_query_mask),
+        .sq_query_block_i(sq_query_block),.sq_query_forward_valid_i(sq_query_forward_valid),.sq_query_forward_data_i(sq_query_forward_data),
+        .full_line_busy_i(dc_full_busy),.internal_busy_i(dc_internal_busy),
+        .dc_req_valid_o(t_dc_ld_req_valid),.dc_req_ready_i(t_dc_ld_req_ready),.dc_req_o(t_dc_ld_req),.dc_s1_o(t_dc_s1),.dc_resp_i(t_dc_ld_resp),
+        .store_complete_valid_o(store_complete_valid),.store_complete_rob_idx_o(store_complete_rob_idx),
+        .load_result_o(load_result),.load_result_ready_i(load_result_consume),.exc_valid_o(mem_exc_valid),.exc_rob_idx_o(mem_exc_idx),.exc_o(mem_exc),.exc_ready_i(mem_exc_ready),
+        .flush_all_i(global_flush),.resolution_valid_i(branch_resolution_i.valid),.resolution_mispredict_i(branch_resolution_i.mispredict),.resolution_tag_i(branch_resolution_i.branch_tag),
+        .ptw_req_valid_o(t_dtlb_ptw_req_valid),.ptw_req_ready_i(t_dtlb_ptw_req_ready),.ptw_req_o(t_dtlb_ptw_req),.ptw_resp_i(t_ptw_resp),
+        .csr_i(t_dmmu_csr),.pmp_i(t_pmp),.sfence_i(t_sfence),.sfence_done_o(t_dtlb_sf_done),.rob_head_i(rob_head),
+        .d_done_i(st_d_done),.d_exc_i(st_d_exc),.d_mark_o(d_mark),.d_clear_o(d_clear),.d_idx_o(d_idx),.d_va_o(d_va),.d_sq_o(d_sq),
+        .ad_wake_o(ad_wake),.perf_o(perf_lsu));
+    assign sq_drain_ready=0;
 
     // 分支单元（原样迁出到 branch_unit；内部例化 branch_execute_unit）。
     branch_unit #(.CFG(CFG)) u_branch_unit (
@@ -1469,38 +1453,38 @@ module backend
     );
 
     always_comb begin
-        rob_complete_fflags='{default:'0};
-        for (int source = 0; source < NUM_INT_ALUS + 2; source++) begin
-            rob_complete_valid[source] = wb_complete_valid[source];
-            rob_complete_idx[source] = wb_complete_idx[source];
+        rob_complete_fflags='{default:'0};rob_complete_valid='{default:0};rob_complete_idx='{default:'0};
 `ifdef ENABLE_RETIRE_INFO
-            rob_complete_rd_wdata[source] = wb_complete_data[source];
+        rob_complete_rd_wdata='{default:'0};
+`endif
+        for(int source=0;source<NUM_INT_ALUS+P+1;source++) begin
+            rob_complete_valid[source]=wb_complete_valid[source];rob_complete_idx[source]=wb_complete_idx[source];
+`ifdef ENABLE_RETIRE_INFO
+            rob_complete_rd_wdata[source]=wb_complete_data[source];
 `endif
         end
+        for(int p=0;p<P;p++) begin
+            rob_complete_valid[NUM_INT_ALUS+P+1+p]=store_complete_valid[p] && !global_flush;
+            rob_complete_idx[NUM_INT_ALUS+P+1+p]=store_complete_rob_idx[p];
+        end
+        rob_complete_valid[NUM_INT_ALUS+2*P+1]=csr_write_fire;rob_complete_idx[NUM_INT_ALUS+2*P+1]=rob_head_info.rob_idx;
+`ifdef ENABLE_RETIRE_INFO
+        rob_complete_rd_wdata[NUM_INT_ALUS+2*P+1]=csr_resp.rdata;
+`endif
         for(int e=0;e<6;e++) begin
-            rob_complete_valid[NUM_INT_ALUS+4+e]=wb_extra_complete[e];
-            rob_complete_idx[NUM_INT_ALUS+4+e]=wb_extra_idx[e];
-            rob_complete_fflags[NUM_INT_ALUS+4+e]=wb_extra_fflags[e];
+            rob_complete_valid[NUM_INT_ALUS+2*P+2+e]=wb_extra_complete[e];rob_complete_idx[NUM_INT_ALUS+2*P+2+e]=wb_extra_idx[e];
+            rob_complete_fflags[NUM_INT_ALUS+2*P+2+e]=wb_extra_fflags[e];
 `ifdef ENABLE_RETIRE_INFO
-            rob_complete_rd_wdata[NUM_INT_ALUS+4+e]=wb_extra_data[e];
+            rob_complete_rd_wdata[NUM_INT_ALUS+2*P+2+e]=wb_extra_data[e];
 `endif
         end
-        for (int port=0;port<FP_WRITE_PORTS;port++) begin
-            rob_complete_valid[NUM_INT_ALUS+10+port]=fp_complete_valid[port];
-            rob_complete_idx[NUM_INT_ALUS+10+port]=fp_complete_idx[port];
-            rob_complete_fflags[NUM_INT_ALUS+10+port]=fp_complete_fflags[port];
+        for(int port=0;port<FP_WRITE_PORTS;port++) begin
+            rob_complete_valid[NUM_INT_ALUS+2*P+8+port]=fp_complete_valid[port];rob_complete_idx[NUM_INT_ALUS+2*P+8+port]=fp_complete_idx[port];
+            rob_complete_fflags[NUM_INT_ALUS+2*P+8+port]=fp_complete_fflags[port];
 `ifdef ENABLE_RETIRE_INFO
-            rob_complete_rd_wdata[NUM_INT_ALUS+10+port]=fp_complete_data[port];
+            rob_complete_rd_wdata[NUM_INT_ALUS+2*P+8+port]=fp_complete_data[port];
 `endif
         end
-        rob_complete_valid[NUM_INT_ALUS+2] = store_complete_valid && !global_flush;
-        rob_complete_idx[NUM_INT_ALUS+2] = store_complete_rob_idx;
-        rob_complete_valid[NUM_INT_ALUS+3]=csr_write_fire;
-        rob_complete_idx[NUM_INT_ALUS+3]=rob_head_info.rob_idx;
-`ifdef ENABLE_RETIRE_INFO
-        rob_complete_rd_wdata[NUM_INT_ALUS+2] = '0;
-        rob_complete_rd_wdata[NUM_INT_ALUS+3]=csr_resp.rdata;
-`endif
     end
 
     physical_regfile #(.CFG(CFG), .DOMAIN(o3_types_pkg::RD_INT)) u_physical_regfile (
@@ -1596,7 +1580,7 @@ module backend
             fetch_instruction_id_q <= '{default: '0};
             fetch_group_seq_q      <= '0;
             alu_issue_q            <= '{default: '0};
-            mem_execute_q          <= '0;
+            mem_execute_q <= '{default:'0};
             retired_inst_count_q   <= 64'd0;
 `ifdef O3_SIM
             sim_cycle_q             <= 64'd0;
@@ -2107,34 +2091,31 @@ module backend
 
             // Branch RegRead/Result 槽更新已迁入 branch_unit。
 
-            if (!mem_execute_q.valid || mem_execute_ready) begin
-                mem_execute_q.valid <= mem_read_grant;
-                mem_execute_q.instruction_id <= mem_iq_issue_uop[0].instruction_id;
+            for(int p=0;p<P;p++) begin
+                mem_execute_q[p].valid <= mem_read_grant[p];
+                mem_execute_q[p].instruction_id <= mem_iq_issue_uop[p].instruction_id;
 `ifdef O3_SIM
-                mem_execute_q.kanata_id <= mem_iq_issue_uop[0].kanata_id;
+                mem_execute_q[p].kanata_id <= mem_iq_issue_uop[p].kanata_id;
 `endif
-                mem_execute_q.rob_idx <= mem_iq_issue_uop[0].rob_idx;
-                mem_execute_q.lq_idx <= mem_iq_issue_uop[0].lq_idx;
-                mem_execute_q.sq_idx <= mem_iq_issue_uop[0].sq_idx;
-                mem_execute_q.dst_preg <= mem_iq_issue_uop[0].dst_preg;
-                mem_execute_q.dst_write_en <= mem_iq_issue_uop[0].rd_write_en;
-                mem_execute_q.dst_dom <= mem_iq_issue_uop[0].ext.rd_dom;
-                mem_execute_q.is_load <= mem_iq_issue_uop[0].is_load;
-                mem_execute_q.is_store <= mem_iq_issue_uop[0].is_store;
-                mem_execute_q.mem_size <= mem_iq_issue_uop[0].mem_size;
-                mem_execute_q.mem_unsigned <= mem_iq_issue_uop[0].mem_unsigned;
-                mem_execute_q.base_value <= mem_iq_issue_uop[0].rs1_read_en
-                                          ? prf_rd_data[mem_src1_port] : '0;
-                mem_execute_q.store_value <= mem_iq_issue_uop[0].rs2_read_en
-                                           ? (mem_iq_issue_uop[0].ext.rs2_dom==o3_types_pkg::RD_FP ? fp_rd_data[6] : prf_rd_data[mem_src2_port]) : '0;
-                mem_execute_q.imm_value <= expand_imm_value(
-                    mem_iq_issue_uop[0].imm_type, mem_iq_issue_uop[0].imm_raw);
-                mem_execute_q.branch_mask <= resolved_branch_mask(mem_iq_issue_uop[0].branch_mask);
-            end else if (branch_resolution_i.valid) begin
-                mem_execute_q.branch_mask <= resolved_branch_mask(mem_execute_q.branch_mask);
+                mem_execute_q[p].rob_idx <= mem_iq_issue_uop[p].rob_idx;
+                mem_execute_q[p].lq_idx <= mem_iq_issue_uop[p].lq_idx;
+                mem_execute_q[p].sq_idx <= mem_iq_issue_uop[p].sq_idx;
+                mem_execute_q[p].dst_preg <= mem_iq_issue_uop[p].dst_preg;
+                mem_execute_q[p].dst_write_en <= mem_iq_issue_uop[p].rd_write_en;
+                mem_execute_q[p].dst_dom <= mem_iq_issue_uop[p].ext.rd_dom;
+                mem_execute_q[p].is_load <= mem_iq_issue_uop[p].is_load;
+                mem_execute_q[p].is_store <= mem_iq_issue_uop[p].is_store;
+                mem_execute_q[p].mem_size <= mem_iq_issue_uop[p].mem_size;
+                mem_execute_q[p].mem_unsigned <= mem_iq_issue_uop[p].mem_unsigned;
+                mem_execute_q[p].base_value <= mem_iq_issue_uop[p].rs1_read_en
+                                          ? prf_rd_data[mem_src1_port[p]] : '0;
+                mem_execute_q[p].store_value <= mem_iq_issue_uop[p].rs2_read_en
+                                           ? (mem_iq_issue_uop[p].ext.rs2_dom==o3_types_pkg::RD_FP ? fp_rd_data[6+p] : prf_rd_data[mem_src2_port[p]]) : '0;
+                mem_execute_q[p].imm_value <= expand_imm_value(
+                    mem_iq_issue_uop[p].imm_type, mem_iq_issue_uop[p].imm_raw);
+                mem_execute_q[p].branch_mask <= resolved_branch_mask(mem_iq_issue_uop[p].branch_mask);
+                if(global_flush) mem_execute_q[p].valid<=0;
             end
-
-            if (global_flush) mem_execute_q.valid<=0;
             if (backend_block) begin
                 fetch_entry_valid_q <= 1'b0;
             end else if (fetch_fire) begin
@@ -2165,10 +2146,11 @@ module backend
     o3_types_pkg::dmmu_csr_t    t_dmmu_csr;
     o3_types_pkg::pmp_state_t   t_pmp;
     o3_types_pkg::sfence_req_t  t_sfence;
+    logic t_sfence_done;
     logic                       t_dc_clean_all_req, t_dc_clean_all_done, t_dc_clean_all_busy;
     logic                       t_dc_ld_req_valid [CFG.lsu.agu_pipes];
     logic                       t_dc_ld_req_ready [CFG.lsu.agu_pipes];
-    o3_types_pkg::dcache_req_t  t_dc_ld_req [CFG.lsu.agu_pipes];
+    o3_types_pkg::dcache_req_t  t_dc_ld_req [CFG.lsu.agu_pipes],t_dc_s1[CFG.lsu.agu_pipes];
     o3_types_pkg::dcache_resp_t t_dc_ld_resp [CFG.lsu.agu_pipes];
     logic                       t_sq_dc_req_valid, t_sq_dc_req_ready, t_sq_committed_empty;
     o3_types_pkg::dcache_req_t  t_sq_dc_req;
@@ -2209,46 +2191,30 @@ module backend
         .dc_req_o(t_dc_pte_ad_req),.dc_resp_i(t_dc_pte_ad_resp),.csr_i(t_dmmu_csr),.cur_epoch_i(t_dmmu_csr.epoch),
         .kill_i(global_flush),.rsv_conflict_o(t_rsv_pte_ad_conflict),.busy_o(),.perf_o(perf_ad));
     assign t_pf_req_valid=1'b0;assign t_pf_req='0; // L10 prefetch disabled.
-    assign t_dc_clean_all_req=1'b0; // Full FENCE.I L1D cleaning belongs to L8.
     assign t_rsv_clear_valid = 1'b0;
     assign t_rsv_clear_reason = o3_types_pkg::RSV_CLR_SC; // valid=0；合法编码无事件
-    assign fatal_o = 1'b0; // platform fatal isolation belongs to L11
+    always_ff @(posedge clk) if(rst) fatal_o<=0;else if(l2_fatal_i.valid || t_dc_fatal.valid) fatal_o<=1;
     assign perf_rd_data_o = '0; // Legacy observation port; use B48 counter CSRs.
     // L10: PMP changes are now real CSR updates, synchronized by commit_ctrl.
 
     dcache #(.CFG(CFG)) u_dcache (
-        .clk(clk), .rst(rst),
-        .ld_req_valid_i(t_dc_ld_req_valid), .ld_req_ready_o(t_dc_ld_req_ready),
-        .ld_req_i(t_dc_ld_req), .ld_resp_o(t_dc_ld_resp),
-        .st_req_valid_i(t_sq_dc_req_valid), .st_req_ready_o(t_sq_dc_req_ready),
-        .st_req_i(t_sq_dc_req), .st_resp_o(t_sq_dc_resp),
-        .ptw_req_valid_i(t_ptw_mem_req_valid), .ptw_req_ready_o(t_ptw_mem_req_ready),
-        .ptw_req_i(t_ptw_mem_req), .ptw_resp_o(t_ptw_mem_resp),
-        .pf_req_valid_i(t_pf_req_valid), .pf_req_ready_o(t_pf_req_ready), .pf_req_i(t_pf_req),
-        // 维护入口：DMA 行协调 + L2 inclusive 回收共用（B08/B41）
-        .probe_valid_i(l1d_probe_valid_i), .probe_ready_o(l1d_probe_ready_o),
-        .probe_i(l1d_probe_i), .probe_resp_o(l1d_probe_resp_o),
-        .clean_all_req_i(t_dc_clean_all_req), .clean_all_done_o(t_dc_clean_all_done),
-        .clean_all_busy_o(t_dc_clean_all_busy),
-        .pte_ad_req_valid_i(t_dc_pte_ad_valid), .pte_ad_req_ready_o(t_dc_pte_ad_ready),
-        .pte_ad_req_i(t_dc_pte_ad_req), .pte_ad_resp_o(t_dc_pte_ad_resp),
-        .cur_epoch_i(t_dmmu_csr.epoch),
-        .rsv_clear_valid_i(t_rsv_clear_valid), .rsv_clear_reason_i(t_rsv_clear_reason),
-        .rsv_pte_ad_conflict_i(t_rsv_pte_ad_conflict),
-        .l2_req_valid_o(l2_req_valid_o), .l2_req_ready_i(l2_req_ready_i), .l2_req_o(l2_req_o),
-        .l2_resp_i(l2_resp_i), .l2_resp_ready_o(l2_resp_ready_o),
-        .l2_wb_valid_o(l2_wb_valid_o), .l2_wb_ready_i(l2_wb_ready_i),
-        .l2_wb_line_paddr_o(l2_wb_line_paddr_o), .l2_wb_data_o(l2_wb_data_o),
-        .l2_wb_error_i(l2_wb_error_i),
-        .idle_o(), .fatal_o(t_dc_fatal), .perf_o(perf_dcache)
-    );
+        .clk(clk),.rst(rst),.ld_req_valid_i(t_dc_ld_req_valid),.ld_req_ready_o(t_dc_ld_req_ready),.ld_req_i(t_dc_ld_req),.ld_s1_i(t_dc_s1),.ld_resp_o(t_dc_ld_resp),
+        .rob_head_i(rob_head),.flush_i(global_flush),.resolution_valid_i(branch_resolution_i.valid),.resolution_mispredict_i(branch_resolution_i.mispredict),.resolution_tag_i(branch_resolution_i.branch_tag),
+        .full_line_busy_o(dc_full_busy),.internal_busy_o(dc_internal_busy),.wake_o(dc_wake),
+        .st_req_valid_i(t_sq_dc_req_valid),.st_req_ready_o(t_sq_dc_req_ready),.st_req_i(t_sq_dc_req),.st_resp_o(t_sq_dc_resp),
+        .ptw_req_valid_i(t_ptw_mem_req_valid),.ptw_req_ready_o(t_ptw_mem_req_ready),.ptw_req_i(t_ptw_mem_req),.ptw_resp_o(t_ptw_mem_resp),
+        .pte_ad_req_valid_i(t_dc_pte_ad_valid),.pte_ad_req_ready_o(t_dc_pte_ad_ready),.pte_ad_req_i(t_dc_pte_ad_req),.pte_ad_resp_o(t_dc_pte_ad_resp),.cur_epoch_i(t_dmmu_csr.epoch),.pmp_i(t_pmp),
+        .clean_all_req_i(t_dc_clean_all_req),.clean_all_done_o(t_dc_clean_all_done),.clean_all_busy_o(t_dc_clean_all_busy),
+        .l2_req_valid_o(l2_req_valid_o),.l2_req_ready_i(l2_req_ready_i),.l2_req_o(l2_req_o),.l2_resp_valid_i(l2_resp_valid_i),.l2_resp_i(l2_resp_i),.l2_resp_ready_o(l2_resp_ready_o),
+        .rsp_up_valid_o(rsp_up_valid_o),.rsp_up_ready_i(rsp_up_ready_i),.rsp_up_o(rsp_up_o),.snp_valid_i(snp_valid_i),.snp_ready_o(snp_ready_o),.snp_i(snp_i),
+        .idle_o(),.fatal_o(t_dc_fatal),.perf_o(perf_dcache));
 
     // 冻结 §4.4：R 仍广播；M 是唯一恢复 block，资源回压保持独立。
     always_ff @(posedge clk) begin
         if (!rst) begin
             assert (rename_accept_count <= MACHINE_WIDTH && dispatch_accept_count <= DISPATCH_WIDTH);
             if (branch_mispredict) begin
-                assert (int_read_grant == '0 && !mem_read_grant && !branch_read_grant);
+                assert (int_read_grant == '0 && !(|mem_read_grant) && !branch_read_grant);
                 assert (rename_accept_count == '0 && dispatch_accept_count == '0);
                 for (int lane=0; lane<RETIRE_WIDTH; lane++) assert (!rob_retire_valid[lane]);
             end

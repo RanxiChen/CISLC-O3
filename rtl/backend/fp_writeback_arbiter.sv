@@ -9,7 +9,7 @@
 module fp_writeback_arbiter import o3_pkg::*; #(
     parameter o3_cfg_pkg::backend_cfg_t CFG,
     localparam int WRITE_PORTS=CFG.exec.fp_prf_write_ports,
-    localparam int NUM_SRC=CFG.exec.num_fma+CFG.exec.num_fdivsqrt+CFG.exec.num_fmisc+CFG.exec.num_fconv+1
+    localparam int NUM_SRC=CFG.exec.num_fma+CFG.exec.num_fdivsqrt+CFG.exec.num_fmisc+CFG.exec.num_fconv+CFG.lsu.agu_pipes
 ) (
     input o3_types_pkg::wb_req_t src_i [NUM_SRC],
     output logic consume_o [NUM_SRC],

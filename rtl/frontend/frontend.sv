@@ -94,15 +94,10 @@ module frontend
     // ---------------- L2（第 11.1 节） ----------------
     output logic            l2_req_valid_o,
     input  logic            l2_req_ready_i,
-    output l2_req_t         l2_req_o,
-    input  l2_resp_t        l2_resp_i,
+    output coh_req_t         l2_req_o,
+    input logic l2_resp_valid_i,
+    input coh_rsp_down_t l2_resp_i,
     output logic            l2_resp_ready_o,
-
-    // ---------------- L2 inclusive 回收的 L1I 定向失效（B41） ----------------
-    input  logic            l1i_recall_valid_i,
-    output logic            l1i_recall_ready_o,
-    input  l1_recall_req_t  l1i_recall_i,
-    output l1i_recall_resp_t l1i_recall_resp_o,
 
     // ---------------- B48 每拍事件增量（架构计数状态由 CSR/HPM 持有） ----------------
     output fe_perf_t        fe_perf_o,
@@ -390,6 +385,7 @@ module frontend
         .l2_req_valid_o      (l2_req_valid_o),
         .l2_req_ready_i      (l2_req_ready_i),
         .l2_req_o            (l2_req_o),
+        .l2_resp_valid_i(l2_resp_valid_i),
         .l2_resp_i           (l2_resp_i),
         .l2_resp_ready_o     (l2_resp_ready_o),
         .csr_i               (csr_i),
@@ -400,10 +396,6 @@ module frontend
         .inv_all_i           (icache_inv_all),
         .inv_done_o          (icache_inv_done),
         .idle_o              (icache_idle),
-        .recall_valid_i      (l1i_recall_valid_i),
-        .recall_ready_o      (l1i_recall_ready_o),
-        .recall_i            (l1i_recall_i),
-        .recall_resp_o       (l1i_recall_resp_o),
         .perf_o              (perf_icache)
     );
 

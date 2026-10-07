@@ -1,46 +1,43 @@
-/**
- * DCache 写回缓冲 —— 脏行排出与 DMA 脏数据交接
- *
- * 作用（B05/B08）：
- * - 替换出的脏行在此排队写回 L2；普通 store 写入 L1 成功即可释放 SQ，之后脏行排出由 cache 负责。
- * - DMA clean+invalidate：脏副本先把最新数据可靠交给 L2，再完成失效确认。
- * - 写回的硬件故障不能静默丢弃，也不能伪装成已退休 store/AMO 的精确异常（B06）。首版（B39）：
- *   L2 返回写回错误时 fatal_o 上报 sticky fatal，该缓冲项不得按成功释放，依赖它的维护/DMA/回收
- *   不得虚假完成；不做自动重试或软件恢复。
- * - 写回在途时，同一行的新 miss 必须看到最新数据（与 MSHR 协调，竞态表待闭合，B11）。
- *
- * 细节待定：缓冲数（CFG.dcache.wb_buffers）、与 MSHR 的同行竞态处理。
- *
- * 当前实现状态：空壳。只有端口与注释，没有逻辑，输出未驱动。
- *
- * 本阶段不写测试代码和仿真代码。
- */
-module dcache_writeback
-    import o3_types_pkg::*;
-#(
-    parameter  o3_cfg_pkg::backend_cfg_t CFG,
-    localparam int ENTRIES = CFG.dcache.wb_buffers
-) (
-    input  logic          clk,
-    input  logic          rst,
-
-    input  logic          evict_valid_i,
-    output logic          evict_ready_o,
-    input  paddr_t        evict_line_paddr_i,
-    input  logic [DC_LINE_BYTES*8-1:0] evict_data_i,
-
-    input  paddr_t        lookup_line_paddr_i,   // 同行 miss 查询
-    output logic          lookup_hit_o,
-
-    output logic          l2_wb_valid_o,
-    input  logic          l2_wb_ready_i,
-    output paddr_t        l2_wb_line_paddr_o,
-    output logic [DC_LINE_BYTES*8-1:0] l2_wb_data_o,
-
-    input  logic          l2_wb_error_i,         // B39：写回失败
-    output fatal_evt_t    fatal_o,
-
-    output logic          idle_o
-);
-    // 未实现。
+/** Every valid victim sends Put, including clean S/E lines. Dirty data is
+ * sampled in one bank-wide read before the MSHR can send Get. */
+module dcache_writeback import o3_types_pkg::*; #(
+    parameter o3_cfg_pkg::backend_cfg_t CFG,localparam int N=CFG.dcache.wb_buffers
+)(input logic clk,rst,input logic alloc_i,input dc_wb_t alloc_wb_i,
+    output logic free_o,output coh_id_t free_id_o,output logic valid_o[N],output dc_wb_t wb_o[N],
+    output logic read_valid_o,output coh_id_t read_id_o,output dc_wb_t read_o,input logic read_issue_i,
+    input logic read_done_i,input coh_id_t read_done_id_i,input coh_data_t read_data_i,
+    output logic put_valid_o,input logic put_ready_i,output coh_rsp_up_t put_o,
+    input logic ack_valid_i,input coh_rsp_down_t ack_i,output logic wb_free_o);
+    typedef enum logic [2:0] {IDLE,READ,READ_WAIT,SEND,WAIT_ACK} state_t;
+    state_t state_q[N];dc_wb_t wb_q[N];logic held_q;int send_q,free_idx,read_idx,send_idx;
+    always_comb begin
+        free_idx=-1;read_idx=-1;send_idx=-1;
+        for(int n=0;n<N;n++) begin
+            valid_o[n]=state_q[n]!=IDLE;wb_o[n]=wb_q[n];
+            if(state_q[n]==IDLE && free_idx<0) free_idx=n;
+            if(state_q[n]==READ && read_idx<0) read_idx=n;
+            if(state_q[n]==SEND && send_idx<0) send_idx=n;
+        end
+        free_o=free_idx>=0;free_id_o=COH_ID_W'(free_idx);
+        read_valid_o=read_idx>=0;read_id_o=COH_ID_W'(read_idx);read_o=read_idx>=0 ? wb_q[read_idx]:'0;
+        put_valid_o=held_q;put_o='{op:COH_PUT,has_data:wb_q[send_q].has_data,
+            addr:wb_q[send_q].line_addr,id:COH_ID_W'(send_q),data:wb_q[send_q].data};
+        wb_free_o=ack_valid_i;
+    end
+    always_ff @(posedge clk) begin
+        if(rst) begin state_q<='{default:IDLE};wb_q<='{default:'0};held_q<=0;send_q<=0;end
+        else begin
+            if(alloc_i) begin assert(free_o);wb_q[free_idx]<=alloc_wb_i;
+                // Clean victims also traverse READ: finite bank ownership and
+                // a uniform dependency notification to the allocating MSHR.
+                state_q[free_idx]<=READ;end
+            if(read_issue_i) begin assert(read_valid_o);state_q[read_id_o]<=READ_WAIT;end
+            if(read_done_i) begin assert(state_q[read_done_id_i]==READ_WAIT);
+                wb_q[read_done_id_i].data<=read_data_i;state_q[read_done_id_i]<=SEND;end
+            if(!held_q && send_idx>=0) begin held_q<=1;send_q<=send_idx;end
+            if(put_valid_o && put_ready_i) begin held_q<=0;state_q[send_q]<=WAIT_ACK;end
+            if(ack_valid_i) begin assert(int'(ack_i.id)<N && state_q[ack_i.id]==WAIT_ACK);state_q[ack_i.id]<=IDLE;end
+            if($past(put_valid_o && !put_ready_i && !rst)) assert(put_valid_o && $stable(put_o));
+        end
+    end
 endmodule

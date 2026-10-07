@@ -213,7 +213,7 @@ module commit_ctrl
         sfence_o=fe_sync_o.sfence;
         sfence_o.valid=head_valid_i && head_i.sys_op==SYSOP_SFENCE_VMA && !system_illegal &&
             sq_committed_empty_i && ptw_idle_i && !sf_sent_q && !irq_accept && !trap_redirect_valid_i;
-        dcache_clean_all_o=0; // L1D clean in L8.
+        dcache_clean_all_o=head_valid_i && head_i.sys_op==SYSOP_FENCE_I && sq_committed_empty_i && !sync_sent_q && !serial_done_q; // L8a: next-cycle acknowledgment; no tag scan.
         st_d_req_valid_o=head_valid_i && head_i.is_store && head_i.complete && head_i.needs_d &&
             !head_i.exc.valid && !d_sent_q && !isolate_i && !trap_redirect_valid_i;
         rsv_clear_valid_o=sfence_o.valid || trap_req_o.valid || (sys_redirect_o.valid && sys_redirect_o.kind==SYS_SATP);

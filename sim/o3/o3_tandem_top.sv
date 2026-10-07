@@ -11,9 +11,6 @@ module o3_tandem_top
 ) (
     input logic clk_i, rst_i,
     input logic [PC_WIDTH-1:0] reset_pc_i,
-    input logic dtcm_init_valid_i,
-    input logic [XLEN-1:0] dtcm_init_addr_i, dtcm_init_wdata_i,
-    input logic [7:0] dtcm_init_wmask_i,
     input logic axi_init_valid_i,
     input logic [PADDR_W-1:0] axi_init_addr_i,
     input logic [AXI_DATA_W-1:0] axi_init_data_i,
@@ -82,8 +79,6 @@ module o3_tandem_top
         .irq_m_timer_i(irq_m_timer_at>=0 && mtime_q>=64'(irq_m_timer_at)),
         .irq_m_soft_i(irq_m_soft_at>=0 && mtime_q>=64'(irq_m_soft_at)),
         .irq_s_ext_i(irq_s_ext_at>=0 && mtime_q>=64'(irq_s_ext_at)),
-        .dtcm_init_valid_i(dtcm_init_valid_i), .dtcm_init_addr_i(dtcm_init_addr_i),
-        .dtcm_init_wdata_i(dtcm_init_wdata_i), .dtcm_init_wmask_i(dtcm_init_wmask_i),
         .fatal_o(fatal_o), .inclusion_err_o(inclusion_err_o),
         .done_o(done_o), .retired_inst_count_o(retired_inst_count_o),
         .retire_info_o(retire_info)
@@ -96,8 +91,12 @@ module o3_tandem_top
     end
     always_ff @(posedge clk_i) begin
         if (rst_i) load_replay_count_o <= '0;
-        else if (u_core.u_backend.mem_replay_capture)
-            load_replay_count_o <= load_replay_count_o + 1'b1;
+        else begin
+            int replayed;replayed=0;
+            for(int p=0;p<o3_cfg_pkg::O3_CFG.be.lsu.agu_pipes;p++)
+                replayed+=int'(u_core.u_backend.lq_replay_valid[p] && u_core.u_backend.lq_replay_ready[p]);
+            load_replay_count_o<=load_replay_count_o+32'(replayed);
+        end
     end
     // Exec resolution is one-shot even if JAL link writeback is held.
     always_ff @(posedge clk_i) begin
@@ -150,7 +149,7 @@ module o3_tandem_top
             u_core.u_frontend.perf_arb,u_core.u_frontend.perf_rq,u_core.u_frontend.perf_f0,
             u_core.u_frontend.perf_f1,u_core.u_frontend.perf_ibuf,u_core.u_frontend.perf_icache,
             u_core.u_frontend.perf_pf}),
-        .be_sources_i('{u_core.u_backend.perf_commit,u_core.u_backend.perf_lsu,u_core.u_backend.perf_dcache,u_core.u_backend.perf_ptw,u_core.u_backend.perf_ad}),
+        .be_sources_i('{u_core.u_backend.perf_commit,u_core.u_backend.perf_lsu,u_core.u_backend.perf_dcache,u_core.u_backend.perf_ptw,u_core.u_backend.perf_ad,u_core.l2_perf}),
         .fe_frontend_i(u_core.u_frontend.fe_perf_o),.fe_core_i(u_core.fe_perf),
         .fe_backend_i(u_core.u_backend.fe_perf_i),.fe_csr_i(u_core.u_backend.u_csr_file.fe_perf_i),
         .fe_hpm_i(u_core.u_backend.u_csr_file.u_hpm_counters.fe_perf_i),
@@ -193,35 +192,24 @@ module o3_tandem_top
                     u_core.u_backend.rob_retire_valid[0]);
             end
             if ($test$plusargs("L10_DEBUG") && debug_cycle_q >= 15500 && debug_cycle_q % 128 == 0) begin
-                $display("[l10] cycle=%0d head=%b pc=%h done=%b exc=%b/%0d needsD=%b D=%b/%b/%b hold=%b/final=%b/fence=%b work=%b/%0d VA=%h xlate=%b/%b replay=%b/%b pending=%b PTW=%0d epoch=%0d",
+                $display("[l10] cycle=%0d head=%b pc=%h done=%b exc=%b/%0d needsD=%b D=%b/%b/%b pending=%b refresh=%b fence=%b AG0=%b/%0d VA0=%h PTW=%0d epoch=%0d",
                     debug_cycle_q,u_core.u_backend.head_valid,u_core.u_backend.rob_head_info.pc,
                     u_core.u_backend.rob_head_info.complete,u_core.u_backend.rob_head_info.exc.valid,u_core.u_backend.rob_head_info.exc.cause,
                     u_core.u_backend.rob_head_info.needs_d,u_core.u_backend.st_d_valid,u_core.u_backend.st_d_ready,u_core.u_backend.st_d_done,
-                    u_core.u_backend.u_load_store_unit.d_hold_q,u_core.u_backend.u_load_store_unit.d_finalize_q,u_core.u_backend.u_load_store_unit.d_fence_wait_q,
-                    u_core.u_backend.u_load_store_unit.work_uop.valid,u_core.u_backend.u_load_store_unit.work_uop.rob_idx,
-                    u_core.u_backend.u_load_store_unit.effective_addr,u_core.u_backend.u_load_store_unit.xlate_busy_q,u_core.u_backend.u_load_store_unit.xlate_done_q,
-                    u_core.u_backend.u_load_store_unit.replay_valid_q,u_core.u_backend.u_load_store_unit.replay_check_q,
-                    u_core.u_backend.u_load_store_unit.pending_valid_q,u_core.u_backend.u_ptw.state_q,u_core.u_backend.t_dmmu_csr.epoch);
+                    u_core.u_backend.u_load_store_unit.d_pending_q,u_core.u_backend.u_load_store_unit.d_refresh_q,u_core.u_backend.u_load_store_unit.d_fence_q,
+                    u_core.u_backend.u_load_store_unit.ag_q[0].valid,u_core.u_backend.u_load_store_unit.ag_q[0].r.uop.rob_idx,
+                    u_core.u_backend.u_load_store_unit.ag_q[0].r.va,u_core.u_backend.u_ptw.state_q,u_core.u_backend.t_dmmu_csr.epoch);
             end
             debug_cycle_q <= debug_cycle_q + 1;
             if ($test$plusargs("L5_DEBUG") && debug_cycle_q < 2000) begin
-                $display("[l5] cycle=%0d head=%b/%0d pc=%h done=%b exc=%b flush=%b csr=%b serial=%b mem=%b pend=%b store=%b req=%b/%b rsp=%b/%b sq=%b/%b",
-                    debug_cycle_q, u_core.u_backend.head_valid,
-                    u_core.u_backend.rob_head_info.rob_idx,
-                    u_core.u_backend.rob_head_info.pc,
-                    u_core.u_backend.rob_head_info.complete,
-                    u_core.u_backend.rob_head_info.exc.valid,
-                    u_core.u_backend.global_flush, u_core.u_backend.csr_req_valid,
-                    u_core.u_backend.head_serial_done,
-                    u_core.u_backend.u_load_store_unit.work_uop.valid,
-                    u_core.u_backend.u_load_store_unit.pending_valid_q,
-                    u_core.u_backend.u_load_store_unit.pending_store_q,
-                    u_core.u_backend.u_load_store_unit.memory_req_valid,
-                    u_core.u_backend.u_load_store_unit.memory_req_ready,
-                    u_core.u_backend.u_load_store_unit.memory_rsp_valid,
-                    u_core.u_backend.u_load_store_unit.memory_rsp_ready,
-                    u_core.u_backend.u_load_store_unit.sq_drain_valid_i,
-                    u_core.u_backend.u_load_store_unit.sq_drain_ready_o);
+                $display("[l5] cycle=%0d head=%b/%0d pc=%h done=%b exc=%b flush=%b csr=%b serial=%b AG=%b/%b LDreq=%b/%b rsp=%b/%b SQreq=%b/%b SQrsp=%b",
+                    debug_cycle_q,u_core.u_backend.head_valid,u_core.u_backend.rob_head_info.rob_idx,u_core.u_backend.rob_head_info.pc,
+                    u_core.u_backend.rob_head_info.complete,u_core.u_backend.rob_head_info.exc.valid,u_core.u_backend.global_flush,
+                    u_core.u_backend.csr_req_valid,u_core.u_backend.head_serial_done,
+                    u_core.u_backend.u_load_store_unit.ag_q[0].valid,u_core.u_backend.u_load_store_unit.ag_q[1].valid,
+                    u_core.u_backend.t_dc_ld_req_valid[0],u_core.u_backend.t_dc_ld_req_valid[1],
+                    u_core.u_backend.t_dc_ld_resp[0].valid,u_core.u_backend.t_dc_ld_resp[1].valid,
+                    u_core.u_backend.t_sq_dc_req_valid,u_core.u_backend.t_sq_dc_req_ready,u_core.u_backend.t_sq_dc_resp.valid);
             end
         end
     end

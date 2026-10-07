@@ -73,10 +73,6 @@ package o3_pkg;
     parameter int PREG_IDX_WIDTH = PREG_W;      // 两域共用宽度（o3_types_pkg）
     parameter int ROB_IDX_WIDTH  = ROB_IDX_W;
 
-    // DTCM：基线未设计，现状沿用（见 O3_CFG.be.lsu）。
-    parameter logic [XLEN-1:0] DTCM_BASE_ADDR  = XLEN'(O3_CFG.be.lsu.dtcm_base);
-    parameter int              DTCM_SIZE_BYTES = O3_CFG.be.lsu.dtcm_bytes;
-
     parameter int BRANCH_TAG_WIDTH = BR_TAG_W;
     parameter int LQ_IDX_WIDTH = LQ_IDX_W;
     parameter int SQ_IDX_WIDTH = SQ_IDX_W;
@@ -409,6 +405,16 @@ package o3_pkg;
         branch_mask_t              branch_mask;
     } mem_execute_uop_t;
 
+    // LQ owns a load's request, wait reason and generation across all replays.
+    typedef struct packed {
+        mem_execute_uop_t uop;
+        logic [XLEN-1:0] va;
+        o3_types_pkg::lq_tag_t tag;
+        o3_types_pkg::ld_wait_e wait_reason;
+        o3_types_pkg::coh_id_t mshr_id;
+        o3_types_pkg::exc_info_t exc;
+    } lq_replay_t;
+
     // Load完成后等待共享PRF写口的结果。真正获得写口时才广播并complete ROB。
     typedef struct packed {
         logic                      valid;
@@ -421,6 +427,8 @@ package o3_pkg;
         logic [PREG_IDX_WIDTH-1:0] dst_preg;
         o3_types_pkg::reg_domain_e dst_dom;
         logic [XLEN-1:0]           result;
+        logic [XLEN-1:0]           va;
+        mem_size_t                 size;
         branch_mask_t              branch_mask;
     } load_result_t;
 

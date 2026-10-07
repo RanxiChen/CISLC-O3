@@ -20,8 +20,6 @@ namespace {
 
 constexpr int kResetCycles = 5;
 constexpr int kRetireWidth = 4;
-constexpr uint64_t kDtcmBase = 0x11000000ull;
-constexpr uint64_t kDtcmBytes = 0x00040000ull;
 constexpr uint64_t kAxiBase = 0x80000000ull;
 constexpr uint64_t kAxiBytes = 0x00200000ull;
 
@@ -283,10 +281,6 @@ Options parse_options(int argc, char** argv) {
 }
 
 void clear_tcm_init(Vo3_tandem_top& dut) {
-    dut.dtcm_init_valid_i = 0;
-    dut.dtcm_init_addr_i = 0;
-    dut.dtcm_init_wdata_i = 0;
-    dut.dtcm_init_wmask_i = 0;
     dut.axi_init_valid_i = 0;
     dut.axi_init_addr_i = 0;
     dut.axi_init_wmask_i = 0;
@@ -371,7 +365,6 @@ int main(int argc, char** argv) {
             options.reset_pc = image.entry;
         }
 
-        const std::vector<InitBeat> dtcm_init = image.memory.init_beats(kDtcmBase, kDtcmBytes);
         const std::vector<InitBeat> axi_init = image.memory.init_beats(kAxiBase, kAxiBytes);
 
         std::unique_ptr<SpikeLockstep> spike;
@@ -417,16 +410,9 @@ int main(int argc, char** argv) {
 
         const std::size_t init_cycles = std::max(
             static_cast<std::size_t>(kResetCycles),
-            std::max(dtcm_init.size(), axi_init.size()));
+            axi_init.size());
         for (std::size_t init_cycle = 0; init_cycle < init_cycles; ++init_cycle) {
             clear_tcm_init(dut);
-            if (init_cycle < dtcm_init.size()) {
-                const InitBeat& beat = dtcm_init[init_cycle];
-                dut.dtcm_init_valid_i = 1;
-                dut.dtcm_init_addr_i = beat.addr;
-                dut.dtcm_init_wdata_i = beat.data;
-                dut.dtcm_init_wmask_i = beat.mask;
-            }
             if (init_cycle < axi_init.size()) {
                 drive_axi_init(dut, axi_init[init_cycle]);
             }
@@ -486,8 +472,7 @@ int main(int argc, char** argv) {
             if(tohost_value!=1) return 1;
         }
         if(spike) std::cout << "[o3-spike] PASS compared=" << next_order << " retired=" << real_retired << " differences=0\n";
-        std::cout << "[o3-memory] dtcm_init_beats=" << dtcm_init.size()
-                  << " axi_init_beats=" << axi_init.size()
+        std::cout << "[o3-memory] axi_init_beats=" << axi_init.size()
                   << " icache_refills=" << dut.icache_refill_count_o << "\n";
         std::cout << "[o3-branch] correct_resolves=" << dut.correct_resolve_count_o
                   << " mispredicts=" << dut.mispredict_count_o << "\n";

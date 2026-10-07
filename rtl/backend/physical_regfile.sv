@@ -1,6 +1,6 @@
 /**
  * Domain-parametric multiport physical register file (B15).
- * INT p0 reads zero and ignores writes. FP p0 is writable. FP uses CFG 7R/2W;
+ * INT p0 reads zero and ignores writes. FP p0 is writable. FP uses CFG 8R/2W;
  * every granted write participates in the existing same-cycle write/read bypass.
  * Generic implementation resets data to zero; FPGA bank/latest-tag variants are retained.
  * 当前实现状态：闭环简化（L9）；lint/测试未运行，no PPA/FPGA inference claim.

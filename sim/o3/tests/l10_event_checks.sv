@@ -3,7 +3,7 @@
 // rather than masking DUT flags or suppressing assertions for the new program.
 // Independent state starts at reset; no producer or counter state is modified.
 module l10_event_checks import o3_types_pkg::*; (
- input logic clk_i,rst_i,input fe_perf_t fe_sources_i[9],input be_perf_t be_sources_i[5],
+ input logic clk_i,rst_i,input fe_perf_t fe_sources_i[9],input be_perf_t be_sources_i[6],
  input fe_perf_t fe_frontend_i,fe_core_i,fe_backend_i,fe_csr_i,fe_hpm_i,
  input be_perf_t be_backend_i,be_hpm_i,
  input logic req_valid_i,trap_i,input csr_req_t req_i,
@@ -21,7 +21,7 @@ module l10_event_checks import o3_types_pkg::*; (
   end
   for(int e=0;e<BE_PERF_NUM;e++) begin
    sum_be[e]=0;
-   for(int p=0;p<5;p++) sum_be[e]+=64'(be_sources_i[p][e]);
+   for(int p=0;p<6;p++) sum_be[e]+=64'(be_sources_i[p][e]);
   end
  end
  function automatic logic [63:0] increment(input logic [15:0] s);

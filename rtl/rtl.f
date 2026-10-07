@@ -135,11 +135,13 @@ rtl/backend/fpu/fpu_misc_fu.sv
 rtl/backend/fpu/fpu_conv_fu.sv
 
 // ---------- 8. 后端：访存 ----------
-rtl/memory/simple_data_sram.sv
 rtl/lsu/dtlb.sv
 rtl/lsu/walk_cache.sv
 rtl/lsu/ptw.sv
 rtl/lsu/pte_ad_updater.sv
+rtl/lsu/dcache_mshr.sv
+rtl/lsu/dcache_writeback.sv
+rtl/lsu/dcache_probe.sv
 rtl/lsu/dcache.sv
 rtl/backend/load_queue.sv
 rtl/backend/store_queue.sv
@@ -158,7 +160,10 @@ rtl/system/commit_ctrl.sv
 rtl/backend/backend.sv
 
 // ---------- 11. 存储层次 ----------
-rtl/memory/l2_cache.sv
+rtl/memory/l2_slots.sv
+rtl/memory/l2_probe_engine.sv
+rtl/memory/l2_mem_engine.sv
+rtl/memory/l2_home.sv
 rtl/memory/axi_master.sv
 
 // ---------- 12. 顶层 ----------

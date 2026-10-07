@@ -8,7 +8,7 @@ module pma_checker import o3_types_pkg::*; #(
   output logic exec_ok_o,cacheable_o,exists_o,read_ok_o,write_ok_o);
     assign cacheable_o=pma_main(paddr_i,int'(bytes_i));
     assign exec_ok_o=cacheable_o;
-    assign exists_o=cacheable_o || pma_dtcm(paddr_i,int'(bytes_i));
+    assign exists_o=cacheable_o;
     assign read_ok_o=exists_o;
     assign write_ok_o=exists_o;
 endmodule

@@ -1,541 +1,490 @@
-/**
- * L1 DCache —— 组相联、写回、多 bank、非阻塞数据缓存
- *
- * 作用（已定方向，B03/B04/B05/B08/B09）：
- * - 普通 load/store、PTW 页表读取、L1 原子操作复用本 cache；L2 缓冲 DDR 访问。
- * - hit-under-miss；多个独立 miss 在途与同 line 合并（dcache_mshr）。流水线等待与事务等待分开；
- *   一次 miss 不把整个访问流水线置忙。
- * - 多 bank 提供实际并行带宽；同 bank 仲裁，tag/meta 访问能力必须配套；
- *   不同 line 不保证不同 bank，不承诺两读一写无冲突。
- * - Load：翻译与 PMP/PMA 检查完成后才允许产生有效结果；SQ 与 cache 可并行查询，结果统一选择；
- *   SQ 完整提供数据时不因 cache miss 无条件申请下级取数。miss 分配或合并 MSHR；资源不足等待
- *   可用事件；回填安装后经 wake_o 唤醒 load 重查（不要求回填直接写 preg）。
- * - Store drain：请求接受与写完成分开；命中写完确认后 SQ 释放；miss/冲突/DMA 行保护时 SQ 保留项，
- *   等事件后重试，不重复发送在途请求；store 等 miss 不占 bank 流水级（B05）。
- * - 响应区分等待原因（dc_status_e），避免盲目重试（B04）。
- * - B49：普通可缓存标量非对齐访问由硬件处理；同 line 已支持，跨 line/跨页拆分留 L8。
- *   当前旧跨 line 异常路径仍保留，不作为 B49 完整实现。
- * - DMA 行协调（B08）：接受 probe 后阻止该行新的 CPU 访问与 AMO，其他行继续；已接受访问完成到
- *   安全边界；clean+invalidate 后返回 quiesced；不得堵住完成旧事务所需的响应/回填/写回/探测应答；
- *   probe 使用维护队列与 bank 仲裁，持续 CPU 请求下也不能永久饥饿。
- * - AMO/LR/SC：内含 dcache_amo_unit 与独立 lrsc_reservation（B09/B35）。store drain/AMO 实际写、
- *   PTE A/D 实际写、DMA 写取得行保护权时向 reservation 送冲突事件；替换/clean/writeback/DMA 读/
- *   L2 容量回收不清除。SC 在途行不被重复选为 victim、维护请求不得无限抢占 SC（前进保障）。
- * - FENCE.I（B23/D25，commit_ctrl 编排）：clean_all_req_i 后遍历全部 tag/meta，跳过非脏行，每个
- *   脏行复用按行 clean+invalidate 写回 L2 并失效，等全部写回确认后 clean_all_done_o；
- *   clean_all_busy_o 供 fencei_dcache_evict_cycles 计数。干净行不逐出。
- * - 维护入口（2026-10-02 确认，常规流水不变）：probe_* 同时承载 DMA 行协调（PROBE_DMA）与 L2
- *   inclusive 回收（PROBE_RECALL）；均经维护队列与 bank 仲裁，不新增普通访问的查询口或流水级；
- *   探测应答不依赖普通 miss 的空闲 MSHR；同行在途回填须标记为不可安装，旧响应不得重新装回；
- *   脏副本先交回最新数据再确认。RECALL 不清 reservation。
- * - PTE A/D（B36）：pte_ad_* 是内部“完整 64 位 PTE 比较 + 条件置 A/D”入口，只供旁侧
- *   pte_ad_updater 使用；普通 load/store 不经过它。比较不匹配返回 mismatch；epoch 失效不写入。
- *   该入口不经 dcache_amo_unit 的 ROB 队首原子门控，避免被外部 AMO 卡死。
- * - 写回错误（B39）：脏行写回 L2 失败时 fatal_o 上报，失败写回不得按成功释放，维护/DMA 不得
- *   虚假完成。
- * - TLB 命中、权限与 A/D 均满足时 load/store 照常走原流水；store 遇 D=0 由 LSU 标记 needs_D（B36）。
- *
- * 首版映射已选 16B word 交错；多 MSHR、BRAM 时序与完整维护队列仍待实现。
- *
- * 当前实现状态：闭环简化（L10）。四个 16B word bank、整行 tag/valid/dirty、
- * 两级 demand 查询、单个 demand 行事务、命中穿越 miss、脏 victim 交回、四拍 L2
- * 回填与 inclusive probe 已写入 RTL。PTW 物理读与完整 PTE 条件置位复用该流水。
- * 多 MSHR、同 line 合并、AMO/预取与
- * DMA 保护尚未实现；普通 LSU 接线与 Alan 验证状态见 doc/LOOP.md。
- *
- * 测试：sim/cocotb/mmu/ 的 Makefile.pte（L10 原子入口）；完整访存门禁留 L8。
- */
-module dcache
-    import o3_types_pkg::*;
-#(
-    parameter  o3_cfg_pkg::backend_cfg_t CFG,
-    localparam int LOAD_PORTS = CFG.lsu.agu_pipes      // load/AGU 管线数待定（B03）
-) (
-    input  logic            clk,
-    input  logic            rst,
-
-    // load 管线（每条 AGU 管线一个）
-    input  logic            ld_req_valid_i [LOAD_PORTS],
-    output logic            ld_req_ready_o [LOAD_PORTS],
-    input  dcache_req_t     ld_req_i       [LOAD_PORTS],
-    output dcache_resp_t    ld_resp_o      [LOAD_PORTS],
-
-    // committed store drain（SQ 按序，首版一次一笔，B05）
-    input  logic            st_req_valid_i,
-    output logic            st_req_ready_o,
-    input  dcache_req_t     st_req_i,
-    output dcache_resp_t    st_resp_o,
-
-    // AMO / LR / SC（ROB 队头，B09）
-    input  logic            amo_req_valid_i,
-    output logic            amo_req_ready_o,
-    input  dcache_req_t     amo_req_i,
-    output dcache_resp_t    amo_resp_o,
-
-    // PTW 物理读（B07）
-    input  logic            ptw_req_valid_i,
-    output logic            ptw_req_ready_o,
-    input  dcache_req_t     ptw_req_i,
-    output dcache_resp_t    ptw_resp_o,
-
-    // stride 预取（B07）
-    input  logic            pf_req_valid_i,
-    output logic            pf_req_ready_o,
-    input  dcache_req_t     pf_req_i,
-
-    // MSHR 回填完成唤醒
-    output dc_wake_t        wake_o,
-
-    // DMA 行协调探测（来自 L2 协调器，B08）
-    input  logic            probe_valid_i,
-    output logic            probe_ready_o,
-    input  dc_probe_req_t   probe_i,
-    output dc_probe_resp_t  probe_resp_o,       // quiesced
-
-    // FENCE.I 数据侧：L1D 全行扫描，脏行写回 L2 并逐出（B23，commit_ctrl 发起）
-    input  logic            clean_all_req_i,
-    output logic            clean_all_done_o,
-    output logic            clean_all_busy_o,
-
-    // PTE 比较 + 条件置 A/D 内部入口（B36，旁侧 pte_ad_updater）
-    input  logic            pte_ad_req_valid_i,
-    output logic            pte_ad_req_ready_o,
-    input  pte_ad_req_t     pte_ad_req_i,
-    output pte_ad_resp_t    pte_ad_resp_o,
-    input  xlate_epoch_t    cur_epoch_i,
-
-    // reservation 清除（trap/xRET/SFENCE.VMA/satp，来自 commit_ctrl）与 PTW A/D 写冲突
-    input  logic            rsv_clear_valid_i,
-    input  rsv_clear_e      rsv_clear_reason_i,
-    input  rsv_conflict_t   rsv_pte_ad_conflict_i,
-
-    // L1D ↔ L2：回填请求/响应、脏行写回
-    output logic            l2_req_valid_o,
-    input  logic            l2_req_ready_i,
-    output l2_req_t         l2_req_o,
-    input  l2_resp_t        l2_resp_i,
-    output logic            l2_resp_ready_o,
-    output logic            l2_wb_valid_o,
-    input  logic            l2_wb_ready_i,
-    output paddr_t          l2_wb_line_paddr_o,
-    output logic [DC_LINE_BYTES*8-1:0] l2_wb_data_o,
-    input  logic            l2_wb_error_i,       // B39：L2 拒绝/失败的写回（含包含关系错误）
-
-    output logic            idle_o,
-    output fatal_evt_t      fatal_o,             // B39：脏行写回 L2 失败
-    output be_perf_t        perf_o
-);
-    localparam int SETS = CFG.dcache.sets;
-    localparam int WAYS = CFG.dcache.ways;
-    localparam int BANKS = CFG.dcache.banks;
-    localparam int SET_W = $clog2(SETS);
-    localparam int WAY_W = $clog2(WAYS);
-    localparam int TAG_W = PADDR_W - 6 - SET_W;
-    localparam int BEAT_W = $clog2(DC_LINE_BYTES / L2_BEAT_BYTES);
-    typedef logic [SET_W-1:0] set_t;
-    typedef logic [WAY_W-1:0] way_t;
-    typedef logic [TAG_W-1:0] tag_t;
-    typedef logic [BEAT_W-1:0] beat_t;
-    typedef logic [DC_LINE_BYTES*8-1:0] line_t;
-    typedef enum logic [2:0] {M_IDLE, M_WB, M_SEND, M_RECV, M_INSTALL, M_FAULT} mstate_t;
-
-    // 16B word interleaving: each 64B line occupies the same set/way in all
-    // four banks. A same-line unaligned scalar access may touch two banks.
-    logic valid_q [SETS][WAYS];
-    logic dirty_q [SETS][WAYS];
-    tag_t tag_q [SETS][WAYS];
-    logic [127:0] bank_read [BANKS][WAYS];
-    logic [BANKS-1:0][WAYS-1:0] bank_write_en;
-    logic [127:0] bank_write_data [BANKS][WAYS];
-    set_t bank_read_set, bank_write_set;
-    logic bank_read_en;
-    logic [WAY_W-1:0] victim_rr_q;
-
-    pte_ad_req_t stage_ad_q,m_ad_q;
-    logic stage_ad_allowed_q,m_ad_allowed_q,stage_ad_match,m_ad_match;
-    dcache_req_t ad_input_req,stage_write_req,m_write_req;
-    logic accept_ad;
-    always_comb begin
-        ad_input_req='0;ad_input_req.src=DC_SRC_PTE_AD;ad_input_req.paddr=pte_ad_req_i.pte_paddr;ad_input_req.size=3;
-        stage_write_req=stage_req_q;m_write_req=m_req_q;
-        if(stage_req_q.src==DC_SRC_PTE_AD) begin
-            stage_write_req.wmask=8'hff;
-            stage_write_req.wdata=stage_ad_q.expected_pte | (stage_ad_q.set_a ? 64'h40 : 0) | (stage_ad_q.set_d ? 64'h80 : 0);
-        end
-        if(m_req_q.src==DC_SRC_PTE_AD) begin
-            m_write_req.wmask=8'hff;
-            m_write_req.wdata=m_ad_q.expected_pte | (m_ad_q.set_a ? 64'h40 : 0) | (m_ad_q.set_d ? 64'h80 : 0);
-        end
-    end
-    // N compares the full observed PTE before selecting bank write data. The
-    // accepted CAS owns the line; an epoch change after acceptance may drain.
-    assign stage_ad_match=stage_req_q.src==DC_SRC_PTE_AD && stage_ad_allowed_q && extract_load(stage_line,stage_req_q)==stage_ad_q.expected_pte;
-    assign m_ad_match=m_req_q.src==DC_SRC_PTE_AD && m_ad_allowed_q && extract_load(m_data_q,m_req_q)==m_ad_q.expected_pte;
-    dcache_req_t stage_req_q;
-    logic stage_valid_q, stage_store_q;
-    set_t stage_set_q;
-    tag_t stage_tag_q;
-    logic [WAYS-1:0] stage_hits_q;
-    logic stage_hit;
-    way_t stage_way;
-    way_t stage_victim_way;
-    line_t stage_line, stage_store_line, stage_victim_line;
-    logic stage_fire, stage_consume, stage_store_hit;
-    logic input_hit, input_line_pending, stage_crossline;
-    logic accept_window, accept_store, accept_load;
-    dcache_req_t input_req;
-    set_t input_set;
-    tag_t input_tag;
-
-    mstate_t mstate_q;
-    dcache_req_t m_req_q;
-    logic m_store_q;
-    paddr_t m_line_q, m_victim_line_q;
-    set_t m_set_q;
-    tag_t m_tag_q;
-    way_t m_way_q;
-    beat_t m_beat_q;
-    line_t m_data_q, m_victim_data_q;
-    logic m_error_q;
-    fatal_evt_t fatal_q;
-
-    logic probe_fire, probe_pending_q, probe_had_dirty_q;
-    way_t probe_way_q;
-    dc_probe_resp_t probe_meta_q;
-    logic [WAYS-1:0] probe_hits;
-    way_t probe_way;
-    set_t probe_set;
-    tag_t probe_tag;
-    line_t probe_line_data;
-    dcache_resp_t ld_resp_q, st_resp_q;
-    dc_wake_t wake_q;
-
-    initial begin
-        assert (BANKS == 4 && WAYS == 4 && SETS == 64 && DC_LINE_BYTES == 64
-             && L2_BEAT_BYTES == 16 && LOAD_PORTS > 0)
-            else $fatal(1, "DCache: current word-bank datapath requires 4x16B banks, 4 ways, 64 sets");
-    end
-
-    function automatic line_t merge_store(input line_t old_line,
-                                           input dcache_req_t req);
-        line_t result;
-        int unsigned byte_offset;
-        result = old_line;
-        byte_offset = int'(req.paddr[5:0]);
-        for (int byte_idx = 0; byte_idx < 8; byte_idx++)
-            if (req.wmask[byte_idx] && byte_offset + byte_idx < DC_LINE_BYTES)
-                result[(byte_offset + byte_idx)*8 +: 8] = req.wdata[byte_idx*8 +: 8];
-        return result;
+/** L8a L1D: two unstalled S0/S1/S2 lanes, eight word banks, line-only
+ * MSHRs, exact clean/dirty Put, one PS and one SNP. All line operations
+ * reserve their S0 bank slot two cycles in advance. Replay leaves S2. */
+module dcache import o3_types_pkg::*; #(
+    parameter o3_cfg_pkg::backend_cfg_t CFG,localparam int P=CFG.lsu.agu_pipes,
+    localparam int SETS=CFG.dcache.sets,WAYS=CFG.dcache.ways,BANKS=CFG.dcache.banks,
+    localparam int SW=$clog2(SETS),WW=$clog2(WAYS),TW=MEM_PADDR_W-6-SW,
+    localparam int N=CFG.dcache.mshrs,WN=CFG.dcache.wb_buffers,
+    localparam int IP=CFG.lsu.mem_pipes-1
+)(input logic clk,rst,
+    input logic ld_req_valid_i[P],output logic ld_req_ready_o[P],input dcache_req_t ld_req_i[P],
+    input dcache_req_t ld_s1_i[P],output dcache_resp_t ld_resp_o[P],
+    input rob_idx_t rob_head_i,
+    input logic flush_i,resolution_valid_i,resolution_mispredict_i,input br_tag_t resolution_tag_i,
+    // Reservations for LSU's IS stage; the CPU S0 request arrives two cycles later.
+    output logic full_line_busy_o,output logic internal_busy_o,
+    input logic st_req_valid_i,output logic st_req_ready_o,input dcache_req_t st_req_i,output dcache_resp_t st_resp_o,
+    input logic ptw_req_valid_i,output logic ptw_req_ready_o,input dcache_req_t ptw_req_i,output dcache_resp_t ptw_resp_o,
+    input logic pte_ad_req_valid_i,output logic pte_ad_req_ready_o,input pte_ad_req_t pte_ad_req_i,
+    output pte_ad_resp_t pte_ad_resp_o,input xlate_epoch_t cur_epoch_i,input pmp_state_t pmp_i,
+    input logic clean_all_req_i,output logic clean_all_done_o,clean_all_busy_o,
+    output dc_wake_t wake_o,
+    output logic l2_req_valid_o,input logic l2_req_ready_i,output coh_req_t l2_req_o,
+    input logic l2_resp_valid_i,input coh_rsp_down_t l2_resp_i,output logic l2_resp_ready_o,
+    output logic rsp_up_valid_o,input logic rsp_up_ready_i,output coh_rsp_up_t rsp_up_o,
+    input logic snp_valid_i,output logic snp_ready_o,input coh_snp_t snp_i,
+    output logic idle_o,output fatal_evt_t fatal_o,output be_perf_t perf_o);
+    typedef struct packed {coh_state_e state;logic [TW-1:0] tag;} tag_t;
+    (* ram_style="distributed" *) tag_t tags_q[P][SETS][WAYS];
+    (* ram_style="block" *) logic [63:0] data_q[BANKS][WAYS][SETS];
+    logic [WAYS-2:0] plru_q[SETS];logic locked_q[SETS][WAYS],rfo_q[SETS][WAYS];
+    int init_q;logic init_done_q;
+    typedef struct packed {logic valid,conflict,bank,snap;dcache_req_t req;pte_ad_req_t ad;logic internal;} lane_t;
+    lane_t s1_q[P],s2_q[P],s0[P];tag_t tag_read_q[P][WAYS],s2_tags_q[P][WAYS];
+    logic [63:0] bank_read_q[BANKS][WAYS],s2_words_q[P][2][WAYS];
+    typedef enum logic [1:0] {LINE_NONE,LINE_PROBE,LINE_INSTALL,LINE_WB} line_kind_t;
+    typedef struct packed {line_kind_t kind;coh_addr_t addr;coh_id_t id;logic [DC_WAY_W-1:0] way;dc_line_txn_t txn;} line_op_t;
+    line_op_t line_choose,line_launch_q[2],line_read_q,line_result_q;
+    logic [63:0] line_words_q[BANKS][WAYS];tag_t line_tags_q[WAYS];
+    coh_data_t line_data_q;coh_state_e line_state_q;int line_way_q;
+    logic ps_valid_q;dcache_req_t ps_req_q;pte_ad_req_t ps_ad_q;logic ps_internal_q;
+    int ps_way_q;logic ps_is_ad_q,ps_write;
+    dc_mshr_state_e ms_state[N];dc_line_txn_t ms_txn[N];
+    logic ms_free,ms_alloc,ms_install,ms_install_issue,ms_install_done,ms_free_pulse;
+    coh_id_t ms_free_id,ms_install_id;dc_line_txn_t alloc_txn,install_txn;
+    logic [$clog2(N+1)-1:0] ms_free_count;
+    logic wb_free,wb_alloc,wb_read,wb_issue,wb_done,wb_free_pulse,wb_put,wb_put_ready;
+    coh_id_t wb_free_id,wb_read_id;dc_wb_t alloc_wb,wb_read_meta,wb_meta[WN];logic wb_valid[WN];
+    coh_rsp_up_t wb_put_msg;
+    logic probe_pending,probe_hold,probe_read,probe_issue,probe_done,probe_ack,probe_ack_ready;
+    coh_snp_t probe_snp;coh_rsp_up_t probe_ack_msg;
+    logic up_held_q,up_probe_q;logic choose_probe;
+    dcache_req_t internal_req_q,internal_choose,internal_launch_q[2];
+    pte_ad_req_t internal_ad_q,internal_ad_launch_q[2],internal_ad_choose;
+    logic internal_valid_q,internal_inpipe_q,internal_wait_q;
+    ld_wait_e internal_reason_q;coh_id_t internal_mshr_q;
+    logic internal_fire,internal_finish,internal_launch_valid_q[2],internal_select;
+    dcache_resp_t decision[P];int hit_way[P];logic hit[P];coh_state_e hit_state[P];
+    int alloc_lane,alloc_way,ps_lane;logic upgrade,alloc_victim,external_mutation;
+    logic [SW-1:0] mutation_set;logic tag_change;int tag_way;tag_t tag_new;
+    logic [SW-1:0] tag_set;
+    function automatic logic killed(input dcache_req_t r);
+        return (r.src==DC_SRC_LOAD || r.is_sta) && (flush_i ||
+            (resolution_valid_i && resolution_mispredict_i && r.br_mask[resolution_tag_i]));
     endfunction
-
-    function automatic logic [XLEN-1:0] extract_load(input line_t data,
-                                                       input dcache_req_t req);
-        return XLEN'(data >> (int'(req.paddr[5:0]) * 8));
+    function automatic logic [WAYS-2:0] touch(input logic [WAYS-2:0] tree,input int way_idx);
+        logic [WAYS-2:0] t;int node,dir;t=tree;node=0;
+        for(int l=0;l<WW;l++) begin dir=(way_idx>>(WW-l-1))&1;t[node]=1'(1-dir);node=2*node+1+dir;end
+        return t;
     endfunction
-
-    assign input_req = pte_ad_req_valid_i ? ad_input_req : ptw_req_valid_i ? ptw_req_i : st_req_valid_i ? st_req_i : ld_req_i[0];
-    assign input_set = set_t'(input_req.paddr[6 +: SET_W]);
-    assign input_tag = tag_t'(input_req.paddr[PADDR_W-1:6+SET_W]);
-    assign input_line_pending = mstate_q != M_IDLE
-        && {input_req.paddr[PADDR_W-1:6], 6'b0} == m_line_q;
-    assign stage_crossline = (int'(stage_req_q.paddr[5:0])
-                            + (1 << stage_req_q.size)) > DC_LINE_BYTES;
+    function automatic int victim(input logic [WAYS-2:0] tree);
+        int node,w,dir;node=0;w=0;
+        for(int l=0;l<WW;l++) begin dir=int'(tree[node]);w=2*w+dir;node=2*node+1+dir;end
+        return w;
+    endfunction
+    function automatic logic [7:0] byte_mask(input logic [1:0] sz);
+        return 8'((9'b1<<(1<<int'(sz)))-1);
+    endfunction
+    function automatic logic [63:0] format(input logic [127:0] words,input dcache_req_t r);
+        logic [63:0] raw;raw=64'(words>>(8*int'(r.paddr[2:0])));
+        case(r.size)
+            0:raw=r.is_signed ? 64'($signed(raw[7:0])):64'(raw[7:0]);
+            1:raw=r.is_signed ? 64'($signed(raw[15:0])):64'(raw[15:0]);
+            2:raw=r.is_flw ? {32'hffffffff,raw[31:0]}:
+                r.is_signed ? 64'($signed(raw[31:0])):64'(raw[31:0]);
+            default:;
+        endcase
+        return raw;
+    endfunction
+    dcache_mshr #(.CFG(CFG)) u_mshr(.clk(clk),.rst(rst),.alloc_i(ms_alloc),.alloc_txn_i(alloc_txn),
+        .free_o(ms_free),.free_id_o(ms_free_id),.free_count_o(ms_free_count),.state_o(ms_state),.txn_o(ms_txn),
+        .wb_read_done_i(wb_done),.wb_read_id_i(line_result_q.id),
+        .req_valid_o(l2_req_valid_o),.req_ready_i(l2_req_ready_i),.req_o(l2_req_o),
+        .rsp_valid_i(l2_resp_valid_i && l2_resp_i.op!=COH_PUTACK),.rsp_i(l2_resp_i),
+        .install_valid_o(ms_install),.install_id_o(ms_install_id),.install_o(install_txn),
+        .install_issue_i(ms_install_issue),.install_done_i(ms_install_done),.install_done_id_i(line_launch_q[1].id),
+        .mshr_free_o(ms_free_pulse));
+    dcache_writeback #(.CFG(CFG)) u_wb(.clk(clk),.rst(rst),.alloc_i(wb_alloc),.alloc_wb_i(alloc_wb),
+        .free_o(wb_free),.free_id_o(wb_free_id),.valid_o(wb_valid),.wb_o(wb_meta),
+        .read_valid_o(wb_read),.read_id_o(wb_read_id),.read_o(wb_read_meta),.read_issue_i(wb_issue),
+        .read_done_i(wb_done),.read_done_id_i(line_result_q.id),.read_data_i(line_data_q),
+        .put_valid_o(wb_put),.put_ready_i(wb_put_ready),.put_o(wb_put_msg),
+        .ack_valid_i(l2_resp_valid_i && l2_resp_i.op==COH_PUTACK),.ack_i(l2_resp_i),.wb_free_o(wb_free_pulse));
+    dcache_probe #(.CFG(CFG)) u_probe(.clk(clk),.rst(rst),.init_done_i(init_done_q),
+        .snp_valid_i(snp_valid_i),.snp_ready_o(snp_ready_o),.snp_i(snp_i),
+        .hold_i(probe_hold),.pending_o(probe_pending),.pending_snp_o(probe_snp),
+        .read_valid_o(probe_read),.read_issue_i(probe_issue),.read_done_i(probe_done),
+        .read_data_i(line_data_q),.read_state_i(line_state_q),
+        .ack_valid_o(probe_ack),.ack_ready_i(probe_ack_ready),.ack_o(probe_ack_msg));
+    assign l2_resp_ready_o=1;
+    assign choose_probe=up_held_q ? up_probe_q:probe_ack;
+    assign rsp_up_valid_o=choose_probe ? probe_ack:wb_put;
+    assign rsp_up_o=choose_probe ? probe_ack_msg:wb_put_msg;
+    assign probe_ack_ready=rsp_up_ready_i && choose_probe;
+    assign wb_put_ready=rsp_up_ready_i && !choose_probe;
+    // Only protocol completions and bounded PS execution can block a SNP.
     always_comb begin
-        input_hit = 1'b0;
-        for (int way = 0; way < WAYS; way++)
-            if (valid_q[input_set][way] && tag_q[input_set][way] == input_tag)
-                input_hit = 1'b1;
+        probe_hold=ps_valid_q && coh_addr_t'(ps_req_q.paddr>>6)==probe_snp.addr;
+        for(int n=0;n<N;n++) if(ms_txn[n].line_addr==probe_snp.addr &&
+            (ms_state[n]==DM_WAIT || ms_state[n]==DM_INSTALL))
+            probe_hold|=!(ms_txn[n].upgrade && ms_state[n]==DM_WAIT && !probe_snp.owner);
+        for(int n=0;n<WN;n++) probe_hold|=wb_valid[n] && wb_meta[n].line_addr==probe_snp.addr;
+        for(int p=0;p<P;p++) begin
+            probe_hold|=s1_q[p].valid && s1_q[p].req.write && coh_addr_t'(s1_q[p].req.paddr>>6)==probe_snp.addr;
+            probe_hold|=s2_q[p].valid && s2_q[p].req.write && coh_addr_t'(s2_q[p].req.paddr>>6)==probe_snp.addr;
+        end
+        for(int l=0;l<2;l++) probe_hold|=internal_launch_valid_q[l] && internal_launch_q[l].write &&
+            coh_addr_t'(internal_launch_q[l].paddr>>6)==probe_snp.addr;
     end
-
+    // Choose a future bank slot. INSTALL writes at the reserved S0 edge;
+    // PROBE/WB synchronously read all banks and complete at S2.
     always_comb begin
-        stage_hit = |stage_hits_q;
-        stage_way = '0;
-        stage_line = '0;
-        stage_victim_way = victim_rr_q;
-        stage_victim_line = '0;
-        for (int way = 0; way < WAYS; way++)
-            if (stage_hits_q[way]) stage_way = way_t'(way);
-        for (int way = WAYS-1; way >= 0; way--)
-            if (!valid_q[stage_set_q][way]) stage_victim_way = way_t'(way);
-        for (int bank = 0; bank < BANKS; bank++)
-            stage_line[bank*128 +: 128] = bank_read[bank][stage_way];
-        for (int bank = 0; bank < BANKS; bank++)
-            stage_victim_line[bank*128 +: 128] = bank_read[bank][stage_victim_way];
-        stage_store_line = merge_store(stage_line, stage_write_req);
-    end
-    assign stage_store_hit = stage_valid_q && stage_hit && (stage_store_q || stage_ad_match)
-                           && !stage_crossline && mstate_q != M_INSTALL;
-    assign stage_consume = stage_valid_q && (stage_crossline
-                         || (stage_hit && !((stage_store_q || stage_ad_match) && mstate_q == M_INSTALL))
-                         || (!stage_hit && mstate_q == M_IDLE));
-    // A busy MSHR admits known resident hits. A second miss waits before S0,
-    // so an L2 recall can always acquire the bank read port and make progress.
-    assign accept_window = !rst && !probe_valid_i && !probe_pending_q
-        && mstate_q != M_WB && mstate_q != M_INSTALL && mstate_q != M_FAULT
-        && (!stage_valid_q || stage_consume)
-        && !stage_store_hit && !(stage_valid_q && !stage_hit)
-        && !input_line_pending && (mstate_q == M_IDLE || input_hit);
-    assign pte_ad_req_ready_o=accept_window;
-    assign ptw_req_ready_o=accept_window && !pte_ad_req_valid_i;
-    assign st_req_ready_o = accept_window && !ptw_req_valid_i && !pte_ad_req_valid_i;
-    for (genvar port = 0; port < LOAD_PORTS; port++) begin : g_load_port
-        assign ld_req_ready_o[port] = (port == 0) && accept_window && !st_req_valid_i && !ptw_req_valid_i && !pte_ad_req_valid_i;
-        assign ld_resp_o[port] = (port == 0 && ld_resp_q.src==DC_SRC_LOAD) ? ld_resp_q : '0;
-    end
-    assign accept_store = st_req_valid_i && st_req_ready_o;
-    assign accept_load = ld_req_valid_i[0] && ld_req_ready_o[0];
-    assign accept_ad=pte_ad_req_valid_i && pte_ad_req_ready_o;
-    assign stage_fire = accept_store || accept_load || (ptw_req_valid_i && ptw_req_ready_o) || accept_ad;
-    assign bank_read_en = stage_fire || probe_fire;
-    assign bank_read_set = probe_fire ? probe_set : input_set;
-
-    assign probe_set = set_t'(probe_i.line_paddr[6 +: SET_W]);
-    assign probe_tag = tag_t'(probe_i.line_paddr[PADDR_W-1:6+SET_W]);
-    always_comb begin
-        probe_hits = '0;
-        probe_way = '0;
-        for (int way = 0; way < WAYS; way++)
-            if (valid_q[probe_set][way] && tag_q[probe_set][way] == probe_tag) begin
-                probe_hits[way] = 1'b1;
-                probe_way = way_t'(way);
+        line_choose='0;
+        if(init_done_q && line_launch_q[0].kind==LINE_NONE && line_launch_q[1].kind==LINE_NONE &&
+            line_read_q.kind==LINE_NONE && line_result_q.kind==LINE_NONE && !ps_valid_q &&
+            !internal_inpipe_q) begin
+            if(probe_read) begin line_choose.kind=LINE_PROBE;line_choose.addr=probe_snp.addr;end
+            else if(ms_install) begin
+                line_choose.kind=LINE_INSTALL;line_choose.addr=install_txn.line_addr;
+                line_choose.id=ms_install_id;line_choose.way=install_txn.way;line_choose.txn=install_txn;
+            end else if(wb_read) begin
+                line_choose.kind=LINE_WB;line_choose.addr=wb_read_meta.line_addr;
+                line_choose.id=wb_read_id;line_choose.way=wb_read_meta.way;
             end
+        end
+        full_line_busy_o=!init_done_q || line_choose.kind!=LINE_NONE;
+        probe_issue=line_choose.kind==LINE_PROBE;ms_install_issue=line_choose.kind==LINE_INSTALL;wb_issue=line_choose.kind==LINE_WB;
+        internal_select=0;internal_choose='0;internal_ad_choose='0;
+        if(!full_line_busy_o && !internal_inpipe_q) begin
+            if(internal_valid_q && !internal_wait_q) begin
+                internal_select=1;internal_choose=internal_req_q;internal_ad_choose=internal_ad_q;
+            end else if(!internal_valid_q) begin
+                if(ptw_req_valid_i) begin internal_select=1;internal_choose=ptw_req_i;end
+                else if(pte_ad_req_valid_i) begin
+                    internal_select=1;internal_choose.src=DC_SRC_PTE_AD;internal_choose.paddr=pte_ad_req_i.pte_paddr;
+                    internal_choose.vaddr=64'(pte_ad_req_i.pte_paddr);internal_choose.size=3;internal_choose.write=1;
+                    internal_choose.wmask='1;internal_ad_choose=pte_ad_req_i;
+                end else if(st_req_valid_i) begin internal_select=1;internal_choose=st_req_i;end
+            end
+        end
+        internal_choose.vaddr=64'(internal_choose.paddr);
+        internal_busy_o=!init_done_q || internal_select;
+        ptw_req_ready_o=internal_select && !internal_valid_q && ptw_req_valid_i;
+        pte_ad_req_ready_o=internal_select && !internal_valid_q && !ptw_req_valid_i && pte_ad_req_valid_i;
+        st_req_ready_o=internal_select && !internal_valid_q && !ptw_req_valid_i && !pte_ad_req_valid_i;
+        internal_fire=internal_select;
     end
-    // Probe is prioritized over new demand reads. It can be accepted during
-    // an unrelated L2 miss; it never waits for a free demand MSHR.
-    assign probe_ready_o = !rst && !stage_valid_q && mstate_q != M_INSTALL
-        && !(mstate_q != M_IDLE && probe_i.line_paddr == m_line_q);
-    assign probe_fire = probe_valid_i && probe_ready_o;
     always_comb begin
-        probe_line_data = '0;
-        for (int bank = 0; bank < BANKS; bank++)
-            probe_line_data[bank*128 +: 128] = bank_read[bank][probe_way_q];
-        probe_resp_o = probe_meta_q;
-        probe_resp_o.valid = probe_pending_q;
-        probe_resp_o.dirty_data = probe_had_dirty_q ? probe_line_data : '0;
+        for(int p=0;p<P;p++) begin
+            s0[p]='0;s0[p].valid=ld_req_valid_i[p] && !killed(ld_req_i[p]);s0[p].req=ld_req_i[p];
+            ld_req_ready_o[p]=init_done_q && line_launch_q[1].kind==LINE_NONE && !(p==IP && internal_launch_valid_q[1]);
+        end
+        if(internal_launch_valid_q[1]) begin
+            s0[IP]='0;s0[IP].valid=1;s0[IP].req=internal_launch_q[1];s0[IP].ad=internal_ad_launch_q[1];s0[IP].internal=1;
+        end
+        // Store-word hazards include both touched words for unaligned loads.
+        for(int p=0;p<P;p++) begin
+            logic [11:0] a,b;a=s0[p].req.vaddr[11:0];b=a+12'((1<<int'(s0[p].req.size))-1);
+            if(s0[p].internal) begin a=s0[p].req.paddr[11:0];b=a+12'((1<<int'(s0[p].req.size))-1);end
+            if(s0[p].valid && !s0[p].req.write && !s0[p].req.is_sta) begin
+            for(int q=0;q<P;q++) begin
+                s0[p].conflict|=s1_q[q].valid && (s1_q[q].req.write || s1_q[q].req.is_sta) &&
+                    (s1_q[q].req.vaddr[11:3]==a[11:3] || s1_q[q].req.vaddr[11:3]==b[11:3]);
+                s0[p].conflict|=s2_q[q].valid && (s2_q[q].req.write || s2_q[q].req.is_sta) &&
+                    (s2_q[q].req.vaddr[11:3]==a[11:3] || s2_q[q].req.vaddr[11:3]==b[11:3]);
+            end
+            s0[p].conflict|=ps_valid_q && (ps_req_q.paddr[11:3]==a[11:3] || ps_req_q.paddr[11:3]==b[11:3]);
+        end
+        end
+        if(P>1) begin
+            logic [7:0] m0,m1;int younger;
+            m0=8'(1<<int'(s0[0].req.vaddr[5:3]));m1=8'(1<<int'(s0[1].req.vaddr[5:3]));
+            if(int'(s0[0].req.vaddr[2:0])+(1<<int'(s0[0].req.size))>8) m0|=8'(1<<((int'(s0[0].req.vaddr[5:3])+1)%BANKS));
+            if(int'(s0[1].req.vaddr[2:0])+(1<<int'(s0[1].req.size))>8) m1|=8'(1<<((int'(s0[1].req.vaddr[5:3])+1)%BANKS));
+            younger=((int'(s0[0].req.rob_idx)+CFG.rob.entries-int'(rob_head_i))%CFG.rob.entries <=
+                (int'(s0[1].req.rob_idx)+CFG.rob.entries-int'(rob_head_i))%CFG.rob.entries) ? 1:0;
+            // IQ/replay lanes are placed in age order by LSU. Internal lane wins.
+            if(s0[1].internal) younger=0;
+            if(s0[0].valid && s0[1].valid && (m0&m1)!=0 && SW'(s0[0].req.vaddr>>6)!=SW'(s0[1].req.vaddr>>6)) s0[younger].bank=1;
+        end
     end
-
-    // Vivado 2022.2 cannot part-select a function call directly.
-    line_t install_store_line;
-    assign install_store_line=merge_store(m_data_q,m_write_req);
-    assign bank_write_set = mstate_q == M_INSTALL ? m_set_q : stage_set_q;
+    assign ps_write=ps_valid_q && line_launch_q[1].kind==LINE_NONE;
+    assign ms_install_done=line_launch_q[1].kind==LINE_INSTALL;
+    assign probe_done=line_result_q.kind==LINE_PROBE;
+    assign wb_done=line_result_q.kind==LINE_WB;
+    // Existing tags mutate before S2 may use an older snapshot.
     always_comb begin
-        bank_write_en = '0;
-        for (int bank = 0; bank < BANKS; bank++)
-            for (int way = 0; way < WAYS; way++) begin
-                bank_write_data[bank][way] = '0;
-                if (mstate_q == M_INSTALL && way == int'(m_way_q)) begin
-                    bank_write_en[bank][way] = 1'b1;
-                    bank_write_data[bank][way] = (m_store_q || m_ad_match)
-                        ? install_store_line[bank*128 +: 128]
-                        : m_data_q[bank*128 +: 128];
-                end else if (stage_store_hit && stage_consume
-                         && way == int'(stage_way)) begin
-                    bank_write_en[bank][way] = 1'b1;
-                    bank_write_data[bank][way] = stage_store_line[bank*128 +: 128];
+        external_mutation=0;mutation_set='0;
+        // A probe reservation also protects its tag snapshot from an older
+        // S2 allocation. Otherwise a dirty victim Put can race the Down ack.
+        if(line_choose.kind==LINE_PROBE) begin external_mutation=1;mutation_set=SW'(line_choose.addr);end
+        if(line_launch_q[0].kind==LINE_PROBE) begin external_mutation=1;mutation_set=SW'(line_launch_q[0].addr);end
+        if(line_launch_q[1].kind==LINE_PROBE) begin external_mutation=1;mutation_set=SW'(line_launch_q[1].addr);end
+        if(line_read_q.kind==LINE_PROBE) begin external_mutation=1;mutation_set=SW'(line_read_q.addr);end
+        if(probe_done) begin external_mutation=1;mutation_set=SW'(line_result_q.addr);end
+        if(ms_install_done) begin external_mutation=1;mutation_set=SW'(line_launch_q[1].addr);end
+        if(ps_write) begin external_mutation=1;mutation_set=SW'(ps_req_q.paddr>>6);end
+    end
+    always_comb begin
+        alloc_lane=-1;alloc_way=0;ps_lane=-1;upgrade=0;alloc_victim=0;ms_alloc=0;wb_alloc=0;alloc_txn='0;alloc_wb='0;
+        for(int p=0;p<P;p++) begin
+            logic same_wb;int same_ms;logic [SW-1:0] set_idx;int v;logic can_alloc,privileged,want_m;
+            logic [63:0] raw;logic [127:0] words;dcache_req_t aligned;aligned=s2_q[p].req;aligned.paddr[2:0]=0;
+            set_idx=SW'(s2_q[p].req.paddr>>6);same_ms=-1;same_wb=0;hit[p]=0;hit_way[p]=0;hit_state[p]=COH_I;
+            for(int w=0;w<WAYS;w++) if(s2_tags_q[p][w].state!=COH_I && !locked_q[set_idx][w] &&
+                s2_tags_q[p][w].tag==TW'(s2_q[p].req.paddr>>(6+SW))) begin
+                hit[p]=1;hit_way[p]=w;hit_state[p]=s2_tags_q[p][w].state;
+            end
+            for(int n=0;n<N;n++) if(ms_state[n]!=DM_IDLE && ms_txn[n].line_addr==coh_addr_t'(s2_q[p].req.paddr>>6)) same_ms=n;
+            // A second lane can merge a same-cycle allocation.
+            if(alloc_lane>=0 && alloc_txn.line_addr==coh_addr_t'(s2_q[p].req.paddr>>6)) same_ms=int'(ms_free_id);
+            for(int n=0;n<WN;n++) same_wb|=wb_valid[n] && wb_meta[n].line_addr==coh_addr_t'(s2_q[p].req.paddr>>6);
+            words={s2_words_q[p][1][hit_way[p]],s2_words_q[p][0][hit_way[p]]};raw=format(words,s2_q[p].req);
+            decision[p]='0;decision[p].valid=s2_q[p].valid && !killed(s2_q[p].req);
+            decision[p].src=s2_q[p].req.src;decision[p].lq_tag=s2_q[p].req.lq_tag;decision[p].sq_idx=s2_q[p].req.sq_idx;
+            decision[p].rdata=raw;decision[p].status=DC_OK;
+            decision[p].exc=s2_q[p].req.exc;
+            privileged=s2_q[p].internal || s2_q[p].req.is_rob_head;
+            want_m=s2_q[p].req.write || s2_q[p].req.is_sta;
+            v=victim(plru_q[set_idx]);
+            // Walk PLRU candidate then wrap past locked ways; invalid first.
+            begin int start;start=v;v=-1;
+                for(int d=0;d<WAYS;d++) if(v<0 && !locked_q[set_idx][(start+d)%WAYS]) v=(start+d)%WAYS;
+                for(int w=WAYS-1;w>=0;w--) if(!locked_q[set_idx][w] && s2_tags_q[p][w].state==COH_I) v=w;
+            end
+            if(hit[p] && hit_state[p]==COH_S && want_m) v=hit_way[p];
+            can_alloc=v>=0 && ms_free && alloc_lane<0 && !external_mutation && !ps_valid_q &&
+                int'(ms_free_count)>=(privileged ? 1:1+(N==1 ? 0:CFG.dcache.mshr_reserve)) &&
+                (v<0 || s2_tags_q[p][v].state==COH_I || (hit[p] && hit_state[p]==COH_S && want_m) || wb_free);
+            if(s2_q[p].req.is_sta) can_alloc&=CFG.dcache.rfo_enable &&
+                int'(ms_free_count)>=2+(N==1 ? 0:CFG.dcache.mshr_reserve);
+            if(decision[p].valid) begin
+                if(s2_q[p].req.exc.valid) decision[p].status=DC_ERROR;
+                else if(s2_q[p].req.translation_miss) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_TLB_MISS;end
+                else if((64'(s2_q[p].req.paddr)>>MEM_PADDR_W)!=0 || (s2_q[p].internal &&
+                    !pmp_allow(pmp_i,s2_q[p].req.paddr,1<<int'(s2_q[p].req.size),2'd1,!want_m,want_m,1'b0)) || !pma_main(64'(s2_q[p].req.paddr),1<<int'(s2_q[p].req.size))) begin
+                    decision[p].status=DC_ERROR;
+                    decision[p].exc='{valid:1'b1,cause:(want_m ? o3_isa_pkg::EXCEPTION_CAUSE_STORE_ACCESS_FAULT:o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ACCESS_FAULT),tval:s2_q[p].req.vaddr};
+                end else if(int'(s2_q[p].req.paddr[5:0])+(1<<int'(s2_q[p].req.size))>64) begin
+                    decision[p].status=DC_ERROR;decision[p].exc='{valid:1'b1,cause:(want_m ?
+                        o3_isa_pkg::EXCEPTION_CAUSE_STORE_ADDR_MISALIGNED:o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ADDR_MISALIGNED),tval:s2_q[p].req.vaddr};
+                end else if(s2_q[p].snap || (external_mutation && mutation_set==set_idx)) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_SNAP;end
+                else if(s2_q[p].conflict) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_CONFLICT;end
+                else if(s2_q[p].bank) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_BANK;end
+                else if(s2_q[p].req.blocked) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_OLDER_STORE_ADDR;end
+                else if(s2_q[p].req.forward_valid && !want_m) begin
+                    decision[p].rdata=format({64'b0,s2_q[p].req.forward_data},aligned);
+                end else if(s2_q[p].req.is_sta) begin
+                    // STA completes without waiting for ownership; RFO is optional.
+                    if((!hit[p] || hit_state[p]==COH_S) && same_ms<0 && !same_wb && can_alloc) alloc_lane=p;
+                end else if(hit[p] && (!want_m || hit_state[p]==COH_E || hit_state[p]==COH_M)) begin
+                    if(want_m) begin
+                        if(ps_valid_q || ps_lane>=0 || external_mutation) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_CONFLICT;end
+                        else if(s2_q[p].req.src==DC_SRC_PTE_AD &&
+                            (s2_q[p].ad.epoch!=cur_epoch_i || s2_words_q[p][0][hit_way[p]]!=s2_q[p].ad.expected_pte)) decision[p].sc_fail=1;
+                        else ps_lane=p;
+                    end
+                end else if(same_ms>=0) begin decision[p].status=DC_MISS_WAIT;decision[p].reason=LDW_MSHR;decision[p].mshr_id=COH_ID_W'(same_ms);end
+                else if(same_wb) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_WB_LINE;end
+                else if(can_alloc) begin alloc_lane=p;decision[p].status=DC_MISS_WAIT;decision[p].reason=LDW_MSHR;decision[p].mshr_id=ms_free_id;end
+                else begin
+                    decision[p].status=DC_REPLAY;
+                    if(external_mutation || ps_valid_q || alloc_lane>=0) decision[p].reason=LDW_CONFLICT;
+                    else if(v>=0 && s2_tags_q[p][v].state!=COH_I && !(hit[p] && hit_state[p]==COH_S && want_m) && !wb_free)
+                        decision[p].reason=LDW_WB_LINE;
+                    else decision[p].reason=LDW_MSHR_FULL;
+                end
+                if(alloc_lane==p) begin
+                    alloc_way=v;upgrade=hit[p] && hit_state[p]==COH_S && want_m;
+                    alloc_victim=!upgrade && s2_tags_q[p][v].state!=COH_I;
+                    ms_alloc=1;wb_alloc=alloc_victim;
+                    alloc_txn.line_addr=coh_addr_t'(s2_q[p].req.paddr>>6);alloc_txn.is_getm=want_m;
+                    alloc_txn.way=DC_WAY_W'(v);alloc_txn.upgrade=upgrade;
+                    alloc_txn.wb_wait=alloc_victim;alloc_txn.wb_id=wb_free_id;
+                    alloc_wb.line_addr=coh_addr_t'({s2_tags_q[p][v].tag,set_idx});
+                    alloc_wb.has_data=s2_tags_q[p][v].state==COH_M;alloc_wb.way=DC_WAY_W'(v);
                 end
             end
-    end
-    for (genvar bank = 0; bank < BANKS; bank++) begin : g_bank
-        for (genvar way = 0; way < WAYS; way++) begin : g_way
-            o3_sram_1r1w #(.DATA_WIDTH(128), .ENTRIES(SETS)) u_data (
-                .clk_i(clk), .read_en_i(bank_read_en), .read_addr_i(bank_read_set),
-                .read_data_o(bank_read[bank][way]),
-                .write_en_i(bank_write_en[bank][way]), .write_addr_i(bank_write_set),
-                .write_data_i(bank_write_data[bank][way])
-            );
+        end
+        // STA Replay is handled by LSU as an address-only recheck; no ownership wait.
+        internal_finish=0;
+        for(int p=0;p<P;p++) begin
+            ld_resp_o[p]=s2_q[p].internal ? '0:decision[p];
+            if(s2_q[p].internal && decision[p].valid &&
+                (decision[p].status==DC_ERROR ||
+                 (s2_q[p].req.src==DC_SRC_STORE_DRAIN && decision[p].status!=DC_OK) ||
+                 (decision[p].status==DC_OK && (!s2_q[p].req.write || decision[p].sc_fail)))) internal_finish=1;
+        end
+        st_resp_o='0;ptw_resp_o='0;pte_ad_resp_o='0;
+        for(int p=0;p<P;p++) if(s2_q[p].internal && internal_finish) begin
+            if(s2_q[p].req.src==DC_SRC_PTW) ptw_resp_o=decision[p];
+            if(s2_q[p].req.src==DC_SRC_STORE_DRAIN) st_resp_o=decision[p];
+            if(s2_q[p].req.src==DC_SRC_PTE_AD) pte_ad_resp_o='{valid:1'b1,updated:1'b0,
+                mismatch:(decision[p].status==DC_OK && decision[p].sc_fail),access_fault:(decision[p].status==DC_ERROR)};
+        end
+        if(ps_write) begin
+            if(ps_is_ad_q) pte_ad_resp_o='{valid:1'b1,updated:1'b1,mismatch:1'b0,access_fault:1'b0};
+            else begin st_resp_o='0;st_resp_o.valid=1;st_resp_o.src=DC_SRC_STORE_DRAIN;st_resp_o.sq_idx=ps_req_q.sq_idx;end
+        end
+        wake_o='{valid:ms_install_done,mshr_id:line_launch_q[1].id,err:line_launch_q[1].txn.err,
+            mshr_free:ms_free_pulse,wb_free:wb_free_pulse};
+        perf_o='0;perf_o[BE_DC_MSHR_ALLOC]=BE_PERF_INC_W'(ms_alloc);
+        perf_o[BE_DC_MSHR_OCCUPANCY]=BE_PERF_INC_W'(N-int'(ms_free_count));
+        perf_o[BE_DC_WB_PUT]=BE_PERF_INC_W'(wb_put && wb_put_ready);
+        perf_o[BE_DC_PROBE]=BE_PERF_INC_W'(probe_issue);
+        for(int p=0;p<P;p++) if(decision[p].valid) begin
+            perf_o[BE_DC_HIT_UNDER_MISS]+=BE_PERF_INC_W'(decision[p].status==DC_OK && !s2_q[p].req.is_sta && !s2_q[p].req.write && hit[p] && int'(ms_free_count)<N);
+            perf_o[BE_DC_MSHR_MERGE]+=BE_PERF_INC_W'(decision[p].status==DC_MISS_WAIT && !(ms_alloc && alloc_lane==p));
+            perf_o[BE_DC_BANK_CONFLICT]+=BE_PERF_INC_W'(decision[p].reason==LDW_BANK);
+            perf_o[BE_DC_MSHR_FULL]+=BE_PERF_INC_W'(decision[p].reason==LDW_MSHR_FULL);
+            perf_o[BE_DC_REPLAY_SNAP]+=BE_PERF_INC_W'(decision[p].reason==LDW_SNAP);
+            perf_o[BE_RFO_ISSUED]+=BE_PERF_INC_W'(s2_q[p].req.is_sta && ms_alloc && alloc_lane==p);
+            perf_o[BE_RFO_DROPPED]+=BE_PERF_INC_W'(CFG.dcache.rfo_enable && s2_q[p].req.is_sta && decision[p].status==DC_OK && (!hit[p] || hit_state[p]==COH_S) && !(ms_alloc && alloc_lane==p));
+            perf_o[BE_RFO_USEFUL]+=BE_PERF_INC_W'(ps_lane==p && rfo_q[SW'(s2_q[p].req.paddr>>6)][hit_way[p]]);
+        end
+        tag_change=0;tag_set='0;tag_way=0;tag_new='0;
+        if(ms_alloc && alloc_victim) begin
+            tag_change=1;tag_set=SW'(s2_q[alloc_lane].req.paddr>>6);tag_way=alloc_way;
+            tag_new=s2_tags_q[alloc_lane][alloc_way];tag_new.state=COH_I;
+        end
+        if(ps_write) begin
+            tag_change=1;tag_set=SW'(ps_req_q.paddr>>6);tag_way=ps_way_q;
+            tag_new='{state:COH_M,tag:TW'(ps_req_q.paddr>>(6+SW))};
+        end
+        if(probe_done && line_state_q!=COH_I) begin
+            tag_change=1;tag_set=SW'(line_result_q.addr);tag_way=line_way_q;
+            tag_new='{state:(probe_snp.op==COH_INV ? COH_I:COH_S),tag:TW'(line_result_q.addr>>SW)};
+        end
+        if(ms_install_done) begin
+            tag_change=1;tag_set=SW'(line_launch_q[1].addr);tag_way=int'(line_launch_q[1].way);
+            tag_new='{state:(line_launch_q[1].txn.err ? COH_I:line_launch_q[1].txn.grant_e ? COH_E:COH_S),
+                tag:TW'(line_launch_q[1].addr>>SW)};
         end
     end
-
-    assign l2_req_valid_o = (mstate_q == M_SEND);
-    assign l2_req_o = '{line_paddr:m_line_q, kind:L2_DEMAND, txn_id:'0};
-    assign l2_resp_ready_o = (mstate_q == M_RECV);
-    assign l2_wb_valid_o = (mstate_q == M_WB)
-        && !(probe_valid_i && probe_ready_o && probe_i.line_paddr == m_victim_line_q);
-    assign l2_wb_line_paddr_o = m_victim_line_q;
-    assign l2_wb_data_o = m_victim_data_q;
-    assign idle_o = mstate_q == M_IDLE && !stage_valid_q && !probe_pending_q;
-    assign fatal_o = fatal_q;
-    assign st_resp_o = st_resp_q;
-    assign wake_o = wake_q;
-
-    // S0 reads four word banks and captures tag metadata. N+1 compares tags,
-    // returns a hit or allocates the one line transaction. Hit loads can
-    // overlap an unrelated L2 miss; stores insert a read/write bubble.
     always_ff @(posedge clk) begin
-        if (rst) begin
-            stage_valid_q <= 1'b0;
-            stage_store_q <= 1'b0;
-            stage_req_q <= '0;stage_ad_q<='0;m_ad_q<='0;stage_ad_allowed_q<=0;m_ad_allowed_q<=0;
-            stage_set_q <= '0;
-            stage_tag_q <= '0;
-            stage_hits_q <= '0;
-            mstate_q <= M_IDLE;
-            m_req_q <= '0;
-            m_store_q <= 1'b0;
-            m_line_q <= '0;
-            m_victim_line_q <= '0;
-            m_set_q <= '0;
-            m_tag_q <= '0;
-            m_way_q <= '0;
-            m_beat_q <= '0;
-            m_data_q <= '0;
-            m_victim_data_q <= '0;
-            m_error_q <= 1'b0;
-            victim_rr_q <= '0;
-            probe_pending_q <= 1'b0;
-            probe_had_dirty_q <= 1'b0;
-            probe_way_q <= '0;
-            probe_meta_q <= '0;
-            ld_resp_q <= '0;
-            st_resp_q <= '0;
-            wake_q <= '0;
-            fatal_q <= '0;
-            for (int set_idx = 0; set_idx < SETS; set_idx++)
-                for (int way = 0; way < WAYS; way++) begin
-                    valid_q[set_idx][way] <= 1'b0;
-                    dirty_q[set_idx][way] <= 1'b0;
-                end
+        if(rst) begin
+            init_q<=0;init_done_q<=0;s1_q<='{default:'0};s2_q<='{default:'0};
+            line_launch_q<='{default:'0};line_read_q<='0;line_result_q<='0;
+            line_data_q<=0;line_state_q<=COH_I;line_way_q<=0;ps_valid_q<=0;ps_req_q<='0;ps_ad_q<='0;
+            ps_way_q<=0;ps_is_ad_q<=0;ps_internal_q<=0;up_held_q<=0;up_probe_q<=0;
+            internal_valid_q<=0;internal_inpipe_q<=0;internal_wait_q<=0;internal_reason_q<=LDW_NONE;
+            internal_mshr_q<=0;internal_req_q<='0;internal_ad_q<='0;
+            internal_launch_valid_q<='{default:0};internal_launch_q<='{default:'0};internal_ad_launch_q<='{default:'0};
+            fatal_o<='0;clean_all_done_o<=0;
         end else begin
-            ld_resp_q.valid <= 1'b0;
-            st_resp_q.valid <= 1'b0;
-            wake_q.valid <= 1'b0;
-            probe_pending_q <= probe_fire;
-            if (probe_fire) begin
-                probe_pending_q <= 1'b1;
-                probe_way_q <= probe_way;
-                probe_had_dirty_q <= |probe_hits && dirty_q[probe_set][probe_way];
-                probe_meta_q.kind <= probe_i.kind;
-                probe_meta_q.recall_id <= probe_i.recall_id;
-                probe_meta_q.had_dirty <= |probe_hits && dirty_q[probe_set][probe_way];
-                if (|probe_hits) begin
-                    valid_q[probe_set][probe_way] <= 1'b0;
-                    dirty_q[probe_set][probe_way] <= 1'b0;
-                end
-                if (mstate_q == M_WB && probe_i.line_paddr == m_victim_line_q)
-                    mstate_q <= M_SEND;
+            clean_all_done_o<=clean_all_req_i;
+            if(!init_done_q) begin
+                for(int p=0;p<P;p++) for(int w=0;w<WAYS;w++) tags_q[p][init_q][w]<='0;
+                for(int w=0;w<WAYS;w++) begin locked_q[init_q][w]<=0;rfo_q[init_q][w]<=0;end
+                plru_q[init_q]<=0;
+                if(init_q==SETS-1) init_done_q<=1;else init_q<=init_q+1;
             end
-
-            if (!stage_valid_q || stage_consume) begin
-                stage_valid_q <= stage_fire;
-                if (stage_fire) begin
-                    stage_req_q <= input_req;
-                    stage_ad_q<=pte_ad_req_i;stage_ad_allowed_q<=pte_ad_req_i.epoch==cur_epoch_i;
-                    stage_store_q <= accept_store;
-                    stage_set_q <= input_set;
-                    stage_tag_q <= input_tag;
-                    for (int way = 0; way < WAYS; way++)
-                        stage_hits_q[way] <= valid_q[input_set][way]
-                            && tag_q[input_set][way] == input_tag;
-                end
+            line_launch_q[0]<=line_choose;line_launch_q[1]<=line_launch_q[0];
+            internal_launch_valid_q[0]<=internal_fire;internal_launch_valid_q[1]<=internal_launch_valid_q[0];
+            internal_launch_q[0]<=internal_choose;internal_launch_q[1]<=internal_launch_q[0];
+            internal_ad_launch_q[0]<=internal_ad_choose;internal_ad_launch_q[1]<=internal_ad_launch_q[0];
+            if(internal_fire) begin
+                internal_valid_q<=1;internal_inpipe_q<=1;internal_wait_q<=0;
+                internal_req_q<=internal_choose;internal_ad_q<=internal_ad_choose;
             end
-            if (stage_valid_q && stage_consume) begin
-                if (stage_crossline) begin
-                    if (stage_store_q) begin
-                        fatal_q <= '{valid:1'b1, src:FATAL_MAINT,
-                                     line_paddr:{stage_req_q.paddr[PADDR_W-1:6], 6'b0}};
-                        mstate_q <= M_FAULT;
-                    end else begin
-                        ld_resp_q <= '{valid:1'b1, src:stage_req_q.src,
-                            status:DC_ERROR, lq_tag:stage_req_q.lq_tag, sq_idx:'0,
-                            rdata:'0, sc_fail:1'b0};
+            for(int p=0;p<P;p++) begin
+                s1_q[p]<=s0[p];s2_q[p]<=s1_q[p];
+                if(!s1_q[p].internal) s2_q[p].req<=ld_s1_i[p];
+                s1_q[p].req.br_mask<=s0[p].req.br_mask & ~(resolution_valid_i ? (CKPT_N'(1)<<resolution_tag_i):'0);
+                s2_q[p].req.br_mask<=s1_q[p].req.br_mask & ~(resolution_valid_i ? (CKPT_N'(1)<<resolution_tag_i):'0);
+                s2_q[p].valid<=s1_q[p].valid && !killed(s1_q[p].req);
+                if(s0[p].valid) begin
+                    for(int w=0;w<WAYS;w++) tag_read_q[p][w]<=tags_q[p][SW'(s0[p].req.vaddr>>6)][w];
+                end
+                for(int w=0;w<WAYS;w++) begin
+                    s2_tags_q[p][w]<=tag_read_q[p][w];
+                    s2_words_q[p][0][w]<=bank_read_q[int'(s1_q[p].req.vaddr[5:3])][w];
+                    s2_words_q[p][1][w]<=bank_read_q[(int'(s1_q[p].req.vaddr[5:3])+1)%BANKS][w];
+                end
+                if(tag_change && SW'(s0[p].req.vaddr>>6)==tag_set) s1_q[p].snap<=1;
+                if(tag_change && SW'(s1_q[p].req.vaddr>>6)==tag_set) s2_q[p].snap<=1;
+                if(s2_q[p].internal && decision[p].valid && decision[p].status!=DC_OK) begin
+                    internal_inpipe_q<=0;internal_wait_q<=1;
+                    internal_reason_q<=decision[p].reason;internal_mshr_q<=decision[p].mshr_id;
+                    if(decision[p].status==DC_MISS_WAIT && wake_o.valid && wake_o.mshr_id==decision[p].mshr_id) begin
+                        internal_wait_q<=0;
+                        if(wake_o.err) internal_req_q.exc<='{valid:1'b1,cause:(s2_q[p].req.write ?
+                            o3_isa_pkg::EXCEPTION_CAUSE_STORE_ACCESS_FAULT:o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ACCESS_FAULT),tval:s2_q[p].req.vaddr};
                     end
-                end else if (stage_hit) begin
-                    if (stage_store_q) begin
-                        dirty_q[stage_set_q][stage_way] <= 1'b1;
-                        st_resp_q <= '{valid:1'b1, src:DC_SRC_STORE_DRAIN,
-                            status:DC_OK, lq_tag:'0, sq_idx:stage_req_q.sq_idx,
-                            rdata:'0, sc_fail:1'b0};
-                    end else begin
-                        ld_resp_q <= '{valid:1'b1, src:stage_req_q.src,
-                            status:DC_OK, lq_tag:stage_req_q.lq_tag, sq_idx:'0,
-                            rdata:extract_load(stage_line, stage_req_q), sc_fail:(stage_req_q.src==DC_SRC_PTE_AD && !stage_ad_match)};
-                        if(stage_ad_match) dirty_q[stage_set_q][stage_way]<=1;
-                    end
-                end else if (mstate_q == M_IDLE) begin
-                    m_req_q <= stage_req_q;m_ad_q<=stage_ad_q;m_ad_allowed_q<=stage_ad_allowed_q;
-                    m_store_q <= stage_store_q;
-                    m_line_q <= {stage_req_q.paddr[PADDR_W-1:6], 6'b0};
-                    m_set_q <= stage_set_q;
-                    m_tag_q <= stage_tag_q;
-                    m_way_q <= stage_victim_way;
-                    m_victim_line_q <= {tag_q[stage_set_q][stage_victim_way], stage_set_q, 6'b0};
-                    m_victim_data_q <= stage_victim_line;
-                    m_beat_q <= '0;
-                    m_data_q <= '0;
-                    m_error_q <= 1'b0;
-                    victim_rr_q <= victim_rr_q + way_t'(1);
-                    mstate_q <= valid_q[stage_set_q][stage_victim_way]
-                             && dirty_q[stage_set_q][stage_victim_way] ? M_WB : M_SEND;
-                    if (valid_q[stage_set_q][stage_victim_way]
-                     && !dirty_q[stage_set_q][stage_victim_way])
-                        valid_q[stage_set_q][stage_victim_way] <= 1'b0;
+                    if(decision[p].reason==LDW_MSHR_FULL && wake_o.mshr_free) internal_wait_q<=0;
+                    if(decision[p].reason==LDW_WB_LINE && wake_o.wb_free) internal_wait_q<=0;
+                    if(decision[p].status==DC_ERROR || s2_q[p].req.src==DC_SRC_STORE_DRAIN) begin internal_valid_q<=0;internal_wait_q<=0;end
                 end
             end
-            case (mstate_q)
-                M_WB: if (l2_wb_valid_o && l2_wb_ready_i) begin
-                    if (l2_wb_error_i) begin
-                        fatal_q <= '{valid:1'b1, src:FATAL_L1D_WB,
-                                     line_paddr:m_victim_line_q};
-                        mstate_q <= M_FAULT;
-                    end else begin
-                        valid_q[m_set_q][m_way_q] <= 1'b0;
-                        dirty_q[m_set_q][m_way_q] <= 1'b0;
-                        mstate_q <= M_SEND;
+            // Shared bank read: same-set requests may consume the same output.
+            for(int b=0;b<BANKS;b++) begin
+                int selected;selected=-1;
+                for(int p=0;p<P;p++) if(s0[p].valid && !s0[p].conflict && !s0[p].bank &&
+                    (int'(s0[p].req.vaddr[5:3])==b || ((int'(s0[p].req.vaddr[2:0])+(1<<int'(s0[p].req.size))>8) && (int'(s0[p].req.vaddr[5:3])+1)%BANKS==b))) selected=p;
+                if(selected>=0) for(int w=0;w<WAYS;w++) bank_read_q[b][w]<=data_q[b][w][SW'(s0[selected].req.vaddr>>6)];
+            end
+            line_read_q<=line_launch_q[1];line_result_q<=line_read_q;
+            if(line_launch_q[1].kind==LINE_PROBE || line_launch_q[1].kind==LINE_WB) begin
+                for(int b=0;b<BANKS;b++) for(int w=0;w<WAYS;w++) line_words_q[b][w]<=data_q[b][w][SW'(line_launch_q[1].addr)];
+                for(int w=0;w<WAYS;w++) line_tags_q[w]<=tags_q[0][SW'(line_launch_q[1].addr)][w];
+            end
+            if(line_read_q.kind==LINE_PROBE || line_read_q.kind==LINE_WB) begin
+                int w;w=int'(line_read_q.way);line_state_q<=COH_I;
+                if(line_read_q.kind==LINE_PROBE) begin w=0;
+                    for(int n=0;n<WAYS;n++) if(line_tags_q[n].state!=COH_I && line_tags_q[n].tag==TW'(line_read_q.addr>>SW)) begin
+                        w=n;line_state_q<=line_tags_q[n].state;
                     end
                 end
-                M_SEND: if (l2_req_ready_i) mstate_q <= M_RECV;
-                M_RECV: if (l2_resp_i.valid) begin
-                    assert (l2_resp_i.txn_id == '0
-                         && l2_resp_i.last == (m_beat_q == beat_t'(3)))
-                        else $fatal(1, "DCache: L2 beat/id mismatch");
-                    m_data_q[m_beat_q*128 +: 128] <= l2_resp_i.data;
-                    m_error_q <= m_error_q || l2_resp_i.error;
-                    if (l2_resp_i.last) begin
-                        if (m_error_q || l2_resp_i.error) begin
-                            if (m_store_q) begin
-                                fatal_q <= '{valid:1'b1, src:FATAL_MAINT,
-                                             line_paddr:m_line_q};
-                                mstate_q <= M_FAULT;
-                            end else begin
-                                ld_resp_q <= '{valid:1'b1, src:m_req_q.src,
-                                    status:DC_ERROR, lq_tag:m_req_q.lq_tag, sq_idx:'0,
-                                    rdata:'0, sc_fail:1'b0};
-                                mstate_q <= M_IDLE;
-                            end
-                        end else mstate_q <= M_INSTALL;
-                    end else m_beat_q <= m_beat_q + beat_t'(1);
+                line_way_q<=w;
+                for(int b=0;b<BANKS;b++) line_data_q[b*64+:64]<=line_words_q[b][w];
+            end
+            if(tag_change) for(int p=0;p<P;p++) tags_q[p][tag_set][tag_way]<=tag_new;
+            if(ms_install_done) begin
+                locked_q[SW'(line_launch_q[1].addr)][line_launch_q[1].way]<=0;
+                if(!line_launch_q[1].txn.err) begin
+                    plru_q[SW'(line_launch_q[1].addr)]<=touch(plru_q[SW'(line_launch_q[1].addr)],int'(line_launch_q[1].way));
+                    if(!line_launch_q[1].txn.ack_e) for(int b=0;b<BANKS;b++)
+                        data_q[b][line_launch_q[1].way][SW'(line_launch_q[1].addr)]<=line_launch_q[1].txn.refill[b*64+:64];
                 end
-                M_INSTALL: begin
-                    tag_q[m_set_q][m_way_q] <= m_tag_q;
-                    valid_q[m_set_q][m_way_q] <= 1'b1;
-                    dirty_q[m_set_q][m_way_q] <= m_store_q || m_ad_match;
-                    wake_q <= '{valid:1'b1, line_paddr:m_line_q};
-                    if (m_store_q) begin
-                        st_resp_q <= '{valid:1'b1, src:DC_SRC_STORE_DRAIN,
-                            status:DC_OK, lq_tag:'0, sq_idx:m_req_q.sq_idx,
-                            rdata:'0, sc_fail:1'b0};
-                    end else begin
-                        ld_resp_q <= '{valid:1'b1, src:m_req_q.src,
-                            status:DC_OK, lq_tag:m_req_q.lq_tag, sq_idx:'0,
-                            rdata:extract_load(m_data_q, m_req_q), sc_fail:(m_req_q.src==DC_SRC_PTE_AD && !m_ad_match)};
+            end
+            if(ps_write) begin
+                for(int i=0;i<8;i++) if(ps_req_q.wmask[i]) begin
+                    int off,b,byte_idx;off=int'(ps_req_q.paddr[5:0])+i;b=(off/8)%BANKS;byte_idx=off%8;
+                    data_q[b][ps_way_q][SW'(ps_req_q.paddr>>6)][byte_idx*8+:8]<=ps_req_q.wdata[i*8+:8];
+                end
+                ps_valid_q<=0;internal_valid_q<=0;internal_inpipe_q<=0;
+                rfo_q[SW'(ps_req_q.paddr>>6)][ps_way_q]<=0;
+            end
+            if(ps_lane>=0) begin
+                ps_valid_q<=1;ps_req_q<=s2_q[ps_lane].req;ps_way_q<=hit_way[ps_lane];
+                ps_is_ad_q<=s2_q[ps_lane].req.src==DC_SRC_PTE_AD;ps_ad_q<=s2_q[ps_lane].ad;
+                if(s2_q[ps_lane].req.src==DC_SRC_PTE_AD) ps_req_q.wdata<=s2_q[ps_lane].ad.expected_pte |
+                    (s2_q[ps_lane].ad.set_a ? 64'h40:0) | (s2_q[ps_lane].ad.set_d ? 64'h80:0);
+            end
+            if(ms_alloc) begin
+                locked_q[SW'(alloc_txn.line_addr)][alloc_way]<=1;
+                rfo_q[SW'(alloc_txn.line_addr)][alloc_way]<=s2_q[alloc_lane].req.is_sta;
+            end
+            for(int p=0;p<P;p++) if(decision[p].valid && decision[p].status==DC_OK && hit[p] && !external_mutation)
+                plru_q[SW'(s2_q[p].req.paddr>>6)]<=touch(plru_q[SW'(s2_q[p].req.paddr>>6)],hit_way[p]);
+            if(internal_finish) begin internal_valid_q<=0;internal_inpipe_q<=0;internal_wait_q<=0;end
+            if(internal_wait_q) begin
+                case(internal_reason_q)
+                    LDW_MSHR:if(wake_o.valid && wake_o.mshr_id==internal_mshr_q) begin
+                        internal_wait_q<=0;
+                        if(wake_o.err) begin
+                            internal_req_q.exc<='{valid:1'b1,cause:(internal_req_q.write ? o3_isa_pkg::EXCEPTION_CAUSE_STORE_ACCESS_FAULT:o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ACCESS_FAULT),tval:internal_req_q.vaddr};
+                        end
                     end
-                    mstate_q <= M_IDLE;
-                end
-                default: ;
-            endcase
+                    LDW_MSHR_FULL:if(wake_o.mshr_free) internal_wait_q<=0;
+                    LDW_WB_LINE:if(wake_o.wb_free) internal_wait_q<=0;
+                    default:internal_wait_q<=0;
+                endcase
+            end
+            if(rsp_up_valid_o && !rsp_up_ready_i && !up_held_q) begin up_held_q<=1;up_probe_q<=choose_probe;end
+            if(rsp_up_valid_o && rsp_up_ready_i) up_held_q<=0;
+            if(l2_req_valid_o) for(int n=0;n<WN;n++) assert(!wb_valid[n] || wb_meta[n].line_addr!=l2_req_o.addr);
+            for(int p=0;p<P;p++) if(ld_req_valid_i[p] && !killed(ld_req_i[p])) assert(ld_req_ready_o[p]) else $fatal(1,"CPU S0 missing IS reservation");
         end
     end
-
-    assign amo_req_ready_o = 1'b0;
-    assign amo_resp_o = '0;
-    assign ptw_resp_o = ld_resp_q.src==DC_SRC_PTW ? ld_resp_q : '0;
-    assign pf_req_ready_o = 1'b0;
-    // A dirty DCache must never claim that FENCE.I cleaned it. The maintenance
-    // sequencer is a separate pending closure; a request remains unacknowledged.
-    assign clean_all_done_o = 1'b0;
-    assign clean_all_busy_o = clean_all_req_i;
-    assign pte_ad_resp_o='{valid:(ld_resp_q.valid && ld_resp_q.src==DC_SRC_PTE_AD),
-        updated:(!ld_resp_q.sc_fail && ld_resp_q.status==DC_OK),
-        mismatch:(ld_resp_q.sc_fail && ld_resp_q.status==DC_OK),access_fault:(ld_resp_q.status==DC_ERROR)};
-    assign perf_o = '0;
+    assign clean_all_busy_o=0;
+    assign idle_o=init_done_q && int'(ms_free_count)==N && !ps_valid_q && !internal_valid_q &&
+        !s1_q[0].valid && !s2_q[0].valid && !s1_q[P-1].valid && !s2_q[P-1].valid &&
+        !(|{wb_valid[0],wb_valid[WN-1]}) && !probe_pending && !probe_ack;
+    initial begin
+        assert(BANKS==8 && CFG.dcache.line_bytes==64 && SETS*CFG.dcache.line_bytes<=4096);
+        assert(WAYS>=2 && (WAYS&(WAYS-1))==0 && SETS>=2 && (SETS&(SETS-1))==0);
+        assert(N>=1 && N<=4 && WN>=1 && WN<=2 && CFG.lsu.mem_pipes inside {1,2});
+    end
 endmodule

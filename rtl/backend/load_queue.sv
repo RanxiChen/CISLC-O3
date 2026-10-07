@@ -1,210 +1,112 @@
-/**
- *
- * 【2026-10-02 框架：目标机制与缺口】
- * - 需要补充：replay 等待原因（bank 冲突、DMA 行保护、SQ 数据未就绪、MSHR 满、TLB miss）与唤醒，
- *   避免每拍盲目重试；重放不重新 rename、不重新分配 ROB/LQ、不要求退回 IQ（B04）。
- * - 事务身份：现有 1 位 generation 不能作为多事务在途的安全保证，改为 lq_tag_t（代际宽度待定）。
- * - 未知地址旧 store（B32，2026-10-02 已定）：load 等待相关依赖条件解除（等待原因 LDW_OLDER_STORE_ADDR，
- *   由该 store 地址写入 SQ 或被取消的事件唤醒）；不能实现成固定拍数超时后无条件越过；首版不加入
- *   推测越过与违例恢复机制。
- * - A/D 排序（B36）：更老 store 的 needs_D 慢路径未完成前，年轻访存不得越过（LDW_AD_ORDER）；已经执行
- *   的年轻访问纳入重放/排序处理。
- * - ROB 按序退休释放 LQ（保持）。目标端口（t_*）未接入。
- * Load Queue
- *
- * Rename按程序顺序分配entry；AGU按lq_idx补写有效地址，LSU发出SRAM请求时
- * 记录outstanding。每次重新分配都会翻转generation，SRAM返回携带
- * {generation,lq_idx}，从而能够丢弃flush后迟到或entry复用后的旧响应。
- * Load只在ROB顺序退休时从队头释放。
- *
- * 周期N组合阶段给出分配索引、容量、当前执行entry的generation以及响应是否仍存活；
- * 周期N上升沿原子执行allocate/AGU/request/response/commit，mispredict恢复优先；
- * 周期N+1可见更新后的entry状态。本阶段不实现Load replay或异常。
- */
-// 当前实现状态：闭环简化（L3）；四宽分配/退休释放，M 拍保留老 load execute/request/response。
-// 测试：sim/cocotb/load_queue/；多事务代际/异常待 L8/L5。
-module load_queue
-    import o3_pkg::*;
-#(
-    parameter  o3_cfg_pkg::backend_cfg_t CFG,
-    localparam int RENAME_WIDTH = BACKEND_MACHINE_WIDTH,
-    localparam int DEPTH = CFG.lsu.lq_depth,
-    localparam int NUM_ROB_ENTRIES = CFG.rob.entries
-) (
-    input logic clk,
-    input logic rst,
-    input logic alloc_req_i [RENAME_WIDTH-1:0],
-    input logic alloc_fire_i,
-    input logic [$clog2(NUM_ROB_ENTRIES)-1:0] alloc_rob_idx_i [RENAME_WIDTH-1:0],
-    input branch_mask_t alloc_branch_mask_i [RENAME_WIDTH-1:0],
-    output logic [$clog2(DEPTH)-1:0] alloc_idx_o [RENAME_WIDTH-1:0],
-    output logic [$clog2(DEPTH+1)-1:0] free_count_o,
-    output logic [$clog2(DEPTH)-1:0] tail_o,
-
-    input logic execute_valid_i,
-    input logic [$clog2(DEPTH)-1:0] execute_idx_i,
-    input logic [XLEN-1:0] execute_addr_i,
-    output logic execute_generation_o,
-    input logic request_fire_i,
-    input logic [$clog2(DEPTH)-1:0] request_idx_i,
-    input logic response_valid_i,
-    input logic [$clog2(DEPTH):0] response_tag_i,
-    output logic response_live_o,
-
+/** L8a instruction waiters. Generation is incremented on allocation; branch
+ * recovery cancels only younger entries. Install never supplies data: it
+ * enables an age-selected replay using the saved VA and renamed identity. */
+module load_queue import o3_pkg::*; #(
+    parameter o3_cfg_pkg::backend_cfg_t CFG,localparam int RENAME_WIDTH=BACKEND_MACHINE_WIDTH,
+    localparam int DEPTH=CFG.lsu.lq_depth,P=CFG.lsu.agu_pipes,IW=$clog2(DEPTH)
+)(input logic clk,rst,flush_i,
+    input logic alloc_req_i[RENAME_WIDTH-1:0],input logic alloc_fire_i,
+    input logic [ROB_IDX_WIDTH-1:0] alloc_rob_idx_i[RENAME_WIDTH-1:0],
+    input branch_mask_t alloc_branch_mask_i[RENAME_WIDTH-1:0],
+    output logic [IW-1:0] alloc_idx_o[RENAME_WIDTH-1:0],output logic [$clog2(DEPTH+1)-1:0] free_count_o,
+    output logic [IW-1:0] tail_o,
+    input logic capture_valid_i[P],input lq_replay_t capture_i[P],
+    output o3_types_pkg::lq_tag_t capture_tag_o[P],
+    input logic update_valid_i[P],input o3_types_pkg::dcache_resp_t update_i[P],
+    input o3_types_pkg::dc_wake_t dc_wake_i,input logic tlb_wake_i,sq_change_i,ad_wake_i,
+    output logic replay_valid_o[P],output lq_replay_t replay_o[P],input logic replay_ready_i[P],
     input logic [$clog2(RENAME_WIDTH+1)-1:0] release_count_i,
-    input logic resolution_valid_i,
-    input logic resolution_mispredict_i,
-    input branch_tag_t resolution_tag_i,
-    input logic [$clog2(DEPTH)-1:0] restore_tail_i
-,
-
-    // ---------------- 目标合同（框架新增，未接入逻辑） ----------------
-    // replay 等待记录（B04 6.2）：等待原因与唤醒；记录放 LQ 内还是独立队列未冻结
-    input  logic                       t_wait_set_valid_i,
-    input  logic [$clog2(DEPTH)-1:0]   t_wait_set_idx_i,
-    input  o3_types_pkg::dc_status_e   t_wait_reason_i,
-    input  o3_types_pkg::dc_wake_t     t_dc_wake_i,
-    input  logic                       t_tlb_wake_i,
-    output logic                       t_replay_valid_o,
-    output logic [$clog2(DEPTH)-1:0]   t_replay_idx_o,
-    input  logic                       t_replay_ready_i,
-    // 多事务身份：idx + 多位代际（现有 1 位不足，B04）
-    output o3_types_pkg::lq_tag_t      t_exec_tag_o,
-    // 访存违例检测（未知地址旧 store 的推测策略待定，B04）
-    input  logic                       t_store_addr_valid_i,
-    input  logic [XLEN-1:0]            t_store_addr_i,
-    input  logic [ROB_IDX_WIDTH-1:0]   t_store_rob_idx_i,
-    output logic                       t_violation_o
-);
-    localparam int IDX_WIDTH = $clog2(DEPTH);
-    localparam int COUNT_WIDTH = $clog2(DEPTH + 1);
-    logic [IDX_WIDTH-1:0] head_q, tail_q;
-    logic [COUNT_WIDTH-1:0] count_q;
-    logic valid_q [DEPTH-1:0];
-    logic generation_q [DEPTH-1:0];
-    logic addr_valid_q [DEPTH-1:0];
-    logic outstanding_q [DEPTH-1:0];
-    logic [XLEN-1:0] addr_q [DEPTH-1:0];
-    logic [$clog2(NUM_ROB_ENTRIES)-1:0] rob_idx_q [DEPTH-1:0];
-    branch_mask_t branch_mask_q [DEPTH-1:0];
-
-    function automatic logic [IDX_WIDTH-1:0] add_idx(
-        input logic [IDX_WIDTH-1:0] base, input int unsigned offset
-    );
-        add_idx = IDX_WIDTH'((int'(base) + offset) % DEPTH);
-    endfunction
-
-    assign free_count_o = COUNT_WIDTH'(DEPTH) - count_q;
-    assign tail_o = tail_q;
-    assign execute_generation_o = generation_q[execute_idx_i];
-    assign response_live_o = response_valid_i
-                           && valid_q[response_tag_i[IDX_WIDTH-1:0]]
-                           && generation_q[response_tag_i[IDX_WIDTH-1:0]]
-                              == response_tag_i[IDX_WIDTH];
-
+    input logic resolution_valid_i,resolution_mispredict_i,input branch_tag_t resolution_tag_i,
+    input logic [IW-1:0] restore_tail_i);
+    logic valid_q[DEPTH],ready_q[DEPTH],executed_q[DEPTH];
+    logic [o3_types_pkg::LQ_GEN_W-1:0] gen_q[DEPTH];lq_replay_t entry_q[DEPTH];
+    int head_q,tail_q,count_q;int replay_idx[P];
     always_comb begin
-        for (int lane = 0; lane < RENAME_WIDTH; lane++) begin
-            int unsigned req_before_lane;
-            req_before_lane = 0;
-            for (int older = 0; older < lane; older++) begin
-                if (alloc_req_i[older]) req_before_lane++;
+        int before_lane;before_lane=0;
+        for(int l=0;l<RENAME_WIDTH;l++) begin alloc_idx_o[l]=IW'((tail_q+before_lane)%DEPTH);before_lane+=int'(alloc_req_i[l]);end
+        free_count_o=$clog2(DEPTH+1)'(DEPTH-count_q);tail_o=IW'(tail_q);
+        for(int p=0;p<P;p++) begin
+            capture_tag_o[p]='{idx:o3_types_pkg::lq_idx_t'(capture_i[p].uop.lq_idx),gen:gen_q[capture_i[p].uop.lq_idx]};
+            replay_idx[p]=-1;replay_valid_o[p]=0;replay_o[p]='0;
+        end
+        for(int d=0;d<DEPTH;d++) begin
+            int idx,slot;logic selected;idx=(head_q+d)%DEPTH;slot=-1;selected=0;
+            for(int p=0;p<P;p++) begin
+                selected|=replay_idx[p]==idx;
+                if(p<CFG.lsu.mem_pipes && slot<0 && replay_idx[p]<0) slot=p;
             end
-            alloc_idx_o[lane] = add_idx(tail_q, req_before_lane);
+            if(slot>=0 && valid_q[idx] && ready_q[idx] && !selected &&
+                !(flush_i || (resolution_valid_i && resolution_mispredict_i && entry_q[idx].uop.branch_mask[resolution_tag_i]))) begin
+                replay_idx[slot]=idx;replay_valid_o[slot]=1;replay_o[slot]=entry_q[idx];
+                replay_o[slot].tag='{idx:o3_types_pkg::lq_idx_t'(idx),gen:gen_q[idx]};
+            end
         end
     end
-
     always_ff @(posedge clk) begin
-        if (rst) begin
-            head_q <= '0;
-            tail_q <= '0;
-            count_q <= '0;
-            valid_q <= '{default: 1'b0};
-            generation_q <= '{default: 1'b0};
-            addr_valid_q <= '{default: 1'b0};
-            outstanding_q <= '{default: 1'b0};
-            addr_q <= '{default: '0};
-            rob_idx_q <= '{default: '0};
-            branch_mask_q <= '{default: '0};
-        end else if (resolution_valid_i && resolution_mispredict_i) begin
-            int unsigned kept;
-            kept = 0;
-            for (int entry = 0; entry < DEPTH; entry++) begin
-                if (valid_q[entry] && branch_mask_q[entry][resolution_tag_i]) begin
-                    valid_q[entry] <= 1'b0;
-                    addr_valid_q[entry] <= 1'b0;
-                    outstanding_q[entry] <= 1'b0;
-                end else if (valid_q[entry]) begin
+        if(rst) begin head_q<=0;tail_q<=0;count_q<=0;valid_q<='{default:0};ready_q<='{default:0};
+            executed_q<='{default:0};gen_q<='{default:'0};entry_q<='{default:'0};end
+        else begin
+            int kept,allocated;kept=0;allocated=0;
+            for(int n=0;n<DEPTH;n++) begin
+                logic dead;dead=flush_i || (resolution_valid_i && resolution_mispredict_i && entry_q[n].uop.branch_mask[resolution_tag_i]);
+                if(valid_q[n] && dead) begin valid_q[n]<=0;ready_q[n]<=0;executed_q[n]<=0;end
+                else if(valid_q[n]) begin
                     kept++;
-                    // spec §7/LQ-M：恢复只取消年轻项，老 load 的正常生命周期照常更新。
-                    // 用拍初 mask 判存活，再清解析位；请求/响应不因 M 吞掉。
-                    branch_mask_q[entry][resolution_tag_i] <= 1'b0;
-                    if (execute_valid_i && execute_idx_i == IDX_WIDTH'(entry)) begin
-                        addr_q[entry] <= execute_addr_i;
-                        addr_valid_q[entry] <= 1'b1;
-                    end
-                    if (request_fire_i && request_idx_i == IDX_WIDTH'(entry))
-                        outstanding_q[entry] <= 1'b1;
-                    if (response_live_o && response_tag_i[IDX_WIDTH-1:0] == IDX_WIDTH'(entry))
-                        outstanding_q[entry] <= 1'b0;
-                end
-            end
-            for (int released = 0; released < RENAME_WIDTH; released++) begin
-                if (released < int'(release_count_i)) begin
-                    valid_q[add_idx(head_q, released)] <= 1'b0;
-                    addr_valid_q[add_idx(head_q, released)] <= 1'b0;
-                    outstanding_q[add_idx(head_q, released)] <= 1'b0;
-                end
-            end
-            head_q <= add_idx(head_q, int'(release_count_i));
-            tail_q <= restore_tail_i;
-            count_q <= COUNT_WIDTH'(kept) - COUNT_WIDTH'(release_count_i);
-        end else begin
-            int unsigned alloc_count;
-            alloc_count = 0;
-
-            for (int released = 0; released < RENAME_WIDTH; released++) begin
-                if (released < int'(release_count_i)) begin
-                    valid_q[add_idx(head_q, released)] <= 1'b0;
-                    addr_valid_q[add_idx(head_q, released)] <= 1'b0;
-                    outstanding_q[add_idx(head_q, released)] <= 1'b0;
-                end
-            end
-            if (release_count_i != '0) head_q <= add_idx(head_q, int'(release_count_i));
-
-            for (int entry = 0; entry < DEPTH; entry++) begin
-                if (resolution_valid_i) branch_mask_q[entry][resolution_tag_i] <= 1'b0;
-            end
-
-            if (alloc_fire_i) begin
-                for (int lane = 0; lane < RENAME_WIDTH; lane++) begin
-                    if (alloc_req_i[lane]) begin
-                        valid_q[alloc_idx_o[lane]] <= 1'b1;
-                        generation_q[alloc_idx_o[lane]] <= ~generation_q[alloc_idx_o[lane]];
-                        addr_valid_q[alloc_idx_o[lane]] <= 1'b0;
-                        outstanding_q[alloc_idx_o[lane]] <= 1'b0;
-                        addr_q[alloc_idx_o[lane]] <= '0;
-                        rob_idx_q[alloc_idx_o[lane]] <= alloc_rob_idx_i[lane];
-                        branch_mask_q[alloc_idx_o[lane]] <= alloc_branch_mask_i[lane];
-                        alloc_count++;
+                    if(resolution_valid_i) entry_q[n].uop.branch_mask[resolution_tag_i]<=0;
+                    case(entry_q[n].wait_reason)
+                        o3_types_pkg::LDW_MSHR:if(dc_wake_i.valid && dc_wake_i.mshr_id==entry_q[n].mshr_id) begin
+                            ready_q[n]<=1;
+                            if(dc_wake_i.err) entry_q[n].exc<='{valid:1'b1,cause:o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ACCESS_FAULT,tval:entry_q[n].va};
+                        end
+                        o3_types_pkg::LDW_MSHR_FULL:if(dc_wake_i.mshr_free) ready_q[n]<=1;
+                        o3_types_pkg::LDW_WB_LINE:if(dc_wake_i.wb_free) ready_q[n]<=1;
+                        o3_types_pkg::LDW_TLB_MISS:if(tlb_wake_i) ready_q[n]<=1;
+                        o3_types_pkg::LDW_OLDER_STORE_ADDR,o3_types_pkg::LDW_OLDER_STORE_DATA:if(sq_change_i) ready_q[n]<=1;
+                        o3_types_pkg::LDW_AD_ORDER:if(ad_wake_i) ready_q[n]<=1;
+                        default:;
+                    endcase
+                    for(int p=0;p<P;p++) begin
+                        if(replay_valid_o[p] && replay_ready_i[p] && replay_idx[p]==n) begin ready_q[n]<=0;entry_q[n].wait_reason<=o3_types_pkg::LDW_NONE;end
+                        if(capture_valid_i[p] && int'(capture_i[p].uop.lq_idx)==n) begin
+                            entry_q[n]<=capture_i[p];entry_q[n].tag<=capture_tag_o[p];
+                            entry_q[n].uop.branch_mask<=br_resolved_mask(capture_i[p].uop.branch_mask,
+                                '{valid:resolution_valid_i,mispredict:resolution_mispredict_i,branch_tag:resolution_tag_i,default:'0});
+                            ready_q[n]<=0;
+                        end
+                        if(update_valid_i[p] && update_i[p].lq_tag.idx==n && update_i[p].lq_tag.gen==gen_q[n]) begin
+                            entry_q[n].wait_reason<=update_i[p].reason;entry_q[n].mshr_id<=update_i[p].mshr_id;
+                            entry_q[n].exc<=update_i[p].exc;
+                            executed_q[n]<=update_i[p].status==o3_types_pkg::DC_OK || update_i[p].status==o3_types_pkg::DC_ERROR;
+                            ready_q[n]<=update_i[p].status==o3_types_pkg::DC_REPLAY &&
+                                update_i[p].reason inside {o3_types_pkg::LDW_CONFLICT,o3_types_pkg::LDW_SNAP,o3_types_pkg::LDW_BANK};
+                            // Do not miss an install/resource wake on the wait-write edge.
+                            if(update_i[p].status==o3_types_pkg::DC_MISS_WAIT && dc_wake_i.valid && dc_wake_i.mshr_id==update_i[p].mshr_id) begin
+                                ready_q[n]<=1;
+                                if(dc_wake_i.err) entry_q[n].exc<='{valid:1'b1,cause:o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ACCESS_FAULT,tval:entry_q[n].va};
+                            end
+                            if(update_i[p].reason==o3_types_pkg::LDW_MSHR_FULL && dc_wake_i.mshr_free) ready_q[n]<=1;
+                            if(update_i[p].reason==o3_types_pkg::LDW_WB_LINE && dc_wake_i.wb_free) ready_q[n]<=1;
+                            if(update_i[p].reason==o3_types_pkg::LDW_TLB_MISS && tlb_wake_i) ready_q[n]<=1;
+                            if(update_i[p].reason inside {o3_types_pkg::LDW_OLDER_STORE_ADDR,o3_types_pkg::LDW_OLDER_STORE_DATA} && sq_change_i) ready_q[n]<=1;
+                            if(update_i[p].reason==o3_types_pkg::LDW_AD_ORDER && ad_wake_i) ready_q[n]<=1;
+                        end
                     end
                 end
-                tail_q <= add_idx(tail_q, alloc_count);
             end
-
-            if (execute_valid_i && valid_q[execute_idx_i]) begin
-                addr_q[execute_idx_i] <= execute_addr_i;
-                addr_valid_q[execute_idx_i] <= 1'b1;
+            for(int l=0;l<RENAME_WIDTH;l++) if(l<int'(release_count_i)) begin
+                valid_q[(head_q+l)%DEPTH]<=0;ready_q[(head_q+l)%DEPTH]<=0;
             end
-            if (request_fire_i && valid_q[request_idx_i]) begin
-                outstanding_q[request_idx_i] <= 1'b1;
+            if(alloc_fire_i && !flush_i && !(resolution_valid_i && resolution_mispredict_i)) begin
+                for(int l=0;l<RENAME_WIDTH;l++) if(alloc_req_i[l]) begin
+                    int idx;idx=int'(alloc_idx_o[l]);allocated++;valid_q[idx]<=1;gen_q[idx]<=gen_q[idx]+1'b1;
+                    ready_q[idx]<=0;executed_q[idx]<=0;entry_q[idx]<='0;
+                    entry_q[idx].uop.rob_idx<=alloc_rob_idx_i[l];entry_q[idx].uop.branch_mask<=alloc_branch_mask_i[l];
+                end
             end
-            if (response_live_o) begin
-                outstanding_q[response_tag_i[IDX_WIDTH-1:0]] <= 1'b0;
-            end
-
-            count_q <= count_q + COUNT_WIDTH'(alloc_count) - COUNT_WIDTH'(release_count_i);
+            head_q<=flush_i ? 0:(head_q+int'(release_count_i))%DEPTH;
+            tail_q<=flush_i ? 0:(resolution_valid_i && resolution_mispredict_i) ? int'(restore_tail_i):(tail_q+allocated)%DEPTH;
+            count_q<=flush_i ? 0:kept+allocated-int'(release_count_i);
+            assert(count_q>=0 && count_q<=DEPTH);
         end
     end
-
-    initial if (DEPTH <= 0) $error("load_queue requires DEPTH > 0");
 endmodule
