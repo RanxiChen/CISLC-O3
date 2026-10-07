@@ -1,7 +1,7 @@
 /**
  * 提交控制 —— ROB 队头之后的按序副作用、系统同步编排、trap/xRET 发起
  *
- * 主流程均已定（B22～B27、B31、B37～B40），L5 M 模式通路已实现，后续级保留目标接口。
+ * 主流程均已定（B22～B27、B49、B37～B40），L5 M 模式通路已实现，后续级保留目标接口。
  *
  * 按序副作用（每拍对实际退休前缀）：
  * - ftq_commit_t（region_last：区域有效指令全部提交，FTQ 交接训练后回收，前端 16.2）。
@@ -34,20 +34,20 @@
  *
  * 异常与中断（B26）：
  * - 同步异常：退休停在故障指令之前；下一拍故障指令为最老项时在无正常退休的 trap 拍接受；
- *   故障项不退休。跨 line 拆分按 B49 留 L8；既有异常身份不在 T08a 改动。
+ *   故障项不退休。跨 line 拆分按 B49 留 L8；既有异常身份不在 L10 改动。
  * - 中断：只在指令边界；串行 CSR 已更新架构状态时先退休再复核；不可撤销 AMO/MMIO 先到安全边界。
  *   EPC = committed_next_pc。
  * - trap 入口与合法 xRET 均清 LR/SC reservation（B35）。
  *
  * fatal（B39）：isolate_i 有效后停止后续正常退休与新串行操作，保留在途总线收尾。
  *
- * 观测（B22/B23/B31）：csr_retired、csr_wait_empty_cycles、csr_block_younger_cycles、
+ * 观测（B22/B23；跨 line 旧计数保留）：csr_retired、csr_wait_empty_cycles、csr_block_younger_cycles、
  * fencei_retired、fencei_dcache_evict_cycles、misaligned_crossline_traps，经 perf_o 输出增量。
  *
  * 细节待定：各同步握手的信号编码与拍数；free list 提交态恢复记录的结构；串行项是否与 CSR 共用。
  *
  * 当前实现状态：闭环简化（L10）：M/S/U xRET/ECALL、中断边界、WFI、PMP CSR 同步。
- * SFENCE 先 SQ 写完成再 PTW idle，精确范围失效后前端同步退休；A/D 待 T08c；L1D clean 与 fatal 待 L8/L11；FP 退休 flags/Dirty 已接通。
+ * SFENCE 先 SQ 写完成再 PTW idle，精确范围失效后前端同步退休；needs_D store 在队头触发 D 重遍历，期间禁止退休；L1D clean 与 fatal 待 L8/L11；FP 退休 flags/Dirty 已接通。
  * ROB 退休经本模块转成 SQ committed / FTQ commit；free list 释放仍在 backend。
  *
  * 逐周期说明（目标）：
@@ -129,6 +129,7 @@ module commit_ctrl
     output logic            flush_all_o,         // 提交端整体清空（异常/xRET/同步重启）
     output be_perf_t        perf_o
 );
+    logic d_sent_q;
     logic serial_done_q,csr_executed_q,sync_sent_q,refetch_q,sf_sent_q,sf_done_q;
     sys_redirect_kind_e refetch_kind_q,trap_kind_q;
     vaddr_t committed_next_pc_q;
@@ -148,7 +149,7 @@ module commit_ctrl
         // No retirement participates in this decision, so there is no ROB
         // retire -> block -> retire loop. A begun CSR/sync must first retire.
         irq_accept=irq_take_i && !sync_trap && !csr_executed_q && !serial_done_q && !sync_sent_q
-            && !sf_sent_q && !trap_redirect_valid_i && !isolate_i && !wfi_stall_i;
+            && !sf_sent_q && !d_sent_q && !(head_valid_i && head_i.needs_d) && !trap_redirect_valid_i && !isolate_i && !wfi_stall_i;
         csr_req_o='0;csr_req_o.op=head_i.ext.csr_op;csr_req_o.addr=head_i.ext.csr_addr;
         csr_req_o.wdata=head_i.ext.csr_use_imm ? 64'(head_i.rs1) : csr_operand_i;
         csr_req_o.write_en=head_i.ext.csr_op==CSROP_RW || head_i.rs1!=0;csr_req_o.rob_idx=head_i.rob_idx;
@@ -206,25 +207,29 @@ module commit_ctrl
                         ftq_id:commit_i[lane].ftq_id,slot:commit_i[lane].slot,target_pc:commit_i[lane].succ_pc};
             end
         end
-        commit_block_o=isolate_i || sync_trap || irq_accept || trap_redirect_valid_i || wfi_stall_i;
+        commit_block_o=(head_valid_i && head_i.needs_d) || isolate_i || sync_trap || irq_accept || trap_redirect_valid_i || wfi_stall_i;
         flush_all_o=trap_req_o.valid || (sys_redirect_o.valid && sys_redirect_o.kind inside {SYS_FENCE_I,SYS_SATP,SYS_PMP,SYS_SFENCE});
         committed_next_pc_o=committed_next_pc_q;
         sfence_o=fe_sync_o.sfence;
         sfence_o.valid=head_valid_i && head_i.sys_op==SYSOP_SFENCE_VMA && !system_illegal &&
             sq_committed_empty_i && ptw_idle_i && !sf_sent_q && !irq_accept && !trap_redirect_valid_i;
-        dcache_clean_all_o=0;st_d_req_valid_o=0; // A/D in T08c; L1D clean in L8.
+        dcache_clean_all_o=0; // L1D clean in L8.
+        st_d_req_valid_o=head_valid_i && head_i.is_store && head_i.complete && head_i.needs_d &&
+            !head_i.exc.valid && !d_sent_q && !isolate_i && !trap_redirect_valid_i;
         rsv_clear_valid_o=sfence_o.valid || trap_req_o.valid || (sys_redirect_o.valid && sys_redirect_o.kind==SYS_SATP);
         rsv_clear_reason_o=sfence_o.valid ? RSV_CLR_SFENCE_SATP : trap_req_o.is_xret ? RSV_CLR_XRET : RSV_CLR_TRAP;
-        perf_o='0;
+        perf_o='0;perf_o[BE_SFENCE]=BE_PERF_INC_W'(sfence_o.valid);
     end
     // N: accept one head CSR, or an interrupt with no normal retire. Edge N:
     // mark CSR irreversible / latch redirect kind. N+1: sync or retirement.
     always_ff @(posedge clk) begin
         if(rst) begin
-            serial_done_q<=0;csr_executed_q<=0;sync_sent_q<=0;refetch_q<=0;sf_sent_q<=0;sf_done_q<=0;
+            d_sent_q<=0;serial_done_q<=0;csr_executed_q<=0;sync_sent_q<=0;refetch_q<=0;sf_sent_q<=0;sf_done_q<=0;
             refetch_kind_q<=SYS_PMP;trap_kind_q<=SYS_EXCEPTION;committed_next_pc_q<=boot_pc_i;
             csr_retired<=0;csr_wait_empty_cycles<=0;csr_block_younger_cycles<=0;
         end else begin
+            if(st_d_req_valid_o && st_d_req_ready_i) d_sent_q<=1;
+            if(!head_valid_i || !head_i.needs_d) d_sent_q<=0;
             if(csr_req_valid_o && csr_resp_i.valid && !csr_resp_i.illegal) begin
                 csr_executed_q<=1;refetch_q<=csr_resp_i.needs_refetch;refetch_kind_q<=csr_resp_i.refetch_kind;
                 serial_done_q<=!csr_resp_i.needs_refetch;
@@ -234,7 +239,7 @@ module commit_ctrl
             if(fe_sync_valid_o && fe_sync_ready_i) sync_sent_q<=1;
             if(sync_sent_q && fe_sync_done_i) serial_done_q<=1;
             if(serial_retire || flush_all_o) begin
-                serial_done_q<=0;csr_executed_q<=0;sync_sent_q<=0;refetch_q<=0;sf_sent_q<=0;sf_done_q<=0;
+                d_sent_q<=0;serial_done_q<=0;csr_executed_q<=0;sync_sent_q<=0;refetch_q<=0;sf_sent_q<=0;sf_done_q<=0;
             end
             for(int lane=0;lane<COMMIT_WIDTH;lane++) if(commit_i[lane].valid) begin
                 committed_next_pc_q<=commit_i[lane].succ_pc;

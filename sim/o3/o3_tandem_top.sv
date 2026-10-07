@@ -150,7 +150,7 @@ module o3_tandem_top
             u_core.u_frontend.perf_arb,u_core.u_frontend.perf_rq,u_core.u_frontend.perf_f0,
             u_core.u_frontend.perf_f1,u_core.u_frontend.perf_ibuf,u_core.u_frontend.perf_icache,
             u_core.u_frontend.perf_pf}),
-        .be_sources_i('{u_core.u_backend.perf_commit,u_core.u_backend.perf_lsu,u_core.u_backend.perf_dcache,u_core.u_backend.perf_ptw}),
+        .be_sources_i('{u_core.u_backend.perf_commit,u_core.u_backend.perf_lsu,u_core.u_backend.perf_dcache,u_core.u_backend.perf_ptw,u_core.u_backend.perf_ad}),
         .fe_frontend_i(u_core.u_frontend.fe_perf_o),.fe_core_i(u_core.fe_perf),
         .fe_backend_i(u_core.u_backend.fe_perf_i),.fe_csr_i(u_core.u_backend.u_csr_file.fe_perf_i),
         .fe_hpm_i(u_core.u_backend.u_csr_file.u_hpm_counters.fe_perf_i),
@@ -191,6 +191,17 @@ module o3_tandem_top
                     u_core.u_backend.issueq_issue_valid,
                     u_core.u_backend.alu_result_q[0].valid,
                     u_core.u_backend.rob_retire_valid[0]);
+            end
+            if ($test$plusargs("L10_DEBUG") && debug_cycle_q >= 15500 && debug_cycle_q % 128 == 0) begin
+                $display("[l10] cycle=%0d head=%b pc=%h done=%b exc=%b/%0d needsD=%b D=%b/%b/%b hold=%b/final=%b/fence=%b work=%b/%0d VA=%h xlate=%b/%b replay=%b/%b pending=%b PTW=%0d epoch=%0d",
+                    debug_cycle_q,u_core.u_backend.head_valid,u_core.u_backend.rob_head_info.pc,
+                    u_core.u_backend.rob_head_info.complete,u_core.u_backend.rob_head_info.exc.valid,u_core.u_backend.rob_head_info.exc.cause,
+                    u_core.u_backend.rob_head_info.needs_d,u_core.u_backend.st_d_valid,u_core.u_backend.st_d_ready,u_core.u_backend.st_d_done,
+                    u_core.u_backend.u_load_store_unit.d_hold_q,u_core.u_backend.u_load_store_unit.d_finalize_q,u_core.u_backend.u_load_store_unit.d_fence_wait_q,
+                    u_core.u_backend.u_load_store_unit.work_uop.valid,u_core.u_backend.u_load_store_unit.work_uop.rob_idx,
+                    u_core.u_backend.u_load_store_unit.effective_addr,u_core.u_backend.u_load_store_unit.xlate_busy_q,u_core.u_backend.u_load_store_unit.xlate_done_q,
+                    u_core.u_backend.u_load_store_unit.replay_valid_q,u_core.u_backend.u_load_store_unit.replay_check_q,
+                    u_core.u_backend.u_load_store_unit.pending_valid_q,u_core.u_backend.u_ptw.state_q,u_core.u_backend.t_dmmu_csr.epoch);
             end
             debug_cycle_q <= debug_cycle_q + 1;
             if ($test$plusargs("L5_DEBUG") && debug_cycle_q < 2000) begin

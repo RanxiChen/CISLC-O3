@@ -17,7 +17,7 @@
  * N edge: accepted prefix allocates atomically; granted IQ entries enter RegRead;
  * held results write PRF/ready/ROB; actual retirement updates committed maps and CSR FP state.
  * N+1: queues/tables expose updated identities, readiness and operands.
- * T08a module/core validation is recorded in O3-T08-report.md; Sv39/A-D in T08b/c.
+ * L10 Sv39/PTW/queue-head A-D integrated; validation and known VM failure in O3-T08-report.md.
  */
 `ifdef O3_SIM
 `include "dpi_functions.svh"
@@ -255,7 +255,7 @@ module backend
         .fp_retire_o(fp_retire),.committed_next_pc_o(committed_next_pc),.sys_redirect_o(sys_redirect_o),
         .fe_sync_valid_o(fe_sync_valid_o),.fe_sync_ready_i(fe_sync_ready_i),.fe_sync_o(fe_sync_o),.fe_sync_done_i(fe_sync_done_i),
         .sq_committed_empty_i(t_sq_committed_empty),.dcache_clean_all_o(),.dcache_clean_all_done_i(1'b0),.dcache_clean_all_busy_i(1'b0),
-        .sfence_o(t_sfence),.sfence_done_i(t_sfence_done),.ptw_idle_i(ptw_idle_o),.sfence_asid_operand_i(prf_rd_data[1]),.st_d_req_valid_o(),.st_d_req_ready_i(1'b0),.st_d_done_i(1'b0),
+        .sfence_o(t_sfence),.sfence_done_i(t_sfence_done),.ptw_idle_i(ptw_idle_o),.sfence_asid_operand_i(prf_rd_data[1]),.st_d_req_valid_o(st_d_valid),.st_d_req_ready_i(st_d_ready),.st_d_done_i(st_d_done),
         .csr_req_valid_o(csr_req_valid),.csr_req_o(csr_req),.csr_resp_i(csr_resp),.csr_operand_i(prf_rd_data[0]),
         .block_younger_cycle_i(gate_block_cycle),.irq_take_i(irq_take),.irq_cause_i(irq_cause),.priv_i(priv),.status_i(csr_status),.trap_req_o(trap_req),
         .trap_redirect_valid_i(trap_redirect_valid),.trap_redirect_pc_i(trap_redirect_pc),
@@ -280,7 +280,7 @@ module backend
         be_perf = '0;
         if (!rst)
             for (int evt = 0; evt < o3_types_pkg::BE_PERF_NUM; evt++)
-                be_perf[evt] = perf_commit[evt] + perf_lsu[evt] + perf_dcache[evt] + perf_ptw[evt];
+                be_perf[evt] = perf_commit[evt] + perf_lsu[evt] + perf_dcache[evt] + perf_ptw[evt] + perf_ad[evt];
     end
 
     localparam int BACKEND_PREG_IDX_WIDTH = PREG_IDX_WIDTH;   // 两域共用 preg 字段宽度（o3_types_pkg::PREG_W）
@@ -557,6 +557,11 @@ module backend
     logic [XLEN-1:0] sq_drain_addr, sq_drain_data;
     logic [7:0] sq_drain_mask;
     logic sq_commit_valid [RETIRE_WIDTH-1:0];
+    logic st_d_valid,st_d_ready,st_d_done,d_mark,d_clear;
+    o3_types_pkg::exc_info_t st_d_exc;
+    o3_types_pkg::rob_idx_t d_idx;
+    o3_types_pkg::vaddr_t d_va;
+    o3_types_pkg::sq_idx_t d_sq;
     logic store_complete_valid;
     logic [BACKEND_ROB_IDX_WIDTH-1:0] store_complete_rob_idx;
     logic mem_execute_ready;
@@ -1213,7 +1218,7 @@ module backend
         .t_alloc_inst_len_i(rob_meta_inst_len),.t_alloc_pc_i(rob_meta_pc),.t_alloc_instruction_i(rob_meta_instruction),.t_alloc_src1_i(rob_meta_src1),.t_alloc_src2_i(rob_meta_src2),.t_alloc_rs1_i(rob_meta_rs1),
         .t_fflags_valid_i(rob_complete_valid),.t_fflags_i(rob_complete_fflags),
         .t_exc_valid_i(rob_exc_valid),.t_exc_idx_i(rob_exc_idx),.t_exc_i(rob_exec_exc),
-        .t_head_valid_o(head_valid),.t_head_o(rob_head_info),.t_head_serial_done_i(head_serial_done),
+        .t_head_valid_o(head_valid),.t_head_o(rob_head_info),.t_head_serial_done_i(head_serial_done),.t_d_mark_valid_i(d_mark),.t_d_clear_valid_i(d_clear),.t_d_idx_i(d_idx),
         .t_commit_o(rob_commit),.t_flush_all_i(global_flush),.t_commit_block_i(rob_commit_block),
         .t_succ_valid_i(exec_resolve_o.valid),.t_succ_pc_i(exec_resolve_o.redirect_pc),
         .alloc_ready_i(rename_fire),
@@ -1423,6 +1428,7 @@ module backend
         .t_csr_i(t_dmmu_csr), .t_pmp_i(t_pmp), .t_sfence_i(t_sfence),.t_sfence_done_o(t_dtlb_sf_done),
         .t_dc_ld_req_valid_o(t_dc_ld_req_valid), .t_dc_ld_req_ready_i(t_dc_ld_req_ready),
         .t_dc_ld_req_o(t_dc_ld_req), .t_dc_ld_resp_i(t_dc_ld_resp),
+        .t_d_done_i(st_d_done),.t_d_exc_i(st_d_exc),.t_d_mark_o(d_mark),.t_d_clear_o(d_clear),.t_d_idx_o(d_idx),.t_d_va_o(d_va),.t_d_sq_o(d_sq),.t_rob_head_i(o3_types_pkg::rob_idx_t'(rob_head)),
         .t_perf_o(perf_lsu)
     );
 
@@ -2180,24 +2186,30 @@ module backend
     // 不在 L3：PTW/A-D（L10）、数据预取（L8）、系统提交/CSR（L5 起）。
     // 禁用请求不伪造应答；idle 仅表示没有 walker 在途。
     logic t_dtlb_sf_done;
-    o3_types_pkg::be_perf_t perf_ptw;
+    o3_types_pkg::be_perf_t perf_ptw,perf_ad;
+    logic ptw_ad_valid,ptw_ad_ready,rewalk_valid,rewalk_ready;
+    o3_types_pkg::pte_ad_req_t ptw_ad_req;
+    o3_types_pkg::pte_ad_resp_t ptw_ad_resp;
+    o3_types_pkg::ptw_req_t rewalk_req;
     ptw #(.CFG(CFG)) u_ptw(.clk(clk),.rst(rst),
         .itlb_req_valid_i(itlb_ptw_req_valid_i),.itlb_req_ready_o(itlb_ptw_req_ready_o),.itlb_req_i(itlb_ptw_req_i),
         .dtlb_req_valid_i(t_dtlb_ptw_req_valid),.dtlb_req_ready_o(t_dtlb_ptw_req_ready),.dtlb_req_i(t_dtlb_ptw_req),
         .resp_o(t_ptw_resp),.mem_req_valid_o(t_ptw_mem_req_valid),.mem_req_ready_i(t_ptw_mem_req_ready),
         .mem_req_o(t_ptw_mem_req),.mem_resp_i(t_ptw_mem_resp),.csr_i(t_dmmu_csr),.pmp_i(t_pmp),
         .sfence_i(t_sfence),.sfence_done_o(),.idle_o(ptw_idle_o),
-        .a_upd_req_valid_o(),.a_upd_req_ready_i(1'b0),.a_upd_req_o(),.a_upd_resp_i('0),
-        .rewalk_req_valid_i(1'b0),.rewalk_req_ready_o(),.rewalk_req_i('0),.perf_o(perf_ptw));
+        .a_upd_req_valid_o(ptw_ad_valid),.a_upd_req_ready_i(ptw_ad_ready),.a_upd_req_o(ptw_ad_req),.a_upd_resp_i(ptw_ad_resp),
+        .rewalk_req_valid_i(rewalk_valid),.rewalk_req_ready_o(rewalk_ready),.rewalk_req_i(rewalk_req),.perf_o(perf_ptw));
     assign itlb_ptw_resp_o=t_ptw_resp;
     assign t_sfence_done=t_dtlb_sf_done;
-    assign t_dc_pte_ad_valid = 1'b0;
-    assign t_dc_pte_ad_req = '0;
-    assign t_rsv_pte_ad_conflict = '0;
-    assign t_pf_req_valid = 1'b0;
-    assign t_pf_req = '0;
-
-    assign t_dc_clean_all_req = 1'b0;
+    pte_ad_updater #(.CFG(CFG)) u_pte_ad_updater(.clk(clk),.rst(rst),
+        .ptw_a_req_valid_i(ptw_ad_valid),.ptw_a_req_ready_o(ptw_ad_ready),.ptw_a_req_i(ptw_ad_req),.ptw_a_resp_o(ptw_ad_resp),
+        .st_d_req_valid_i(st_d_valid),.st_d_req_ready_o(st_d_ready),.st_d_vaddr_i(d_va),.st_d_sq_idx_i(d_sq),
+        .st_d_done_o(st_d_done),.st_d_exc_o(st_d_exc),.rewalk_req_valid_o(rewalk_valid),.rewalk_req_ready_i(rewalk_ready),
+        .rewalk_req_o(rewalk_req),.rewalk_resp_i(t_ptw_resp),.dc_req_valid_o(t_dc_pte_ad_valid),.dc_req_ready_i(t_dc_pte_ad_ready),
+        .dc_req_o(t_dc_pte_ad_req),.dc_resp_i(t_dc_pte_ad_resp),.csr_i(t_dmmu_csr),.cur_epoch_i(t_dmmu_csr.epoch),
+        .kill_i(global_flush),.rsv_conflict_o(t_rsv_pte_ad_conflict),.busy_o(),.perf_o(perf_ad));
+    assign t_pf_req_valid=1'b0;assign t_pf_req='0; // L10 prefetch disabled.
+    assign t_dc_clean_all_req=1'b0; // Full FENCE.I L1D cleaning belongs to L8.
     assign t_rsv_clear_valid = 1'b0;
     assign t_rsv_clear_reason = o3_types_pkg::RSV_CLR_SC; // valid=0；合法编码无事件
     assign fatal_o = 1'b0; // platform fatal isolation belongs to L11

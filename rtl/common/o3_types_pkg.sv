@@ -1263,6 +1263,7 @@ package o3_types_pkg;
         // B37：本条实际退休后的下一架构 PC。普通指令 = 原始 PC + 真实指令长度；控制流 = 真实后继
         // PC（由 BRU 解析写回 ROB）。同拍多条退休取最后一条实际退休指令的 succ_pc。
         vaddr_t              succ_pc;
+        logic                needs_d; // L10: complete store waits for queue-head non-speculative D update
         logic                crossline_misalign; // 旧跨 line 异常身份；B49 拆分待 L8
         fuse_role_e          fuse_role;          // B34：融合成员仍各自退休
     } rob_commit_t;
@@ -1311,7 +1312,11 @@ package o3_types_pkg;
         BE_MISALIGNED_CROSSLINE_TRAP = 'h24,
         // B34：MULH+MUL 融合对数（观测，口径待定）
         BE_MUL_FUSED_PAIR = 'h25,
-        BE_PERF_NUM = 'h26
+        BE_DTLB_MISS = 'h26,
+        BE_PTE_A_UPDATE = 'h27,
+        BE_PTE_D_UPDATE = 'h28,
+        BE_SFENCE = 'h29,
+        BE_PERF_NUM = 'h2a
     } be_perf_evt_e;
 
     localparam int BE_PERF_INC_W = $clog2(RENAME_W + 1);

@@ -150,7 +150,12 @@ Q7 的 TLB 不缓存 A=0、ADUE=0 时由 PTW 交付一次 pending page fault，�
 `evidence/t08b-gate02/commands.jsonl` 记录全部命令/cwd/exit；37 个模块套件共 126/126 PASS；
 八项整核回归与 T08a `run-l10-priv` 全通过；`scripts/lint.sh` 0 errors。
 `run-l10-vm VM_AD=0` exit 2，首个失败为 backend 的正确分支推进断言；保留断言并追加诊断上下文。
-同 SHA 交付门禁在本步代码提交后运行，结果补在收尾报告。
+同 SHA 交付门禁已完成：代码 `2e5333bf62201cd428a73481b2401d7b1c3c29bc`，
+Alan cwd `/home/chen/FUN/CISLC-O3-runs/20261007-t08b-final/`，GitHub clone + 原 gitlink 子模块初始化。
+`python3 sim/o3/tests/run_t08_gates.py evidence/final --build --core`，逐项命令与 exit 在
+`evidence/final/commands.jsonl`；37 套件 **126/126 PASS**（FAIL/SKIP=0），八项整核回归、
+T08a `run-l10-priv`、build、lint exit 0；完整 VM_AD=0 exit 2。
+测试前后 tracked diff 为空，SHA 与状态记录在 `evidence/sha.txt`、`evidence/status-{before,after}.txt`。
 
 开发失败与修复：
 
@@ -172,9 +177,80 @@ Q7 的 TLB 不缓存 A=0、ADUE=0 时由 PTW 交付一次 pending page fault，�
 
 规范依据：[RISC-V Supervisor ISA 1.13 的 Sv39/翻译算法与 SFENCE](https://docs.riscv.org/reference/isa/v20260120/priv/supervisor.html)。
 
-## 已知问题（收尾时按最终 SHA 更新）
+## T08c：硬件 A/D 与 L10 收口
 
-- T08b `run-l10-vm`：首个失败 `rtl/backend/backend.sv` 的 `decode_ready == uopq_enq_ready` 断言。
-  最后退休前缀 cycle 15839、PC `0x80000154`；未经同 SHA 诊断前不把它归因为 MRET 或 MMU。
-  复现：Alan 对应代码目录 `make -C sim/o3 run-l10-vm SPIKE_ARGS=+L7_CHECK VM_AD=0`。
-  按 2026-10-07 修订继续 T08c；不删除断言、失败程序或自查期望。
+实现 DCache 完整 64 位 PTE CAS（命中与 refill 后均比较）、PTW 的投机 A 更新与比较失败重遍历、
+ROB `needs_d` 元信息及退休前缀阻挡、队头 D 重遍历、LSU 单个 D-store 身份保存与年轻访存等待。
+D 成功后精确失效该 VA 的本地 DTLB 项，重新翻译、更新 SQ PA 并进行原只读目标 probe；
+最终成功才清 ROB needs_D，错误保留原 store VA/cause。ADUE 复位仍为 1。
+原 L3 单发射/单 pending/replay、B04 顺序 load 简化保留，跨 line/跨页拆分与 LR/SC 留 L8。
+
+新增/扩展 MMU 六组用例、真实 DCache PTE 入口两组用例、commit_ctrl needs_D 和 ROB 退休前缀用例；
+保留全部既有用例/断言/golden。`run-l10-ad` 是额外的正向 A/D 整核程序，完整 `run-l10-vm` 原样保留。
+只读事件聚合增加 AD 源，继续逐拍检查 producer 聚合、HPM 与已有 L7 检查。
+
+开发 cwd：`/home/chen/FUN/CISLC-O3-runs/20261007-t08c-2e5333b-work/`。
+该目录为 rsync 开发快照，最终代码 SHA 门禁另外从 GitHub clone。
+
+| 轮次 | 命令与范围 | exit / 结果 |
+| --- | --- | --- |
+| dev01 | `bash scripts/lint.sh` | 0 errors，exit 0 |
+| dev02 | runner `--modules mmu commit_ctrl --build --core` | MMU 6/6、commit 5/5；八项整核回归与特权自查通过；VM exit 2，无进展超时 |
+| dev03 | runner `--modules rob mmu_pte`；`make -C sim/o3 run-l10-ad SPIKE_ARGS=+L7_CHECK` | ROB 4/4；PTE harness 编译枚举类型错误；AD 正向程序 PASS 15892 周期/6252 退休 |
+| dev04 | runner `--modules mmu_pte` | harness 显式初始化 amo_op 后 2/2 PASS；lint exit 0 |
+| gate01 | runner `--build --core` | 38套件/132 用例，HPM 1个旧事件边界刺激失败；八项回归、priv、AD通过；VM超时 |
+| hpm-fix | runner `--modules hpm_counters` | 19/19 PASS，包含新四个事件精确计数 |
+| dev05 | runner `--modules mmu --build`，VM 二进制 `+L7_CHECK +L10_DEBUG` | MMU新增 D mismatch/权限/PMP 拒绝后 6/6 PASS；VM 诊断出 replay 等待环 |
+| dev06 | runner `--modules backend backend_control backend_issue_queue --build --core` | 5/5模块通过；八项回归、priv、AD通过；VM 推进至 cause 15 旧分支断言 |
+
+开发修复：真实 DCache harness 的 struct pattern 必须显式初始化 enum `amo_op`，修正 fixture；
+runner 不再将构建失败前的旧 XML 误计为本轮结果，只解析本次命令之后生成的 XML。
+这些修复不修改 DUT 行为或降低检查强度。
+完整 gate01 的 HPM 旧“越界 BE event”刺激硬编码 0x26，在 T08c 已成为有效 DTLB 事件；
+原不计数断言仍为精确 0，越界刺激改为 DUT 暴露的 BE_PERF_NUM，并新增 0x26～0x29
+每个 selector 的完整计数检查（3×4=12）。这修正事件边界刺激，不屏蔽合法事件或放宽期望。
+
+## 自行决定（T08c）
+
+| 问题 | 决定 | 依据 | 涉及文件 |
+| --- | --- | --- | --- |
+| 原子口仲裁/所有权 | AD > PTW > 原 CPU 仲裁，复用 cache 两级/单 MSHR；命中与 refill 都比较完整 64 位 PTE，成功才写脏 | spec 5.4/8.1、B36；普通访问不增加流水级 | dcache |
+| D owner 保存/回压 | LSU 只保存一个 needs_D store 的完整 uop/SQ/ROB/VA；第二个 D=0 store 与年轻访存回压，年轻 load 入已有 replay | X2/X16、spec 8.3、B49；L3 资源不扩展为 L8 | load_store_unit |
+| ROB 完成和退休分离 | 首次只读 probe 仍置 complete，但 needs_D 阻止任何包含此项的退休前缀；队头只发一次更新请求，完成前禁止中断越过 | spec 8.3、精确异常、B36/B37 | rob、commit_ctrl、backend |
+| 比较失败之后的 SQ 地址 | D 重遍历可发现新 PPN；成功后本地精确 DTLB 失效并重翻译/替换 SQ PA/重新 probe，最终完成才清 needs_D | 完整 PTE 比较与重遍历；不能使用过期 PA 写 store，B49 | ptw、load_store_unit |
+| CAS 重试上限 | 无固定次数/超时软件 trap；mismatch 从 walk-cache lookup 重走并重新检查权限/PMP | spec 8.2/8.3、B49 | ptw |
+| 取消/epoch 边界 | 已接受物理 CAS 可 drain；尚未接受的旧 epoch 请求不写。旧结果只释放 owner，不回填/退休；冲突通知只在实际成功写时发出 | spec 8.5、D27、B36；原子事务所有权 | pte_ad_updater、dcache、ptw |
+| D 重遍历优先级 | 队头 DCOMMIT 先于 I/D miss；普通 I/D 仍 RR，D 重遍历不修改 RR 历史 | spec 8.3 与 single-walker 前进需求 | ptw、pte_ad_updater |
+| 性能事件口径 | BE 0x26 DTLB miss 响应次数（包含重试），0x27/0x28 实际 A/D 0→1 写次数，0x29 SFENCE 发起；既有 PTW 0x12/WC 0x13；FE 0x28 ITLB miss | spec 10 的自由事件编码；不是软件 perf/PMU 平台证明 | o3_types_pkg、dtlb、pte_ad_updater、commit_ctrl、backend、l10_event_checks |
+| replay 与寄存器内 store 仲裁 | 单 replay 比寄存器内更年轻访存优先；更老 store 仍可越过解除未知 SQ 地址依赖；被旁侧 preempt 的输入不应答 ready | X2/X16、B04/L3 简化、B49 硬件处理；修复新 VM 的硬件等待环 | load_store_unit |
+| 测试组织 | PTE cache harness 放在 mmu/，只覆盖 L10 CAS 合同；另加完整 A/D 正向整核程序补完整 VM 失败之后的路径 | 用户修订允许新增 L10 已知失败继续；不运行推迟的通用访存 suite | sim/cocotb/mmu、sim/o3/tests/l10_ad.S、Makefile |
+
+跨模块合同：PTW 请求携带上下文和 DCOMMIT src；响应携带 PTE 地址/值；ROB 增加 needs_D，
+LSU→ROB mark/clear/idx 与 LSU→updater VA/SQ、updater→LSU done/exception；commit 单发请求，
+PTW/updater/DCcache 共享 CAS 身份。修改均在允许文件范围内，没有改 doc/design Bxx/Dxx 或 doc/spec。
+
+## 已知问题
+
+1. **T08b 完整 VM**：首个失败是 `backend.sv` 的正确分支推进断言
+   `decode_ready == uopq_enq_ready`。同 SHA 诊断为 `decode_ready=0 enq_ready=1 block=1 flush=1
+   trap=1 cause=13 head_pc=0x80000180`：程序预期的 SUM=0 load page fault 与正确分支解析同拍。
+   MRET、4K/2M 前缀已推进；最后退休 cycle 15839、PC `0x80000154`。不删断言或故障程序。
+   复现 cwd `/home/chen/FUN/CISLC-O3-runs/20261007-t08b-final/`：
+   `make -C sim/o3 run-l10-vm SPIKE_ARGS=+L7_CHECK VM_AD=0`（exit 2）；日志 `evidence/final/run-l10-vm.log`。
+2. **T08c 完整 VM**：开发 dev02 的 10000 拍无退休超时（cycle 25818、6237 events）已修复：
+   老 SUM=0 load（PC `0x80000184`）在 replay，年轻错误路径 tohost store 占 RegRead；
+   replay 仲裁按 ROB 年龄优先老项并保持被 preempt 输入不 ready，更老 store 仍可解除 SQ 依赖。
+   dev06 已越过该点、完成 SUM=0/SUM=1 路径；首个剩余失败是同一旧正确分支推进断言，
+   `decode_ready=0 enq_ready=1 block=1 flush=1 trap=1 cause=15 head_pc=0x800001c4`，
+   对应程序预期的只读页 store page fault 与正确分支解析同拍。
+   保留原断言，按用户修订作为已知问题；最终 SHA 复现与日志见下节。
+
+以上按任务书 2026-10-07 用户修订带已知问题收口，不宣称完整 Sv39 整核 VM 通过。
+完整 VM 的 RO fault 之后 NX、ADUE=0、ASID/SFENCE/PMP 整核链没有完整通过证据；
+MMU 权限/ASID/精确 fence/PMP/A/D 模块通过与独立 AD 正向程序通过不能替代它。
+
+未做：L8/L11、通用访存类 cocotb、Spike、ACT4、formal、综合/时序/PPA、FPGA/SoC：**未运行**。
+
+## T08c 最终代码 SHA 门禁
+
+提交后从 GitHub clone 精确代码 SHA，在 Alan 运行完整门禁；结果随文档收尾补齐。

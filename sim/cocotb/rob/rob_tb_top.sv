@@ -9,6 +9,8 @@ module rob_tb_top import o3_pkg::*; #(
                                  ? o3_types_pkg::INT_PREGS : o3_types_pkg::FP_PREGS,
     localparam int RETIRE_WIDTH = o3_cfg_pkg::O3_CFG.core.commit_width
 ) (
+    input logic d_mark_i,d_clear_i,
+    input o3_types_pkg::rob_idx_t d_idx_i,
     input  logic clk,
     input  logic rst,
     input  logic                               alloc_req_i       [MACHINE_WIDTH-1:0],
@@ -85,6 +87,7 @@ output logic [31:0] cfg_width_o, cfg_depth_o, cfg_rob_o, cfg_pregs_o, cfg_read_p
 output branch_mask_t mask_obs_o [NUM_ROB_ENTRIES-1:0]
 );
 rob #(.CFG(CFG), .COMPLETE_WIDTH(COMPLETE_WIDTH)) dut (
+.t_d_mark_valid_i(d_mark_i),.t_d_clear_valid_i(d_clear_i),.t_d_idx_i(d_idx_i),
 .clk(clk),
 .rst(rst),
 .alloc_req_i(alloc_req_i),

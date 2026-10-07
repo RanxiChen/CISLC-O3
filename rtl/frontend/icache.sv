@@ -2,7 +2,7 @@
  * ICache: 64B whole-line interleaving over two banks, with an S0-S3
  * synchronous lookup pipeline (D10-D14).
  *
- * 当前实现状态：闭环简化（L10 T08a，Bare 缓存取指）
+ * 当前实现状态：闭环简化（L10，Sv39 物理 tag 缓存取指）
  * - S0 samples a demand and starts banked tag/data reads. S1 holds
  *   the synchronous results; S2 registers tag comparisons; S3 selects data
  *   and returns the original FTQ/RQ identity. Uncontended hits accept one
@@ -14,9 +14,10 @@
  *   the full line, then publishes valid and responds. Independent hits can
  *   pass a pending miss (D13/D14). MSHR count/merge capacity remains below
  *   the provisional CFG count; a second miss waits in S3.
- * - L10 T08a: Bare physical addresses pass through real PMP S2/S3 and PMA.
+ * - L10: S0 ITLB lookup overlaps SRAM read; S1 holds/retries translation miss.
+ *   S2 uses translated PA/tag and S3 checks PMP/PMA/page fault.
  *   Cached hits repeat protection checks; faults do not allocate an MSHR.
- *   ITLB translation joins in T08b; prefetch remains disabled. Inclusive
+ *   Recent-line reuse is keyed by PA/epoch/priv; prefetch remains disabled. Inclusive
  *   L2 recall drains lookup stages and invalidates the exact resident line.
  * - Tests: sim/cocotb/icache/. Whole-core closure: sim/o3/.
  *

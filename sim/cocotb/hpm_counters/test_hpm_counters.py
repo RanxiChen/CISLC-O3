@@ -162,6 +162,16 @@ async def event_select_fe_and_be(d):
         assert (await tb.peek(hpmc(n)))[0] == e, (n, e, (await tb.peek(hpmc(n)))[0])
 
 
+    # T08c allocates BE 0x26..0x29. Check their full increments explicitly.
+    assert tb.benum == 0x2a
+    for event in range(0x26,0x2a):
+        await tb.access(hpme(3),RW,0x0200|event)
+        await clear_counters(tb)
+        tb.drive_perf(be={event:3})
+        await tb.cycles(4);tb.drive_perf()
+        assert (await tb.peek(hpmc(3)))[0] == 12, hex(event)
+
+
 @cocotb.test()
 async def varying_increment_accumulates(d):
     tb = await setup(d)
@@ -180,7 +190,7 @@ async def varying_increment_accumulates(d):
 async def disabled_and_unknown_events_do_not_count(d):
     """Event 0, FE numbering holes (0x16..0x1F), beyond-last numbers, unknown sources."""
     tb = await setup(d)
-    sel = [0x0000, 0x0100, 0x0116, 0x011F, 0x0134, 0x0226, 0x0301, 0x0001]
+    sel = [0x0000, 0x0100, 0x0116, 0x011F, 0x0134, 0x0200 | tb.benum, 0x0301, 0x0001]
     for i, s in enumerate(sel):
         await tb.access(hpme(3 + i), RW, s)
     await clear_counters(tb)

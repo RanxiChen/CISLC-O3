@@ -139,6 +139,7 @@ rtl/memory/simple_data_sram.sv
 rtl/lsu/dtlb.sv
 rtl/lsu/walk_cache.sv
 rtl/lsu/ptw.sv
+rtl/lsu/pte_ad_updater.sv
 rtl/lsu/dcache.sv
 rtl/backend/load_queue.sv
 rtl/backend/store_queue.sv

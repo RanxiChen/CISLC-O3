@@ -13,8 +13,8 @@
  * - Store drain：请求接受与写完成分开；命中写完确认后 SQ 释放；miss/冲突/DMA 行保护时 SQ 保留项，
  *   等事件后重试，不重复发送在途请求；store 等 miss 不占 bank 流水级（B05）。
  * - 响应区分等待原因（dc_status_e），避免盲目重试（B04）。
- * - B31：普通可缓存标量非对齐访问同 line 内硬件支持（内部可跨 bank 拆分/拼接，仍是一次访问）；
- *   跨 line 由 LSU 在发出前报地址非对齐异常，不进入本 cache。
+ * - B49：普通可缓存标量非对齐访问由硬件处理；同 line 已支持，跨 line/跨页拆分留 L8。
+ *   当前旧跨 line 异常路径仍保留，不作为 B49 完整实现。
  * - DMA 行协调（B08）：接受 probe 后阻止该行新的 CPU 访问与 AMO，其他行继续；已接受访问完成到
  *   安全边界；clean+invalidate 后返回 quiesced；不得堵住完成旧事务所需的响应/回填/写回/探测应答；
  *   probe 使用维护队列与 bank 仲裁，持续 CPU 请求下也不能永久饥饿。
@@ -37,12 +37,13 @@
  *
  * 首版映射已选 16B word 交错；多 MSHR、BRAM 时序与完整维护队列仍待实现。
  *
- * 当前实现状态：闭环简化（L3，进行中）。四个 16B word bank、整行 tag/valid/dirty、
+ * 当前实现状态：闭环简化（L10）。四个 16B word bank、整行 tag/valid/dirty、
  * 两级 demand 查询、单个 demand 行事务、命中穿越 miss、脏 victim 交回、四拍 L2
- * 回填与 inclusive probe 已写入 RTL。多 MSHR、同 line 合并、PTW/AMO/预取与
+ * 回填与 inclusive probe 已写入 RTL。PTW 物理读与完整 PTE 条件置位复用该流水。
+ * 多 MSHR、同 line 合并、AMO/预取与
  * DMA 保护尚未实现；普通 LSU 接线与 Alan 验证状态见 doc/LOOP.md。
  *
- * 测试：sim/cocotb/dcache/。
+ * 测试：sim/cocotb/mmu/ 的 Makefile.pte（L10 原子入口）；完整访存门禁留 L8。
  */
 module dcache
     import o3_types_pkg::*;
@@ -150,6 +151,26 @@ module dcache
     logic bank_read_en;
     logic [WAY_W-1:0] victim_rr_q;
 
+    pte_ad_req_t stage_ad_q,m_ad_q;
+    logic stage_ad_allowed_q,m_ad_allowed_q,stage_ad_match,m_ad_match;
+    dcache_req_t ad_input_req,stage_write_req,m_write_req;
+    logic accept_ad;
+    always_comb begin
+        ad_input_req='0;ad_input_req.src=DC_SRC_PTE_AD;ad_input_req.paddr=pte_ad_req_i.pte_paddr;ad_input_req.size=3;
+        stage_write_req=stage_req_q;m_write_req=m_req_q;
+        if(stage_req_q.src==DC_SRC_PTE_AD) begin
+            stage_write_req.wmask=8'hff;
+            stage_write_req.wdata=stage_ad_q.expected_pte | (stage_ad_q.set_a ? 64'h40 : 0) | (stage_ad_q.set_d ? 64'h80 : 0);
+        end
+        if(m_req_q.src==DC_SRC_PTE_AD) begin
+            m_write_req.wmask=8'hff;
+            m_write_req.wdata=m_ad_q.expected_pte | (m_ad_q.set_a ? 64'h40 : 0) | (m_ad_q.set_d ? 64'h80 : 0);
+        end
+    end
+    // N compares the full observed PTE before selecting bank write data. The
+    // accepted CAS owns the line; an epoch change after acceptance may drain.
+    assign stage_ad_match=stage_req_q.src==DC_SRC_PTE_AD && stage_ad_allowed_q && extract_load(stage_line,stage_req_q)==stage_ad_q.expected_pte;
+    assign m_ad_match=m_req_q.src==DC_SRC_PTE_AD && m_ad_allowed_q && extract_load(m_data_q,m_req_q)==m_ad_q.expected_pte;
     dcache_req_t stage_req_q;
     logic stage_valid_q, stage_store_q;
     set_t stage_set_q;
@@ -212,7 +233,7 @@ module dcache
         return XLEN'(data >> (int'(req.paddr[5:0]) * 8));
     endfunction
 
-    assign input_req = ptw_req_valid_i ? ptw_req_i : st_req_valid_i ? st_req_i : ld_req_i[0];
+    assign input_req = pte_ad_req_valid_i ? ad_input_req : ptw_req_valid_i ? ptw_req_i : st_req_valid_i ? st_req_i : ld_req_i[0];
     assign input_set = set_t'(input_req.paddr[6 +: SET_W]);
     assign input_tag = tag_t'(input_req.paddr[PADDR_W-1:6+SET_W]);
     assign input_line_pending = mstate_q != M_IDLE
@@ -240,12 +261,12 @@ module dcache
             stage_line[bank*128 +: 128] = bank_read[bank][stage_way];
         for (int bank = 0; bank < BANKS; bank++)
             stage_victim_line[bank*128 +: 128] = bank_read[bank][stage_victim_way];
-        stage_store_line = merge_store(stage_line, stage_req_q);
+        stage_store_line = merge_store(stage_line, stage_write_req);
     end
-    assign stage_store_hit = stage_valid_q && stage_hit && stage_store_q
+    assign stage_store_hit = stage_valid_q && stage_hit && (stage_store_q || stage_ad_match)
                            && !stage_crossline && mstate_q != M_INSTALL;
     assign stage_consume = stage_valid_q && (stage_crossline
-                         || (stage_hit && !(stage_store_q && mstate_q == M_INSTALL))
+                         || (stage_hit && !((stage_store_q || stage_ad_match) && mstate_q == M_INSTALL))
                          || (!stage_hit && mstate_q == M_IDLE));
     // A busy MSHR admits known resident hits. A second miss waits before S0,
     // so an L2 recall can always acquire the bank read port and make progress.
@@ -254,15 +275,17 @@ module dcache
         && (!stage_valid_q || stage_consume)
         && !stage_store_hit && !(stage_valid_q && !stage_hit)
         && !input_line_pending && (mstate_q == M_IDLE || input_hit);
-    assign ptw_req_ready_o=accept_window;
-    assign st_req_ready_o = accept_window && !ptw_req_valid_i;
+    assign pte_ad_req_ready_o=accept_window;
+    assign ptw_req_ready_o=accept_window && !pte_ad_req_valid_i;
+    assign st_req_ready_o = accept_window && !ptw_req_valid_i && !pte_ad_req_valid_i;
     for (genvar port = 0; port < LOAD_PORTS; port++) begin : g_load_port
-        assign ld_req_ready_o[port] = (port == 0) && accept_window && !st_req_valid_i && !ptw_req_valid_i;
+        assign ld_req_ready_o[port] = (port == 0) && accept_window && !st_req_valid_i && !ptw_req_valid_i && !pte_ad_req_valid_i;
         assign ld_resp_o[port] = (port == 0 && ld_resp_q.src==DC_SRC_LOAD) ? ld_resp_q : '0;
     end
     assign accept_store = st_req_valid_i && st_req_ready_o;
     assign accept_load = ld_req_valid_i[0] && ld_req_ready_o[0];
-    assign stage_fire = accept_store || accept_load || (ptw_req_valid_i && ptw_req_ready_o);
+    assign accept_ad=pte_ad_req_valid_i && pte_ad_req_ready_o;
+    assign stage_fire = accept_store || accept_load || (ptw_req_valid_i && ptw_req_ready_o) || accept_ad;
     assign bank_read_en = stage_fire || probe_fire;
     assign bank_read_set = probe_fire ? probe_set : input_set;
 
@@ -293,7 +316,7 @@ module dcache
 
     // Vivado 2022.2 cannot part-select a function call directly.
     line_t install_store_line;
-    assign install_store_line=merge_store(m_data_q,m_req_q);
+    assign install_store_line=merge_store(m_data_q,m_write_req);
     assign bank_write_set = mstate_q == M_INSTALL ? m_set_q : stage_set_q;
     always_comb begin
         bank_write_en = '0;
@@ -302,7 +325,7 @@ module dcache
                 bank_write_data[bank][way] = '0;
                 if (mstate_q == M_INSTALL && way == int'(m_way_q)) begin
                     bank_write_en[bank][way] = 1'b1;
-                    bank_write_data[bank][way] = m_store_q
+                    bank_write_data[bank][way] = (m_store_q || m_ad_match)
                         ? install_store_line[bank*128 +: 128]
                         : m_data_q[bank*128 +: 128];
                 end else if (stage_store_hit && stage_consume
@@ -342,7 +365,7 @@ module dcache
         if (rst) begin
             stage_valid_q <= 1'b0;
             stage_store_q <= 1'b0;
-            stage_req_q <= '0;
+            stage_req_q <= '0;stage_ad_q<='0;m_ad_q<='0;stage_ad_allowed_q<=0;m_ad_allowed_q<=0;
             stage_set_q <= '0;
             stage_tag_q <= '0;
             stage_hits_q <= '0;
@@ -396,6 +419,7 @@ module dcache
                 stage_valid_q <= stage_fire;
                 if (stage_fire) begin
                     stage_req_q <= input_req;
+                    stage_ad_q<=pte_ad_req_i;stage_ad_allowed_q<=pte_ad_req_i.epoch==cur_epoch_i;
                     stage_store_q <= accept_store;
                     stage_set_q <= input_set;
                     stage_tag_q <= input_tag;
@@ -424,10 +448,11 @@ module dcache
                     end else begin
                         ld_resp_q <= '{valid:1'b1, src:stage_req_q.src,
                             status:DC_OK, lq_tag:stage_req_q.lq_tag, sq_idx:'0,
-                            rdata:extract_load(stage_line, stage_req_q), sc_fail:1'b0};
+                            rdata:extract_load(stage_line, stage_req_q), sc_fail:(stage_req_q.src==DC_SRC_PTE_AD && !stage_ad_match)};
+                        if(stage_ad_match) dirty_q[stage_set_q][stage_way]<=1;
                     end
                 end else if (mstate_q == M_IDLE) begin
-                    m_req_q <= stage_req_q;
+                    m_req_q <= stage_req_q;m_ad_q<=stage_ad_q;m_ad_allowed_q<=stage_ad_allowed_q;
                     m_store_q <= stage_store_q;
                     m_line_q <= {stage_req_q.paddr[PADDR_W-1:6], 6'b0};
                     m_set_q <= stage_set_q;
@@ -483,7 +508,7 @@ module dcache
                 M_INSTALL: begin
                     tag_q[m_set_q][m_way_q] <= m_tag_q;
                     valid_q[m_set_q][m_way_q] <= 1'b1;
-                    dirty_q[m_set_q][m_way_q] <= m_store_q;
+                    dirty_q[m_set_q][m_way_q] <= m_store_q || m_ad_match;
                     wake_q <= '{valid:1'b1, line_paddr:m_line_q};
                     if (m_store_q) begin
                         st_resp_q <= '{valid:1'b1, src:DC_SRC_STORE_DRAIN,
@@ -492,7 +517,7 @@ module dcache
                     end else begin
                         ld_resp_q <= '{valid:1'b1, src:m_req_q.src,
                             status:DC_OK, lq_tag:m_req_q.lq_tag, sq_idx:'0,
-                            rdata:extract_load(m_data_q, m_req_q), sc_fail:1'b0};
+                            rdata:extract_load(m_data_q, m_req_q), sc_fail:(m_req_q.src==DC_SRC_PTE_AD && !m_ad_match)};
                     end
                     mstate_q <= M_IDLE;
                 end
@@ -509,7 +534,8 @@ module dcache
     // sequencer is a separate pending closure; a request remains unacknowledged.
     assign clean_all_done_o = 1'b0;
     assign clean_all_busy_o = clean_all_req_i;
-    assign pte_ad_req_ready_o = 1'b0;
-    assign pte_ad_resp_o = '0;
+    assign pte_ad_resp_o='{valid:(ld_resp_q.valid && ld_resp_q.src==DC_SRC_PTE_AD),
+        updated:(!ld_resp_q.sc_fail && ld_resp_q.status==DC_OK),
+        mismatch:(ld_resp_q.sc_fail && ld_resp_q.status==DC_OK),access_fault:(ld_resp_q.status==DC_ERROR)};
     assign perf_o = '0;
 endmodule

@@ -1,4 +1,4 @@
-// L9 RTL implemented; lint/functional validation deferred (2026-10-07).
+// L10 ROB metadata and needs_D retirement gate; evidence in O3-T08-report.md.
 /**
  * 本次实现（O3-T03）：L5：保存完整队头串行/异常元信息；译码异常与非 CSR 串行项分配即 complete；异常不退休。
  *
@@ -15,10 +15,10 @@
  *      交给 commit_ctrl/trap_ctrl，故障项不退休，整体清除年轻状态（committed 边界恢复）；
  *      合法 xRET 自身退休触发返回（B27）；中断 EPC 用 committed_next_pc（B37）。
  *   5) 每项保存 succ_pc（B37）：普通指令 pc+inst_len，控制流由 BRU 解析写入真实后继；
- *      crossline_misalign（B31）；fuse_role（B34：融合成员各自占 ROB 项、各自退休，成员由
+ *      crossline_misalign（旧身份保留，B49 拆分留 L8）；fuse_role（B34：融合成员各自占 ROB 项、各自退休，成员由
  *      FUSE_HEAD 的同一次乘法请求的低位结果完成，不独立执行）。
  * - U3：保存动态 FTQ 身份、槽位与 ftq_last；实际退休由 backend 转为 ftq_commit_t。
- * 当前实现状态：闭环简化（L5），四宽分配/退休、队头精确 trap。
+ * 当前实现状态：闭环简化（L10），四宽分配/退休、队头精确 trap，needs_D 阻止对应退休前缀。
  * - L5 元信息、队头 ready、global flush 合同接入；分支 M 阻止退休，C 退休拍初正常前缀。
  * Minimal ROB
  *
@@ -135,6 +135,9 @@ module rob #(
     // 队头信息：串行化指令（CSR/FENCE/FENCE.I/SFENCE/AMO/MMIO/xRET/ECALL）在队头执行
     output logic                       t_head_valid_o,
     output o3_types_pkg::rob_commit_t  t_head_o,
+    input logic t_d_mark_valid_i=1'b0,
+    input logic t_d_clear_valid_i=1'b0,
+    input o3_types_pkg::rob_idx_t t_d_idx_i='0,
     input  logic                       t_head_serial_done_i,   // 队头串行操作已完成，可退休
     // 每条提交指令的完整信息，送 commit_ctrl
     output o3_types_pkg::rob_commit_t  t_commit_o         [RETIRE_WIDTH-1:0],
@@ -280,7 +283,7 @@ module rob #(
                     prior_idx = wrap_idx(head_q, prior);
                     if (!(entry_valid_q[prior_idx]
                        && entry_complete_q[prior_idx]
-                       && !entry_exception_q[prior_idx]
+                       && !entry_exception_q[prior_idx] && !meta_q[prior_idx].needs_d
                        && (!meta_q[prior_idx].ext.serialize || (prior_idx==head_q && t_head_serial_done_i)))) begin
                         retire_prefix_valid = 1'b0;
                     end
@@ -328,6 +331,8 @@ module rob #(
                     instruction:t_alloc_instruction_i[lane],src1_preg:t_alloc_src1_i[lane],src2_preg:t_alloc_src2_i[lane],rs1:t_alloc_rs1_i[lane],
                     succ_pc:t_alloc_pc_i[lane]+o3_types_pkg::vaddr_t'(t_alloc_inst_len_i[lane]),fuse_role:o3_types_pkg::FUSE_NONE,default:'0};
             end
+            if(t_d_mark_valid_i) meta_q[t_d_idx_i].needs_d<=1;
+            if(t_d_clear_valid_i) meta_q[t_d_idx_i].needs_d<=0;
             if (t_exc_valid_i) meta_q[t_exc_idx_i].exc <= t_exc_i;
             if (t_succ_valid_i) meta_q[resolution_rob_idx_i].succ_pc <= t_succ_pc_i;
         end

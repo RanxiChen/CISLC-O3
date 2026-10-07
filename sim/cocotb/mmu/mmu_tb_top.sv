@@ -1,5 +1,6 @@
 module mmu_tb_top import o3_types_pkg::*; (
     input logic clk,rst,kill_i,
+    input logic d_commit_i,output logic d_commit_ready_o,d_commit_done_o,d_commit_exc_o,
     input logic i_valid_i,d_valid_i,d_store_i,input logic [63:0] i_va_i,d_va_i,
     input logic [3:0] mode_i,input logic [1:0] priv_i,input logic sum_i,mxr_i,adue_i,
     input logic [15:0] asid_i,input logic [43:0] root_i,input logic [7:0] epoch_i,
@@ -18,7 +19,9 @@ module mmu_tb_top import o3_types_pkg::*; (
     logic i_req_valid,i_ready,d_req_valid,d_ready,i_resp;
     logic[43:0] i_ppn;logic[1:0] i_level;
     logic dv[2],ds[2],dr[2];vaddr_t da[2];tlb_resp_t dp[2];logic i_sf,d_sf;
-    pte_ad_req_t ad_req;pte_ad_resp_t ad_resp;
+    pte_ad_req_t ad_req,ptw_ad;pte_ad_resp_t ad_resp,ptw_ad_resp;
+    logic ptw_ad_valid,ptw_ad_ready,rewalk_valid,rewalk_ready;
+    ptw_req_t rewalk_req;exc_info_t d_exc;
     always_comb begin
         fe='{priv:priv_i,adue:adue_i,satp_mode:mode_i,satp_asid:asid_i,satp_ppn:root_i,epoch:xlate_epoch_t'(epoch_i)};
         csr='{priv_eff:priv_i,sum:sum_i,mxr:mxr_i,adue:adue_i,satp_mode:mode_i,
@@ -48,8 +51,16 @@ module mmu_tb_top import o3_types_pkg::*; (
         .itlb_req_ready_o(i_ready),.itlb_req_i(i_req),.dtlb_req_valid_i(d_req_valid),.dtlb_req_ready_o(d_ready),.dtlb_req_i(d_req),
         .resp_o(resp),.mem_req_valid_o(mem_req_o),.mem_req_ready_i(mem_ready_i),.mem_req_o(mem_req),.mem_resp_i(mem_resp),
         .csr_i(csr),.pmp_i(pmp),.sfence_i(sf),.sfence_done_o(),.idle_o(idle_o),
-        .a_upd_req_valid_o(ad_req_o),.a_upd_req_ready_i(ad_ready_i),.a_upd_req_o(ad_req),.a_upd_resp_i(ad_resp),
-        .rewalk_req_valid_i(1'b0),.rewalk_req_ready_o(),.rewalk_req_i('0),.perf_o());
+        .a_upd_req_valid_o(ptw_ad_valid),.a_upd_req_ready_i(ptw_ad_ready),.a_upd_req_o(ptw_ad),.a_upd_resp_i(ptw_ad_resp),
+        .rewalk_req_valid_i(rewalk_valid),.rewalk_req_ready_o(rewalk_ready),.rewalk_req_i(rewalk_req),.perf_o());
+    pte_ad_updater #(.CFG(o3_cfg_pkg::O3_CFG.be)) updater(.clk(clk),.rst(rst),
+        .ptw_a_req_valid_i(ptw_ad_valid),.ptw_a_req_ready_o(ptw_ad_ready),.ptw_a_req_i(ptw_ad),.ptw_a_resp_o(ptw_ad_resp),
+        .st_d_req_valid_i(d_commit_i),.st_d_req_ready_o(d_commit_ready_o),.st_d_vaddr_i(d_va_i),.st_d_sq_idx_i('0),
+        .st_d_done_o(d_commit_done_o),.st_d_exc_o(d_exc),.rewalk_req_valid_o(rewalk_valid),.rewalk_req_ready_i(rewalk_ready),
+        .rewalk_req_o(rewalk_req),.rewalk_resp_i(resp),.dc_req_valid_o(ad_req_o),.dc_req_ready_i(ad_ready_i),
+        .dc_req_o(ad_req),.dc_resp_i(ad_resp),.csr_i(csr),.cur_epoch_i(xlate_epoch_t'(epoch_i)),.kill_i(kill_i),
+        .rsv_conflict_o(),.busy_o(),.perf_o());
+    assign d_commit_exc_o=d_exc.valid;
     assign mem_addr_o=mem_req.paddr;assign ad_addr_o=ad_req.pte_paddr;assign ad_expected_o=ad_req.expected_pte;
     assign ad_set_a_o=ad_req.set_a;assign ad_set_d_o=ad_req.set_d;
 endmodule

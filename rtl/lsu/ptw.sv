@@ -2,7 +2,7 @@
  * N accept snapshot; N+1 walk-cache lookup; REQ/WAIT/CHECK per level.
  * Physical S-mode R/PMA check precedes every read. Epoch invalidation drains
  * an accepted read and returns its old identity solely to release ownership.
- * T08b Svade: permission check precedes A/D faults; no PTE writes yet.
+ * Svadu: permission check precedes A/D CAS; only queue-head DCOMMIT sets D.
  * SFENCE waits for idle outside this module. Tests: sim/cocotb/mmu/.
  */
 module ptw import o3_types_pkg::*; #(parameter o3_cfg_pkg::backend_cfg_t CFG)(
@@ -17,7 +17,7 @@ module ptw import o3_types_pkg::*; #(parameter o3_cfg_pkg::backend_cfg_t CFG)(
     input logic rewalk_req_valid_i,output logic rewalk_req_ready_o,input ptw_req_t rewalk_req_i,
     output be_perf_t perf_o
 );
-    typedef enum logic[2:0] {IDLE,LOOKUP,REQ,WAIT,CHECK,RETURN} state_t;
+    typedef enum logic[3:0] {IDLE,LOOKUP,REQ,WAIT,CHECK,RETURN,AD_REQ,AD_WAIT} state_t;
     state_t state_q;
     ptw_req_t req_q;
     logic last_d_q,g_q,af_q,pf_q;
@@ -25,7 +25,7 @@ module ptw import o3_types_pkg::*; #(parameter o3_cfg_pkg::backend_cfg_t CFG)(
     logic[43:0] base_q;
     logic[63:0] pte_q;
     paddr_t pte_pa_q,address;
-    logic wc_hit,wc_g,wc_fill,physical_ok,bad_pte,leaf,permission_ok,misaligned;
+    logic wc_hit,wc_g,wc_fill,physical_ok,ad_physical_ok,bad_pte,leaf,permission_ok,misaligned,ad_needed;
     logic[1:0] wc_level;
     logic[43:0] wc_ppn;
     logic[8:0] vpn_index;
@@ -36,6 +36,8 @@ module ptw import o3_types_pkg::*; #(parameter o3_cfg_pkg::backend_cfg_t CFG)(
     assign vpn_index=level_q==2 ? req_q.vpn[26:18] : level_q==1 ? req_q.vpn[17:9] : req_q.vpn[8:0];
     assign address={base_q,vpn_index,3'b0};
     assign physical_ok=pma_main({8'b0,address},8) && pmp_allow(pmp_i,address,8,2'b01,1'b1,1'b0,1'b0);
+    assign ad_physical_ok=pma_main({8'b0,pte_pa_q},8) && pmp_allow(pmp_i,pte_pa_q,8,2'b01,1'b1,1'b1,1'b0);
+    assign ad_needed=!pte_q[6] || (req_q.src==PTW_SRC_DCOMMIT && !pte_q[7]);
     assign bad_pte=!pte_q[0] || (!pte_q[1] && pte_q[2]) || |pte_q[63:54];
     assign leaf=pte_q[1] || pte_q[3];
     assign misaligned=(level_q==2 && |pte_q[27:10]) || (level_q==1 && |pte_q[18:10]);
@@ -54,7 +56,9 @@ module ptw import o3_types_pkg::*; #(parameter o3_cfg_pkg::backend_cfg_t CFG)(
         resp_o.perm_r=pte_q[1];resp_o.perm_w=pte_q[2];resp_o.perm_x=pte_q[3];resp_o.perm_u=pte_q[4];
         resp_o.perm_g=g_q || pte_q[5];resp_o.perm_a=pte_q[6];resp_o.perm_d=pte_q[7];
         resp_o.access_fault=af_q;resp_o.page_fault=pf_q;resp_o.pte_paddr=pte_pa_q;resp_o.pte=pte_q;
-        a_upd_req_valid_o=0;a_upd_req_o='0;
+        a_upd_req_valid_o=state_q==AD_REQ && req_q.epoch==csr_i.epoch && ad_physical_ok;
+        a_upd_req_o='{pte_paddr:pte_pa_q,expected_pte:pte_q,set_a:1'b1,
+            set_d:(req_q.src==PTW_SRC_DCOMMIT),epoch:req_q.epoch};
         sfence_done_o=sfence_i.valid && idle_o;
         perf_o='0;perf_o[BE_PTW_WALK]=BE_PERF_INC_W'(idle_o &&
             ((itlb_req_valid_i && itlb_req_ready_o) || (dtlb_req_valid_i && dtlb_req_ready_o) || rewalk_req_valid_i));
@@ -77,10 +81,19 @@ module ptw import o3_types_pkg::*; #(parameter o3_cfg_pkg::backend_cfg_t CFG)(
                 else if(!physical_ok) begin af_q<=1;state_q<=RETURN;end
                 else if(mem_req_ready_i) begin pte_pa_q<=address;state_q<=WAIT;end
             WAIT: if(mem_resp_i.valid) begin pte_q<=mem_resp_i.rdata;af_q<=mem_resp_i.status==DC_ERROR;state_q<=CHECK;end
-            CHECK: if(req_q.epoch!=csr_i.epoch || af_q || bad_pte || (leaf && (misaligned || !permission_ok || !pte_q[6] || (req_q.is_store && !pte_q[7]))) || (!leaf && level_q==0)) begin
+            CHECK: if(req_q.epoch!=csr_i.epoch || af_q || bad_pte || (leaf && (misaligned || !permission_ok || (!req_q.adue && (!pte_q[6] || (req_q.is_store && !pte_q[7]))))) || (!leaf && level_q==0)) begin
                 pf_q<=!af_q;state_q<=RETURN;
-            end else if(leaf) state_q<=RETURN;
+            end else if(leaf) state_q<=ad_needed ? AD_REQ : RETURN;
             else begin g_q<=g_q || pte_q[5];base_q<=pte_q[53:10];level_q<=level_q-1'b1;state_q<=REQ;end
+            AD_REQ: if(req_q.epoch!=csr_i.epoch) begin pf_q<=1;state_q<=RETURN;end
+                else if(!ad_physical_ok) begin af_q<=1;state_q<=RETURN;end
+                else if(a_upd_req_ready_i) state_q<=AD_WAIT;
+            AD_WAIT: if(a_upd_resp_i.valid) begin
+                if(req_q.epoch!=csr_i.epoch) begin pf_q<=1;state_q<=RETURN;end
+                else if(a_upd_resp_i.access_fault) begin af_q<=1;state_q<=RETURN;end
+                else if(a_upd_resp_i.mismatch) begin g_q<=0;af_q<=0;pf_q<=0;state_q<=LOOKUP;end
+                else if(a_upd_resp_i.updated) begin pte_q[6]<=1;if(req_q.src==PTW_SRC_DCOMMIT) pte_q[7]<=1;state_q<=RETURN;end
+            end
             RETURN: state_q<=IDLE;
             default: state_q<=IDLE;
         endcase

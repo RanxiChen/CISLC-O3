@@ -20,5 +20,5 @@ module dtlb import o3_types_pkg::*; #(parameter o3_cfg_pkg::backend_cfg_t CFG,
         .mode_i(csr_i.satp_mode),.asid_i(csr_i.satp_asid),.root_i(csr_i.satp_ppn),.epoch_i(csr_i.epoch),
         .resp_valid_o(resp_valid_o[0]),.resp_o(resp_o[0]),.ptw_req_valid_o(ptw_req_valid_o),.ptw_req_ready_i(ptw_req_ready_i),
         .ptw_req_o(ptw_req_o),.ptw_resp_i(ptw_resp_i),.sfence_i(sfence_i),.sfence_done_o(sfence_done_o));
-    assign perf_o='0; // BE DTLB miss event connected with L10 event allocation.
+    always_comb begin perf_o='0;perf_o[BE_DTLB_MISS]=BE_PERF_INC_W'(resp_valid_o[0] && resp_o[0].miss);end
 endmodule

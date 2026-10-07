@@ -101,3 +101,19 @@ async def rob_full_exception_prefix_and_m_jal_completion_cancel_ftq(d):
     await tick(d);clear(d,INPUTS);await settle()
     assert [val(d.retire_valid_o[n]) for n in range(w)]==[1,1,0,0]
     await tick(d);await settle();assert not any(val(d.retire_valid_o[n]) for n in range(w))
+
+
+@cocotb.test()
+async def complete_dirty_store_blocks_retirement_prefix_until_final_probe(d):
+    await reset(d,INPUTS);d.alloc_ready_i.value=1
+    for n in range(3): d.alloc_req_i[n].value=1
+    d.alloc_is_store_i[1].value=1
+    await tick(d);clear(d,INPUTS)
+    for n in range(3):d.complete_valid_i[n].value=1;d.complete_idx_i[n].value=n
+    d.d_mark_i.value=1;d.d_idx_i.value=1
+    await tick(d);clear(d,INPUTS);await settle()
+    assert [val(d.retire_valid_o[n]) for n in range(4)]==[1,0,0,0]
+    await tick(d);await settle()
+    assert not any(val(d.retire_valid_o[n]) for n in range(4))
+    d.d_clear_i.value=1;d.d_idx_i.value=1;await tick(d);clear(d,INPUTS);await settle()
+    assert [val(d.retire_valid_o[n]) for n in range(4)]==[1,1,0,0]
