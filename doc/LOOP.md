@@ -27,7 +27,7 @@
 | L7a | uBTB/BTB/TAGE、FTQ 恢复、RAS、F1 预解码修正与 M-mode HPM | 冻结 spec 与 T05 分步门禁 | **实现与定向功能验收完成**：T05c/d `cbe3372`，Alan cocotb 68/68、四源恢复与两组 l7_predict 正确性/性能 PASS，lint 与整核构建 PASS，见 [T05cd 报告](tasks/O3-T05cd-report.md) |
 | L7b | 整数 RVC、跨块 edge 指令与 IALIGN=16 | V1～V8 冻结；T06a→T06b 门禁 | **实现与定向功能验收完成**：spec `01c939a`，T06a `2614064`、T06b `2b50184`；Alan 70/70、77/77 cocotb，四个整核回归与 l7b_rvc 自查 PASS；不含 Spike/ACT4/FPGA，见 [T06 报告](tasks/O3-T06-report.md) |
 | L8 | 多 MSHR、重放、同 line 非对齐、A 扩展、FENCE/FENCE.I | RV64IMAC + litmus + 死锁 watchdog | 未开始 |
-| L9 | F/D：拆分 CVFPU、FP 重命名、fflags/FS 退休、浮点访存/RVC | T07 定向 cocotb + 整核 FP 自查 + 回归；ACT4 推迟到 FPGA | **基础功能门禁通过，完整验收未完成**（`50ff873`）：Alan 模块 9/9、顺序 FP 自查、既有五项整核回归 PASS；较长 FP 用例发现单槽 replay 等待环，保留 FAIL，见 [T07 报告](tasks/O3-T07-report.md) |
+| L9 | F/D：拆分 CVFPU、FP 重命名、fflags/FS 退休、浮点访存/RVC | T07 定向 cocotb + 整核 FP 自查 + 回归；ACT4 推迟到 FPGA | **单槽 replay 等待环修复，本次指定门禁通过；完整合同验收未完成**（`f0f4106`）：Alan Memory IQ 2/2、整数 replay 自查 121 周期/20 退休、完整 FP 自查 1860 周期/616 退休（另 1 trap）、顺序 FP 与既有五项回归 PASS，lint 0 errors；采用 load 按序发射的 L3 简化，L8 Breeze 访存整体替换，见 [T07 报告](tasks/O3-T07-report.md) |
 | L10 | S/U、Sv39 MMU、SFENCE.VMA/satp/PMP、A/D、WFI | 特权测试 + riscv-tests p/v | 未开始 |
 | L11 | SoC：L2 + DDR4（MIG）+ CLINT/PLIC + UART + SD（AXI Quad SPI，B44）+ SD DMA + FASE | 仿真启动 OpenSBI + Linux；上板经 SD 卡启动 Linux | 未开始 |
 
@@ -101,7 +101,7 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
 | `memory/l2_cache.sv` | **闭环简化（L4）**：256 set/4-way 配置、tree-PLRU、AXI 回填、双 L1 回收、脏行 AXI 写回 | 普通请求单未决；B03/B41 并发、DMA/维护协调与完整 L1D 数据路径未实现 | `sim/cocotb/l2_cache/` Alan 2/2 PASS（`1d2caeb`） |
 | `lsu/dcache.sv` | **闭环简化（L3）**：4 个 16B word bank、整行 tag/valid/dirty、两级查询、单行 miss、hit-under-miss、脏 victim 写回、L2 回填、probe | 多 MSHR/同 line 合并、PTW/AMO/预取、DMA 行保护；clean_all 不会虚假确认但尚未执行 | Alan 3/3 PASS（`022f90c`）；整核基本数据门禁 PASS |
 | `backend/store_queue.sv` | **闭环简化（L3）**：SQ 年龄顺序查询、最近完整覆盖旧 store 转发；未知地址与部分覆盖保守等待；DCache 完成后释放，DTCM 保留本地 drain | LQ replay、依赖等待事件、跨行异常与整核冲突覆盖 | Alan 既有三项+四宽/C/M/commit/drain 随机合同 4/4 PASS（`ac2aed1`，seed 1/7/29）；整核数据门禁 PASS |
-| `backend/backend_issue_queue.sv` | **闭环简化（L9）**：Memory 保留单发射/replay 选择，新增分域源就绪与唤醒 | 多项 replay、多 load 在途留 L8 | FP 顺序访存 PASS；无串行边界的 load→store→load 单槽 replay 等待环 FAIL（T07）；本模块独立门禁未运行；此前 Memory IQ/replay 证据仅对应旧版 |
+| `backend/backend_issue_queue.sv` | **闭环简化（L9）**：分域源就绪/唤醒；Memory 单发射，load 按程序顺序选择，store bypass 与 allow_load_i 保留；L3 简化偏离 B04，避免单 replay 槽等待环 | L8 换成 Breeze 访存时整体替换 | Alan `f0f4106`：Memory IQ 2/2 PASS（含 ROB 回绕、store 越过、replay 门控）；整数 replay/完整 FP/指定整核回归 PASS；独立 FP/INT/BR IQ 完整合同未运行 |
 | `backend/load_store_unit.sv` | **闭环简化（L9）**：保留单 load pending/replay；FP 目的域经过 pending/result，FLW boxing、FLD 原样；多项 LQ replay、翻译/异常、跨行与 MMIO 留后级 | FP 顺序访存 PASS；无串行边界的 load→store→load 单槽 replay 等待环 FAIL（T07）；本模块独立门禁未运行；此前 LSU/replay 证据仅对应旧版 |
 | `frontend/fetch_return_queue.sv` | **闭环简化（L7a）**：单槽身份匹配、年龄清除；kill 拍保留槽接收匹配响应 | 单槽吞吐限制保留，多项返回队列留后级 | T05b `b122d59` Alan 3/3 PASS；本次未改行为 |
 | `frontend/rvc_expander.sv` | **闭环简化（L9）**：整数 RV64C 加四条浮点 RVC，C.LUI nzimm 修正 | 完整 ISA 一致性留后级 | Alan 3/3 PASS（`50ff873`），含 FP RVC 与 C.LUI；顺序整核 PASS |
@@ -117,7 +117,7 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
 | `backend/rename_stage.sv`、`rename_map_table.sv`、`free_list.sv` | **闭环简化（L9）**：INT/FP 独立预算与映射、src3 RAW、f0/p0、共享 tag 恢复 | R1/R2 按 B42 时序触发 | L9 顺序整核功能覆盖；本模块独立门禁未运行；此前 O3-T01 证据仅对应旧版 |
 | `backend/branch_checkpoint_file.sv` | **闭环简化（L3）**：C 释放/清 parent 与不同 tag create 合并；只看拍初空闲，不同拍复用 | 系统整体恢复待 L5 | Alan CK full/C/M 700 周期 PASS（`ac2aed1`，seed 1/7/29） |
 | `backend/rename_dispatch_queue.sv`、`dispatch_stage.sv` | **闭环简化（L9）**：四宽前缀增加 FP 分流；FP 访存走 MEM，异常只消费 RDQ | 后续级 AMO 等 | L9 顺序整核功能覆盖；本模块独立门禁未运行；RDQ 本次未改 |
-| `backend/backend_issue_queue.sv`、`prf_read_arbiter.sv` | **闭环简化（L9）**：分域唤醒、三源 FP IQ 双发射、五个 FU 槽容量、一个跨域 INT 读候选 | FP 提前唤醒按 B33 推迟到性能优化 | L9 顺序整核功能覆盖；本模块独立门禁未运行；此前 INT/MEM/BR/RR 证据仅对应旧版 |
+| `backend/backend_issue_queue.sv`、`prf_read_arbiter.sv` | **闭环简化（L9）**：分域唤醒、三源 FP IQ 双发射、五个 FU 槽容量、一个跨域 INT 读候选；Memory load 顺序简化见上行 | FP 提前唤醒按 B33 推迟到性能优化 | Alan `f0f4106` 完整/顺序 FP 与指定整核回归覆盖；Memory IQ 2/2 PASS；FP/INT/BR IQ 与 RR 独立完整合同未运行 |
 | `backend/branch_unit.sv`、`alu_pipe.sv` | **闭环简化（L3）**：one-shot C/M 与 JAL 链接解耦；ALU 独立 kill 保留旧 Result | JALR 在 L6；L7b IALIGN=16 已接入，完整目标边界留后级 | Alan 缺口 2 具名/700 事务 DUT/真实 WB 竞争与总装 C 合同 PASS（`ac2aed1`，seed 1/7/29） |
 | `backend/load_queue.sv` | **闭环简化（L3）**：四宽；C 合并正常记账，M 仅取消年轻并保留旧 execute/request/response | 多事务代际/异常待 L8/L5 | Alan LQ-C/M PASS（`ac2aed1`）；240 事务复用/迟到合同 PASS（`1b7885d`，seed 1/7/29） |
 | `core/o3_core.sv` | 总装（连线） | ICache/L2/AXI、直接控制流恢复及基础 DCache 数据路径已接通 | 整核 Alan smoke、分支及基础数据门禁 PASS（`6b4c540`） |
@@ -229,3 +229,11 @@ B33 闭环简化：FP FU 不发提前唤醒；INT/FP 消费者由真实目的域
 `run-l9-fp` 保留 FAIL：年轻 load 进入单槽 replay 后禁止更老 load 发射，
 阻塞依赖该老 load 的 store；纯整数复现也 FAIL。未修改访存设计或删除失败用例。
 本次仅记基本执行功能验证；完整 L9 spec 门禁、Spike/ACT4、综合/FPGA/SoC 未运行。
+
+2026-10-07 后续修复更新：上述 `50ff873` 等待环 FAIL 为历史记录；最新代码
+`f0f410640a27abe4f62f3cf728f387ab8b6bde6e` 已推送并在 Alan 独立目录通过本次全部指定门禁。
+Memory IQ load 按序发射，store/replay 门控保留；这是用户决定的 B04/L3 简化，L8 Breeze
+访存整体替换。`run-replay-order` 为 121 周期/20 退休、1 replay；`run-l9-fp` 为
+1860 周期/616 退休、1 个预期 trap、2 replay，均 tohost=1。Memory IQ 2/2、lint 0 errors，
+顺序 FP 与五项既有回归全部通过，完整命令/exit code 见 [T07 报告](tasks/O3-T07-report.md)。
+全套 L9 合同验收仍未完成；本次未运行 Spike/ACT4、访存类 cocotb、综合/FPGA/SoC。

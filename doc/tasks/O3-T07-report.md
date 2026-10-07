@@ -197,3 +197,85 @@ sim/o3/build/Vo3_tandem_top +L7_CHECK --image sim/o3/build/replay-integer.elf --
 
 完整 IEEE/ISA 边界、双 FMA/双写回的全部交错、所有新端口的单独模块 harness、
 全套 L7/受影响非访存 cocotb、Spike/ACT4、MRET、综合/PPA/FPGA/SoC 均未运行。
+
+## 单槽 replay 等待环修复（2026-10-07）
+
+本节更新上述“保留问题”的结论，历史失败证据继续保留。
+用户明确决定采用 L3 闭环简化：Memory IQ 的 load 按程序顺序发射；store 选择规则及
+`allow_load_i` 门控保持不变，L8 换成 Breeze 访存时整体替换。不改 spec、设计基线或 LSU。
+
+- 指定基线：`0ef54395a8b2ea71ba25cf5f8e9d71c5f11970e7`。实际起始 HEAD 为
+  `00646b8bb767a98f9ae44f67bb32a10326b6adb5`；两者间仅有已有文档改动，RTL/测试相同。
+- 已推送代码/测试提交：`f0f410640a27abe4f62f3cf728f387ab8b6bde6e`。
+  后续报告/LOOP 纯文档提交对应此代码 SHA，不作为重新执行过门禁的 SHA。
+- RTL 仅改 `rtl/backend/backend_issue_queue.sv` 的 `KIND==IQ_MEM` 选择条件与头注释。
+  扫描所有有效 load，用现有 ROB 环形距离算法比较年龄；参照压紧后队列最老项
+  `queue_q[0].rob_idx`。不以源就绪或握手状态排除旧 load，保证未就绪/被回压的旧 load
+  仍挡住年轻 load。有效项始终按程序顺序压紧，故该参照也适用于 ROB 索引回绕。
+  INT/BR/FP 选择与队列更新、恢复逻辑未改。头注释明确偏离 B04 的原因与 L8 替换安排。
+- 原 Memory IQ 用例及其全部期望保留；新增一条定向用例，覆盖旧 load 未就绪、年轻
+  load 就绪仍不发射，store 在 replay 占用时仍能越过，唤醒后旧 load 先发、年轻 load
+  后发，以及握手回压与 ROB 回绕。固定种子为 1。
+  harness 补 `ext.rs1_dom=RD_INT`：原 `rs1_read_en` 的等待源保留 `RD_NONE`，
+  在分域 ready 逻辑中会被视为就绪；这是输入适配，未削弱原断言。
+- 整数复现取自 `20261007-l9-basic-50ff873/evidence/replay-integer.S`，原始 SHA256
+  为 `111375f110010d0d64016b2205e2f357679f0aa72ce4d4bbf1cba854fbded876`。
+  收入 `sim/o3/tests/replay-integer.S`，保留 DIV→LD→依赖 SD→年轻 LD 序列，追加
+  两次 load 的数据比对；tohost=1 表示通过，3 表示失败。新增 `run-replay-order`。
+
+### Alan 运行与来源
+
+开发目录：`/home/chen/FUN/CISLC-O3-runs/20261007-t07-replay-dev/`，checkout `0ef5439`，
+按允许列表经 `rsync -aR` 同步上述 RTL、harness、测试、Makefile 和汇编；来源文件
+SHA256 记录在 `evidence/provenance.log`。开发 lint 为 0 errors / 361 warnings，
+Memory IQ 2/2 PASS，命令均 exit 0；通过后本地提交并 push。
+
+最终验证 cwd：`/home/chen/FUN/CISLC-O3-runs/20261007-t07-replay-f0f4106/`。
+独立 Git clone/checkout 精确代码 SHA，从源码重建，不使用开发二进制。所有命令
+先 `source /home/chen/miniforge3/bin/activate cislc-o3`；Verilator 5.050、cocotb 2.1.0、
+Python CLI 3.12.14。未改 Alan 原开发树或已有证据目录。
+
+GitHub 经已验证的本地代理 `127.0.0.1:7897`，SSH 反向转发到 Alan `18798`；
+clone/submodule 命令带 `-c http.proxy=http://127.0.0.1:18798`。独立目录按 gitlink 执行
+`git submodule update --init third_party/cvfpu`，再在该子模块执行
+`git submodule update --init src/common_cells`，均 exit 0；最终 clone 使用开发目录
+的 Git 对象库作为 `--reference`，没有复制源码或使用 Git bundle。
+CVFPU/common_cells 仍为 `1b220f3bc89df99e246b72e3574a3a533cf87653` /
+`6aeee85d0a34fedc06c14f04fd6363c9f7b4eeea`，源码工作树无修改。
+
+完整命令、exit code 与日志位于 `evidence/commands.tsv`；来源见
+`evidence/provenance.log`。ELF/整核轨迹位于 `sim/o3/build/`，固定回归轨迹位于 `sim/o3/`。
+
+首次开发 checkout `00646b8` exit 128：该已有纯文档提交当时尚未推送，GitHub clone
+没有其对象；改为 checkout RTL/测试相同的指定基线 `0ef5439`，exit 0。
+此准备失败不计作功能失败或最终门禁证据。
+
+### 精确 SHA 验收结果
+
+下表 cwd 均为上述最终验证目录，日志名相对 `evidence/`。全部 exit 0。
+周期数取驱动输出；退休数按 JSONL 的 `type=retire` 统计，排除 metadata 和 trap。
+
+| 命令 | exit code | 周期 / 退休数及结果 | 日志 |
+|---|---:|---|---|
+| `scripts/lint.sh` | 0 | 0 errors / 361 warnings | `lint.log` |
+| `make -C sim/cocotb/backend_issue_queue -j8 TEST_SEED=1` | 0 | 原用例 + 新定向用例 2/2 PASS | `memory-iq.log` |
+| `make -C sim/o3 build VERILATOR="verilator -j 8"` | 0 | 从源码独立重建，141.069 s | `build.log` |
+| `make -C sim/o3 run-replay-order` | 0 | 121 / 20；tohost=1，load_replays=1 | `replay-order.log` |
+| `make -C sim/o3 run-l9-fp` | 0 | 1860 / 616；另有 1 次预期 FS Off trap，驱动显示 617 events；tohost=1，load_replays=2 | `l9-fp.log` |
+| `make -C sim/o3 run-l9-fp-smoke` | 0 | 890 / 267；tohost=1 | `fp-smoke.log` |
+| `make -C sim/o3 run-smoke SPIKE_ARGS=+L7_CHECK` | 0 | 38 / 4；固定轨迹 PASS | `smoke.log` |
+| `make -C sim/o3 run-rv64i-instructions SPIKE_ARGS=+L7_CHECK` | 0 | 70 / 14；固定轨迹 PASS | `rv64i.log` |
+| `make -C sim/o3 run-l3-branch-dense SPIKE_ARGS=+L7_CHECK` | 0 | 1966 / 365；固定轨迹 PASS，load_replays=10 | `branch-dense.log` |
+| `make -C sim/o3 run-l7-predict` | 0 | A：43787 / 19396；B：43838 / 19447；两组 tohost=1，layout/跨组正确性与三段性能检查 PASS | `l7-predict.log` |
+| `make -C sim/o3 run-l7b-rvc` | 0 | 5673 / 2216；tohost=1 | `l7b-rvc.log` |
+
+计数复核保存在 `evidence/metrics.jsonl`。最终二进制 SHA256：
+`2ab6752953c4a2941a29c9fcf4841ef159970a004cca557fadd3dfa719f181fd`，
+见 `evidence/binary.sha256`。最终父仓库及两个依赖 `git diff --exit-code` 均为 0；
+无断言、fatal/inclusion、timeout 或失败标记。只保留运行脚本、日志与轨迹等生成物。
+
+**结论：单槽 replay 等待环已修复，本次指定门禁全部通过。** 整数复现仍实际触发 replay，
+完整 `l9_fp.S` 也触发 2 次 replay 并完成，不是以消除 replay 或裁剪 FP 程序换取通过。
+原 FP 用例、watchdog、golden、期望、断言、槽数与 LSU 访存设计均未修改。
+全套 L9 spec 合同/独立模块验收仍未完成；本次未运行 Spike、ACT4、访存类 cocotb、
+综合/PPA/FPGA/SoC，不将本轮通过扩大为这些项目的证明。
