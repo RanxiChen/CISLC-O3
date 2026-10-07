@@ -28,7 +28,7 @@
 | L7b | 整数 RVC、跨块 edge 指令与 IALIGN=16 | V1～V8 冻结；T06a→T06b 门禁 | **实现与定向功能验收完成**：spec `01c939a`，T06a `2614064`、T06b `2b50184`；Alan 70/70、77/77 cocotb，四个整核回归与 l7b_rvc 自查 PASS；不含 Spike/ACT4/FPGA，见 [T06 报告](tasks/O3-T06-report.md) |
 | L8 | 多 MSHR、重放、同 line 非对齐、A 扩展、FENCE/FENCE.I | RV64IMAC + litmus + 死锁 watchdog | 未开始 |
 | L9 | F/D：拆分 CVFPU、FP 重命名、fflags/FS 退休、浮点访存/RVC | T07 定向 cocotb + 整核 FP 自查 + 回归；ACT4 推迟到 FPGA | **单槽 replay 等待环修复，本次指定门禁通过；完整合同验收未完成**（`f0f4106`）：Alan Memory IQ 2/2、整数 replay 自查 121 周期/20 退休、完整 FP 自查 1860 周期/616 退休（另 1 trap）、顺序 FP 与既有五项回归 PASS，lint 0 errors；采用 load 按序发射的 L3 简化，L8 Breeze 访存整体替换，见 [T07 报告](tasks/O3-T07-report.md) |
-| L10 带已知问题收口 | S/U、Sv39 MMU、SFENCE.VMA/satp/PMP、A/D、WFI | T08a→b→c 定向门禁；2026-10-07 用户修订 | T08a `8610b9a`、T08b `2e5333b` 已通过指定既有门禁；T08c 已接入队头 D/CAS/年轻访存排序，正在完成同 SHA 验收。完整 VM 失败保留，详见 [T08 报告](tasks/O3-T08-report.md)。X2：TLB hit-under-miss/单 miss 槽/单 PTW；X8：SFENCE 先等 SQ 写完成再 PTW idle。收尾后停止，L8/L11 未开始 |
+| L10 带已知问题收口 | S/U、Sv39 MMU、SFENCE.VMA/satp/PMP、A/D、WFI | T08a→b→c 定向门禁；2026-10-07 用户修订 | T08a `8610b9a`、T08b `2e5333b` 已通过指定既有门禁；T08c `1d0d6f8` 已接入队头 D/CAS/年轻访存排序，Alan 同 SHA 38套件132/132、八项既有整核回归、T08a 全部与 AD 正向程序通过，lint 0 errors。完整 VM 在 cause 15 / PC 0x800001c4 的旧分支断言失败保留，详见 [T08 报告](tasks/O3-T08-report.md)。X2：TLB hit-under-miss/单 miss 槽/单 PTW；X8：SFENCE 先等 SQ 写完成再 PTW idle。已收尾停止，L8/L11 未开始 |
 | L11 | SoC：L2 + DDR4（MIG）+ CLINT/PLIC + UART + SD（AXI Quad SPI，B44）+ SD DMA + FASE | 仿真启动 OpenSBI + Linux；上板经 SD 卡启动 Linux | 未开始 |
 
 ## 2. L4 缓存取指闭环（历史范围；L7a/L7b 已完成定向验收）
@@ -97,6 +97,7 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
 | `frontend/bpu.sv` | **闭环简化（L7b）**：快/慢预测、history/RAS 快照、训练；真实长度/edge 与返回地址 | BRAM 映射留后级 | Alan BPU 5/5 PASS，见 T06 报告 |
 | `frontend/bpu_slow_check.sv` | **闭环简化（L7b）**：候选排序、缺目标、快慢覆盖；核对长度/edge、真实历史/RAS 地址 | 完整 ISA 一致性留后级 | Alan 1/1 PASS，含字段比较定向向量 |
 | `frontend/ftq.sv` | **闭环简化（L7b）**：实际长度/edge 训练；年轻区域任意提交关闭更老空区域 | 完整一致性留后级 | Alan FTQ fixture 3/3 PASS；整核 RVC PASS |
+| `frontend/frontend.sv` | L10 连线：CSR/epoch/PTW 及精确 SFENCE 到 ICache 内 ITLB，miss 性能源回前端；返回队列保持原身份 | 预取翻译与多 MSHR 留后级 | T08c 前端全部既有 cocotb 与整核回归；完整 VM 的后续路径已知失败 |
 | `frontend/icache.sv` | **闭环简化（L10）**：S0 阵列与 ITLB 并行，S1 miss 保留重查，S2 PA/tag、S3 PMP/PMA/page fault；recent 行按 PA/epoch/priv | 单 MSHR/recall 保留；多 MSHR/预取/时序待后级 | T08b 同 SHA 4/4；T08c 整核 AD 与指定既有回归；完整 VM 已知失败见报告 |
 | `memory/l2_cache.sv` | **闭环简化（L4）**：256 set/4-way 配置、tree-PLRU、AXI 回填、双 L1 回收、脏行 AXI 写回 | 普通请求单未决；B03/B41 并发、DMA/维护协调与完整 L1D 数据路径未实现 | `sim/cocotb/l2_cache/` Alan 2/2 PASS（`1d2caeb`） |
 | `frontend/itlb.sv` / `lsu/dtlb.sv` | **闭环简化（L10）**：8×4+4 大页/PLRU、ASID/G/权限/四种 SFENCE/epoch；命中可穿越 miss，故障一次交给相同上下文重试 | X2：I/D 各单 miss 槽；DTLB 仅口0，端口扩展留 L8 | MMU 6组权限/大页/随机参考/非阻塞/取消/epoch 用例；完整 VM 已知失败见报告 |
@@ -243,3 +244,12 @@ Memory IQ load 按序发射，store/replay 门控保留；这是用户决定的 
 1860 周期/616 退休、1 个预期 trap、2 replay，均 tohost=1。Memory IQ 2/2、lint 0 errors，
 顺序 FP 与五项既有回归全部通过，完整命令/exit code 见 [T07 报告](tasks/O3-T07-report.md)。
 全套 L9 合同验收仍未完成；本次未运行 Spike/ACT4、访存类 cocotb、综合/FPGA/SoC。
+
+### 2026-10-07 L10 收尾证据
+
+代码 `1d0d6f8369fa69476d07538157be234a88db08bf`；Alan GitHub 独立 clone
+`/home/chen/FUN/CISLC-O3-runs/20261007-t08c-1d0d6f8/`，完整命令/exit/log 在 `evidence/final/`。
+38 套件 132/132（FAIL/SKIP=0）；八项既有整核回归、T08a 特权与 AD 正向整核通过；
+完整 VM cause 15 与正确分支解析同拍触发旧推进断言，保留为已知问题。
+跨模块合同与全部自行决定、复现命令见 [T08 报告](tasks/O3-T08-report.md)。
+报告/LOOP 收尾提交只改文档；L8/L11 未开始。

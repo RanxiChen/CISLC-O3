@@ -1,6 +1,10 @@
 # O3-T08：L10 实施与 Alan 验证报告
 
 实施依据：冻结 spec `0b812d6`，Q1～Q8 已纳入；分支 `feat/L1-closure`。
+本轮从 GitHub 拉取并确认 `bc4a62d`，按任务书顶部 2026-10-07 用户修订连续执行 T08b→T08c。
+收尾：**L10 带已知问题收口**。T08b `2e5333b`、T08c `1d0d6f8`；Alan 同 SHA
+分别 126/126、132/132 模块通过，八项既有整核回归与 T08a 全通过；完整 VM 的旧分支断言
+失败保留。全部自行决定与已知问题见下文；L8/L11 未开始。
 
 ## T08a
 
@@ -227,7 +231,7 @@ runner 不再将构建失败前的旧 XML 误计为本轮结果，只解析本�
 
 跨模块合同：PTW 请求携带上下文和 DCOMMIT src；响应携带 PTE 地址/值；ROB 增加 needs_D，
 LSU→ROB mark/clear/idx 与 LSU→updater VA/SQ、updater→LSU done/exception；commit 单发请求，
-PTW/updater/DCcache 共享 CAS 身份。修改均在允许文件范围内，没有改 doc/design Bxx/Dxx 或 doc/spec。
+PTW/updater/DCache 共享 CAS 身份。修改均在允许文件范围内，没有改 doc/design Bxx/Dxx 或 doc/spec。
 
 ## 已知问题
 
@@ -248,9 +252,116 @@ PTW/updater/DCcache 共享 CAS 身份。修改均在允许文件范围内，没�
 以上按任务书 2026-10-07 用户修订带已知问题收口，不宣称完整 Sv39 整核 VM 通过。
 完整 VM 的 RO fault 之后 NX、ADUE=0、ASID/SFENCE/PMP 整核链没有完整通过证据；
 MMU 权限/ASID/精确 fence/PMP/A/D 模块通过与独立 AD 正向程序通过不能替代它。
+D 重遍历的 PTE 替换/权限/PMP 失败在 MMU harness 覆盖；LSU 重新写 SQ PA 的并发映射改变
+及 D 失败的精确 store trap 尚无独立整核覆盖，不能从固定映射 AD 正向程序推断这些集成路径已验证。
+历史 L5 的随机差异/旧 MRET 等问题仍按 [T03 报告](O3-T03-report.md) 保留；本轮没有重跑或宣称修复。
 
 未做：L8/L11、通用访存类 cocotb、Spike、ACT4、formal、综合/时序/PPA、FPGA/SoC：**未运行**。
 
 ## T08c 最终代码 SHA 门禁
 
-提交后从 GitHub clone 精确代码 SHA，在 Alan 运行完整门禁；结果随文档收尾补齐。
+代码 SHA：`1d0d6f8369fa69476d07538157be234a88db08bf`（已推 GitHub）。
+Alan cwd：`/home/chen/FUN/CISLC-O3-runs/20261007-t08c-1d0d6f8/`，从 GitHub 独立 clone，
+按原 gitlink 初始化 CVFPU/common_cells 及其余子模块，不复用开发生成目录。
+环境：`source /home/chen/miniforge3/bin/activate cislc-o3`。
+
+完整门禁：`python3 sim/o3/tests/run_t08_gates.py evidence/final --build --core`。
+该 runner 记录每条命令/cwd/exit 并继续到后续目标，进程返回 0 不代表全门禁通过；
+以 `evidence/final/commands.jsonl` 与 `summary.json` 的每条 exit/test fail 为准。
+原始 stdout/stderr 为 `evidence/final/<套件或目标>.log`；构建目录每轮/每模块独立。
+工具版本/代码 SHA/gitlink/cwd：`evidence/final/provenance.log`；
+tracked diff 与完整状态：`tracked-{before,after}.diff`、`status-{before,after}.txt`。
+
+实际命令模式：
+
+- `make -C sim/o3 build 'VERILATOR=verilator -j 8'`。
+- `make -C sim/cocotb/<模块> -j8 SIM=verilator TEST_SEED=1 SIM_BUILD=<evidence/final/build-模块>`。
+- FTQ：bpu 目录加 `COCOTB_TOPLEVEL=ftq_training_tb_top COCOTB_TEST_MODULES=test_ftq`。
+- PTE 原子入口：mmu 目录加 `-f Makefile.pte`。
+- `bash scripts/lint.sh`。
+- `make -C sim/o3 <目标> SPIKE_ARGS=+L7_CHECK VM_AD=1`（不带 `--spike`）。
+
+最终结果：**38 套件，132/132 PASS，FAIL=0、SKIP=0**。包含全部 T08a/T08b 与
+L7a/L7b/L9 既有用例；HPM 原越界刺激按实际事件上界修正，新增四事件精确计数保留。
+整核构建与 lint 均 exit 0；lint **0 errors / 364 warnings**（非 strict 门禁）。
+测试前后 tracked diff 均为 0 字节；未跟踪项为 evidence 与生成的 XML/JSONL/pycache。
+51 条命令中仅 `run-l10-vm` exit 2，其他全部 exit 0，原始统计另在 `evidence/final/facts.json`。
+文档收尾提交只更新报告/LOOP，验收绑定以上代码 SHA，不冒充再次运行代码门禁。
+
+| 套件 / harness | T08b 2e5333b | T08c 1d0d6f8 | 两步 exit |
+| --- | --- | --- | --- |
+
+| `ubtb` | 3/3 | 3/3 PASS | 0 / 0 |
+| `main_btb` | 2/2 | 2/2 PASS | 0 / 0 |
+| `tage` | 2/2 | 2/2 PASS | 0 / 0 |
+| `ras` | 2/2 | 2/2 PASS | 0 / 0 |
+| `branch_recovery` | 4/4 | 4/4 PASS | 0 / 0 |
+| `fetch_buffer` | 2/2 | 2/2 PASS | 0 / 0 |
+| `fetch_return_queue` | 3/3 | 3/3 PASS | 0 / 0 |
+| `bpu_slow_check` | 1/1 | 1/1 PASS | 0 / 0 |
+| `redirect_arbiter` | 2/2 | 2/2 PASS | 0 / 0 |
+| `bpu` | 5/5 | 5/5 PASS | 0 / 0 |
+| `rvc_expander` | 3/3 | 3/3 PASS | 0 / 0 |
+| `ifu_f0` | 6/6 | 6/6 PASS | 0 / 0 |
+| `ifu_f1` | 18/18 | 18/18 PASS | 0 / 0 |
+| `l7_recovery` | 2/2 | 2/2 PASS | 0 / 0 |
+| `hpm_counters` | 19/19 | 19/19 PASS | 0 / 0 |
+| `csr_file` | 10/10 | 10/10 PASS | 0 / 0 |
+| `fpu_fu` | 2/2 | 2/2 PASS | 0 / 0 |
+| `pmp_checker` | 2/2 | 2/2 PASS | 0 / 0 |
+| `wfi_ctrl` | 1/1 | 1/1 PASS | 0 / 0 |
+| `decoder` | 1/1 | 1/1 PASS | 0 / 0 |
+| `commit_ctrl` | 4/4 | 5/5 PASS | 0 / 0 |
+| `frontend_sync_ctrl` | 3/3 | 3/3 PASS | 0 / 0 |
+| `icache` | 4/4 | 4/4 PASS | 0 / 0 |
+| `backend` | 2/2 | 2/2 PASS | 0 / 0 |
+| `backend_control` | 1/1 | 1/1 PASS | 0 / 0 |
+| `backend_issue_queue` | 2/2 | 2/2 PASS | 0 / 0 |
+| `free_list` | 2/2 | 2/2 PASS | 0 / 0 |
+| `rename_entry_gate` | 1/1 | 1/1 PASS | 0 / 0 |
+| `rename_map_table` | 2/2 | 2/2 PASS | 0 / 0 |
+| `rename_stage` | 1/1 | 1/1 PASS | 0 / 0 |
+| `rob` | 3/3 | 4/4 PASS | 0 / 0 |
+| `prf_read_arbiter` | 1/1 | 1/1 PASS | 0 / 0 |
+| `fu_completion_fifo` | 1/1 | 1/1 PASS | 0 / 0 |
+| `wb_alu_kill` | 1/1 | 1/1 PASS | 0 / 0 |
+| `trap_ctrl` | 1/1 | 1/1 PASS | 0 / 0 |
+| `mmu` | 4/4 | 6/6 PASS | 0 / 0 |
+| `ftq` | 3/3 | 3/3 PASS | 0 / 0 |
+| `mmu_pte` | 未运行 | 2/2 PASS | — / 0 |
+
+| 整核目标 | exit | 最终周期 / 退休与 trap |
+| --- | --- | --- |
+| `run-smoke` | 0 | 38 / 4；既有自查/轨迹检查 PASS |
+| `run-rv64i-instructions` | 0 | 70 / 14；既有自查/轨迹检查 PASS |
+| `run-l3-branch-dense` | 0 | 1966 / 365；既有自查/轨迹检查 PASS |
+| `run-l7-predict` | 0 | A：43807 / 19396；B：43861 / 19447；既有自查/轨迹检查 PASS |
+| `run-l7b-rvc` | 0 | 5873 / 2216；既有自查/轨迹检查 PASS |
+| `run-l9-fp-smoke` | 0 | 890 / 267；既有自查/轨迹检查 PASS |
+| `run-l9-fp` | 0 | 1844 / 615 events（614 退休 + 1 trap），tohost=1 |
+| `run-replay-order` | 0 | 121 / 20；既有自查/轨迹检查 PASS |
+| `run-l10-priv` | 0 | 3499 / 439 events（422 退休 + 17 trap），tohost=1 |
+| `run-l10-vm` | 2 | cause 15 / head PC 0x800001c4 的旧正确分支推进断言；未到 tohost |
+| `run-l10-ad` | 0 | 15891 / 6252；tohost=1，A-only→队头D→年轻load/SQ转发→PTE读回均自查通过 |
+
+完整 VM 最终 SHA 首个失败为 `rtl/backend/backend.sv:2257`：
+
+```text
+correct-branch progress: decode_ready=0 enq_ready=1 block=1 flush=1 sys=0
+trap=1 cause=15 head_pc=00000000800001c4
+```
+
+复现（Alan 已激活 cislc-o3）：
+
+```bash
+cd /home/chen/FUN/CISLC-O3-runs/20261007-t08c-1d0d6f8
+make -C sim/o3 run-l10-vm SPIKE_ARGS=+L7_CHECK VM_AD=1
+```
+
+make exit 2；首个失败日志 `evidence/final/run-l10-vm.log`，中止前轨迹 `sim/o3/build/l10_vm.jsonl`。
+开发等待环诊断另保留 `20261007-t08c-2e5333b-work/evidence/t08c-vm-debug-direct.log` 与
+`evidence/l10-vm-debug.jsonl`；`+L10_DEBUG` 是只读观察，不修改 ready/valid/断言。
+原正确分支断言、VM 故障自查、八项回归 golden 均保留。
+
+交付状态：T08b/T08c 代码与报告已推送；LOOP L10 行与相关模块行更新；
+L10 按用户修订带已知问题收口，到此停止，**L8/L11 未开始**。
