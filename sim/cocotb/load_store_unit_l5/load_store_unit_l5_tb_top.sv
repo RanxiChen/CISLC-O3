@@ -1,97 +1,89 @@
-module load_store_unit_l5_tb_top
-    import o3_pkg::*;
-    import o3_types_pkg::*;
-(
-    input logic clk, rst, flush_all_i, dc_error_i,
-    output logic exc_valid_o, store_complete_o,
-    output logic [5:0] exc_cause_o,
-    output logic [63:0] exc_tval_o,
-    output logic [ROB_IDX_WIDTH-1:0] exc_rob_o,
-    input logic mem_valid, mem_load, mem_store,
-    input logic bus_mode_i, dc_ready_i, dc_response_i, result_ready_i, lq_live_i,
-    input logic [XLEN-1:0] dc_response_data_i,
-    output logic dc_request_o, pending_o,
-    output logic [31:0] cfg_tags_o, cfg_rob_o, cfg_lq_o,
-    output branch_mask_t result_mask_o,
-    input logic [INST_ID_WIDTH-1:0] mem_id,
-    input logic [ROB_IDX_WIDTH-1:0] mem_rob,
-    input logic [LQ_IDX_WIDTH-1:0] mem_lq,
-    input logic [SQ_IDX_WIDTH-1:0] mem_sq,
-    input logic [XLEN-1:0] mem_base, mem_store_data,
-    input branch_mask_t mem_branch_mask,
-    input logic sq_block, sq_forward, sq_change,
-    input logic resolution_valid, resolution_mispredict,
-    input branch_tag_t resolution_tag,
-    input logic [XLEN-1:0] sq_forward_data,
-    output logic mem_ready, replay_busy, replay_capture,
-    output logic query_valid, store_execute,
-    output logic result_valid,
-    output logic [INST_ID_WIDTH-1:0] result_id,
-    output logic [XLEN-1:0] result_data
+module load_store_unit_l5_tb_top import o3_pkg::*; #(
+    parameter o3_cfg_pkg::backend_cfg_t CFG=o3_cfg_pkg::O3_CFG.be,
+    localparam int P=CFG.lsu.agu_pipes
+)(input logic clk,rst,
+    input mem_execute_uop_t mem_uop_i[P],input logic issue_is_load_i[P],output logic issue_ready_o[P],
+    input logic lq_replay_valid_i[P],input lq_replay_t lq_replay_i[P],output logic lq_replay_ready_o[P],
+    input logic sq_replay_valid_i[P],input lq_replay_t sq_replay_i[P],output logic sq_replay_ready_o[P],
+    output logic lq_capture_valid_o[P],sq_capture_valid_o[P],output lq_replay_t capture_o[P],
+    output logic lq_update_valid_o[P],sq_update_valid_o[P],output o3_types_pkg::dcache_resp_t update_o[P],
+    output logic sq_execute_valid_o[P],output logic [SQ_IDX_WIDTH-1:0] sq_execute_idx_o[P],
+    output logic [XLEN-1:0] sq_execute_addr_o[P],sq_execute_data_o[P],output logic [7:0] sq_execute_mask_o[P],
+    output logic [ROB_IDX_WIDTH-1:0] sq_execute_rob_idx_o[P],output mem_size_t sq_execute_size_o[P],
+    output logic [XLEN-1:0] sq_execute_va_o[P],
+    output logic sq_query_valid_o[P],output logic [ROB_IDX_WIDTH-1:0] sq_query_rob_idx_o[P],
+    output logic [XLEN-1:0] sq_query_addr_o[P],output logic [7:0] sq_query_mask_o[P],
+    input logic sq_query_block_i[P],sq_query_forward_valid_i[P],input logic [XLEN-1:0] sq_query_forward_data_i[P],
+    input logic full_line_busy_i,internal_busy_i,
+    output logic dc_req_valid_o[P],output o3_types_pkg::dcache_req_t dc_req_o[P],dc_s1_o[P],
+    input o3_types_pkg::dcache_resp_t dc_resp_i[P],
+    output logic store_complete_valid_o[P],output logic [ROB_IDX_WIDTH-1:0] store_complete_rob_idx_o[P],
+    output load_result_t load_result_o[P],input logic load_result_ready_i[P],
+    output logic exc_valid_o[P],output logic [ROB_IDX_WIDTH-1:0] exc_rob_idx_o[P],
+    output o3_types_pkg::exc_info_t exc_o[P],input logic exc_ready_i[P],
+    input logic flush_all_i,resolution_valid_i,resolution_mispredict_i,input branch_tag_t resolution_tag_i,
+    input o3_types_pkg::dmmu_csr_t csr_i,input o3_types_pkg::pmp_state_t pmp_i,
+    output logic [31:0] cfg_tags_o,cfg_rob_o,cfg_lq_o,
+    output o3_types_pkg::dcache_resp_t fmt_response_valid,fmt_response_status,fmt_response_reason,
+    fmt_response_mshr_id,fmt_response_lq_tag_idx,fmt_response_lq_tag_gen,fmt_response_rdata,fmt_response_exc,
+    output mem_execute_uop_t fmt_uop_valid,fmt_uop_instruction_id,fmt_uop_rob_idx,fmt_uop_lq_idx,
+    fmt_uop_sq_idx,fmt_uop_dst_preg,fmt_uop_dst_dom,fmt_uop_is_load,fmt_uop_is_store,
+    fmt_uop_mem_size,fmt_uop_base_value,fmt_uop_store_value,fmt_uop_branch_mask,
+    output load_result_t fmt_result_valid,fmt_result_instruction_id,fmt_result_result,fmt_result_branch_mask,
+    output lq_replay_t fmt_replay_uop,fmt_replay_va,fmt_replay_tag_idx,fmt_replay_tag_gen,
+    output o3_types_pkg::dcache_req_t fmt_request_blocked,fmt_request_forward_valid,fmt_request_forward_data,
+    fmt_request_exc,fmt_request_translation_miss,fmt_request_lq_tag_idx,fmt_request_lq_tag_gen,
+    fmt_request_paddr,fmt_request_vaddr,fmt_request_is_sta
 );
-    exc_info_t exc;
-    assign exc_cause_o=exc.cause;assign exc_tval_o=exc.tval;
-    mem_execute_uop_t mem_uop;
-    load_result_t result;
-    logic dc_ld_req_valid [o3_cfg_pkg::O3_CFG.be.lsu.agu_pipes];
-    logic dc_ld_req_ready [o3_cfg_pkg::O3_CFG.be.lsu.agu_pipes];
-    dcache_req_t dc_ld_req [o3_cfg_pkg::O3_CFG.be.lsu.agu_pipes];
-    dcache_resp_t dc_ld_resp [o3_cfg_pkg::O3_CFG.be.lsu.agu_pipes];
-    for (genvar port = 0; port < o3_cfg_pkg::O3_CFG.be.lsu.agu_pipes; port++) begin
-        assign dc_ld_req_ready[port] = bus_mode_i && port == 0 && dc_ready_i;
-        assign dc_ld_resp[port] = '{valid:(bus_mode_i && port == 0 && dc_response_i), src:DC_SRC_LOAD, status:(dc_error_i ? DC_ERROR : DC_OK), rdata:dc_response_data_i, default:'0};
+    o3_types_pkg::lq_tag_t lq_tag_i[P];logic dc_req_ready_i[P];
+    for(genvar p=0;p<P;p++) begin
+        assign lq_tag_i[p]='{idx:capture_o[p].uop.lq_idx,gen:8'd1};
+        assign dc_req_ready_i[p]=1'b1;
     end
+    load_store_unit #(.CFG(CFG)) dut(.lq_tag_i(lq_tag_i),.dc_req_ready_i(dc_req_ready_i),
+        .ptw_req_valid_o(),.ptw_req_ready_i(1'b0),.ptw_req_o(),.ptw_resp_i('0),
+        .sfence_i('0),.sfence_done_o(),.rob_head_i('0),.d_done_i(1'b0),.d_exc_i('0),
+        .d_mark_o(),.d_clear_o(),.d_idx_o(),.d_va_o(),.d_sq_o(),.ad_wake_o(),.perf_o(),.*);
+    assign cfg_tags_o=CFG.rename.checkpoints;assign cfg_rob_o=CFG.rob.entries;assign cfg_lq_o=CFG.lsu.lq_depth;
     always_comb begin
-        mem_uop = '0;
-        mem_uop.valid = mem_valid;
-        mem_uop.is_load = mem_load;
-        mem_uop.is_store = mem_store;
-        mem_uop.instruction_id = mem_id;
-        mem_uop.rob_idx = mem_rob;
-        mem_uop.lq_idx = mem_lq;
-        mem_uop.sq_idx = mem_sq;
-        mem_uop.mem_size = MEM_SIZE_8B;
-        mem_uop.base_value = mem_base;
-        mem_uop.store_value = mem_store_data;
-        mem_uop.branch_mask = mem_branch_mask;
+        fmt_uop_valid='0;fmt_uop_valid.valid='1;
+        fmt_uop_instruction_id='0;fmt_uop_instruction_id.instruction_id='1;
+        fmt_uop_rob_idx='0;fmt_uop_rob_idx.rob_idx='1;
+        fmt_uop_lq_idx='0;fmt_uop_lq_idx.lq_idx='1;
+        fmt_uop_sq_idx='0;fmt_uop_sq_idx.sq_idx='1;
+        fmt_uop_dst_preg='0;fmt_uop_dst_preg.dst_preg='1;
+        fmt_uop_dst_dom='0;fmt_uop_dst_dom.dst_dom=o3_types_pkg::reg_domain_e'('1);
+        fmt_uop_is_load='0;fmt_uop_is_load.is_load='1;
+        fmt_uop_is_store='0;fmt_uop_is_store.is_store='1;
+        fmt_uop_mem_size='0;fmt_uop_mem_size.mem_size=mem_size_t'('1);
+        fmt_uop_base_value='0;fmt_uop_base_value.base_value='1;
+        fmt_uop_store_value='0;fmt_uop_store_value.store_value='1;
+        fmt_uop_branch_mask='0;fmt_uop_branch_mask.branch_mask='1;
+        fmt_result_valid='0;fmt_result_valid.valid='1;
+        fmt_result_instruction_id='0;fmt_result_instruction_id.instruction_id='1;
+        fmt_result_result='0;fmt_result_result.result='1;
+        fmt_result_branch_mask='0;fmt_result_branch_mask.branch_mask='1;
+        fmt_replay_uop='0;fmt_replay_uop.uop='1;
+        fmt_replay_va='0;fmt_replay_va.va='1;
+        fmt_replay_tag_idx='0;fmt_replay_tag_idx.tag.idx='1;
+        fmt_replay_tag_gen='0;fmt_replay_tag_gen.tag.gen='1;
+        fmt_request_blocked='0;fmt_request_blocked.blocked='1;
+        fmt_request_forward_valid='0;fmt_request_forward_valid.forward_valid='1;
+        fmt_request_forward_data='0;fmt_request_forward_data.forward_data='1;
+        fmt_request_exc='0;fmt_request_exc.exc='1;
+        fmt_request_translation_miss='0;fmt_request_translation_miss.translation_miss='1;
+        fmt_request_lq_tag_idx='0;fmt_request_lq_tag_idx.lq_tag.idx='1;
+        fmt_request_lq_tag_gen='0;fmt_request_lq_tag_gen.lq_tag.gen='1;
+        fmt_request_paddr='0;fmt_request_paddr.paddr='1;
+        fmt_request_vaddr='0;fmt_request_vaddr.vaddr='1;
+        fmt_request_is_sta='0;fmt_request_is_sta.is_sta='1;
+        fmt_response_valid='0;fmt_response_valid.valid='1;
+        fmt_response_status='0;fmt_response_status.status=o3_types_pkg::dc_status_e'('1);
+        fmt_response_reason='0;fmt_response_reason.reason=o3_types_pkg::ld_wait_e'('1);
+        fmt_response_mshr_id='0;fmt_response_mshr_id.mshr_id='1;
+        fmt_response_lq_tag_idx='0;fmt_response_lq_tag_idx.lq_tag.idx='1;
+        fmt_response_lq_tag_gen='0;fmt_response_lq_tag_gen.lq_tag.gen='1;
+        fmt_response_rdata='0;fmt_response_rdata.rdata='1;
+        fmt_response_exc='0;fmt_response_exc.exc='1;
     end
-    assign dc_request_o = dc_ld_req_valid[0];
-    assign pending_o = dut.pending_valid_q;
-    assign cfg_tags_o = BACKEND_NUM_BRANCH_CHECKPOINTS;
-    assign cfg_rob_o = o3_cfg_pkg::O3_CFG.be.rob.entries;
-    assign cfg_lq_o = o3_cfg_pkg::O3_CFG.be.lsu.lq_depth;
-    assign result_mask_o = result.branch_mask;
-    assign result_valid = result.valid;
-    assign result_id = result.instruction_id;
-    assign result_data = result.result;
-    load_store_unit #(.CFG(o3_cfg_pkg::O3_CFG.be), .USE_DCACHE(1'b1),.CHECK_STORE_ACCESS(1'b1)) dut (
-        .clk(clk), .rst(rst),.flush_all_i(flush_all_i), .mem_uop_i(mem_uop), .mem_ready_o(mem_ready),
-        .lq_execute_valid_o(), .lq_execute_idx_o(), .lq_execute_addr_o(),
-        .lq_execute_generation_i(1'b0), .lq_request_fire_o(), .lq_request_idx_o(),
-        .lq_response_valid_o(), .lq_response_tag_o(), .lq_response_live_i(bus_mode_i && lq_live_i),
-        .sq_execute_valid_o(store_execute), .sq_execute_idx_o(),
-        .sq_execute_addr_o(), .sq_execute_data_o(), .sq_execute_mask_o(),
-        .sq_query_valid_o(query_valid), .sq_query_rob_idx_o(),
-        .sq_query_addr_o(), .sq_query_mask_o(),
-        .sq_query_block_i(sq_block), .sq_query_forward_valid_i(sq_forward),
-        .sq_query_forward_data_i(sq_forward_data),
-        .sq_drain_valid_i(1'b0), .sq_drain_ready_o(), .sq_drain_addr_i('0),
-        .sq_drain_data_i('0), .sq_drain_mask_i('0),
-        .sq_change_i(sq_change), .replay_busy_o(replay_busy),
-        .replay_capture_o(replay_capture),
-        .store_complete_valid_o(store_complete_o), .store_complete_rob_idx_o(),
-        .load_result_o(result), .load_result_ready_i(result_ready_i),
-        .resolution_valid_i(resolution_valid),
-        .resolution_mispredict_i(resolution_mispredict),
-        .resolution_tag_i(resolution_tag),
-        .dtcm_init_valid_i(1'b0), .dtcm_init_addr_i('0),
-        .dtcm_init_wdata_i('0), .dtcm_init_wmask_i('0),
-        .ext_req_valid_o(), .ext_req_ready_i(1'b0), .ext_req_write_o(),
-        .ext_req_addr_o(), .ext_req_wdata_o(), .ext_req_wmask_o(),
-        .ext_rsp_valid_i(1'b0), .ext_rsp_ready_o(), .ext_rsp_rdata_i('0),
-        .ext_rsp_error_i(1'b0),
-        .t_exc_valid_o(exc_valid_o),.t_exc_rob_idx_o(exc_rob_o),.t_exc_o(exc),
-        .t_dc_ld_req_valid_o(dc_ld_req_valid), .t_dc_ld_req_ready_i(dc_ld_req_ready),
-        .t_dc_ld_req_o(dc_ld_req), .t_dc_ld_resp_i(dc_ld_resp)
-    );
 endmodule

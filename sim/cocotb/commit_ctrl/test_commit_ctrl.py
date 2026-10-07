@@ -104,3 +104,17 @@ async def dirty_store_is_non_speculative_and_waits_for_final_probe(d):
     d.d_done_i.value=1;await edge(d);d.d_done_i.value=0
     assert int(d.block_o.value)==1 and int(d.d_req_o.value)==0 # retranslation/final target probe still owns head
     d.head_needs_d_i.value=0;await edge(d);assert int(d.block_o.value)==0
+
+
+@cocotb.test()
+async def fence_i_waits_for_sq_then_one_cycle_ack_and_frontend_sync(d):
+    await reset_l10(d);d.head_valid_i.value=1;d.head_serial_i.value=1;d.sysop_i.value=7
+    for _ in range(12):
+        await edge(d);assert not int(d.clean_req_o.value) and not int(d.sync_o.value)
+        assert not int(d.serial_done_o.value)
+    d.sq_empty_i.value=1;await settle();assert int(d.clean_req_o.value)
+    await edge(d);assert int(d.clean_ack_o.value)
+    d.sync_ready_i.value=1;await settle();assert int(d.sync_o.value)
+    await edge(d);d.sync_done_i.value=1;await edge(d);d.sync_done_i.value=0
+    assert int(d.serial_done_o.value)
+    d.commit_valid_i.value=1;await settle();assert int(d.redirect_o.value) and int(d.flush_o.value)

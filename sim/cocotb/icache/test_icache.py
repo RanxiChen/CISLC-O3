@@ -25,12 +25,9 @@ class Harness:
         dut.l2_req_ready.value = 0
         dut.l2_resp_valid.value = 0
         dut.l2_resp_data.value = 0
-        dut.l2_resp_last.value = 0
+        dut.l2_resp_id.value = 0
         dut.l2_resp_error.value = 0
         dut.inv_all.value = 0
-        dut.recall_valid.value = 0
-        dut.recall_addr.value = 0
-        dut.recall_id.value = 0
 
     async def tick(self):
         self.d.clk.value = 0
@@ -41,12 +38,9 @@ class Harness:
             "resp_valid": int(d.resp_valid.value),
             "l2_req_valid": int(d.l2_req_valid.value),
             "l2_req_addr": int(d.l2_req_addr.value),
+            "l2_req_id": int(d.l2_req_id.value),
             "l2_resp_ready": int(d.l2_resp_ready.value),
             "idle": int(d.idle.value),
-            "recall_ready": int(d.recall_ready.value),
-            "recall_resp_valid": int(d.recall_resp_valid.value),
-            "recall_resp_id": int(d.recall_resp_id.value),
-            "recall_resp_quiesced": int(d.recall_resp_quiesced.value),
         }
         if obs["resp_valid"]:
             self.responses.append((
@@ -100,6 +94,7 @@ class Harness:
                 break
         else:
             assert False, f"L2 request timeout line={expected_line:#x}"
+        self.pending_id=obs["l2_req_id"]
         self.d.l2_req_ready.value = 1
         obs = await self.tick()
         assert obs["l2_req_valid"]
@@ -110,16 +105,13 @@ class Harness:
     async def refill(self, data, error_last=False):
         assert len(data) == 64
         d = self.d
-        for beat in range(4):
-            d.l2_resp_valid.value = 1
-            d.l2_resp_data.value = int.from_bytes(data[beat*16:(beat+1)*16], "little")
-            d.l2_resp_last.value = int(beat == 3)
-            d.l2_resp_error.value = int(error_last and beat == 3)
-            obs = await self.tick()
-            assert obs["l2_resp_ready"], f"beat={beat} cycle={self.cycle}"
-        d.l2_resp_valid.value = 0
-        d.l2_resp_last.value = 0
-        d.l2_resp_error.value = 0
+        d.l2_resp_valid.value=1
+        d.l2_resp_id.value=self.pending_id
+        d.l2_resp_data.value=int.from_bytes(data,'little')
+        d.l2_resp_error.value=int(error_last)
+        obs=await self.tick()
+        assert obs['l2_resp_ready']
+        d.l2_resp_valid.value=0;d.l2_resp_error.value=0
 
 
 @cocotb.test()
@@ -204,17 +196,22 @@ async def failed_refill_does_not_install_and_invalidation_clears_valid(dut):
     dut.req_valid.value = 1
     dut.req_pc.value = line + 16
     obs = await h.tick()
-    assert obs["req_ready"] == 0, f"same-line miss must wait: {obs}"
+    assert obs["req_ready"] == 1, f"same-line miss must merge: {obs}"
     dut.req_valid.value = 0
+    # Whole-line response has no four-beat latency. Let the accepted request
+    # reach S3 and merge into the existing physical-line MSHR before return.
+    for _ in range(4):
+        obs=await h.tick();assert not obs['l2_req_valid']
     await h.refill(data, error_last=True)
-    await h.expect_count(1)
+    await h.expect_count(2)
     assert h.responses[0][1] == 1 and h.responses[0][4] == 1
+    assert h.responses[1][4] == 1
 
     await h.request(line, 2, 2)
     await h.accept_l2_request(line)
     await h.refill(data)
-    await h.expect_count(2)
-    assert h.responses[1][1:] == (2, 2, int.from_bytes(data[:16], "little"), 0)
+    await h.expect_count(3)
+    assert h.responses[2][1:] == (2, 2, int.from_bytes(data[:16], "little"), 0)
     assert int(dut.idle.value) == 1
 
     dut.inv_all.value = 1
@@ -232,7 +229,7 @@ async def failed_refill_does_not_install_and_invalidation_clears_valid(dut):
 
 
 @cocotb.test()
-async def inclusive_recall_invalidates_only_target_line(dut):
+async def l8a_no_recall_copy_survives_until_explicit_invalidation(dut):
     h = Harness(dut)
     await h.reset()
     line = 0x80000200
@@ -245,27 +242,18 @@ async def inclusive_recall_invalidates_only_target_line(dut):
     await h.expect_count(2)
     assert h.responses[-1][3] == int.from_bytes(data[16:32], "little")
 
-    dut.recall_valid.value = 1
-    dut.recall_addr.value = line
-    dut.recall_id.value = 1
+    # Frozen section 8: L1I has no directory/recall interface. Its copy remains
+    # usable without an L2 transaction until explicit FENCE.I invalidation.
+    await h.request(line + 32,3,3)
     for _ in range(20):
-        if (await h.tick())["recall_ready"]:
-            break
-    else:
-        assert False, "ICache did not accept inclusive recall"
-    dut.recall_valid.value = 0
-    obs = await h.tick()
-    assert obs["recall_resp_valid"] == 1
-    assert obs["recall_resp_id"] == 1
-    assert obs["recall_resp_quiesced"] == 1
-
-    await h.request(line + 32, 3, 3)
-    await h.accept_l2_request(line)
-    await h.refill(data)
+        obs=await h.tick();assert not obs['l2_req_valid']
     await h.expect_count(3)
-    assert h.responses[-1][1:] == (
-        3, 3, int.from_bytes(data[32:48], "little"), 0
-    )
+    assert h.responses[-1][1:]==(3,3,int.from_bytes(data[32:48],'little'),0)
+    dut.inv_all.value=1;await h.tick();dut.inv_all.value=0
+    assert int(dut.inv_done.value)==1
+    await h.request(line+32,4,4);await h.accept_l2_request(line);await h.refill(data)
+    await h.expect_count(4)
+    assert h.responses[-1][1:]==(4,4,int.from_bytes(data[32:48],'little'),0)
 
 @cocotb.test()
 async def l10_recheck_cached_line_pmp_and_pma_without_refill(d):

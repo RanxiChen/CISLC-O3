@@ -1,3 +1,8 @@
+# X5 migration removes DTCM; all values and random scales retained.
+def zero_new_inputs(d):
+    for n in ['flush_all_i','execute1_valid','execute1_idx','execute1_addr','execute1_data','execute1_mask','query1_valid','query1_rob','query1_addr','query1_mask','dc_retry','dc_reason','dc_wake_i']:
+        getattr(d,n).value=0
+
 import cocotb
 from cocotb.triggers import Timer
 
@@ -5,6 +10,7 @@ from cocotb.triggers import Timer
 @cocotb.test()
 async def youngest_complete_store_and_unknown_address(d):
     d.clk.value = 0
+    zero_new_inputs(d)
     d.rst.value = 1
     d.alloc_valid.value = 0
     d.alloc_rob.value = 0
@@ -85,6 +91,7 @@ async def committed_store_waits_for_dcache_completion(d):
                  "commit_idx", "dc_req_ready", "dc_resp_valid", "dc_resp_idx",
                  "local_drain_ready"):
         getattr(d, name).value = 0
+    zero_new_inputs(d)
     d.rst.value = 1
 
     async def tick():
@@ -130,13 +137,14 @@ async def committed_store_waits_for_dcache_completion(d):
 
 
 @cocotb.test()
-async def committed_dtcm_store_uses_local_drain(d):
+async def committed_x5_main_store_waits_for_cached_ps_completion(d):
     for name in ("clk", "alloc_valid", "alloc_rob", "execute_valid", "execute_idx",
                  "execute_addr", "execute_data", "execute_mask", "query_valid",
                  "query_rob", "query_addr", "query_mask", "commit_valid",
                  "commit_idx", "dc_req_ready", "dc_resp_valid", "dc_resp_idx",
                  "local_drain_ready"):
         getattr(d, name).value = 0
+    zero_new_inputs(d)
     d.rst.value = 1
 
     async def tick():
@@ -157,7 +165,7 @@ async def committed_dtcm_store_uses_local_drain(d):
     d.alloc_valid.value = 0
     d.execute_valid.value = 1
     d.execute_idx.value = idx
-    d.execute_addr.value = 0x11000008
+    d.execute_addr.value = 0x80040008
     d.execute_data.value = 0x55
     d.execute_mask.value = 0xff
     await tick()
@@ -166,10 +174,13 @@ async def committed_dtcm_store_uses_local_drain(d):
     d.commit_idx.value = idx
     await tick()
     d.commit_valid.value = 0
-    assert (await tick()) == (1, 0, 0)
+    assert (await tick()) == (0, 1, 0)
     d.local_drain_ready.value = 1
-    assert (await tick()) == (1, 0, 0)
+    assert (await tick()) == (0, 1, 0) # X5: local drain cannot complete main memory
     d.local_drain_ready.value = 0
+    d.dc_req_ready.value=1;await tick();d.dc_req_ready.value=0
+    assert (await tick()) == (0, 0, 0)
+    d.dc_resp_valid.value=1;d.dc_resp_idx.value=idx;await tick();d.dc_resp_valid.value=0
     assert (await tick()) == (0, 0, 1)
 
 
@@ -181,6 +192,7 @@ async def four_store_commit_and_recovery_old_execute_drain_random_delays(d):
     scalar=['clk','alloc_valid','alloc_rob','execute_valid','execute_idx','execute_addr','execute_data','execute_mask','query_valid','query_rob','query_addr','query_mask','commit_valid','commit_idx','dc_req_ready','dc_resp_valid','dc_resp_idx','local_drain_ready','multi_mode_i','multi_alloc_count_i','multi_commit_count_i','resolution_valid_i','resolution_mispredict_i','resolution_tag_i','restore_tail_i']
     for n in scalar:getattr(d,n).value=0
     array(d.multi_rob_i,[0]*len(d.multi_rob_i));array(d.multi_mask_i,[0]*len(d.multi_mask_i));array(d.multi_commit_idx_i,[0]*len(d.multi_commit_idx_i))
+    zero_new_inputs(d)
     d.rst.value=1;await tick(d);d.rst.value=0;await settle()
     w=val(d.cfg_width_o);depth=val(d.cfg_depth_o);assert w==4
     # Every batch is independent and exercises four-lane identity/wrap; some
@@ -243,6 +255,7 @@ async def trap_preserves_committed_drain_and_cancels_speculative_stores(d):
     for cycle in range(40):
         for n in ['clk','alloc_valid','execute_valid','query_valid','commit_valid','dc_req_ready','dc_resp_valid','local_drain_ready','multi_mode_i','resolution_valid_i','flush_all_i']:
             getattr(d,n).value=0
+        zero_new_inputs(d)
         d.rst.value=1
         async def edge():
             d.clk.value=0;await Timer(1,unit='ns');d.clk.value=1;await Timer(1,unit='ns');d.clk.value=0;await Timer(1,unit='ns')
@@ -257,3 +270,25 @@ async def trap_preserves_committed_drain_and_cancels_speculative_stores(d):
         d.dc_req_ready.value=1;await edge();d.dc_req_ready.value=0
         d.dc_resp_valid.value=1;d.dc_resp_idx.value=ids[0];await edge();d.dc_resp_valid.value=0;await Timer(1,unit='ns')
         assert int(d.free_count_o.value)==int(d.cfg_depth_o.value) and int(d.committed_empty.value)==1
+
+
+@cocotb.test()
+async def dual_sta_and_dual_query_exact_forwarding(d):
+    from l3_contract import tick,settle,array,val
+    zero_new_inputs(d)
+    for n in ['clk','alloc_valid','execute_valid','query_valid','commit_valid','dc_req_ready','dc_resp_valid','local_drain_ready','resolution_valid_i']:
+        getattr(d,n).value=0
+    d.multi_mode_i.value=1;d.multi_alloc_count_i.value=0;d.multi_commit_count_i.value=0
+    d.rst.value=1;await tick(d);d.rst.value=0
+    d.multi_alloc_count_i.value=2;array(d.multi_rob_i,[1,2,0,0]);array(d.multi_mask_i,[0]*4)
+    await settle();ids=[val(d.multi_alloc_idx_o[n]) for n in range(2)]
+    await tick(d);d.multi_alloc_count_i.value=0
+    d.execute_valid.value=1;d.execute_idx.value=ids[0];d.execute_addr.value=0x80010000;d.execute_data.value=0x1122334455667788;d.execute_mask.value=255
+    d.execute1_valid.value=1;d.execute1_idx.value=ids[1];d.execute1_addr.value=0x80010008;d.execute1_data.value=0xaabbccddeeff0011;d.execute1_mask.value=255
+    await tick(d);d.execute_valid.value=0;d.execute1_valid.value=0
+    for port,addr,want in [(0,0x80010000,0x1122334455667788),(1,0x80010008,0xaabbccddeeff0011)]:
+        pre='query' if port==0 else 'query1'
+        getattr(d,pre+'_valid').value=1;getattr(d,pre+'_rob').value=3;getattr(d,pre+'_addr').value=addr;getattr(d,pre+'_mask').value=255
+    await settle()
+    assert (val(d.query_block),val(d.query_forward_valid),val(d.query_forward_data))==(0,1,0x1122334455667788)
+    assert (val(d.query1_block),val(d.query1_forward_valid),val(d.query1_forward_data))==(0,1,0xaabbccddeeff0011)

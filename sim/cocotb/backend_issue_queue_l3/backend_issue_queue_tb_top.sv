@@ -4,7 +4,7 @@ module backend_issue_queue_tb_top import o3_pkg::*; #(
     parameter  o3_cfg_pkg::backend_cfg_t CFG = o3_cfg_pkg::O3_CFG.be,
     parameter  o3_types_pkg::iq_kind_e KIND = o3_types_pkg::IQ_INT,          // 实例选择，无默认值
     localparam int ENQ_WIDTH = CFG.dispatch.width,
-    localparam int ISSUE_WIDTH = (KIND == o3_types_pkg::IQ_INT) ? CFG.exec.num_alu : 1,  // MEM/BR 现状单发射；FP 待定
+    localparam int ISSUE_WIDTH = (KIND == o3_types_pkg::IQ_INT) ? CFG.exec.num_alu : (KIND == o3_types_pkg::IQ_MEM) ? CFG.lsu.agu_pipes : 1,  // MEM/BR 现状单发射；FP 待定
     localparam int WAKEUP_WIDTH = CFG.exec.int_prf_write_ports,
     localparam int DEPTH = (KIND == o3_types_pkg::IQ_INT) ? CFG.dispatch.int_iq_depth
                          : (KIND == o3_types_pkg::IQ_MEM) ? CFG.dispatch.mem_iq_depth
@@ -31,6 +31,7 @@ module backend_issue_queue_tb_top import o3_pkg::*; #(
     input  logic resolution_mispredict_i,
     input  branch_tag_t resolution_tag_i
 ,
+output logic [$bits(renamed_uop_t)-1:0] fmt_renamed_uop_t_ext_rs1_dom,fmt_renamed_uop_t_ext_rs2_dom,
 output logic [$bits(renamed_uop_t)-1:0] fmt_renamed_uop_t_valid,
 output logic [$bits(renamed_uop_t)-1:0] fmt_renamed_uop_t_instruction_id,
 output logic [$bits(renamed_uop_t)-1:0] fmt_renamed_uop_t_rob_idx,
@@ -54,7 +55,8 @@ backend_issue_queue #(.CFG(CFG), .KIND(KIND)) dut (
 .enq_fire_i(enq_fire_i),
 .free_count_o(free_count_o),
 .preg_ready_i(preg_ready_i),
-.mul_ready_i(1'b1),.mul_pair_ready_i(1'b1),.div_ready_i(1'b1),.allow_load_i(allow_load_i),
+.mul_ready_i(1'b1),.mul_pair_ready_i(1'b1),.div_ready_i(1'b1),
+.fp_preg_ready_i('{default:0}),.fp_wakeup_valid_i('{default:0}),.fp_wakeup_preg_i('{default:'0}),.fp_regread_ready_i('0),.issue_fp_fu_o(),
 .wakeup_valid_i(wakeup_valid_i),
 .wakeup_preg_i(wakeup_preg_i),
 .issue_uop_o(issue_uop_o),
@@ -64,6 +66,8 @@ backend_issue_queue #(.CFG(CFG), .KIND(KIND)) dut (
 .resolution_mispredict_i(resolution_mispredict_i),
 .resolution_tag_i(resolution_tag_i)
 );
+always_comb begin renamed_uop_t v;v='0;v.ext.rs1_dom=o3_types_pkg::reg_domain_e'('1);fmt_renamed_uop_t_ext_rs1_dom=v;end
+always_comb begin renamed_uop_t v;v='0;v.ext.rs2_dom=o3_types_pkg::reg_domain_e'('1);fmt_renamed_uop_t_ext_rs2_dom=v;end
 always_comb begin renamed_uop_t v; v='0; v.valid='1; fmt_renamed_uop_t_valid=v; end
 always_comb begin renamed_uop_t v; v='0; v.instruction_id='1; fmt_renamed_uop_t_instruction_id=v; end
 always_comb begin renamed_uop_t v; v='0; v.rob_idx='1; fmt_renamed_uop_t_rob_idx=v; end

@@ -1,177 +1,124 @@
+import os
+import random
 import cocotb
-from cocotb.triggers import Timer
+from l3_contract import val,field,codec,array,clear
+from l8a_lsu_agents import Bench,INPUTS
 
 
 @cocotb.test()
 async def blocked_load_replays_after_older_store_executes(d):
-    for name in ("clk", "mem_valid", "mem_load", "mem_store", "mem_id",
-                 "mem_rob", "mem_lq", "mem_sq", "mem_base", "mem_store_data",
-                 "mem_branch_mask", "sq_block", "sq_forward", "sq_change",
-                 "sq_forward_data", "resolution_valid", "resolution_mispredict",
-                 "resolution_tag"):
-        getattr(d, name).value = 0
-    d.rst.value = 1
-
-    async def tick():
-        d.clk.value = 0
-        await Timer(5, unit="ns")
-        obs = {name: int(getattr(d, name).value) for name in (
-            "mem_ready", "replay_busy", "replay_capture", "query_valid",
-            "store_execute", "result_valid", "result_id", "result_data")}
-        d.clk.value = 1
-        await Timer(5, unit="ns")
-        return obs
-
-    await tick()
-    d.rst.value = 0
-    d.mem_valid.value = 1
-    d.mem_load.value = 1
-    d.mem_id.value = 42
-    d.mem_rob.value = 2
-    d.mem_lq.value = 1
-    d.mem_base.value = 0x80000108
-    d.sq_block.value = 1
-    obs = await tick()
-    assert obs["replay_capture"] == 1 and obs["mem_ready"] == 1, obs
-    d.mem_valid.value = 0
-    d.mem_load.value = 0
-    obs = await tick()
-    assert obs["replay_busy"] == 1 and obs["query_valid"] == 1, obs
-    obs = await tick()
-    assert obs["replay_busy"] == 1 and obs["query_valid"] == 0, obs
-
-    d.mem_valid.value = 1
-    d.mem_store.value = 1
-    d.mem_rob.value = 1
-    d.mem_base.value = 0x80000108
-    d.sq_change.value = 1
-    obs = await tick()
-    assert obs["store_execute"] == 1 and obs["mem_ready"] == 1, obs
-    d.mem_valid.value = 0
-    d.mem_store.value = 0
-    d.sq_change.value = 0
-    d.sq_block.value = 0
-    d.sq_forward.value = 1
-    d.sq_forward_data.value = 0x1122334455667788
-    obs = await tick()
-    assert obs["replay_busy"] == 1 and obs["query_valid"] == 1, obs
-    obs = await tick()
-    assert obs["replay_busy"] == 0 and obs["result_valid"] == 1, obs
-    assert obs["result_id"] == 42 and obs["result_data"] == 0x1122334455667788, obs
+    e=Bench(d);await e.reset();e.block=True
+    await e.issue(e.uop(42))
+    await e.until(lambda: e.waits.get(1)==1)
+    assert not e.results
+    for _ in range(12):await e.tick();assert not e.results
+    await e.issue(e.uop(8,load=False,rob=1,value=0x1122334455667788))
+    await e.until(lambda: bool(e.stores))
+    assert e.stores[-1][2:]==(0x80000108,0x1122334455667788)
+    # The independent SQ agent now exposes the complete older store.
+    e.block=False;e.forward=True;e.data=0x1122334455667788
+    await e.replay(1)
+    await e.until(lambda: bool(e.results))
+    r=e.results[-1][2]
+    assert field(d,'result',r,'instruction_id')==42
+    assert field(d,'result',r,'result')==0x1122334455667788
+    assert e.requests[-1][2]==0x80000108
 
 
 @cocotb.test()
 async def wrong_path_replay_is_cancelled(d):
-    for name in ("clk", "mem_valid", "mem_load", "mem_store", "mem_id",
-                 "mem_rob", "mem_lq", "mem_sq", "mem_base", "mem_store_data",
-                 "mem_branch_mask", "sq_block", "sq_forward", "sq_change",
-                 "sq_forward_data", "resolution_valid", "resolution_mispredict",
-                 "resolution_tag"):
-        getattr(d, name).value = 0
-    d.rst.value = 1
-
-    async def tick():
-        d.clk.value = 0
-        await Timer(5, unit="ns")
-        obs = (int(d.replay_busy.value), int(d.replay_capture.value),
-               int(d.query_valid.value), int(d.result_valid.value))
-        d.clk.value = 1
-        await Timer(5, unit="ns")
-        return obs
-
-    await tick()
-    d.rst.value = 0
-    d.mem_valid.value = 1
-    d.mem_load.value = 1
-    d.mem_branch_mask.value = 1
-    d.mem_id.value = 5
-    d.mem_base.value = 0x80000100
-    d.sq_block.value = 1
-    assert (await tick())[1] == 1
-    d.mem_valid.value = 0
-    d.mem_load.value = 0
-    d.resolution_valid.value = 1
-    d.resolution_mispredict.value = 1
-    d.resolution_tag.value = 0
-    await tick()
-    d.resolution_valid.value = 0
-    d.resolution_mispredict.value = 0
-    d.sq_change.value = 1
-    d.sq_block.value = 0
-    d.sq_forward.value = 1
-    d.sq_forward_data.value = 0x55
-    for _ in range(5):
-        assert await tick() == (0, 0, 0, 0)
+    e=Bench(d);await e.reset();e.block=True
+    await e.issue(e.uop(5,addr=0x80000100,mask=1))
+    await e.until(lambda: e.waits.get(1)==1)
+    d.resolution_valid_i.value=1;d.resolution_mispredict_i.value=1;d.resolution_tag_i.value=0
+    await e.tick();d.resolution_valid_i.value=0;d.resolution_mispredict_i.value=0
+    e.block=False;e.forward=True;e.data=0x55
+    assert not e.saved and not e.waits
+    for _ in range(12):await e.tick();assert not e.results
 
 
 @cocotb.test()
 async def seeded_c_m_replay_pending_response_result_backpressure(d):
-    import os,random
-    from l3_contract import val,settle,tick
-    seed=int(os.getenv('TEST_SEED','1'));rng=random.Random(seed)
-    inputs=['clk','mem_valid','mem_load','mem_store','mem_id','mem_rob','mem_lq','mem_sq','mem_base','mem_store_data','mem_branch_mask','sq_block','sq_forward','sq_change','sq_forward_data','resolution_valid','resolution_mispredict','resolution_tag','bus_mode_i','dc_ready_i','dc_response_i','dc_response_data_i','result_ready_i','lq_live_i']
-    for n in inputs:getattr(d,n).value=0
-    d.rst.value=1;await tick(d);d.rst.value=0
-    tags=val(d.cfg_tags_o);assert tags>0
+    rng=random.Random(int(os.getenv('TEST_SEED','1')))
     for transaction in range(160):
-        for n in inputs:getattr(d,n).value=0
-        d.rst.value=1;await tick(d);d.rst.value=0;d.bus_mode_i.value=1;d.lq_live_i.value=1
-        ident=transaction+1;data=rng.getrandbits(64);tag=transaction%tags
-        mask=(1<<tag)| (1<<((tag+3)%tags));d.mem_branch_mask.value=mask
-        d.mem_valid.value=1;d.mem_load.value=1;d.mem_id.value=ident
-        d.mem_rob.value=transaction%val(d.cfg_rob_o);d.mem_lq.value=transaction%val(d.cfg_lq_o)
-        d.mem_base.value=0x80010000+8*(transaction%8)
-        mode=transaction%3;kill=transaction%4==0
-        if mode==0: # Direct forward, C concurrent with creating Result.
-            d.sq_forward.value=1;d.sq_forward_data.value=data
-            d.resolution_valid.value=1;d.resolution_tag.value=tag
-            await tick(d);mask &= ~(1<<tag)
-        elif mode==1: # Replay wait awakened by an SQ event, not by timeout.
-            d.sq_block.value=1;await settle();assert val(d.replay_capture)==1
-            await tick(d);d.mem_valid.value=0;d.mem_load.value=0
-            await tick(d)
-            for delay in range(rng.randrange(1,6)):
-                await tick(d);assert val(d.replay_busy)==1 and val(d.query_valid)==0,(seed,transaction,delay)
+        e=Bench(d);await e.reset()
+        ident=transaction+1;data=rng.getrandbits(64);tags=val(d.cfg_tags_o);tag=transaction%tags
+        mask=(1<<tag)|(1<<((tag+3)%tags));mode=transaction%3;kill=transaction%4==0
+        e.data=data;e.block=mode==1;e.forward=mode==0;e.miss=mode==2
+        await e.issue(e.uop(ident,addr=0x80010000+8*(transaction%8),mask=mask,rob=transaction%val(d.cfg_rob_o),lq=transaction%val(d.cfg_lq_o)))
+        idx=transaction%val(d.cfg_lq_o)
+        if mode:
+            await e.until(lambda: idx in e.waits)
+            for _ in range(rng.randrange(1,6)):
+                await e.tick();assert not e.results
+            if kill and mode==1:
+                # Retain the original random old-STA-on-M coverage in every
+                # such transaction, using its real fixed S2 completion edge.
+                await e.issue(e.uop(ident+1000,load=False,addr=0x80020000,
+                                    lq=idx,rob=0,value=data))
+                await e.until(lambda:any(e.reply))
+            d.resolution_valid_i.value=1;d.resolution_mispredict_i.value=int(kill);d.resolution_tag_i.value=tag
+            await e.tick();d.resolution_valid_i.value=0;d.resolution_mispredict_i.value=0
+            mask&=~(1<<tag)
             if kill:
-                d.resolution_valid.value=1;d.resolution_mispredict.value=1;d.resolution_tag.value=tag
-                # Surviving old store must execute while younger replay dies.
-                d.mem_valid.value=1;d.mem_store.value=1;d.mem_branch_mask.value=0
-                await settle();assert val(d.store_execute)==1
-                await tick(d);d.mem_valid.value=0;d.mem_store.value=0
-                assert val(d.replay_busy)==0 and val(d.result_valid)==0
+                if mode==1:
+                    assert e.stores[-1][2:]==(0x80020000,data),(transaction,'old STA on M')
+                assert idx not in e.saved and idx not in e.waits
+                e.miss=False;e.block=False
+                for _ in range(5):await e.tick();assert not e.results
                 continue
-            d.sq_change.value=1;d.sq_block.value=0;d.sq_forward.value=1;d.sq_forward_data.value=data
-            d.resolution_valid.value=1;d.resolution_tag.value=tag
-            await tick(d);mask &= ~(1<<tag)
-            d.resolution_valid.value=0;await tick(d)
-        else: # Single pending request; C/M and delayed responses.
-            d.dc_ready_i.value=1;await settle();assert val(d.dc_request_o)==1
-            await tick(d);d.mem_valid.value=0;d.mem_load.value=0
-            assert val(d.pending_o)==1
-            # A second load must be backpressured without replacing pending ID.
-            d.mem_valid.value=1;d.mem_load.value=1;d.mem_id.value=ident+1000
-            await settle();assert val(d.mem_ready)==0
-            d.mem_valid.value=0;d.mem_load.value=0
-            for delay in range(rng.randrange(1,6)):
-                await tick(d);assert val(d.pending_o)==1,(seed,transaction,delay)
-            d.resolution_valid.value=1;d.resolution_mispredict.value=kill;d.resolution_tag.value=tag
-            await tick(d);mask &= ~(1<<tag)
-            d.resolution_valid.value=0;d.dc_response_i.value=1;d.dc_response_data_i.value=data
-            if kill:
-                # LQ model marks the pending identity dead at the earlier M;
-                # the delayed bus response still finishes the request but must
-                # never recreate Result after its branch mask was cleared.
-                d.lq_live_i.value=0
-                await tick(d)
-                assert val(d.pending_o)==0 and val(d.result_valid)==0,(seed,transaction,'late young response')
-                continue
-            await tick(d);d.dc_response_i.value=0
-        d.mem_valid.value=0;d.mem_load.value=0;d.resolution_valid.value=0
-        assert val(d.result_valid)==1 and val(d.result_id)==ident and val(d.result_data)==data,(seed,transaction,mode)
-        for delay in range(rng.randrange(1,6)):
-            d.resolution_valid.value=1;d.resolution_tag.value=(tag+3)%tags
-            await tick(d);mask &= ~(1<<((tag+3)%tags))
-            assert val(d.result_valid)==1 and val(d.result_id)==ident and val(d.result_data)==data
-            assert val(d.result_mask_o)==mask,(seed,transaction,delay,mask)
-        d.resolution_valid.value=0;d.result_ready_i.value=1;await tick(d)
-        assert val(d.result_valid)==0
+            e.miss=False;e.block=False;e.forward=True
+            await e.replay(idx)
+        else:
+            # Correct resolution coincides with S2/fifo creation, not just RR.
+            await e.until(lambda: any(e.reply))
+            d.resolution_valid_i.value=1;d.resolution_tag_i.value=tag
+            await e.tick();d.resolution_valid_i.value=0
+            mask&=~(1<<tag)
+        await e.until(lambda: bool(e.results))
+        r=e.results[-1][2]
+        assert field(d,'result',r,'instruction_id')==ident
+        assert field(d,'result',r,'result')==data
+        assert field(d,'result',r,'branch_mask')==mask,(transaction,mode,mask,field(d,'result',r,'branch_mask'))
+        for _ in range(rng.randrange(1,6)):
+            d.resolution_valid_i.value=1;d.resolution_tag_i.value=(tag+3)%tags
+            await e.tick();mask&=~(1<<((tag+3)%tags))
+            raw=val(d.load_result_o[0])
+            assert field(d,'result',raw,'valid') and field(d,'result',raw,'instruction_id')==ident
+            assert field(d,'result',raw,'result')==data and field(d,'result',raw,'branch_mask')==mask
+        d.resolution_valid_i.value=0;e.hold_result=False
+        await e.tick();await e.tick()
+        assert not field(d,'result',val(d.load_result_o[0]),'valid')
+
+
+@cocotb.test()
+async def two_lane_results_and_fifo_reservations(d):
+    e=Bench(d);await e.reset();e.data=0xaabbccdd
+    await e.issue(e.uop(1,lq=0),e.uop(2,addr=0x80000110,lq=1,rob=3))
+    await e.until(lambda: all(field(d,'result',val(d.load_result_o[p]),'valid') for p in range(2)))
+    assert [field(d,'result',val(d.load_result_o[p]),'instruction_id') for p in range(2)]==[1,2]
+    await e.issue(e.uop(3,lq=2),e.uop(4,lq=3,rob=4))
+    await e.until(lambda: len({field(d,'response',a,'lq_tag.idx') for _,_,a in e.updates})==4)
+    for _ in range(12):
+        await e.tick()
+        assert not val(d.issue_ready_o[0]) and not val(d.issue_ready_o[1])
+        assert [field(d,'result',val(d.load_result_o[p]),'instruction_id') for p in range(2)]==[1,2]
+    e.hold_result=False;await e.tick()
+    assert all(field(d,'result',val(d.load_result_o[p]),'valid') for p in range(2))
+    assert [field(d,'result',val(d.load_result_o[p]),'instruction_id') for p in range(2)]==[3,4]
+    await e.tick();await e.tick()
+    assert all(not field(d,'result',val(d.load_result_o[p]),'valid') for p in range(2))
+
+
+@cocotb.test()
+async def mispredict_at_s2_cancels_young_but_keeps_old_store(d):
+    e=Bench(d);await e.reset();e.data=0x55
+    # An older STA and younger load reach S2 together; the branch kills only
+    # the load although its fixed-latency response is already in flight.
+    await e.issue(e.uop(8,load=False,lq=0,rob=1,value=0x1122334455667788),
+                  e.uop(5,lq=1,rob=2,mask=1))
+    await e.until(lambda:any(e.reply))
+    d.resolution_valid_i.value=1;d.resolution_mispredict_i.value=1;d.resolution_tag_i.value=0
+    await e.tick();d.resolution_valid_i.value=0;d.resolution_mispredict_i.value=0
+    assert e.stores[-1][2:]==(0x80000108,0x1122334455667788)
+    for _ in range(12):await e.tick();assert not e.results

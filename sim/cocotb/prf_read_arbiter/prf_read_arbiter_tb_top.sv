@@ -2,6 +2,7 @@
 module prf_read_arbiter_tb_top import o3_pkg::*; #(
 
     parameter  o3_cfg_pkg::backend_cfg_t CFG = o3_cfg_pkg::O3_CFG.be,
+    localparam int P=CFG.lsu.agu_pipes,
     localparam int NUM_INT_ALUS    = CFG.exec.num_alu,
     localparam int PRF_READ_PORTS  = CFG.exec.int_prf_read_ports,
     localparam int NUM_ROB_ENTRIES = CFG.rob.entries,
@@ -14,20 +15,20 @@ module prf_read_arbiter_tb_top import o3_pkg::*; #(
     input  renamed_uop_t [NUM_INT_ALUS-1:0] int_issue_uop_i,
     input  logic [NUM_INT_ALUS-1:0]     int_issue_valid_i,
     input  logic                        alu_regread_ready_i [NUM_INT_ALUS-1:0],
-    input  renamed_uop_t                mem_issue_uop_i,
-    input  logic                        mem_issue_valid_i,
-    input  logic                        mem_accept_i,    // Memory 执行级可接收
+    input  renamed_uop_t [P-1:0]      mem_issue_uop_i,
+    input  logic [P-1:0]              mem_issue_valid_i,
+    input  logic                      mem_accept_i[P],    // Memory 执行级可接收
     input  renamed_uop_t                br_issue_uop_i,
     input  logic                        br_issue_valid_i,
     input  logic                        branch_regread_ready_i,
 
     output logic [NUM_INT_ALUS-1:0]     int_read_grant_o,
-    output logic                        mem_read_grant_o,
+    output logic [P-1:0]              mem_read_grant_o,
     output logic                        branch_read_grant_o,
     output logic [PORT_W-1:0]           int_src1_port_o [NUM_INT_ALUS-1:0],
     output logic [PORT_W-1:0]           int_src2_port_o [NUM_INT_ALUS-1:0],
-    output logic [PORT_W-1:0]           mem_src1_port_o,
-    output logic [PORT_W-1:0]           mem_src2_port_o,
+    output logic [PORT_W-1:0]           mem_src1_port_o[P],
+    output logic [PORT_W-1:0]           mem_src2_port_o[P],
     output logic [PORT_W-1:0]           branch_src1_port_o,
     output logic [PORT_W-1:0]           branch_src2_port_o,
     output logic [PREG_IDX_WIDTH-1:0]   prf_rd_addr_o [PRF_READ_PORTS-1:0]
@@ -49,6 +50,7 @@ output logic [$bits(renamed_uop_t)-1:0] fmt_renamed_uop_t_dst_preg,
 output logic [31:0] cfg_width_o, cfg_depth_o, cfg_rob_o, cfg_pregs_o, cfg_read_ports_o, cfg_tags_o
 );
 prf_read_arbiter #(.CFG(CFG)) dut (
+.fp_issue_uop_i('0),.fp_issue_valid_i(1'b0),.fp_regread_ready_i(1'b0),.fp_read_grant_o(),.fp_src1_port_o(),
 .issue_block_i(issue_block_i),
 .rob_head_i(rob_head_i),
 .int_issue_uop_i(int_issue_uop_i),

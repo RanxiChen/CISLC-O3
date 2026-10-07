@@ -27,7 +27,7 @@ class Tb:
             addr=self.get('mem_addr_o');self.reads.append(addr);self.queue.append((self.cycle+self.rng.randrange(1,6),addr))
         self.put('clk',1);await settle();self.put('clk',0);await settle();self.cycle+=1
     async def reset(self):
-        for n in ('d_commit_i','clk','kill_i','i_valid_i','d_valid_i','d_store_i','i_va_i','d_va_i','sum_i','mxr_i','epoch_i','asid_i','sf_valid_i','sf_rs1_x0_i','sf_rs2_x0_i','sf_va_i','sf_asid_i','mem_valid_i','mem_ready_i','mem_fault_i','mem_data_i','deny_read_i','deny_write_i','ad_ready_i','ad_valid_i','ad_updated_i','ad_mismatch_i','ad_fault_i'):
+        for n in ('d1_valid_i','d1_store_i','d1_va_i','d_commit_i','clk','kill_i','i_valid_i','d_valid_i','d_store_i','i_va_i','d_va_i','sum_i','mxr_i','epoch_i','asid_i','sf_valid_i','sf_rs1_x0_i','sf_rs2_x0_i','sf_va_i','sf_asid_i','mem_valid_i','mem_ready_i','mem_fault_i','mem_data_i','deny_read_i','deny_write_i','ad_ready_i','ad_valid_i','ad_updated_i','ad_mismatch_i','ad_fault_i'):
             self.put(n,0)
         self.put('priv_i',1);self.put('mode_i',8);self.put('adue_i',0);self.put('root_i',0x80000);self.put('rst',1)
         await self.tick();await self.tick();self.put('rst',0)
@@ -205,3 +205,31 @@ async def queue_head_dirty_rewalk_and_epoch_drain(d):
     for _ in range(50): await t.tick()
     assert t.mem[p]&A
     assert (await t.lookup(0x6000))['miss']
+
+
+@cocotb.test()
+async def dual_dtlb_bare_hits_and_shared_miss_progress(d):
+    t=Tb(d);await t.reset();t.put('mode_i',0)
+    for cycle in range(40):
+        a=0x80000000+8*cycle;b=0x80010000+8*cycle
+        t.put('d_va_i',a);t.put('d1_va_i',b);t.put('d_valid_i',1);t.put('d1_valid_i',1)
+        await t.tick()
+        assert t.get('d_resp_o') and t.get('d1_resp_o')
+        assert t.get('d_hit_o') and t.get('d1_hit_o')
+        assert (t.get('d_pa_o'),t.get('d1_pa_o'))==(a,b)
+    t.put('d_valid_i',0);t.put('d1_valid_i',0);t.put('mode_i',8)
+    t.map(0x4000,0x80010000);t.map(0x8000,0x80020000)
+    await t.access(0x4000,'load','hit')
+    # Resident port0 progresses while port1 owns the sole miss.
+    t.put('d_va_i',0x4008);t.put('d1_va_i',0x8010);t.put('d_valid_i',1);t.put('d1_valid_i',1)
+    await t.tick()
+    assert t.get('d_hit_o') and t.get('d1_miss_o')
+    assert t.get('d_pa_o')==0x80010008
+    t.put('d_valid_i',0);t.put('d1_valid_i',0)
+    for _ in range(80):await t.tick()
+    for cycle in range(40):
+        t.put('d_va_i',0x4000+cycle);t.put('d1_va_i',0x8000+cycle)
+        t.put('d_valid_i',1);t.put('d1_valid_i',1);await t.tick()
+        assert t.get('d_hit_o') and t.get('d1_hit_o')
+        assert (t.get('d_pa_o'),t.get('d1_pa_o'))==(0x80010000+cycle,0x80020000+cycle)
+    t.put('d_valid_i',0);t.put('d1_valid_i',0)

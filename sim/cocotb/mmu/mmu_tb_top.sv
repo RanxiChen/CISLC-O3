@@ -1,5 +1,8 @@
 module mmu_tb_top import o3_types_pkg::*; (
     input logic clk,rst,kill_i,
+    input logic d1_valid_i,d1_store_i,input logic [63:0] d1_va_i,
+    output logic d1_resp_o,d1_hit_o,d1_miss_o,d1_pf_o,d1_af_o,d1_dirty_o,
+    output logic [55:0] d1_pa_o,
     input logic d_commit_i,output logic d_commit_ready_o,d_commit_done_o,d_commit_exc_o,
     input logic i_valid_i,d_valid_i,d_store_i,input logic [63:0] i_va_i,d_va_i,
     input logic [3:0] mode_i,input logic [1:0] priv_i,input logic sum_i,mxr_i,adue_i,
@@ -29,8 +32,8 @@ module mmu_tb_top import o3_types_pkg::*; (
         sf='{valid:sf_valid_i,rs1_is_x0:sf_rs1_x0_i,rs2_is_x0:sf_rs2_x0_i,vaddr:sf_va_i,asid:sf_asid_i};
         pmp='0;pmp.entries[0].addr=54'h3fffffffffffff;
         pmp.entries[0].cfg=deny_read_i ? 8'h18 : deny_write_i ? 8'h19 : 8'h1f;
-        dv[0]=d_valid_i;ds[0]=d_store_i;da[0]=d_va_i;dv[1]=0;ds[1]=0;da[1]=0;
-        mem_resp='{valid:mem_valid_i,src:DC_SRC_PTW,status:(mem_fault_i ? DC_ERROR : DC_OK),rdata:mem_data_i,default:'0};
+        dv[0]=d_valid_i;ds[0]=d_store_i;da[0]=d_va_i;dv[1]=d1_valid_i;ds[1]=d1_store_i;da[1]=d1_va_i;
+        mem_resp='{valid:mem_valid_i,src:DC_SRC_PTW,status:(mem_fault_i ? DC_ERROR : DC_OK),reason:LDW_NONE,rdata:mem_data_i,default:'0};
         ad_resp='{valid:ad_valid_i,updated:ad_updated_i,mismatch:ad_mismatch_i,access_fault:ad_fault_i};
     end
     itlb #(.CFG(o3_cfg_pkg::O3_CFG.fe)) i_tlb(.clk_i(clk),.rst_i(rst),.kill_i(kill_i),
@@ -43,6 +46,9 @@ module mmu_tb_top import o3_types_pkg::*; (
         .ptw_req_valid_o(d_req_valid),.ptw_req_ready_i(d_ready),.ptw_req_o(d_req),.ptw_resp_i(resp),
         .csr_i(csr),.sfence_i(sf),.sfence_done_o(d_sf),.perf_o());
     assign i_pa_o=sv39_pa(i_ppn,i_va_i,i_level);
+    assign d1_resp_o=dr[1];assign d1_hit_o=dp[1].hit;assign d1_miss_o=dp[1].miss;
+    assign d1_pf_o=dp[1].page_fault;assign d1_af_o=dp[1].access_fault;assign d1_dirty_o=dp[1].perm_d;
+    assign d1_pa_o=sv39_pa(dp[1].ppn,d1_va_i,dp[1].level);
     assign d_resp_o=dr[0];assign d_hit_o=dp[0].hit;assign d_miss_o=dp[0].miss;
     assign d_pf_o=dp[0].page_fault;assign d_af_o=dp[0].access_fault;assign d_dirty_o=dp[0].perm_d;
     assign d_pa_o=sv39_pa(dp[0].ppn,d_va_i,dp[0].level);

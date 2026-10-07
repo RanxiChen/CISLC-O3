@@ -23,11 +23,11 @@ async def c_issue_enqueue_wakeup_m_kill_stall_preserves_identity(d):
             e=dict(id=serial+lane,mask=rng.getrandbits(val(d.cfg_tags_o)),s1=rng.randrange(1,7),s2=rng.randrange(1,7),rs1=rng.randrange(2),rs2=rng.randrange(2),load=kind==1 and bool(rng.randrange(2)))
             e['a']=not e['rs1'] or ready[e['s1']] or waking==e['s1'];e['b']=not e['rs2'] or ready[e['s2']] or waking==e['s2']
             new.append(e)
-        inputs=[codec(d,'renamed_uop_t',valid=1,instruction_id=e['id'],branch_mask=e['mask'],rs1_read_en=e['rs1'],rs2_read_en=e['rs2'],src1_preg=e['s1'],src2_preg=e['s2'],is_load=int(e['load']),is_store=int(kind==1 and not e['load'])) for e in new]
+        inputs=[codec(d,'renamed_uop_t',**{'ext.rs1_dom':1,'ext.rs2_dom':1},valid=1,instruction_id=e['id'],branch_mask=e['mask'],rs1_read_en=e['rs1'],rs2_read_en=e['rs2'],src1_preg=e['s1'],src2_preg=e['s2'],is_load=int(e['load']),is_store=int(kind==1 and not e['load'])) for e in new]
         bundle(d.enq_uop_i,inputs+[0]*(w-n));d.enq_fire_i.value=n>0
         chosen=[]
         if not mis:
-            chosen=[i for i,e in enumerate(q) if e['a'] and e['b'] and (kind!=1 or not e['load'] or allow)][:issues]
+            chosen=[i for i,e in enumerate(q) if e['a'] and e['b']][:issues]
         await settle()
         assert val(d.free_count_o)==depth-len(q),(seed,cycle,kind,q)
         assert val(d.issue_valid_o)==(1<<len(chosen))-1,(seed,cycle,chosen)
