@@ -486,7 +486,10 @@ module backend
                 lsu_exc_valid=1;lsu_exc_idx=mem_exc_idx[p];lsu_exc=mem_exc[p];
             end
         end
-        for(int p=0;p<P;p++) mem_exc_ready[p]=lsu_exc_valid && mem_exc_idx[p]==lsu_exc_idx && !csr_req_valid;
+        // ROB recovery does not accept its precise-exception port on an M edge.
+        // Keep the surviving older exception in the LSU FIFO until the next edge.
+        for(int p=0;p<P;p++) mem_exc_ready[p]=lsu_exc_valid && mem_exc_idx[p]==lsu_exc_idx &&
+            !csr_req_valid && !branch_mispredict && !global_flush;
         sq_changed=t_sq_dc_resp.valid || branch_resolution_i.valid;
         for(int p=0;p<P;p++) sq_changed|=sq_execute_valid[p];
     end
