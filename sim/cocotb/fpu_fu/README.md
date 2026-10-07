@@ -13,3 +13,7 @@ NV/DZ、请求身份、结果背压保持、分支取消和全局 flush 后迟�
 程序含 F/D 运算、转换、访存、四条 FP RVC、flags、动态舍入、FS Off trap
 和 50 次依赖/分支循环；不使用 MRET，不调用 Spike。
 这是基本功能门禁，不替代 L9 spec 全部验收项或后续 SoC 回归。
+
+`run-l9-fp-smoke` 是较小的顺序功能门禁，访存块间用 CSR 串行边界排空更老操作。
+`run-l9-fp` 保留未串行化的依赖/replay 用例；已发现单槽 replay 可能阻塞更老 load，
+构成 load→store→年轻 load 的等待环，不能用 smoke PASS 代替它的结果。

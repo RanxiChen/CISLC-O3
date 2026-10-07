@@ -197,3 +197,9 @@ run-l7b-rvc:
 run-l9-fp:
 	$(RISCV_GCC) -march=rv64imfdc_zicsr -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l9_fp.S -o $(BUILD_DIR)/l9_fp.elf
 	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK --image $(BUILD_DIR)/l9_fp.elf --trace $(BUILD_DIR)/l9_fp.jsonl --tohost-address 0x801ff000 --max-cycles 100000 --max-retires 10000
+
+# Sequential basic gate; retain run-l9-fp as the broader dependency/replay case.
+.PHONY: run-l9-fp-smoke
+run-l9-fp-smoke:
+	$(RISCV_GCC) -march=rv64imfdc_zicsr -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l9_fp_smoke.S -o $(BUILD_DIR)/l9_fp_smoke.elf
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK --image $(BUILD_DIR)/l9_fp_smoke.elf --trace $(BUILD_DIR)/l9_fp_smoke.jsonl --tohost-address 0x801ff000 --max-cycles 100000 --max-retires 10000
