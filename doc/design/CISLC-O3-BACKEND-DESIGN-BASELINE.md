@@ -1,12 +1,12 @@
 # CISLC-O3 后端设计基线与决策记录
 
-更新日期：2026-10-06。**最新：第 37 节 B48（性能计数器 Zihpm + Sscofpmf）；B45 已暂停。此前：第 36 节 B42～B47（v1 实施计划确认，见 [`../O3-v1-plan.md`](../O3-v1-plan.md)）；B01 改为四宽；B16/B17/B19/B20 已移入附录 A。**
+更新日期：2026-10-07。**最新：第 38 节 B49（能由硬件处理的不交给软件 trap：跨 line/跨页非对齐硬件拆分、`time` CSR 硬件读、Sstc；B31 的“跨 line 报异常”部分被取代）。此前：第 37 节 B48（性能计数器 Zihpm + Sscofpmf）；B45 已暂停。此前：第 36 节 B42～B47（v1 实施计划确认，见 [`../O3-v1-plan.md`](../O3-v1-plan.md)）；B01 改为四宽；B16/B17/B19/B20 已移入附录 A。**
 
 原更新日期：2026-10-02。目标工程：`/home/chen/work/CISLC-O3`。本文暂存于 Flow，仅记录设计与只读源码核对；不代表 RTL、编译、仿真、时序或 FPGA 验证完成。
 
 最新恢复决定：B30 同步前端 D29 的 BOOM 式 RAS 快速修复及系统首笔取指解耦，替换旧 undo；B29 的其余审查入口继续有效。
 
-最新访存决定：B31 已选普通可缓存标量非对齐访问同 line 硬件支持、跨 line 报异常，并加入跨 line 非对齐异常次数计数。
+最新访存决定：B31 已选普通可缓存标量非对齐访问同 line 硬件支持、跨 line 报异常，并加入跨 line 非对齐异常次数计数。**2026-10-07 B49 取代其中“跨 line 报异常”与计数器口径：跨 line/跨页改为硬件拆分完成。**
 
 最新机制共识：B32～B41（第 35 节）记录保守 load 依赖、提前唤醒与完成 FIFO、MULH+MUL 融合、LR/SC reservation、硬件 A/D、committed_next_pc、WFI、fatal 隔离、FP 状态退休、L2 inclusive（组相联、PLRU）回收，以及系统同步由 commit_ctrl 编排；已补入目标工程 RTL 框架（空壳，未编译/验证）。
 
@@ -161,7 +161,7 @@ R2 分配 ROB/SQ → 地址/数据准备 → 翻译与访问检查 → 执行完
 - TLB miss 不是异常：等待 PTW，成功后与 hit 路径具有相同资格；不因为曾经 miss 就要求普通 store 等 cache 最终写入才退休。
 - page fault、PMP/PMA 拒绝及访问边界等同步错误保留原指令身份，向 ROB 报告。故障 VA 与内部 PA 分开保存，不混作异常地址。
 - PTW 自身读取页表的物理权限检查，与最终目标访问权限检查分开。
-- 普通可缓存标量非对齐访问按 B31：同 line 硬件支持、跨 line 报非对齐异常，不建立双页拆分完成通路；权限检查覆盖全部访问字节。A 扩展首版自然对齐限制见 B09。
+- 普通可缓存标量非对齐访问按 B31：同 line 硬件支持、跨 line 报非对齐异常，不建立双页拆分完成通路；权限检查覆盖全部访问字节。（2026-10-07 B49 取代：跨 line/跨页由硬件拆成两次访问完成，两半分别翻译与检查。）A 扩展首版自然对齐限制见 B09。
 - 将来写回的硬件故障不能静默丢弃，也不能伪装成已退休原 store/AMO 的精确异常；硬件错误报告方式待特权/异常设计闭合。
 - 本记录固定访存端异常合同；统一异常入口、CSR、xRET、中断边界随后已按 B22/B26/B27 确认，剩余集成审查见 B29。
 
@@ -510,7 +510,7 @@ SQ 排空后，按前端 D26 的 rs1 虚拟地址、rs2 ASID、global 与页大�
 
 ### 32.1 已确认的复用范围
 
-用户已确认传统定时器路线，并要求后续 Linux 特权、中断控制器等常规机制复用 Breeze 经验，不再逐节重新讲解或重新选择。首版链路为 `CLINT mtime/mtimecmp → MTIP → M-mode OpenSBI → 软件 STIP → S-mode Linux`。Linux 通过 SBI set_timer 设置下一事件，OpenSBI 编程比较值并清除旧 STIP、重启机器定时器中断；机器定时器到期后由 OpenSBI 屏蔽 MTIE 并置 STIP，交给 S 态处理。具体固件实现须与所选 OpenSBI 版本核对；首版不依赖 Sstc，未禁止未来添加。
+用户已确认传统定时器路线，并要求后续 Linux 特权、中断控制器等常规机制复用 Breeze 经验，不再逐节重新讲解或重新选择。首版链路为 `CLINT mtime/mtimecmp → MTIP → M-mode OpenSBI → 软件 STIP → S-mode Linux`。Linux 通过 SBI set_timer 设置下一事件，OpenSBI 编程比较值并清除旧 STIP、重启机器定时器中断；机器定时器到期后由 OpenSBI 屏蔽 MTIE 并置 STIP，交给 S 态处理。具体固件实现须与所选 OpenSBI 版本核对；首版不依赖 Sstc，未禁止未来添加。（2026-10-07 B49：v1 加入 Sstc，Linux 优先使用 `stimecmp`，传统 SBI set_timer 路径保留为 OpenSBI 回退。）
 
 CSRFile 承接 M/S pending、enable、delegation、trap entry/return 及软件 STIP 语义；平台提供 MSIP/MTIP/MEIP/SEIP 等输入，不能把平台反映的只读 pending 位误做普通可写寄存器。PLIC 的 priority、pending、enable、threshold、claim/complete 与设备中断接线沿用 Breeze 的经验。复用意味着以已审查实现为依据迁移语义和验证经验，不是照抄 Wishbone/LiteX 包装、旧核数、源数、地址或时钟参数，也不把 Breeze 的测试结果算作 CISLC-O3 已通过。
 
@@ -559,7 +559,9 @@ CSRFile 承接 M/S pending、enable、delegation、trap entry/return 及软件 S
 
 本次只更新两份设计基线；目标工程的 `ras.sv` 等仍保留旧框架，未修改 RTL、未编译或仿真，不覆盖其他 agent 的改动。B29 是审查入口，B30 是最新恢复决策补充；余项继续区分已定待实现、接口细化和真正行为选择。
 
-## 34. B31：同 line 非对齐访问支持与跨 line 异常计数（2026-10-02，已确认）
+## 34. B31：同 line 非对齐访问支持与跨 line 异常计数（2026-10-02，已确认；跨 line 部分 2026-10-07 由 B49 取代）
+
+> **2026-10-07 B49：** 本节“跨 line 报地址非对齐异常、不建立双页拆分完成通路”及 34.1 计数器口径已被第 38 节取代；同 line 部分、MMIO 不拆分、A 扩展自然对齐继续有效。
 
 用户选择方案②：普通可缓存内存的标量非对齐 load/store（包括相应浮点访存）在同一条 cache line 内由硬件支持；跨 line 则报告地址非对齐异常，不发出该指令的数据读写。MMIO 不进入这条普通内存拆分路径，A 扩展仍按 B09 要求自然对齐。该决定不涉及取指跨块拼接，也不扩展至 V。
 
@@ -731,6 +733,44 @@ CSRFile 承接 M/S pending、enable、delegation、trap entry/return 及软件 S
 - 采样中断不是精确归因：`perf record` 记录的是中断进入时的 PC，可能与触发溢出的事件相隔若干条指令（skid）。首版接受，不做精确事件采样。
 - 一次只能同时观测 N 种事件；需要更多事件时分多次运行。
 - 计数器加法器、事件选择器的面积与时序在 L11 综合时核对。
+
+## 38. B49：能由硬件处理的不交给软件 trap（2026-10-07，已定）
+
+### 38.1 原则
+
+用户确认：凡 RISC-V 允许“软件处理（trap 后模拟、SBI 调用、为记账而报异常）”与“硬件处理”二选一的地方，**选硬件处理**，并尽量放在旁路、与正常流水线并行，不给常用路径增加流水级。可以为此增加硬件与合同要求。依据：乱序核上每次 trap 都要清空流水线并串行化，代价远大于额外硬件。
+
+- 规范对硬件的限制仍须遵守（例如 D 位不得推测置位，B36 已按此在队首非推测更新）。
+- 已符合本原则、不改：B36 硬件 A/D、B07 硬件 PTW、B40 FS Dirty 硬件维护、B48 计数器 S/U 直接读取（经 `mcounteren`/`scounteren`）。
+- 以后各级 spec 遇到规范允许 trap 模拟的点，默认给出硬件方案；改动已定 Bxx/Dxx 仍须用户确认。
+
+### 38.2 跨 line / 跨页非对齐访存：硬件拆分（取代 B31 跨 line 部分）
+
+- 普通可缓存标量 load/store（含 FLW/FLD/FSW/FSD）跨 cache line 时，LSU 拆成两次 line 内访问并拼接，仍是一条架构指令、一次完成/退休；不再报地址非对齐异常。
+- 跨 4KiB 页时两半分别翻译、分别做页表权限/PMP/PMA 检查（D 位、A 位按两页各自处理）。任一半有异常时整条指令精确报告：cause 取该半的 page fault/access fault，`tval` 为出错那一半的首个虚拟地址（规范允许的选择，固定此口径）。
+- load 在两半数据与检查全部完成后才交付；store 两半检查与数据齐备后才完成，drain 时两半写入。不承诺整体原子性（规范不要求）。
+- 继续不拆分：MMIO / 非可缓存区域（报地址非对齐异常，保持 B31）；A 扩展 LR/SC/AMO 自然对齐（B09，规范要求）。
+- 计数器：B31.1 的 `misaligned_crossline_traps` 改为性能事件 `misaligned_crossline_split`，统计**退休**的跨 line 拆分访存条数（错误路径、重放不计）；事件号随 L8 加入 B48 编号表。
+- 归属：L8（随 Breeze 访存翻译与乱序优化一起实现）。L10 的 DTLB/PTW 接口须允许同一指令发起两次翻译请求，不得假定一条访存只有一个虚拟页。
+
+### 38.3 `time` CSR 硬件读
+
+- `time`（0xC01）由硬件直接返回 CLINT `mtime` 的值，不 trap 给 OpenSBI 模拟。核顶层增加 `mtime_i` 输入（来自 CLINT，或核内与之同步的副本）；读取受 `mcounteren.TM`、`scounteren.TM` 控制，未授权时按规范报非法指令。
+- `mtime_i` 与 CPU 时钟的关系、跨时钟域方式在 L11 SoC 集成时确定；L10 仿真由 testbench 驱动。
+- 归属：L10 实现 CSR 与权限；L11 接 CLINT。
+
+### 38.4 Sstc
+
+- 加入 Sstc：`stimecmp`（0x14D）、`menvcfg.STCE`（bit 63）。`STCE=1` 时 `mip.STIP = (time >= stimecmp)`，由硬件维护，S 模式可直接设定时器，不经 SBI ecall；`STCE=0` 时保持传统软件 STIP 路径。`mcounteren.TM=0` 时 S 模式访问 `stimecmp` 非法。
+- 不做 H 扩展的 `vstimecmp`。
+- 归属：L10 实现 CSR、`menvcfg.STCE` 与 STIP 比较；中断交付随 L11 中断控制接入。OpenSBI/设备树在 L11 声明 `sstc`。
+- 取代 v1 计划第 5 节“不在 v1”中的 Sstc，及 B28/B29 中“首版不依赖 Sstc”的表述（传统路径保留为回退）。
+
+### 38.5 影响范围
+
+- 设计基线：B06（第 8 节）、B31（第 34 节）、B28（第 31 节）已加取代注记。
+- v1 计划：L8 加 B49 跨 line 拆分；L10 加 `time` CSR、Sstc CSR；L11 加 Sstc 中断交付与 OpenSBI 配置；第 5 节删去 Sstc。
+- RTL 头注释中引用 B31“跨 line 报异常”的位置（`load_store_unit.sv`、`dcache.sv`、`dtlb.sv`、`commit_ctrl.sv`、`backend_perf_events.sv`、`rob.sv`、`o3_types_pkg.sv` 的 `crossline_misalign`）随所在模块被 L8/L10 触及时修正，记入 `LOOP.md` 第 4 节。
 
 ## 附录 A：已被取代的历史决策
 

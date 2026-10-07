@@ -55,10 +55,10 @@ L0～L4 及 L3 的已有证据见 `LOOP.md`。v1 从 L3 收尾开始。
 | L5 | 接入 Spike 逐条比对；M 模式 CSR、精确异常、ecall/ebreak/illegal、MRET、committed_next_pc | B22、B26、B27、B37、B45 | ACT4 RV64I 全部通过；Spike 比对 0 差异 |
 | L6 | M 扩展（MUL 采用 DSP，DIV 沿用 Breeze radix-4，手工翻译）；完成 FIFO 与提前唤醒；JALR | B13、B33、B34、B43 | ACT4 RV64IM；仿真跑 CoreMark（原定首次 OOC 综合已推迟到 L11，见 2.4） |
 | L7 | （2026-10-06 拆为 L7a 预测器接入 + B48 计数器；L7b RVC、D33～D35）完整预测：uBTB/BTB/TAGE、FTQ 恢复、RAS 快速修复；RVC（手工翻译 Breeze 解压器） | D01～D24、D29～D35、B30、B48 | M 模式 Zihpm 计数器与前端预测事件（B48）；RV64IMC；误预测率与 IPC 基线；Spike 比对 |
-| L8 | 完整非阻塞访存：多 MSHR、重放、同 line 非对齐、A 扩展、FENCE/FENCE.I | B03～B05、B09、B23、B31、B32、B35 | RV64IMAC；litmus；死锁 watchdog；随机访存程序 |
+| L8 | 完整非阻塞访存：多 MSHR、重放、同 line 非对齐、跨 line/跨页非对齐硬件拆分（B49）、A 扩展、FENCE/FENCE.I | B03～B05、B09、B23、B31、B32、B35、B49 | RV64IMAC；litmus；死锁 watchdog；随机访存程序 |
 | L9 | F/D：拆分 CVFPU、FP 重命名、fflags/FS 退休 | B14、B15、B40 | ACT4 RV64GC（用户态） |
-| L10 | S/U 模式、Sv39 MMU（翻译 Breeze MMU 的 TLB/PTW/walk cache，LSU 侧接口按 O3 重新设计）、SFENCE.VMA、satp、PMP、A/D 更新、WFI；计数器 S/U 访问与 Sscofpmf 溢出中断（B48） | B06、B07、B24、B36、B38、D25～D28 | 特权测试；riscv-tests p/v 变体 |
-| L11 | SoC：L2 + DDR4（Vivado MIG）+ CLINT/PLIC + UART + SD（AXI Quad SPI）+ SD DMA 协调 + FASE；fatal 隔离；OpenSBI PMU 与 Linux perf（B48） | B08、B28、B29、B39、B41、B44 | 仿真中启动 OpenSBI + Linux；上板启动 Linux，镜像经 SD 卡加载 |
+| L10 | S/U 模式、Sv39 MMU（翻译 Breeze MMU 的 TLB/PTW/walk cache，LSU 侧接口按 O3 重新设计）、SFENCE.VMA、satp、PMP、A/D 更新、WFI；计数器 S/U 访问与 Sscofpmf 溢出中断（B48）；`time` CSR 硬件读、Sstc 的 `stimecmp`/`menvcfg.STCE`/STIP 比较（B49）；DTLB/PTW 接口允许一条访存两次翻译（B49） | B06、B07、B24、B36、B38、B49、D25～D28 | 特权测试；riscv-tests p/v 变体 |
+| L11 | SoC：L2 + DDR4（Vivado MIG）+ CLINT/PLIC + UART + SD（AXI Quad SPI）+ SD DMA 协调 + FASE；fatal 隔离；OpenSBI PMU 与 Linux perf（B48）；CLINT `mtime` 接入核、Sstc 中断交付与 OpenSBI/设备树声明（B49） | B08、B28、B29、B39、B41、B44、B49 | 仿真中启动 OpenSBI + Linux；上板启动 Linux，镜像经 SD 卡加载 |
 
 每一级都可以拆成多个任务；级内的局部 cocotb 测试规则见 `agent.md` 第 2 节。
 
@@ -82,4 +82,4 @@ Breeze 仓库：`/home/chen/leisure/flow`。
 
 ## 5. 不在 v1
 
-多核、V 扩展（在 Breeze 上另做）、值预测、Sstc、Debug Mode、L2 预取以外的新预测机制。
+多核、V 扩展（在 Breeze 上另做）、值预测、Debug Mode、L2 预取以外的新预测机制。（Sstc 已于 2026-10-07 按 B49 移入 v1。）

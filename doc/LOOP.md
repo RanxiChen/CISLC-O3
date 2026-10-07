@@ -150,6 +150,8 @@ R1 依赖与级间暂存按 B42 综合时序触发，不指定 Ln。
 - `doc/CISLC_O3_frontend.md` 中描述 `ifu.sv` 状态机的章节已失效。
 - `rtl/common/o3_cfg_pkg.sv` 保留未使用的空宏 `` `O3_TBD ``；backend 相关过期说明已在 O3-T01 修正。
 
+- B49（2026-10-07）取代 B31 跨 line 报异常：`load_store_unit.sv`、`dcache.sv`、`dtlb.sv`、`commit_ctrl.sv`、`backend_perf_events.sv`、`rob.sv`、`o3_types_pkg.sv`（`crossline_misalign`）头注释仍按旧口径；L8/L10 触及时修正。`csr_file.sv:7`“首版不依赖 Sstc”同样过期。
+
 - 58 个 RTL 文件头注释仍写着"本阶段不写测试代码和仿真代码"（旧规则，已作废，见 agent.md 第 4.1 节）。
 
 以上随相关模块被闭环触及时顺手修正。
