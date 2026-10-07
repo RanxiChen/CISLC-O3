@@ -73,7 +73,7 @@
 | `sie` / `sip` | `mie/mip & mideleg` 的视图；`sip` 只可写 SSIP、LCOFIP（且须已委托） |
 | `stvec`、`mtvec` | 模式 0/1，其他值写为 0；向量模式只对中断加偏移 |
 | `sepc`、`mepc` | `& ~1`（IALIGN=16） |
-| `scause`、`mcause` | WARL：只保存合法 cause（**修正**：Breeze 原样存） |
+| `scause`、`mcause` | WLRL，O3 实现为：合法值 = 中断位 0 且异常码 ∈ {0,1,2,3,4,5,6,7,8,9,11,12,13,15}，或中断位 1 且中断码 ∈ {1,3,5,7,9,11,13}；其余位为 0。非法写**整次忽略，保留旧值**（Q1）。（**修正**：Breeze 原样存） |
 | `stval`、`mtval`、`sscratch`、`mscratch` | 原样 |
 | `satp` | MODE ∈ {0 Bare, 8 Sv39}，其他 MODE 写入忽略（整次写不生效，同 Breeze）；ASID 16 位全可写；PPN 44 位。写入触发 6.2 同步 |
 | `menvcfg` | 可写 STCE(63)、ADUE(61)（X10）；其余 0 |
@@ -153,7 +153,7 @@
 | --- | --- |
 | ITLB、DTLB | 各 8 组 × 4 路 4 KiB 页（同步读 RAM 或寄存器，实现自选）+ 4 项全相联大页（寄存器，2 MiB/1 GiB）；树 PLRU |
 | ASID | 16 位；每项带 ASID 与 G |
-| walk cache | 上层：key=VPN[2]，1×4；中层：key=VPN[2:1]，2×4；寄存器；ASID 标记，不带 G |
+| walk cache | 上层：key=VPN[2]，1×4；中层：key=VPN[2:1]，2×4；寄存器；ASID 标记 + 路径累计 G（Q2）：G=1 的项对任意 ASID 命中 |
 | PTW | 1 个 walker（`ptw_slots=1`）；请求队列 ITLB 1 项、DTLB 1 项 |
 | `o3_cfg_pkg` | `itlb.entries=32/ways=4`、`dtlb_entries=32/dtlb_ways=4` 与上表一致；`walk_cache_entries` 改为分层参数；“待定”注释改为本 spec |
 
@@ -168,7 +168,7 @@
   - 取指需 X；load 需 R 或（MXR 且 X）；store 需 W；
   - U 模式需 `pte.U`；S 模式访问 `pte.U=1` 的页：取指一律失败，数据需 `SUM=1`；
   - A=0 或 store 且 D=0：**不报错**，走第 8 节。
-- 命中返回 PPN、大页级别、权限位与 G；PA 按级别拼接。
+- 命中返回 PPN、大页级别、权限位与 G；PA 按级别拼接。TLB 项的 G 为**整条遍历路径的累计 G**（各级 PTE 的 G 取或，规范：非叶子 G=1 表示其下所有映射为全局，Q2）。
 - **miss**：DTLB 返回 `miss`，请求方（LSU）挂起该访存并让出流水线（B04，复用现有 replay 槽，`LDW_TLB_MISS`）；DTLB 记录该 VPN 并向 PTW 请求。miss 期间 DTLB **继续服务其他请求的命中**；同 VPN 的第二个 miss 合并，不同 VPN 的第二个 miss 在请求队列满时返回 `miss` 并稍后重试（X2）。
 - PTW 返回后回填（无效路优先，否则 PLRU）并唤醒挂起者重新查询；PTW 返回 fault 时不回填，按 Breeze 的“pending fault”方式在该 VPN 下一次查询时交付一次（X7），然后清除。kill（分支误预测、flush）清除未交付的 pending fault。
 - ITLB 同理（第 5.1 节），取指 miss 时 ICache 该请求在 S1 判为 miss、不发 L2 请求，挂起到 PTW 返回后重新查询。
@@ -178,7 +178,7 @@
 | rs1 | rs2 | TLB | walk cache |
 | --- | --- | --- | --- |
 | x0 | x0 | 全部（含 G） | 全部 |
-| x0 | ≠x0 | ASID 匹配且非 G | ASID 匹配 |
+| x0 | ≠x0 | ASID 匹配且非 G | ASID 匹配且非 G |
 | ≠x0 | x0 | 覆盖该 VA 的叶子项（含 G，按各项页大小匹配） | 不变 |
 | ≠x0 | ≠x0 | 覆盖该 VA、ASID 匹配且非 G | 不变 |
 
@@ -193,7 +193,7 @@
 - 请求时快照 `satp.PPN/ASID` 与 `xlate_epoch`；返回时 epoch 不等于当前值则丢弃、不回填、不交付（D27）。
 - CHECK：`!V || (!R && W)` 或 `pte[63:54] != 0`（无 Svpbmt/Svnapot，N/PBMT 非零即保留）→ page fault；叶子大页 PPN 未对齐 → page fault；level 0 遇非叶子 → page fault；PTE 读访问错误 → access fault（取指 1、load 5、store 7），优先于 page fault。非叶子的 U/A/D 不检查（规范保留位，同 Breeze 新 MMU）。
 - 叶子返回后若需要置 A（第 8 节），先完成 A 更新再交付。
-- 非叶子 PTE 填 walk cache（level 2→上层，level 1→中层），带 ASID。
+- 非叶子 PTE 填 walk cache（level 2→上层，level 1→中层），带 ASID 与截至该级的累计 G；walk cache 捷径命中时以其累计 G 作为遍历的初始 G 继续累计（Q2；新 Breeze 只取叶子 G，此处不照搬）。
 - 访存接口 `mem_req{paddr}` / `mem_resp{data, access_fault}`（与 Breeze `PtwMemIO` 同形，B50），接 `dcache.sv` 已有的 PTW 读口（5.4）。PTW 读页表前做 PMP（以 S 模式、8 字节、读权限检查）与 PMA（须为可缓存主存）检查，失败直接以 `access_fault` 结束，不发 DCache 请求。
 - `idle_o` 供 SFENCE 等待（第 6 节）。
 
@@ -267,6 +267,7 @@
 - 该 store 到达 ROB 队头时，`commit_ctrl` 串行执行：`pte_ad_updater` 对该 VA 重新遍历（可走 walk cache），得到叶子后检查权限仍允许写，原子比较并置 `A|D`，成功后失效 DTLB 中该 VA 的旧项（或直接以新 PTE 回填），然后 store 正常退休。比较失败则重新遍历；遍历得到 page fault/access fault 则该 store 按 B26 报异常（归属原指令）。
 - 排序：`needs_D` store 之后更年轻的访存不得越过它进入 DCache（B36 “阻止年轻访存越过”）。L10 实现：LSU 在存在未处理的 `needs_D` store 时，对其后的 load 判为等待（`LDW_AD_ORDER`），到该 store 处理完再放行。L10 访存本来近乎串行，性能影响可接受。
 - 取消、`satp` 写、SFENCE 使 epoch 变化后，`pte_ad_updater` 不得为旧 epoch 发起新的 PTE 写（B36）。
+- **A/D 写的物理检查（Q3）**：PTE 的原子读—比较—条件写按 S 模式、8 字节检查 PMP（须 R 与 W 都允许）与 PMA（须为可放页表的可缓存主存），在发往 DCache 前完成。失败则不写 PTE，向原访问交付 access fault：取指 1、load 5、store 7；`tval` = 原 VA。队头 D 更新失败归属原 store（cause 7）。
 
 ### 8.3 DCache `pte_ad` 口（`dcache.sv:99-104`）
 
@@ -330,7 +331,7 @@
 | --- | --- |
 | `csr_file`（改） | S CSR 读写与 WARL（mstatus/sstatus 视图、medeleg/mideleg 掩码、sie/sip 视图、satp MODE 非法写忽略）；委托进 S 与进 M；MRET/SRET 特权与 MPRV；TSR/TVM 非法；计数器 counteren 门控；Sstc：STCE=1 时 STIP 跟随比较、STCE=0 时可写；中断优先级与全局使能各一例；scountovf |
 | `hpm_counters`（改） | *INH 过滤一例；回绕置 OF 与 LCOFIP 一例 |
-| `mmu`（新，含 ITLB/DTLB/PTW/walk cache，Python 页表遍历器参考模型） | 翻译 Breeze T1～T17 中适用者：Bare/M 直通、非规范 VA、三级遍历、walk cache 两级捷径、2M/1G 大页、大页未对齐、保留位、PTE 读 access fault、权限矩阵（含 SUM/MXR/U）、ASID/G、四种 SFENCE 范围（含 walk cache 在 rs1≠x0 时保留）、kill 前/后、轮转仲裁、随机遍历对照；**新增**：miss 期间其他 VPN 命中仍返回（非阻塞）、epoch 变化丢弃迟到返回、A=0 触发 A 更新并以新 PTE 回填、比较失败重新遍历 |
+| `mmu`（新，含 ITLB/DTLB/PTW/walk cache，Python 页表遍历器参考模型） | 翻译 Breeze T1～T17 中适用者：Bare/M 直通、非规范 VA、三级遍历、walk cache 两级捷径、2M/1G 大页、大页未对齐、保留位、PTE 读 access fault、权限矩阵（含 SUM/MXR/U）、ASID/G、四种 SFENCE 范围（含 walk cache 在 rs1≠x0 时保留、x0/rs2 时保留 G 项）、非叶子 G 累计（含 walk cache 捷径恢复）、A/D 写 PMP 拒绝报 access fault、kill 前/后、轮转仲裁、随机遍历对照；**新增**：miss 期间其他 VPN 命中仍返回（非阻塞）、epoch 变化丢弃迟到返回、A=0 触发 A 更新并以新 PTE 回填、比较失败重新遍历 |
 | `pmp_checker`（新） | OFF/TOR/NA4/NAPOT、优先级、部分覆盖失败、M 模式与 L 位、锁定写忽略 |
 | `commit_ctrl`（改） | SRET/MRET 重定向 kind；SFENCE 序列（SQ 空 → PTW idle → sfence → 前端同步 → 退休）；satp/PMP needs_refetch；中断在指令边界接受、`epc=committed_next_pc`；WFI 睡眠/同拍不睡/唤醒；needs_D store 队头处理 |
 | `frontend_sync_ctrl`（改） | SFENCE kind 不发 `inv_all`；FENCE.I 原用例保留 |
@@ -371,3 +372,11 @@
 | X14 | WFI 在 S/U 的非法判定 | U 立即非法；S 且 TW=1 立即非法（不设超时） | 规范允许超时后非法也允许立即；立即最简单 |
 | X15 | 任务拆分 | T08a 特权/CSR/中断/WFI/计数器/time/Sstc/PMP（Bare 下即可测）→ T08b MMU（ITLB/DTLB/PTW/walk cache、satp、SFENCE、page fault、Svade 模式）→ T08c 硬件 A/D（DCache `pte_ad` 口、A/D 更新、`needs_D`），连续执行 | T08a 不依赖翻译；T08b 先用 Svade 打通翻译，再在 T08c 加硬件 A/D，便于定位 |
 | X16 | 页表遍历与 load/store 共享唯一 MSHR 的前进性 | PTW 读优先；TLB miss 的 load 不占 MSHR | 满足 B07 前进性；L8 多 MSHR 时按 B07 预留份额 |
+
+### 14.1 实施中补充决定（2026-10-07，Codex 提问，用户确认）
+
+| 编号 | 问题 | 决定 | 正文位置 |
+| --- | --- | --- | --- |
+| Q1 | `mcause/scause` 合法集合与非法写 | 异常码 {0～9,11,12,13,15}、中断码 {1,3,5,7,9,11,13}，其余位 0；非法写整次忽略、保留旧值（规范为 WLRL，只保证保存支持的编码） | 2.2 |
+| Q2 | 非叶子 PTE 的 G | 路径累计 G（取或）；walk cache 增加累计 G，G=1 项跨 ASID 命中；SFENCE x0/rs2 时 walk cache 保留 G 项。覆盖 4.2 原“walk cache 不带 G” | 4.2、4.3、4.4、4.5 |
+| Q3 | A/D 条件写的物理检查与失败归属 | S 模式、8 字节、PMP R/W 均允许、PMA 可放页表；失败不写，交付原访问类型的 access fault 1/5/7，tval=原 VA | 8.2 |
