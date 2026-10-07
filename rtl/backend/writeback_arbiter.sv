@@ -1,25 +1,14 @@
-// 当前实现状态：闭环简化（L6）；测试 sim/cocotb/mdu/、early_wakeup/、sim/o3/。
-// L6: MUL/DIV completion heads participate in same oldest-first atomic grant as ALU.
 /**
- *
- * 【2026-10-02 框架：目标机制与缺口】
- * - 现有：4 个 ALU、1 个 Load、JAL/JALR 链接值按 ROB 年龄竞争整数写口；PRF 写入、wakeup、
- *   ROB complete 同一 grant 原子生效；被杀/无目的结果直接消费。
- * - L6：extra_src_i 中 MUL、DIV 已参与选择；FP→INT、AMO 待 L9/L8，CSR 用 L5 队头串行口。
- *   写口数 CFG.exec.int_prf_write_ports 待定；FP 域另有 fp_writeback_arbiter。
- * - 完成 FIFO（B33 已定）：MUL/FP 等流水 FU 的结果先进各自 fu_completion_fifo，头部作为候选；未赢得
- *   写口时留在 FIFO 头继续作 bypass 源，已发出的提前唤醒承诺不因仲裁推迟失效。融合乘法的两个结果
- *   是两个独立候选。公平性规则仍待定（纯年龄优先可能让长延迟结果长期占槽）。
- * - 取消：现用 resolution 掩码过滤；目标与 D24 统一取消边界一致。
- * Shared PRF writeback arbiter
- *
- * Integer、Load和JAL/JALR链接值结果保持寄存器竞争
- * PRF_WRITE_PORTS physical write ports. Candidates are selected oldest-first relative to
- * current ROB head. A producer is consumed only when killed, when it has no architectural
- * destination, or when it wins a write port. PRF write, wakeup and ROB complete therefore
- * share one atomic grant event.
- *
- * This block is combinational. Holding/backpressure state remains owned by each producer.
+ * INT writeback arbitration by ROB age (B13/B14/B15/B33).
+ * ALU, integer load, branch link and extra MUL/DIV/FP->INT candidates compete for
+ * INT PRF ports. FP->INT extra slots 2/3 preserve each result's fflags. x0 results
+ * complete without a PRF port and still report flags. Unselected live results stay held.
+ * Global flush and misprediction filter all writes and completion in the same cycle;
+ * canceled results are consumed for discard without completing a reused ROB entry.
+ * AMO remains outside L9; CSR keeps the serialized head path in backend.
+ * 当前实现状态：闭环简化（L9）；lint/测试未运行。
+ * Pure combinational N grants; N edge updates PRF/ready/ROB with the same event;
+ * N+1 ungranted producer heads still hold their numerical result and identity.
  */
 module writeback_arbiter
     import o3_pkg::*;
@@ -32,6 +21,7 @@ module writeback_arbiter
     //   0 MUL、1 DIV、2 FP-MISC→INT（比较/分类）、3 FP-CONV→INT（F2I/FMV.X）、4 CSR、5 AMO/LR/SC
     localparam int NUM_EXTRA_SRC = 6
 ) (
+    input logic flush_all_i,
     input int_execute_result_t alu_result_i [NUM_ALUS-1:0],
     input load_result_t load_result_i,
     input branch_result_t branch_result_i,
@@ -55,7 +45,8 @@ module writeback_arbiter
     output logic                  extra_consume_o [NUM_EXTRA_SRC],
     output logic extra_complete_valid_o [NUM_EXTRA_SRC],
     output logic [ROB_IDX_WIDTH-1:0] extra_complete_idx_o [NUM_EXTRA_SRC],
-    output logic [XLEN-1:0] extra_complete_data_o [NUM_EXTRA_SRC]
+    output logic [XLEN-1:0] extra_complete_data_o [NUM_EXTRA_SRC],
+    output logic [o3_isa_pkg::FFLAGS_W-1:0] extra_complete_fflags_o [NUM_EXTRA_SRC]
 );
     localparam int NUM_SOURCES = NUM_ALUS + 2 + NUM_EXTRA_SRC;
     logic candidate_valid [NUM_SOURCES-1:0];
@@ -69,7 +60,7 @@ module writeback_arbiter
     endfunction
 
     function automatic logic killed(input branch_mask_t mask);
-        killed = resolution_valid_i && resolution_mispredict_i && mask[resolution_tag_i];
+        killed = flush_all_i || (resolution_valid_i && resolution_mispredict_i && mask[resolution_tag_i]);
     endfunction
 
     always_comb begin
@@ -158,6 +149,7 @@ module writeback_arbiter
                 (!extra_src_i[e].tag.dst_write_en || selected[NUM_ALUS+2+e]);
             extra_complete_idx_o[e]=extra_src_i[e].tag.rob_idx;
             extra_complete_data_o[e]=extra_src_i[e].data;
+            extra_complete_fflags_o[e]=extra_src_i[e].fflags;
         end
         branch_consume_o = !branch_result_i.valid || branch_result_i.exc.valid
                          || killed(branch_result_i.branch_mask)

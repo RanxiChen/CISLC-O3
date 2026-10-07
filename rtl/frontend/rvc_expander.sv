@@ -1,6 +1,7 @@
 // Integer RV64C expansion, translated from Flow AirRvcDecompressor.scala
 // at 02e3f6fd2219186c9ddbe7cc7dd3e486ae9709f6 (L7b spec 2.2).
-// Floating-point, RV32-only and reserved encodings retain legal_o=0.
+// 当前实现状态：闭环简化（L9）；lint/测试未运行，纯组合译码。
+// L9 also expands RV64 C.FLD/C.FSD/C.FLDSP/C.FSDSP; f0 is writable.
 module rvc_expander (
     input logic [15:0] in_i,
     output logic [31:0] out_o,
@@ -47,6 +48,11 @@ module rvc_expander (
                 imm={5'b0,c[5],c[12:10],c[6],2'b0};
                 out_o=c[15] ? enc_s(2,rs1p,rdp,imm):enc_i(7'h03,rdp,2,rs1p,imm);legal_o=1;
             end
+            1,5: begin // FLD / FSD
+                imm={4'b0,c[6:5],c[12:10],3'b0};
+                out_o=c[15] ? {imm[11:5],rdp,rs1p,3'd3,imm[4:0],7'h27} : enc_i(7'h07,rdp,3,rs1p,imm);
+                legal_o=1;
+            end
             3,7: begin // LD / SD
                 imm={4'b0,c[6:5],c[12:10],3'b0};
                 out_o=c[15] ? enc_s(3,rs1p,rdp,imm):enc_i(7'h03,rdp,3,rs1p,imm);legal_o=1;
@@ -61,7 +67,7 @@ module rvc_expander (
                 if(rd==2) begin
                     imm={{2{c[12]}},c[12],c[4:3],c[5],c[2],c[6],4'b0};
                     if(imm!=0) begin out_o=enc_i(7'h13,2,0,2,imm);legal_o=1;end
-                end else if(rd!=0 && (|c[12:2])) begin
+                end else if(rd!=0 && (|{c[12],c[6:2]})) begin
                     out_o={{14{c[12]}},c[12],c[6:2],rd,7'h37};legal_o=1;
                 end
             end
@@ -91,6 +97,12 @@ module rvc_expander (
             0: if(rd!=0) begin out_o=enc_i(7'h13,rd,1,rd,{6'b0,c[12],c[6:2]});legal_o=1;end
             2: if(rd!=0) begin
                 imm={4'b0,c[3:2],c[12],c[6:4],2'b0};out_o=enc_i(7'h03,rd,2,2,imm);legal_o=1;
+            end
+            1: begin // FLDSP, including f0
+                imm={3'b0,c[4:2],c[12],c[6:5],3'b0};out_o=enc_i(7'h07,rd,3,2,imm);legal_o=1;
+            end
+            5: begin // FSDSP
+                imm={3'b0,c[9:7],c[12:10],3'b0};out_o={imm[11:5],rs2,5'd2,3'd3,imm[4:0],7'h27};legal_o=1;
             end
             3: if(rd!=0) begin
                 imm={3'b0,c[4:2],c[12],c[6:5],3'b0};out_o=enc_i(7'h03,rd,3,2,imm);legal_o=1;

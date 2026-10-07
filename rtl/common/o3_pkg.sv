@@ -273,7 +273,7 @@ package o3_pkg;
         branch_mask_t              branch_mask;
         branch_tag_t               branch_tag;
         uop_ext_t                  ext;         // 框架新增（未接入逻辑）
-        rename_ext_t               rext;        // 框架新增：第三源 preg（未接入逻辑）
+        rename_ext_t               rext;        // 框架新增：第三源 preg（L9 已接入）
         mdu_fuse_t                 mdu_fuse; // B34 member identity after dispatch pair acceptance
     } renamed_uop_t;
 
@@ -397,6 +397,7 @@ package o3_pkg;
         logic [LQ_IDX_WIDTH-1:0]   lq_idx;
         logic [SQ_IDX_WIDTH-1:0]   sq_idx;
         logic [PREG_IDX_WIDTH-1:0] dst_preg;
+        o3_types_pkg::reg_domain_e dst_dom;
         logic                      dst_write_en;
         logic                      is_load;
         logic                      is_store;
@@ -418,6 +419,7 @@ package o3_pkg;
         logic [ROB_IDX_WIDTH-1:0]  rob_idx;
         logic [LQ_IDX_WIDTH-1:0]   lq_idx;
         logic [PREG_IDX_WIDTH-1:0] dst_preg;
+        o3_types_pkg::reg_domain_e dst_dom;
         logic [XLEN-1:0]           result;
         branch_mask_t              branch_mask;
     } load_result_t;

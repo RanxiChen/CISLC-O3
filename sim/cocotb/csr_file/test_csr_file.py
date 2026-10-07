@@ -6,10 +6,42 @@ async def edge(d):
     d.clk.value=0; await settle(); d.clk.value=1; await settle(); d.clk.value=0; await settle()
 
 @cocotb.test()
-async def zicsr_warl_traps_counters(d):
-    for n in ['clk','req_valid_i','write_i','op_i','addr_i','data_i','retired_i','fe_perf_i','be_perf_i','trap_i','xret_i','cause_i','epc_i','tval_i']:getattr(d,n).value=0
+async def fp_csr_reset_alias_and_retirement(d):
+    for n in ['fp_valid_i','fp_dirty_i','fp_flags_i','clk','req_valid_i','write_i','op_i','addr_i','data_i','retired_i','fe_perf_i','be_perf_i','trap_i','xret_i','cause_i','epc_i','tval_i']:
+        getattr(d,n).value=0
     d.rst.value=1;await edge(d);d.rst.value=0
-    state={0x300:0x1800,0x301:0x8000000000001104,0x304:0,0x305:0x200,0x340:0,0x341:0,0x342:0,0x343:0,0x344:0,0xf11:0,0xf12:0,0xf13:0,0xf14:0}
+    assert int(d.fs_o.value)==0 and int(d.frm_o.value)==0
+    async def access(addr,data=0,write=False):
+        d.req_valid_i.value=1;d.addr_i.value=addr;d.op_i.value=1
+        d.data_i.value=data;d.write_i.value=write;await settle()
+        result=int(d.read_o.value),int(d.illegal_o.value)
+        await edge(d);d.req_valid_i.value=0;d.write_i.value=0
+        return result
+    for addr in (1,2,3):assert (await access(addr,255,True))[1]==1
+    await access(0x300,1<<13,True)
+    assert await access(3)==(0,0)  # illegal writes while Off had no effect
+    assert int(d.fs_o.value)==1  # reads leave Initial intact
+    await access(3,0xa3,True)
+    assert await access(1)==(3,0)
+    assert await access(2)==(5,0)  # reserved frm is stored, not clamped
+    assert int(d.fs_o.value)==3
+    assert (await access(0x300))[0]>>63==1
+    await access(3,0,True);await access(0x300,2<<13,True)
+    d.fp_valid_i.value=1;d.fp_flags_i.value=0x10;d.fp_dirty_i.value=1
+    await edge(d);d.fp_flags_i.value=1;await edge(d)
+    d.fp_valid_i.value=0;d.fp_dirty_i.value=0;d.fp_flags_i.value=0
+    assert await access(1)==(0x11,0)
+    assert int(d.fs_o.value)==3
+    await access(0x300,0,True)
+    assert (await access(3))[1]==1
+    await access(0x300,1<<13,True)
+    assert await access(3)==(0x11,0)  # FS changes preserve fcsr
+
+@cocotb.test()
+async def zicsr_warl_traps_counters(d):
+    for n in ['fp_valid_i','fp_dirty_i','fp_flags_i','clk','req_valid_i','write_i','op_i','addr_i','data_i','retired_i','fe_perf_i','be_perf_i','trap_i','xret_i','cause_i','epc_i','tval_i']:getattr(d,n).value=0
+    d.rst.value=1;await edge(d);d.rst.value=0
+    state={0x300:0x1800,0x301:0x800000000000112c,0x304:0,0x305:0x200,0x340:0,0x341:0,0x342:0,0x343:0,0x344:0,0xf11:0,0xf12:0,0xf13:0,0xf14:0}
     async def access(addr,op=2,data=0,write=False):
         d.req_valid_i.value=1;d.addr_i.value=addr;d.op_i.value=op;d.data_i.value=data;d.write_i.value=write;await settle()
         old=state.get(addr,0);illegal=addr not in state or (write and addr>>10==3)
@@ -17,8 +49,10 @@ async def zicsr_warl_traps_counters(d):
         if addr in state:assert int(d.read_o.value)==old,(hex(addr),old,int(d.read_o.value))
         if write and not illegal:
             new=data if op==1 else old|data if op==2 else old&~data
-            if addr==0x300:new=0x1800|(new&0x88)
-            if addr==0x301:new=0x8000000000001104
+            if addr==0x300:
+                new=0x1800|(new&0x6088)
+                if (new>>13)&3==3:new|=1<<63
+            if addr==0x301:new=0x800000000000112c
             if addr==0x304:new&=0x888
             if addr==0x305:new=(new&~3)|(1 if new&3==1 else 0)
             if addr==0x341:new&=~1
@@ -44,7 +78,7 @@ async def zicsr_warl_traps_counters(d):
 @cocotb.test()
 async def hpm_routed_through_csr_file(d):
     """L7a 6.3: HPM addresses are served by hpm_counters via csr_file; events reach the counters."""
-    for n in ['clk','req_valid_i','write_i','op_i','addr_i','data_i','retired_i','fe_perf_i','be_perf_i','trap_i','xret_i','cause_i','epc_i','tval_i']:getattr(d,n).value=0
+    for n in ['fp_valid_i','fp_dirty_i','fp_flags_i','clk','req_valid_i','write_i','op_i','addr_i','data_i','retired_i','fe_perf_i','be_perf_i','trap_i','xret_i','cause_i','epc_i','tval_i']:getattr(d,n).value=0
     d.rst.value=1;await edge(d);d.rst.value=0
     async def access(addr,data=0,write=False,op=1):
         d.req_valid_i.value=1;d.addr_i.value=addr;d.op_i.value=op;d.data_i.value=data;d.write_i.value=write;await settle()
@@ -68,7 +102,7 @@ async def hpm_routed_through_csr_file(d):
 
 @cocotb.test()
 async def trap_xret_stale_payload_and_live_hpm(d):
-    for n in ['clk','req_valid_i','write_i','op_i','addr_i','data_i','retired_i','fe_perf_i','be_perf_i','trap_i','xret_i','cause_i','epc_i','tval_i']:
+    for n in ['fp_valid_i','fp_dirty_i','fp_flags_i','clk','req_valid_i','write_i','op_i','addr_i','data_i','retired_i','fe_perf_i','be_perf_i','trap_i','xret_i','cause_i','epc_i','tval_i']:
         getattr(d,n).value=0
     d.rst.value=1;await edge(d);d.rst.value=0
     async def access(addr, data=0, write=False, op=1):

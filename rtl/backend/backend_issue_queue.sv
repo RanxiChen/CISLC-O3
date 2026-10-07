@@ -1,37 +1,19 @@
-// L6: FU availability gates Select independently of PRF grants; wakes include completion heads.
 /**
- *
- * 【2026-10-02 框架：目标机制与缺口】
- * - 实例按 KIND（IQ_INT/IQ_MEM/IQ_BR/IQ_FP）从 CFG 取深度与发射宽度，无默认值。
- * - 需要补充：第三源（FMA）ready；源寄存器域（INT/FP 两套 ready 表与唤醒广播）；
- *   多个写回域的 wakeup 输入；M FU 与 FP FU 的发射/占用约束（DIV 单请求迭代时不能连续发射，
- *   乘法完成端容量预留或可停顿流水的选择待讨论，B21）。
- * - L3 Memory 实例允许越过源未就绪的队头；LSU 的单项保守依赖 replay 槽占用时
- *   暂停新 load 选择，但仍允许 store 发射解除依赖。没有推测越过未知 store 地址。
- * - 现有选择：最老 ready 优先，没有同拍 wakeup-select 旁路（保持）。
- * Generic backend Issue Queue
- *
- * 已实现：
- * - 接收Dispatch同拍分流到本队列的0..ENQ_WIDTH条renamed uop并按lane年龄压紧。
- * - 保存完整renamed uop，依据preg_ready_i持续更新两个源操作数的ready状态。
- * - Writeback广播目的preg，同拍更新等待项的next ready状态；下一拍参与Select。
- * - 从队列年龄最老端扫描，给出最多ISSUE_WIDTH条ready候选。
- * - 只有issue_valid_o && issue_ready_i握手的候选才从队列删除。
- * - 正确分支解析清除branch-mask bit；误预测删除目标分支之后的uop并压紧。
- *
- * 未实现：
- * - 不区分整数、访存或分支执行语义；类型隔离由Dispatch保证。
- * - 不做写回同拍旁路、年龄矩阵、端口亲和性和多周期FU占用仲裁。
- * - 是否真正发射完全由每个实例的issue_ready_i决定；Integer实例接四路ALU，
- *   Integer/Memory/Branch实例均由共享读口和对应FU可用性回送ready。
- * - OLDEST_ONLY=1时只允许物理队头成为候选；L3 Memory 实例设为 0，并由
- *   allow_load_i 配合 LSU 单项 replay 槽避免年轻 Load 占住执行寄存器的死锁。
- * 当前实现状态：闭环简化（L6）。INT 共享 M，按独立 FU 容量选择；Memory 单发射，可越过源未就绪队头；
- * replay 槽占用时只选 store。测试：sim/cocotb/backend_issue_queue/。
- *
- * 周期N组合阶段更新ready视图、选择候选并计算压缩后的next状态；
- * 周期N上升沿原子删除已握手候选、追加Dispatch输入或执行恢复；
- * 周期N+1对外看到新的free count和最老ready候选。
+ * Domain-qualified backend issue queue (B14/B15/B33).
+ * Every source has a domain and cached readiness; wake/ready checks compare only the
+ * corresponding register domain. src3 participates in FMA dependencies. No same-cycle
+ * wake-select bypass: a received writeback becomes selectable on the following cycle.
+ * FP: depth CFG.dispatch.fp_iq_depth, oldest-ready dual issue; five RegRead capacities
+ * prevent repeated FU selection, at most one INT-source FP candidate per cycle.
+ * INT: retains MUL/DIV occupancy constraints and fused-pair handling. MEM: single
+ * issue can bypass an unready head, suppressing loads while the replay slot is occupied.
+ * Only issue_valid && issue_ready deletes a candidate; denied INT read grants leave it queued.
+ * Correct resolution clears masks; misprediction removes dependent younger entries.
+ * B33 FP early wakeup is deferred to performance work; actual PRF writes wake FP sources.
+ * 当前实现状态：闭环简化（L9）；本次 lint/测试未运行。
+ * N: select stored-ready candidates and form next queue. N edge: delete accepted candidates,
+ * update source readiness, compact survivors and append dispatch lanes. N+1: new candidates.
+ * Test harness domain/third-source/FU ports need extension in the next validation session.
  */
 module backend_issue_queue
     import o3_pkg::*;
@@ -39,13 +21,13 @@ module backend_issue_queue
     parameter  o3_cfg_pkg::backend_cfg_t CFG,
     parameter  o3_types_pkg::iq_kind_e KIND,          // 实例选择，无默认值
     localparam int ENQ_WIDTH = CFG.dispatch.width,
-    localparam int ISSUE_WIDTH = (KIND == o3_types_pkg::IQ_INT) ? CFG.exec.num_alu : 1,  // MEM/BR 现状单发射；FP 待定
+    localparam int ISSUE_WIDTH = (KIND == o3_types_pkg::IQ_INT) ? CFG.exec.num_alu : (KIND == o3_types_pkg::IQ_FP ? 2 : 1),
     parameter int WAKEUP_WIDTH = CFG.exec.int_prf_write_ports,
     localparam int DEPTH = (KIND == o3_types_pkg::IQ_INT) ? CFG.dispatch.int_iq_depth
                          : (KIND == o3_types_pkg::IQ_MEM) ? CFG.dispatch.mem_iq_depth
                          : (KIND == o3_types_pkg::IQ_BR)  ? CFG.dispatch.br_iq_depth
                          : CFG.dispatch.fp_iq_depth,
-    localparam int NUM_PHYS_REGS = (KIND == o3_types_pkg::IQ_FP) ? CFG.rename.fp_phys_regs : CFG.rename.int_phys_regs,
+    localparam int NUM_PHYS_REGS = CFG.rename.int_phys_regs,
     localparam bit OLDEST_ONLY = 1'b0
 ) (
     input  logic clk,
@@ -55,6 +37,12 @@ module backend_issue_queue
     output logic [$clog2(DEPTH+1)-1:0] free_count_o,
 
     input  logic preg_ready_i [NUM_PHYS_REGS-1:0],
+    input logic fp_preg_ready_i [CFG.rename.fp_phys_regs-1:0],
+    input logic fp_wakeup_valid_i [CFG.exec.fp_prf_write_ports-1:0],
+    input logic [PREG_IDX_WIDTH-1:0] fp_wakeup_preg_i [CFG.exec.fp_prf_write_ports-1:0],
+    // FU indices: FMA0, FMA1, DIVSQRT, MISC, CONV; capacity of RegRead slots.
+    input logic [4:0] fp_regread_ready_i,
+    output logic [2:0] issue_fp_fu_o [ISSUE_WIDTH-1:0],
     input  logic mul_ready_i, mul_pair_ready_i, div_ready_i,
     input  logic allow_load_i,  // Memory replay 槽已占用/将占用时仍可选 store
     input  logic wakeup_valid_i [WAKEUP_WIDTH-1:0],
@@ -72,34 +60,56 @@ module backend_issue_queue
     renamed_uop_t queue_q [DEPTH-1:0];
     logic src1_ready_q [DEPTH-1:0];
     logic src2_ready_q [DEPTH-1:0];
+    logic src3_ready_q [DEPTH-1:0];
     renamed_uop_t queue_next [DEPTH-1:0];
     logic src1_ready_next [DEPTH-1:0];
     logic src2_ready_next [DEPTH-1:0];
+    logic src3_ready_next [DEPTH-1:0];
     logic [COUNT_WIDTH-1:0] count_q, count_next;
     logic [DEPTH-1:0] remove_mask;
     logic issue_selected_valid [ISSUE_WIDTH-1:0];
     logic [$clog2(DEPTH)-1:0] issue_selected_idx [ISSUE_WIDTH-1:0];
 
-    function automatic logic wakeup_hits(
-        input logic [PREG_IDX_WIDTH-1:0] preg
-    );
+    function automatic logic source_ready(input o3_types_pkg::reg_domain_e dom,
+        input logic [PREG_IDX_WIDTH-1:0] preg);
         logic hit;
-        begin
-            hit = 1'b0;
-            for (int port = 0; port < WAKEUP_WIDTH; port++) begin
-                hit |= wakeup_valid_i[port] && (wakeup_preg_i[port] == preg);
-            end
-            wakeup_hits = hit;
+        hit=dom==o3_types_pkg::RD_NONE;
+        if (dom==o3_types_pkg::RD_FP) begin
+            if (int'(preg)<CFG.rename.fp_phys_regs) hit=fp_preg_ready_i[preg];
+            for (int p=0;p<CFG.exec.fp_prf_write_ports;p++)
+                hit |= fp_wakeup_valid_i[p] && fp_wakeup_preg_i[p]==preg;
+        end else if (dom==o3_types_pkg::RD_INT) begin
+            if (int'(preg)<NUM_PHYS_REGS) hit=preg_ready_i[preg];
+            for (int p=0;p<WAKEUP_WIDTH;p++) hit |= wakeup_valid_i[p] && wakeup_preg_i[p]==preg;
         end
+        return hit;
+    endfunction
+
+    function automatic int available_fp_fu(input o3_types_pkg::fu_class_e cls,
+        input logic [4:0] available);
+        case (cls)
+            o3_types_pkg::FU_FMA: begin
+                if (available[0]) return 0;
+                if (available[1]) return 1;
+            end
+            o3_types_pkg::FU_FDIVSQRT: if (available[2]) return 2;
+            o3_types_pkg::FU_FMISC: if (available[3]) return 3;
+            o3_types_pkg::FU_FCONV: if (available[4]) return 4;
+            default: ;
+        endcase
+        return -1;
     endfunction
 
     assign free_count_o = COUNT_WIDTH'(DEPTH) - count_q;
 
     always_comb begin
         logic selected [DEPTH-1:0];
-        logic picked_mul,picked_div;
+        logic picked_mul,picked_div,picked_fp_int;
+        logic [4:0] fp_available;
 
-        selected = '{default: 1'b0};picked_mul=0;picked_div=0;
+        selected = '{default: 1'b0};picked_mul=0;picked_div=0;picked_fp_int=0;
+        fp_available=fp_regread_ready_i;
+        issue_fp_fu_o='{default:'0};
         issue_uop_o = '{default: '0};
         issue_valid_o = '0;
         issue_selected_valid = '{default: 1'b0};
@@ -116,6 +126,10 @@ module backend_issue_queue
                  && (queue_q[idx].ext.fu_class!=o3_types_pkg::FU_MUL ||
                      (!picked_mul && (queue_q[idx].mdu_fuse.valid ? mul_pair_ready_i:mul_ready_i)))
                  && (queue_q[idx].ext.fu_class!=o3_types_pkg::FU_DIV || (!picked_div && div_ready_i))
+                 && (KIND!=o3_types_pkg::IQ_FP ||
+                     (available_fp_fu(queue_q[idx].ext.fu_class,fp_available)>=0 &&
+                      !(picked_fp_int && queue_q[idx].rs1_read_en && queue_q[idx].ext.rs1_dom==o3_types_pkg::RD_INT)))
+                 && (!queue_q[idx].ext.rs3_read_en || src3_ready_q[idx])
                  && (!queue_q[idx].rs1_read_en || src1_ready_q[idx])
                  && (!queue_q[idx].rs2_read_en || src2_ready_q[idx])) begin
                     chosen = idx;
@@ -123,6 +137,12 @@ module backend_issue_queue
             end
             if (chosen >= 0) begin
                 selected[chosen] = 1'b1;
+                if (KIND==o3_types_pkg::IQ_FP) begin
+                    issue_fp_fu_o[port]=3'(available_fp_fu(queue_q[chosen].ext.fu_class,fp_available));
+                    fp_available[issue_fp_fu_o[port]]=0;
+                    if (queue_q[chosen].rs1_read_en && queue_q[chosen].ext.rs1_dom==o3_types_pkg::RD_INT)
+                        picked_fp_int=1;
+                end
                 if(queue_q[chosen].ext.fu_class==o3_types_pkg::FU_MUL) picked_mul=1;
                 if(queue_q[chosen].ext.fu_class==o3_types_pkg::FU_DIV) picked_div=1;
                 issue_uop_o[port] = queue_q[chosen];
@@ -154,6 +174,7 @@ module backend_issue_queue
         queue_next = '{default: '0};
         src1_ready_next = '{default: 1'b0};
         src2_ready_next = '{default: 1'b0};
+        src3_ready_next = '{default: 1'b0};
         write_idx = 0;
 
         // 先保留未发射、未被错误分支杀死的旧项，并清理正确解析的branch bit。
@@ -169,15 +190,15 @@ module backend_issue_queue
                 end
                 src1_ready_next[write_idx] = !queue_q[idx].rs1_read_en
                                            || src1_ready_q[idx]
-                                           || preg_ready_i[queue_q[idx].src1_preg]
-                                           || wakeup_hits(queue_q[idx].src1_preg);
+                                           || source_ready(queue_q[idx].ext.rs1_dom, queue_q[idx].src1_preg);
                 // use_imm只描述执行单元的立即数输入，不能代替真实rs2依赖。
                 // Branch同时使用B型立即数和rs2；只看use_imm会让Load->Branch
                 // 在Load写回前错误发射。
                 src2_ready_next[write_idx] = !queue_q[idx].rs2_read_en
                                            || src2_ready_q[idx]
-                                           || preg_ready_i[queue_q[idx].src2_preg]
-                                           || wakeup_hits(queue_q[idx].src2_preg);
+                                           || source_ready(queue_q[idx].ext.rs2_dom, queue_q[idx].src2_preg);
+
+                src3_ready_next[write_idx] = !queue_q[idx].ext.rs3_read_en || src3_ready_q[idx] || source_ready(queue_q[idx].ext.rs3_dom, queue_q[idx].rext.src3_preg);
                 write_idx++;
             end
         end
@@ -192,11 +213,11 @@ module backend_issue_queue
                         queue_next[write_idx].mdu_fuse.lo_tag.br_mask[resolution_tag_i] = 1'b0;
                     end
                     src1_ready_next[write_idx] = !enq_uop_i[lane].rs1_read_en
-                                               || preg_ready_i[enq_uop_i[lane].src1_preg]
-                                               || wakeup_hits(enq_uop_i[lane].src1_preg);
+                                               || source_ready(enq_uop_i[lane].ext.rs1_dom, enq_uop_i[lane].src1_preg);
                     src2_ready_next[write_idx] = !enq_uop_i[lane].rs2_read_en
-                                               || preg_ready_i[enq_uop_i[lane].src2_preg]
-                                               || wakeup_hits(enq_uop_i[lane].src2_preg);
+                                               || source_ready(enq_uop_i[lane].ext.rs2_dom, enq_uop_i[lane].src2_preg);
+
+                    src3_ready_next[write_idx] = !enq_uop_i[lane].ext.rs3_read_en || source_ready(enq_uop_i[lane].ext.rs3_dom, enq_uop_i[lane].rext.src3_preg);
                     write_idx++;
                 end
             end
@@ -210,11 +231,13 @@ module backend_issue_queue
             queue_q <= '{default: '0};
             src1_ready_q <= '{default: 1'b0};
             src2_ready_q <= '{default: 1'b0};
+            src3_ready_q <= '{default: 1'b0};
             count_q <= '0;
         end else begin
             queue_q <= queue_next;
             src1_ready_q <= src1_ready_next;
             src2_ready_q <= src2_ready_next;
+            src3_ready_q <= src3_ready_next;
             count_q <= count_next;
         end
     end

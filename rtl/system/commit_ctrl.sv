@@ -1,3 +1,4 @@
+// L9 RTL implemented; lint/functional validation deferred (2026-10-07).
 /**
  * 提交控制 —— ROB 队头之后的按序副作用、系统同步编排、trap/xRET 发起
  *
@@ -47,7 +48,7 @@
  * 细节待定：各同步握手的信号编码与拍数；free list 提交态恢复记录的结构；串行项是否与 CSR 共用。
  *
  * 当前实现状态：闭环简化（L5）：M-only CSR/同步异常/返回，SQ drain + 前端最小 FENCE.I。
- * 完整 L1D clean 待 L8；中断/S/U/FP/fatal 隔离待其所属级。
+ * 完整 L1D clean 待 L8；中断/S/U/fatal 隔离待其所属级；FP 退休 flags/Dirty 已接通。
  * ROB 退休经本模块转成 SQ committed / FTQ commit；free list 释放仍在 backend。
  *
  * 逐周期说明（目标）：
@@ -160,7 +161,13 @@ module commit_ctrl
             sys_redirect_o.valid=1; sys_redirect_o.target_pc=trap_redirect_pc_i;
             sys_redirect_o.kind=SYS_EXCEPTION;
         end
+        fp_retire_o='0;
         for (int lane=0;lane<COMMIT_WIDTH;lane++) begin
+            if (commit_i[lane].valid) begin
+                fp_retire_o.valid=1;
+                fp_retire_o.fflags |= commit_i[lane].fflags;
+                fp_retire_o.fs_dirty |= (commit_i[lane].rd_dom==RD_FP && commit_i[lane].rd_write_en) || (|commit_i[lane].fflags);
+            end
             ftq_commit_o[lane]='0;
             ftq_commit_o[lane].valid=commit_i[lane].valid;
             ftq_commit_o[lane].ftq_id=commit_i[lane].ftq_id;
@@ -185,7 +192,7 @@ module commit_ctrl
         commit_block_o=isolate_i || (head_valid_i && head_i.exc.valid);
         flush_all_o=trap_req_o.valid || (sys_redirect_o.valid && sys_redirect_o.kind==SYS_FENCE_I);
         committed_next_pc_o=committed_next_pc_q;
-        fp_retire_o='0; sfence_o='0; dcache_clean_all_o=0; st_d_req_valid_o=0;
+        sfence_o='0; dcache_clean_all_o=0; st_d_req_valid_o=0;
         rsv_clear_valid_o=trap_req_o.valid;
         rsv_clear_reason_o=trap_req_o.is_xret ? RSV_CLR_XRET : RSV_CLR_TRAP;
         wfi_retire_o=0; perf_o='0;

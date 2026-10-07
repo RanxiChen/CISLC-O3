@@ -1,29 +1,22 @@
-// L6 B34: N accepts complete pair or neither; N+1 RDQ holds both ROB identities.
 /**
- *
- * 【2026-10-02 框架：目标机制与缺口】
- * - 目标（B02）：本模块成为 R2 资源规划器。R1（rename_dep_r1）只做组内依赖预处理并经
- *   rename_stage_buffer 暂存；R2 在同一接受边界原子检查 ROB、INT preg、FP preg、LQ、SQ、
- *   checkpoint、RDQ，选择最老可接受连续前缀，一条指令所需资源要么全部获得要么不分配。
- * - 需要补充：FP 目的域的 preg 计数（fp_preg_free_count）与分配请求；依赖选择改用 R1
- *   记录的生产者槽位（不再使用 rename_map_table 的 src*_from_older_lane）。
- * - 宽度：目标 CFG.rename.width（B42 为 4）；现状 WIDTH=BACKEND_MACHINE_WIDTH。
- * - 部分接受后剩余指令保留原槽位，资源与 RDQ 输出按剩余有效指令程序顺序形成连续前缀（B02 3.3）。
- * - recovery_block_i 仅接 M；C 正常四宽 rename（O3-T01/B12）。
- * Four-wide prefix Rename planner and uop assembler
- *
- * 本模块无状态。从Decode Queue的最老lane开始累计检查ROB、preg、LQ、SQ、
- * branch checkpoint和Rename/Dispatch Queue资源，产生本拍可原子接受的最大前缀。
- * 一旦某条指令缺少任一资源，该条和所有更年轻lane都停止；更老可行前缀仍推进。
+ * Four-lane atomic prefix rename planner (B02/B15/B42).
+ * Budgets INT and FP physical registers separately, plus ROB/RDQ/LQ/SQ/checkpoints.
+ * Every accepted lane receives all required resources; the first unavailable resource
+ * blocks that lane and younger ones. FP f0 needs a register; INT x0 does not.
+ * Third-source mapping and resolved FP control are carried through renamed_uop.rext/ext.
+ * Integer MUL fusion still requires complete pair resources before accepting HEAD.
+ * 当前实现状态：闭环简化（L9）；single-cycle map-table bypass retained, R1/R2 split deferred.
+ * No internal state: N computes resource prefix then assembles mapped uops; N edge
+ * downstream tables allocate that prefix, N+1 RDQ holds complete renamed identities.
+ * 本次 lint/测试未运行。
  */
-// 当前实现状态：闭环简化（L6）；正确解析不停顿，四宽合同、B34 整对资源接纳。测试：sim/cocotb/rename_stage/。
 module rename_stage
     import o3_pkg::*;
 #(
     parameter  o3_cfg_pkg::backend_cfg_t CFG,
     localparam int WIDTH = BACKEND_MACHINE_WIDTH,          // 目标 R2 宽度 CFG.rename.width（B01）
     localparam int NUM_PHYS_REGS = CFG.rename.int_phys_regs,
-    localparam int NUM_FP_PHYS_REGS = CFG.rename.fp_phys_regs, // 框架新增，未接入
+    localparam int NUM_FP_PHYS_REGS = CFG.rename.fp_phys_regs,
     localparam int NUM_ROB_ENTRIES = CFG.rob.entries,
     localparam int LQ_DEPTH = CFG.lsu.lq_depth,
     localparam int SQ_DEPTH = CFG.lsu.sq_depth,
@@ -34,6 +27,7 @@ module rename_stage
     input logic recovery_block_i,
 
     input logic [$clog2(NUM_PHYS_REGS+1)-1:0] preg_free_count_i,
+    input logic [$clog2(NUM_FP_PHYS_REGS+1)-1:0] fp_preg_free_count_i,
     input logic [$clog2(NUM_ROB_ENTRIES+1)-1:0] rob_free_count_i,
     input logic [$clog2(LQ_DEPTH+1)-1:0] lq_free_count_i,
     input logic [$clog2(SQ_DEPTH+1)-1:0] sq_free_count_i,
@@ -44,6 +38,7 @@ module rename_stage
 
     input logic [PREG_IDX_WIDTH-1:0] src1_preg_i [WIDTH-1:0],
     input logic [PREG_IDX_WIDTH-1:0] src2_preg_i [WIDTH-1:0],
+    input logic [PREG_IDX_WIDTH-1:0] src3_preg_i [WIDTH-1:0],
     input logic [PREG_IDX_WIDTH-1:0] old_dst_preg_i [WIDTH-1:0],
     input logic [PREG_IDX_WIDTH-1:0] new_dst_preg_i [WIDTH-1:0],
     input logic [$clog2(NUM_ROB_ENTRIES)-1:0] rob_idx_i [WIDTH-1:0],
@@ -64,11 +59,12 @@ module rename_stage
 );
     localparam int LANE_COUNT_WIDTH = $clog2(WIDTH + 1);
     always_comb begin
-        int unsigned preg_left, rob_left, lq_left, sq_left, rdq_left;
+        int unsigned preg_left, fp_preg_left, rob_left, lq_left, sq_left, rdq_left;
         logic blocked;
         branch_mask_t running_mask;
 
         preg_left = int'(preg_free_count_i);
+        fp_preg_left = int'(fp_preg_free_count_i);
         rob_left = int'(rob_free_count_i);
         lq_left = int'(lq_free_count_i);
         sq_left = int'(sq_free_count_i);
@@ -86,14 +82,14 @@ module rename_stage
 
         for (int lane = 0; lane < WIDTH; lane++) begin
             logic need_preg, need_lq, need_sq, need_cp, can_accept;
-            need_preg = decoded_i[lane].valid && decoded_i[lane].rd_write_en && (decoded_i[lane].rd != '0);
+            need_preg = decoded_i[lane].valid && decoded_i[lane].rd_write_en && (decoded_i[lane].ext.rd_dom == o3_types_pkg::RD_FP || decoded_i[lane].rd != '0);
             need_lq = decoded_i[lane].valid && decoded_i[lane].is_load;
             need_sq = decoded_i[lane].valid && decoded_i[lane].is_store;
             need_cp = decoded_i[lane].valid && decoded_i[lane].needs_checkpoint;
 
             can_accept = !blocked && (lane < int'(visible_count_i)) && decoded_i[lane].valid
                        && (rob_left > 0) && (rdq_left > 0)
-                       && (!need_preg || (preg_left > 0))
+                       && (!need_preg || (decoded_i[lane].ext.rd_dom == o3_types_pkg::RD_FP ? fp_preg_left > 0 : preg_left > 0))
                        && (!need_lq || (lq_left > 0))
                        && (!need_sq || (sq_left > 0))
                        && (!need_cp || checkpoint_grant_i[lane]);
@@ -115,7 +111,10 @@ module rename_stage
                 accept_count_o = accept_count_o + LANE_COUNT_WIDTH'(1);
                 rob_left--;
                 rdq_left--;
-                if (need_preg) preg_left--;
+                if (need_preg) begin
+                    if (decoded_i[lane].ext.rd_dom == o3_types_pkg::RD_FP) fp_preg_left--;
+                    else preg_left--;
+                end
                 if (need_lq) lq_left--;
                 if (need_sq) sq_left--;
                 if (need_cp) running_mask[checkpoint_tag_i[lane]] = 1'b1;
@@ -132,7 +131,7 @@ module rename_stage
         renamed_uop_o = '{default: '0};
         for (int lane = 0; lane < WIDTH; lane++) begin
             logic need_preg, need_lq, need_sq, need_cp;
-            need_preg = decoded_i[lane].valid && decoded_i[lane].rd_write_en && (decoded_i[lane].rd != '0);
+            need_preg = decoded_i[lane].valid && decoded_i[lane].rd_write_en && (decoded_i[lane].ext.rd_dom == o3_types_pkg::RD_FP || decoded_i[lane].rd != '0);
             need_lq = decoded_i[lane].valid && decoded_i[lane].is_load;
             need_sq = decoded_i[lane].valid && decoded_i[lane].is_store;
             need_cp = decoded_i[lane].valid && decoded_i[lane].needs_checkpoint;
@@ -178,6 +177,7 @@ module rename_stage
             renamed_uop_o[lane].needs_checkpoint = decoded_i[lane].needs_checkpoint;
             renamed_uop_o[lane].src1_preg = src1_preg_i[lane];
             renamed_uop_o[lane].src2_preg = src2_preg_i[lane];
+            renamed_uop_o[lane].rext.src3_preg = src3_preg_i[lane];
             renamed_uop_o[lane].dst_preg = need_preg ? new_dst_preg_i[lane] : '0;
             renamed_uop_o[lane].old_dst_preg = need_preg ? old_dst_preg_i[lane] : '0;
             renamed_uop_o[lane].rob_idx = rob_idx_i[lane];

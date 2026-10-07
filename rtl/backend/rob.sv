@@ -1,3 +1,4 @@
+// L9 RTL implemented; lint/functional validation deferred (2026-10-07).
 /**
  * 本次实现（O3-T03）：L5：保存完整队头串行/异常元信息；译码异常与非 CSR 串行项分配即 complete；异常不退休。
  *
@@ -264,7 +265,7 @@ module rob #(
                 retire_info_o[ridx].pc             = entry_pc_q[retire_idx];
                 retire_info_o[ridx].instruction    = entry_instruction_q[retire_idx];
                 retire_info_o[ridx].rd             = entry_rd_q[retire_idx];
-                retire_info_o[ridx].rd_write_en    = entry_rd_write_en_q[retire_idx];
+                retire_info_o[ridx].rd_write_en    = entry_rd_write_en_q[retire_idx] && meta_q[retire_idx].rd_dom!=o3_types_pkg::RD_FP;
                 retire_info_o[ridx].rd_wdata       = entry_rd_wdata_q[retire_idx];
             end
 `endif
@@ -313,10 +314,13 @@ module rob #(
     always_ff @(posedge clk) begin
         if (rst) meta_q <= '{default:'0};
         else begin
+            for (int port=0;port<COMPLETE_WIDTH;port++)
+                if (!t_flush_all_i && complete_valid_i[port] && t_fflags_valid_i[port] && entry_valid_q[complete_idx_i[port]])
+                    meta_q[complete_idx_i[port]].fflags <= t_fflags_i[port];
             if (alloc_fire) for (int lane=0;lane<MACHINE_WIDTH;lane++) if (alloc_req_i[lane]) begin
                 meta_q[alloc_idx_o[lane]] <= '{valid:1'b1,rob_idx:o3_types_pkg::rob_idx_t'(alloc_idx_o[lane]),
                     pc:t_alloc_pc_i[lane],inst_len:t_alloc_inst_len_i[lane],ftq_id:alloc_ftq_idx_i[lane],slot:alloc_ftq_slot_i[lane],
-                    region_last:alloc_ftq_last_i[lane],rd_dom:o3_types_pkg::RD_INT,rd:alloc_rd_i[lane],
+                    region_last:alloc_ftq_last_i[lane],rd_dom:t_alloc_ext_i[lane].rd_dom,rd:alloc_rd_i[lane],
                     rd_write_en:alloc_rd_write_en_i[lane],new_preg:alloc_new_dst_preg_i[lane],old_preg:alloc_old_dst_preg_i[lane],
                     is_load:alloc_is_load_i[lane],is_store:alloc_is_store_i[lane],lq_idx:alloc_lq_idx_i[lane],sq_idx:alloc_sq_idx_i[lane],
                     sys_op:t_alloc_ext_i[lane].sys_op,ext:t_alloc_ext_i[lane],exc:t_alloc_exc_i[lane],

@@ -1,45 +1,12 @@
 /**
- *
- * 【2026-10-02 框架：目标机制与缺口】
- * - 实例按 DOMAIN 取规模：RD_INT（读/写口数待定，p0 恒零）、RD_FP（64×64，无恒零寄存器，B15）。
- *   HAS_ZERO_REG 已给出，现有实现仍硬编码 p0；FP 实例未接入。
- * - 原始内容 64*64=4096 bit 不是 FP 多端口 PRF 的 FPGA 资源估计；读口复制、写口仲裁另计（B15）。
- * 物理寄存器文件 (Physical Register File)
- *
- * 功能：为乱序执行提供物理寄存器存储
- *
- * 当前已经实现的功能：
- * - 支持参数化的多读端口、多写端口物理寄存器文件
- * - 当前backend在本模块外对Integer/Memory读请求仲裁为8R，对ALU/Load结果仲裁为4W
- * - 支持同拍写后读旁路，避免本拍读到旧值
- * - reset 后把所有物理寄存器清零，保证当前阶段日志和最小执行链路可预测
- * - p0 作为零物理寄存器：读恒为 0，所有写入请求都会被忽略
- * - 在 `FPGA_TARGET` 下保留原来的 FPGA 优化实现
- * - 在未定义 `FPGA_TARGET` 时提供一个行为等价的通用实现，便于当前阶段 backend 集成和静态检查
- *
- * 当前没有实现的功能：
- * - 不负责 rename / free list / 读写端口仲裁；本模块只执行已经grant的物理访问
- * - 不实现 ASIC 工艺下的真多端口寄存器堆优化
- * - 当前阶段不附带测试代码和仿真代码，只先搭功能与注释
- *
- * 参数说明：
- * - NUM_READ_PORTS:  读端口数量（默认8，支持4发射×2操作数）
- * - NUM_WRITE_PORTS: 写端口数量（默认4，支持4发射写回）
- * - NUM_ENTRIES:     物理寄存器数量（默认96）
- * - DATA_WIDTH:      数据宽度（默认64位）
- *
- * 时序行为：
- * - 周期 N 组合阶段：
- *   1) 读端口根据 rd_addr_i 直接返回当前寄存器值
- *   2) 若同拍存在 wr_en_i 且写地址命中某个读端口，则 rd_data_o 优先返回本拍 wr_data_i
- * - 周期 N 上升沿：
- *   1) 若 rst=1，则所有物理寄存器清零
- *   2) 否则把所有 wr_en_i=1 的写端口数据写入对应物理寄存器
- * - 周期 N+1：
- *   1) 可从读端口读到更新后的寄存器内容
+ * Domain-parametric multiport physical register file (B15).
+ * INT p0 reads zero and ignores writes. FP p0 is writable. FP uses CFG 7R/2W;
+ * every granted write participates in the existing same-cycle write/read bypass.
+ * Generic implementation resets data to zero; FPGA bank/latest-tag variants are retained.
+ * 当前实现状态：闭环简化（L9）；lint/测试未运行，no PPA/FPGA inference claim.
+ * N: read stored values with granted-write bypass. N edge: write granted data;
+ * generic reset clears entries. N+1: registered contents reflect those writes.
  */
-
-
 module physical_regfile
     import o3_pkg::*;
 #(
@@ -87,7 +54,7 @@ module physical_regfile
 
     function automatic logic is_zero_preg(input logic [ADDR_WIDTH-1:0] preg_idx);
         begin
-            is_zero_preg = (preg_idx == ADDR_WIDTH'(0));
+            is_zero_preg = HAS_ZERO_REG && (preg_idx == ADDR_WIDTH'(0));
         end
     endfunction
 

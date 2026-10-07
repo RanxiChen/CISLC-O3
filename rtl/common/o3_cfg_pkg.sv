@@ -179,15 +179,15 @@ package o3_cfg_pkg;
         int unsigned int_iq_depth;        // 待定
         int unsigned mem_iq_depth;        // 待定
         int unsigned br_iq_depth;         // 待定
-        int unsigned fp_iq_depth;         // 待定：FP IQ 组织未定（B14/B15/B21），先给一个总深度
+        int unsigned fp_iq_depth;         // L9: unified 12-entry, three-source, dual-issue FP IQ
     } dispatch_cfg_t;
 
     typedef struct packed {
         int unsigned num_alu;             // 待定：整数 ALU 数（现状 4 不是基线决定）
         int unsigned int_prf_read_ports;  // 待定：整数 PRF 读口
         int unsigned int_prf_write_ports; // 待定：整数 PRF 写口
-        int unsigned fp_prf_read_ports;   // 待定：两条三源 FMA 同拍最多 6 读，不等于已冻结 6 读（B14）
-        int unsigned fp_prf_write_ports;  // 待定
+        int unsigned fp_prf_read_ports;   // L9: two three-source FP lanes + one FP store data port
+        int unsigned fp_prf_write_ports;  // L9: two oldest-first FP write ports
         int unsigned mul_stages;          // B43：DSP 乘法四级实际流水，O3 包装额外延迟另计
         int unsigned mul_result_slots;    // 待定：乘法完成 FIFO 深度。机制已定（B33）：接受请求时预留完成空间，
                                           // 流水不停顿，唤醒承诺不因写回推迟而失效；深度未冻结
@@ -198,7 +198,7 @@ package o3_cfg_pkg;
         int unsigned num_fdivsqrt;        // 已定 1（B14）
         int unsigned num_fmisc;           // 已定 1（B14）
         int unsigned num_fconv;           // 已定 1（B14）
-        int unsigned fpu_inflight_slots;  // 待定：每个 FP FU 侧表的在途请求槽数（B14）
+        int unsigned fpu_inflight_slots;  // L9: 8 identity slots per FP FU, retained through final termination
     } exec_cfg_t;
 
     typedef struct packed {
@@ -369,7 +369,7 @@ package o3_cfg_pkg;
                 num_alu:             2,
                 int_prf_read_ports:  4,
                 int_prf_write_ports: 2,
-                fp_prf_read_ports:   6,
+                fp_prf_read_ports:   7,
                 fp_prf_write_ports:  2,
                 mul_stages:          4,
                 mul_result_slots:    8,
@@ -379,7 +379,7 @@ package o3_cfg_pkg;
                 num_fdivsqrt:        1,
                 num_fmisc:           1,
                 num_fconv:           1,
-                fpu_inflight_slots:  4
+                fpu_inflight_slots:  8
             },
             lsu: '{
                 lq_depth:    16,

@@ -1,3 +1,4 @@
+// L9 RTL implemented; lint/functional validation deferred (2026-10-07).
 /**
  * 本次实现（O3-T03）：L5：集成实例以只读 Store probe 确认访问权限；访问错误精确 cause 5/7，flush 隔离迟到返回。
  *
@@ -186,6 +187,7 @@ module load_store_unit
     logic [ROB_IDX_WIDTH-1:0] pending_rob_idx_q;
     logic [LQ_IDX_WIDTH-1:0] pending_lq_idx_q;
     logic [PREG_IDX_WIDTH-1:0] pending_dst_preg_q;
+    o3_types_pkg::reg_domain_e pending_dst_dom_q;
     mem_size_t pending_mem_size_q;
     logic pending_mem_unsigned_q;
     branch_mask_t pending_branch_mask_q;
@@ -247,7 +249,8 @@ module load_store_unit
     function automatic logic [XLEN-1:0] format_load(
         input logic [XLEN-1:0] raw,
         input mem_size_t size,
-        input logic is_unsigned
+        input logic is_unsigned,
+        input o3_types_pkg::reg_domain_e dst_dom
     );
         case (size)
             MEM_SIZE_1B: format_load = is_unsigned
@@ -256,7 +259,7 @@ module load_store_unit
             MEM_SIZE_2B: format_load = is_unsigned
                                      ? XLEN'(raw[15:0])
                                      : XLEN'($signed(raw[15:0]));
-            MEM_SIZE_4B: format_load = is_unsigned
+            MEM_SIZE_4B: format_load = dst_dom==o3_types_pkg::RD_FP ? {32'hffffffff,raw[31:0]} : is_unsigned
                                      ? XLEN'(raw[31:0])
                                      : XLEN'($signed(raw[31:0]));
             default:     format_load = raw;
@@ -414,7 +417,7 @@ module load_store_unit
 `endif
             pending_rob_idx_q <= '0;
             pending_lq_idx_q <= '0;
-            pending_dst_preg_q <= '0;
+            pending_dst_preg_q <= '0; pending_dst_dom_q<=o3_types_pkg::RD_NONE;
             pending_mem_size_q <= MEM_SIZE_1B;
             pending_mem_unsigned_q <= 1'b0;
             pending_branch_mask_q <= '0;
@@ -468,7 +471,7 @@ module load_store_unit
 `endif
                 pending_rob_idx_q <= work_uop.rob_idx;
                 pending_lq_idx_q <= work_uop.lq_idx;
-                pending_dst_preg_q <= work_uop.dst_preg;
+                pending_dst_preg_q <= work_uop.dst_preg; pending_dst_dom_q<=work_uop.dst_dom;
                 pending_mem_size_q <= work_uop.mem_size;
                 pending_mem_unsigned_q <= work_uop.mem_unsigned;
                 pending_branch_mask_q <= resolved_mask(work_uop.branch_mask);
@@ -487,10 +490,10 @@ module load_store_unit
 `endif
                     load_result_q.rob_idx <= pending_rob_idx_q;
                     load_result_q.lq_idx <= pending_lq_idx_q;
-                    load_result_q.dst_preg <= pending_dst_preg_q;
+                    load_result_q.dst_preg <= pending_dst_preg_q; load_result_q.dst_dom<=pending_dst_dom_q;
                     load_result_q.result <= format_load(
                         memory_rsp_error ? '0 : memory_rsp_rdata,
-                        pending_mem_size_q, pending_mem_unsigned_q);
+                        pending_mem_size_q, pending_mem_unsigned_q, pending_dst_dom_q);
                     load_result_q.branch_mask <= resolved_mask(pending_branch_mask_q);
                 end
             end
@@ -507,9 +510,9 @@ module load_store_unit
 `endif
                 load_result_q.rob_idx <= work_uop.rob_idx;
                 load_result_q.lq_idx <= work_uop.lq_idx;
-                load_result_q.dst_preg <= work_uop.dst_preg;
+                load_result_q.dst_preg <= work_uop.dst_preg; load_result_q.dst_dom<=work_uop.dst_dom;
                 load_result_q.result <= format_load(
-                    sq_query_forward_data_i, work_uop.mem_size, work_uop.mem_unsigned);
+                    sq_query_forward_data_i, work_uop.mem_size, work_uop.mem_unsigned, work_uop.dst_dom);
                 load_result_q.branch_mask <= resolved_mask(work_uop.branch_mask);
             end
         end

@@ -1,3 +1,4 @@
+// L9 RTL implemented; lint/functional validation deferred (2026-10-07).
 /**
  * CSR 文件 —— 架构 CSR 唯一状态所有者与派生状态
  *
@@ -14,13 +15,13 @@
  * - B38：输出单项 mip/mie 视图（irq_view_o）给 wfi_ctrl 作为唤醒条件；正式中断条件（全局使能、
  *   特权级、委托）单独形成 irq_take_o。两者不能共用。
  * - B40：fp_retire_i 每拍一次：fflags OR 进架构 fflags；fs_dirty 置 mstatus.FS=Dirty（及 SD）。
- *   软件写 fflags/frm/fcsr 在 CSR 串行更新点置 Dirty。FS=Off 时 FP 指令非法由译码/执行按既有规则
+ *   软件写 fflags/frm/fcsr 在 CSR 串行更新点置 Dirty。FS=Off 时 FP 指令非法由 rename 入口按 L9 合同
  *   报告。dynamic rm 读取程序顺序正确的 frm（frm 写入串行化，B15/B22）。
  *
  * 细节待定：后续特权级 CSR 集合与 WARL 细节；time 来源；CSR 内部拍数（允许拆多拍，外部串行
  * 边界不变）。
  *
- * 当前实现状态：闭环简化（L7a）：M/Bare 单 hart；后续级的中断/S/U/FP 接口显式 tie-off。
+ * 当前实现状态：闭环简化（L7a）：M/Bare 单 hart；中断/S/U 待后级；L9 FP CSR/退休状态已接通。
  * - B48 M-mode HPM / mcycle / minstret 由 hpm_counters 统一持有；L7a 新增行为未验证。
  *
  * 逐周期说明（目标）：
@@ -71,12 +72,15 @@ module csr_file
     output dmmu_csr_t       dmmu_csr_o,
     output logic [1:0]      priv_o
 );
+    logic [1:0] fs_q;
+    logic [2:0] frm_q;
+    logic [4:0] fflags_q;
     logic mie_bit_q, mpie_q;
     logic [63:0] mie_q, mtvec_q, mscratch_q, mepc_q, mcause_q, mtval_q;
     logic [63:0] old_value, modify_value, hpm_write_value;
     logic implemented, hpm_implemented;
     csr_resp_t hpm_resp;
-    localparam logic [63:0] MISA = 64'h8000000000001104; // RV64IMC, Zicsr/Zifencei have no letter bit.
+    localparam logic [63:0] MISA = 64'h800000000000112c; // L9 T07b RV64IMFDC, Zicsr/Zifencei have no letter bit.
 
     hpm_counters #(.NUM_HPM(o3_cfg_pkg::O3_CFG.core.hpm_counters)) u_hpm_counters (
         .clk_i(clk), .rst_i(rst),
@@ -88,7 +92,10 @@ module csr_file
         implemented = 1'b1;
         old_value = '0;
         case (req_i.addr)
-            12'h300: old_value = 64'h1800 | (64'(mpie_q)<<7) | (64'(mie_bit_q)<<3);
+            12'h001: begin old_value=64'(fflags_q); implemented=fs_q!=0; end
+            12'h002: begin old_value=64'(frm_q); implemented=fs_q!=0; end
+            12'h003: begin old_value=64'({frm_q,fflags_q}); implemented=fs_q!=0; end
+            12'h300: old_value = 64'h1800 | (64'(fs_q)<<13) | (64'(fs_q==3)<<63) | (64'(mpie_q)<<7) | (64'(mie_bit_q)<<3);
             12'h301: old_value = MISA;
             12'h304: old_value = mie_q;
             12'h305: old_value = mtvec_q;
@@ -109,7 +116,10 @@ module csr_file
         // WARL coercion matches the M-only subset of Breeze, not speculative state.
         write_value_o = modify_value;
         case (req_i.addr)
-            12'h300: write_value_o = 64'h1800 | (modify_value & 64'h88);
+            12'h001: write_value_o=modify_value & 64'h1f;
+            12'h002: write_value_o=modify_value & 64'h7;
+            12'h003: write_value_o=modify_value & 64'hff;
+            12'h300: write_value_o = 64'h1800 | (modify_value & 64'h6088) | (64'(modify_value[14:13]==3)<<63);
             12'h301: write_value_o = MISA; // read-only WARL, writes ignored (Breeze semantics)
             12'h304: write_value_o = modify_value & 64'h888;
             12'h344: write_value_o = '0;
@@ -130,10 +140,11 @@ module csr_file
         pmp_o = '0; priv_o = 2'b11;
         irq_view_o = '{mip:64'd0,mie:mie_q};
         irq_take_o = 1'b0; irq_cause_o = '0; // L11
-        frm_o = '0; fs_o = '0; // L9
+        frm_o = frm_q; fs_o = fs_q;
     end
     always_ff @(posedge clk) begin
         if (rst) begin
+            fs_q<=0; frm_q<=0; fflags_q<=0;
             mie_bit_q <= 0; mpie_q <= 0; mie_q <= 0;
             mtvec_q <= 64'h200; mscratch_q <= 0; mepc_q <= 0; mcause_q <= 0; mtval_q <= 0;
         end else begin
@@ -148,7 +159,10 @@ module csr_file
                 end
             end else if (req_valid_i && !resp_o.illegal && req_i.write_en) begin
                 case (req_i.addr)
-                    12'h300: begin mie_bit_q <= write_value_o[3]; mpie_q <= write_value_o[7]; end
+                    12'h001: begin fflags_q<=write_value_o[4:0]; fs_q<=3; end
+                    12'h002: begin frm_q<=write_value_o[2:0]; fs_q<=3; end
+                    12'h003: begin frm_q<=write_value_o[7:5]; fflags_q<=write_value_o[4:0]; fs_q<=3; end
+                    12'h300: begin mie_bit_q <= write_value_o[3]; mpie_q <= write_value_o[7]; fs_q<=write_value_o[14:13]; end
                     12'h304: mie_q <= write_value_o;
                     12'h305: mtvec_q <= write_value_o;
                     12'h340: mscratch_q <= write_value_o;
@@ -157,6 +171,12 @@ module csr_file
                     12'h343: mtval_q <= write_value_o;
                     default: ;
                 endcase
+            end
+            // N edge: merge only actual retirement; N+1 software observes flags/Dirty.
+            if (fp_retire_i.valid && ((|fp_retire_i.fflags) || fp_retire_i.fs_dirty)) begin
+                assert (!(req_valid_i || trap_update_valid_i));
+                fflags_q<=fflags_q | fp_retire_i.fflags;
+                if (fp_retire_i.fs_dirty) fs_q<=3;
             end
         end
     end

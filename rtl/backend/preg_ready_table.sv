@@ -1,27 +1,12 @@
 /**
- * 物理寄存器 ready 表（busy 表）
- *
- * 来源：2026-10-02 从 backend.sv 的 preg_ready_q 更新逻辑原样迁出，逻辑未改。
- *
- * 当前已经实现：
- * - 复位时 p0..p(NUM_ARCH_REGS-1) 作为初始架构映射为 ready，其余 not-ready。
- * - Rename 接受的真实目的 preg 在上升沿标记 not-ready。
- * - 只有真正获得 PRF 写口的结果在上升沿标记 ready；IQ 以此表与写回广播维护源状态。
- *
- * 需要补充的机制：
- * - DOMAIN=RD_FP 实例：64 个物理 FPR，f0 正常可写；复位初始映射 f0..f31 → fp0..fp31（B15）。
- * - 分支恢复时被回收的 preg 不需要改 ready（Free List 重新分配时会再清）；与 B02 R2 原子
- *   事务一致。B33 提前唤醒只用于交付时间确定、且有完成空间预留的流水 FU：承诺不会失效，因此不需要
- *   推测唤醒取消/重放；ready 表仍在真正写 PRF 时置位，提前唤醒经 IQ 唤醒广播与 FIFO 头 bypass 承接。
- *   memory 结果不提前唤醒。若以后引入真正的推测唤醒，ready 语义需重新闭合。
- * - 写回来源扩展到 MUL/DIV/FP/CSR/AMO 后，写口数由 CFG 决定。
- *
- * 逐周期说明：
- * - 周期 N 组合：ready_o 输出当前表。
- * - 周期 N 上升沿：先按 alloc 清 ready，再按写口置 ready（同一 preg 同拍不会既分配又写回）。
- * - 周期 N+1：IQ 看到更新后的 ready。
- *
- * 本阶段不写测试代码和仿真代码。
+ * Per-domain physical-register readiness (B02/B15/B33).
+ * Reset marks initial architectural mappings ready in either domain. FP p0 is not
+ * special. Accepted allocations clear readiness; only actual PRF grants set readiness.
+ * Recovery needs no eager ready reset: reallocation clears returned registers.
+ * B33 early wakeup for FP FUs is deferred to performance work; INT M promises remain.
+ * 当前实现状态：闭环简化（L9）；lint/测试未运行。
+ * N: expose current ready array. N edge: clear accepted destinations, then set granted
+ * writes (distinct live identities). N+1: consumers observe updated readiness.
  */
 module preg_ready_table
     import o3_pkg::*;

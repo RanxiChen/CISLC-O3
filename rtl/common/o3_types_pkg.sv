@@ -683,6 +683,9 @@ package o3_types_pkg;
         FFMT_D = 1'b1
     } fp_fmt_e;
 
+    // Project-owned integer conversion width; translated only inside FP wrappers.
+    typedef enum logic { IFMT_W, IFMT_L } fp_int_fmt_e;
+
     typedef enum logic [3:0] {
         SYSOP_NONE, SYSOP_ECALL, SYSOP_EBREAK, SYSOP_MRET, SYSOP_SRET, SYSOP_WFI,
         SYSOP_FENCE, SYSOP_FENCE_I, SYSOP_SFENCE_VMA
@@ -707,11 +710,11 @@ package o3_types_pkg;
         IQ_INT = 2'd0,
         IQ_MEM = 2'd1,
         IQ_BR  = 2'd2,
-        IQ_FP  = 2'd3     // FP IQ 组织待定（B14/B15）
+        IQ_FP  = 2'd3     // L9: unified three-source dual-issue FP IQ
     } iq_kind_e;
 
     // decoded_uop_t / renamed_uop_t 的框架扩展字段（o3_pkg 中以 ext 字段承载）。
-    // 字段为逻辑内容，decoder 尚未产生，下游尚未消费。
+    // L9 FP fields are produced by decoder and carried through rename/RDQ/IQ/RegRead.
     typedef struct packed {
         logic [REG_ADDR_WIDTH-1:0] rs3;          // FMA 第三源（B15）
         logic                      rs3_read_en;
@@ -726,7 +729,11 @@ package o3_types_pkg;
         logic                      aq;           // A 扩展排序位（B09 首版较强排序，仍保留字段）
         logic                      rl;
         fp_op_e                    fp_op;
-        fp_fmt_e                   fp_fmt;
+        fp_fmt_e                   fp_fmt;      // destination floating format
+        fp_fmt_e                   fp_src_fmt;
+        fp_int_fmt_e               fp_int_fmt;
+        logic                      fp_unsigned;
+        logic                      uses_arch_rm;
         logic [FRM_W-1:0]          rm;           // 静态 rm；dynamic 需取程序顺序正确的 frm（B15）
         csr_op_e                   csr_op;
         logic                      csr_use_imm;  // CSRRWI/CSRRSI/CSRRCI
@@ -806,9 +813,11 @@ package o3_types_pkg;
     typedef struct packed {
         fu_tag_t          tag;
         fp_op_e           op;
-        fp_fmt_e          fmt;
+        fp_fmt_e          src_fmt;
+        fp_fmt_e          dst_fmt;
+        fp_int_fmt_e      int_fmt;
         logic [FRM_W-1:0] rm;            // 已解析为实际舍入模式
-        logic             op_mod;        // 有/无符号整数转换等修饰位（编码待定）
+        logic             op_mod;        // unsigned integer conversion; wrapper maps fused op modifiers
         logic [XLEN-1:0]  src1;
         logic [XLEN-1:0]  src2;
         logic [XLEN-1:0]  src3;
@@ -1050,7 +1059,7 @@ package o3_types_pkg;
     // 系统：CSR、trap、提交
     // 主流程已定：B22（CSR 串行）、B23/B24（屏障）、B26（异常/中断）、B27（xRET）、
     // B29（复用 Breeze 特权语义）、B32（load 依赖等待）、B37（committed_next_pc）、B38（WFI）、B39（fatal）、
-    // B40（FP 状态退休）。RTL 未实现；信号编码待定。
+    // B40（FP 状态退休）在 L9 接通；后级中断/S/U/维护合同仍待各级实现。
     // ============================================================
     typedef struct packed {
         csr_op_e               op;

@@ -1,29 +1,14 @@
 /**
- * 本次实现（O3-T03）：L5：提交态 free bitmap 跟随正常退休；global flush 恢复并包含同拍提交。
- *
- * 【2026-10-02 框架：目标机制与缺口】
- * - 实例化两份：DOMAIN=RD_INT 与 DOMAIN=RD_FP（B15）。HAS_ZERO_REG 已给出，现有逻辑仍硬编码
- *   “p0 永久保留、p0..p31 初始映射”；FP 实例需要 fp0..fp31 初始映射且没有永久保留项。
- * - 分配宽度目标为 CFG.rename.width；释放宽度为提交宽度（core.commit_width）。
- * - 每分支 allocation mask 的恢复合同不变：误预测一拍返还错误路径分配。
- * Rename Free List with branch allocation lists
- *
- * 职责：
- * - 复位时p0..p31承担初始架构映射，p32..p95空闲；提交后被覆盖的p1..p31也可回收。
- * - 只有p0永久保留，永不进入候选或释放集合。
- * - 按 lane0 到 laneN 的年龄顺序，每拍最多选择 MACHINE_WIDTH 个空闲 preg。
- * - 为每个未决分支维护 allocation mask，记录该分支之后分配的 preg。
- * - 分支预测失败时一拍返还错误路径 preg；预测正确时只释放 mask 槽位。
- *
- * 不负责：不维护架构映射，也不分配 branch tag。
- *
- * 周期行为：
- * - 周期 N 组合阶段：从 free_bitmap_q 连续优先选择候选 preg并给出空闲数量。
- * - 周期 N 上升沿：正常拍原子清除分配位、加入commit释放位并更新分支分配掩码。
- * - mispredict上升沿：禁止正常分配，把目标分支allocation mask与commit释放合并回空闲位图。
- * - 周期 N+1：Rename看到恢复后的空闲集合；PRF中的旧数据不需要清零。
+ * Per-domain physical free-list and recovery allocation masks (B02/B15).
+ * INT skips p0; FP includes p0 in allocation/count/release. Initial f0..f31 map to
+ * fp0..fp31, with remaining physical registers free. Shared branch checkpoint tags
+ * record all younger allocations in both domains. Global flush restores committed
+ * free state including actual same-boundary retirement; mispredict returns dependent allocations.
+ * 当前实现状态：闭环简化（L9）；lint/测试未运行。
+ * N: choose distinct free candidates for the accepted rename prefix. N edge: consume
+ * allocations, return retired old mappings and record/recover checkpoint masks.
+ * N+1: free count/candidate bitmap reflects the new or restored state.
  */
-
 module free_list
     import o3_pkg::*;
 #(
@@ -85,7 +70,7 @@ module free_list
             chosen_preg = -1;
             if (alloc_req_i[lane]) begin
                 request_count++;
-                for (int preg = 1; preg < NUM_PHYS_REGS; preg++) begin
+                for (int preg = int'(HAS_ZERO_REG); preg < NUM_PHYS_REGS; preg++) begin
                     if ((chosen_preg < 0) && candidate_bitmap[preg]) begin
                         chosen_preg = preg;
                     end
@@ -102,7 +87,7 @@ module free_list
         alloc_available_o = (selected_count == request_count);
 
         free_count_o = '0;
-        for (int preg = 1; preg < NUM_PHYS_REGS; preg++) begin
+        for (int preg = int'(HAS_ZERO_REG); preg < NUM_PHYS_REGS; preg++) begin
             if (free_bitmap_q[preg]) begin
                 free_count_o = free_count_o + COUNT_WIDTH'(1);
             end
@@ -127,14 +112,14 @@ module free_list
                 committed_next[release_preg_i[lane]]=1;
                 committed_next[commit_new_preg_i[lane]]=0;
             end
-            committed_next[0]=0;
+            if (HAS_ZERO_REG) committed_next[0]=0;
             committed_free_q<=committed_next;
             free_next = free_bitmap_q;
             allocation_next = allocation_mask_q;
 
             for (int port = 0; port < RELEASE_WIDTH; port++) begin
                 if (release_valid_i[port]
-                 && (release_preg_i[port] != '0)
+                 && (!HAS_ZERO_REG || release_preg_i[port] != '0)
                  && (release_preg_i[port] < PREG_IDX_WIDTH'(NUM_PHYS_REGS))) begin
                     free_next[release_preg_i[port]] = 1'b1;
                 end
@@ -148,7 +133,7 @@ module free_list
                 // 候选位图从拍初状态产生，因此需要重新合入本拍commit释放。
                 for (int port = 0; port < RELEASE_WIDTH; port++) begin
                     if (release_valid_i[port]
-                     && (release_preg_i[port] != '0)
+                     && (!HAS_ZERO_REG || release_preg_i[port] != '0)
                      && (release_preg_i[port] < PREG_IDX_WIDTH'(NUM_PHYS_REGS))) begin
                         free_next[release_preg_i[port]] = 1'b1;
                     end

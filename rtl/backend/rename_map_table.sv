@@ -1,31 +1,15 @@
 /**
- * 本次实现（O3-T03）：L5：global flush 从 committed RAT 恢复，包含同拍提交更新；分支快照机制保留。
- *
- * 【2026-10-02 框架：目标机制与缺口】
- * - 实例化两份：DOMAIN=RD_INT（x0→p0 恒零）与 DOMAIN=RD_FP（f0 正常可写，32→64，B15）。
- *   HAS_ZERO_REG 参数已给出，但现有逻辑仍按整数域硬编码 x0/p0，FP 实例未接入。
- * - 目标（B02）：组内 RAW/WAW 比较移到 R1（rename_dep_r1）；本模块只保留读当前 RAT、
- *   按 R1 结果选择“本组更老生产者的新 preg”或 RAT 映射、checkpoint 快照与 committed map。
- *   现有 src*_from_older_lane 旁路逻辑待迁移后删除。
- * - 需要补充：第三源 rs3 的映射读口（FMA）；宽度改为 CFG.rename.width。
- * - 快照包含分支自身和更老指令，不包含更年轻指令（不变量保持）。
- * Speculative and Committed Rename Map Table
- *
- * 职责：
- * - speculative_map_q服务Rename，支持4-wide从老到年轻的RAW/WAW组合旁路。
- * - committed_map_q只在顺序提交时更新，保存精确架构映射基线。
- * - 每个分支checkpoint保存完整speculative map；误预测时一拍恢复。
- *
- * checkpoint快照位于分支lane之后：包含所有更老lane以及控制流指令自身的
- * 目的映射，但不包含同拍更年轻lane的修改。
- *
- * 周期行为：
- * - 周期N组合阶段读取当前speculative map，并让更老lane的新目的映射覆盖基础读值。
- * - 正常Rename上升沿写入接受前缀，并为其中的分支保存对应lane边界快照。
- * - mispredict上升沿优先把目标checkpoint复制回speculative map；commit map仍只随退休更新。
- * - 周期N+1可见新的或恢复后的映射。
+ * Per-domain speculative/committed rename map and shared-tag checkpoints (B02/B15).
+ * Three source ports and same-domain intra-group RAW/WAW bypass. Input read/write
+ * enables must be qualified for this DOMAIN by the caller. HAS_ZERO_REG preserves
+ * x0->p0 only in INT; f0 and fp0 are ordinary FP state.
+ * Checkpoints include older/self destinations, exclude younger lanes, and use the
+ * same branch tag in both domains. Global flush restores committed state including
+ * actual same-boundary retirement. Misprediction restores the selected snapshot.
+ * 当前实现状态：闭环简化（L9）；single-cycle rename retained (B42), lint/测试未运行。
+ * N: read speculative maps with older-lane bypass. N edge: update accepted mappings,
+ * checkpoint snapshots and retired committed mappings, or apply recovery. N+1: new maps.
  */
-
 module rename_map_table
     import o3_pkg::*;
 #(
@@ -48,9 +32,11 @@ module rename_map_table
     input  logic                             lane_valid_i [MACHINE_WIDTH-1:0],
     input  logic [$clog2(NUM_ARCH_REGS)-1:0] rs1_addr_i [MACHINE_WIDTH-1:0],
     input  logic [$clog2(NUM_ARCH_REGS)-1:0] rs2_addr_i [MACHINE_WIDTH-1:0],
+    input logic [$clog2(NUM_ARCH_REGS)-1:0] rs3_addr_i [MACHINE_WIDTH-1:0],
     input  logic [$clog2(NUM_ARCH_REGS)-1:0] rd_addr_i [MACHINE_WIDTH-1:0],
     input  logic                             rs1_read_en_i [MACHINE_WIDTH-1:0],
     input  logic                             rs2_read_en_i [MACHINE_WIDTH-1:0],
+    input logic rs3_read_en_i [MACHINE_WIDTH-1:0],
     input  logic                             rd_write_en_i [MACHINE_WIDTH-1:0],
     input  logic [PREG_IDX_WIDTH-1:0] new_dst_preg_i [MACHINE_WIDTH-1:0],
 
@@ -67,9 +53,11 @@ module rename_map_table
 
     output logic [PREG_IDX_WIDTH-1:0] src1_preg_o [MACHINE_WIDTH-1:0],
     output logic [PREG_IDX_WIDTH-1:0] src2_preg_o [MACHINE_WIDTH-1:0],
+    output logic [PREG_IDX_WIDTH-1:0] src3_preg_o [MACHINE_WIDTH-1:0],
     output logic [PREG_IDX_WIDTH-1:0] old_dst_preg_o [MACHINE_WIDTH-1:0],
     output logic                             src1_from_older_lane_o [MACHINE_WIDTH-1:0],
-    output logic                             src2_from_older_lane_o [MACHINE_WIDTH-1:0]
+    output logic                             src2_from_older_lane_o [MACHINE_WIDTH-1:0],
+    output logic src3_from_older_lane_o [MACHINE_WIDTH-1:0]
 );
 
     localparam int ARCH_IDX_WIDTH = $clog2(NUM_ARCH_REGS);
@@ -83,37 +71,50 @@ module rename_map_table
         for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
             src1_preg_o[lane] = '0;
             src2_preg_o[lane] = '0;
+            src3_preg_o[lane] = '0;
             old_dst_preg_o[lane] = '0;
             src1_from_older_lane_o[lane] = 1'b0;
             src2_from_older_lane_o[lane] = 1'b0;
+            src3_from_older_lane_o[lane] = 1'b0;
 
-            if (lane_valid_i[lane] && rs1_read_en_i[lane] && (rs1_addr_i[lane] != '0)) begin
+            if (lane_valid_i[lane] && rs1_read_en_i[lane] && (!HAS_ZERO_REG || rs1_addr_i[lane] != '0)) begin
                 src1_preg_o[lane] = speculative_map_q[rs1_addr_i[lane]];
                 for (int older = 0; older < lane; older++) begin
                     if (lane_valid_i[older] && rd_write_en_i[older]
-                     && (rd_addr_i[older] != '0) && (rd_addr_i[older] == rs1_addr_i[lane])) begin
+                     && (!HAS_ZERO_REG || rd_addr_i[older] != '0) && (rd_addr_i[older] == rs1_addr_i[lane])) begin
                         src1_preg_o[lane] = new_dst_preg_i[older];
                         src1_from_older_lane_o[lane] = 1'b1;
                     end
                 end
             end
 
-            if (lane_valid_i[lane] && rs2_read_en_i[lane] && (rs2_addr_i[lane] != '0)) begin
+            if (lane_valid_i[lane] && rs2_read_en_i[lane] && (!HAS_ZERO_REG || rs2_addr_i[lane] != '0)) begin
                 src2_preg_o[lane] = speculative_map_q[rs2_addr_i[lane]];
                 for (int older = 0; older < lane; older++) begin
                     if (lane_valid_i[older] && rd_write_en_i[older]
-                     && (rd_addr_i[older] != '0) && (rd_addr_i[older] == rs2_addr_i[lane])) begin
+                     && (!HAS_ZERO_REG || rd_addr_i[older] != '0) && (rd_addr_i[older] == rs2_addr_i[lane])) begin
                         src2_preg_o[lane] = new_dst_preg_i[older];
                         src2_from_older_lane_o[lane] = 1'b1;
                     end
                 end
             end
 
-            if (lane_valid_i[lane] && rd_write_en_i[lane] && (rd_addr_i[lane] != '0)) begin
+            if (lane_valid_i[lane] && rs3_read_en_i[lane] && (!HAS_ZERO_REG || rs3_addr_i[lane] != '0)) begin
+                src3_preg_o[lane] = speculative_map_q[rs3_addr_i[lane]];
+                for (int older = 0; older < lane; older++) begin
+                    if (lane_valid_i[older] && rd_write_en_i[older]
+                     && (!HAS_ZERO_REG || rd_addr_i[older] != '0) && (rd_addr_i[older] == rs3_addr_i[lane])) begin
+                        src3_preg_o[lane] = new_dst_preg_i[older];
+                        src3_from_older_lane_o[lane] = 1'b1;
+                    end
+                end
+            end
+
+            if (lane_valid_i[lane] && rd_write_en_i[lane] && (!HAS_ZERO_REG || rd_addr_i[lane] != '0)) begin
                 old_dst_preg_o[lane] = speculative_map_q[rd_addr_i[lane]];
                 for (int older = 0; older < lane; older++) begin
                     if (lane_valid_i[older] && rd_write_en_i[older]
-                     && (rd_addr_i[older] != '0) && (rd_addr_i[older] == rd_addr_i[lane])) begin
+                     && (!HAS_ZERO_REG || rd_addr_i[older] != '0) && (rd_addr_i[older] == rd_addr_i[lane])) begin
                         old_dst_preg_o[lane] = new_dst_preg_i[older];
                     end
                 end
@@ -135,7 +136,7 @@ module rename_map_table
         end else begin
             // Committed map与推测恢复正交；只接受ROB顺序退休提供的新映射。
             for (int port = 0; port < COMMIT_WIDTH; port++) begin
-                if (commit_valid_i[port] && commit_rd_write_en_i[port] && (commit_rd_i[port] != '0)) begin
+                if (commit_valid_i[port] && commit_rd_write_en_i[port] && (!HAS_ZERO_REG || commit_rd_i[port] != '0)) begin
                     committed_map_q[commit_rd_i[port]] <= commit_new_preg_i[port];
                 end
             end
@@ -154,7 +155,7 @@ module rename_map_table
                 end
             end else if (rename_fire_i) begin
                 for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
-                    if (lane_valid_i[lane] && rd_write_en_i[lane] && (rd_addr_i[lane] != '0)) begin
+                    if (lane_valid_i[lane] && rd_write_en_i[lane] && (!HAS_ZERO_REG || rd_addr_i[lane] != '0)) begin
                         speculative_map_q[rd_addr_i[lane]] <= new_dst_preg_i[lane];
                     end
                 end
@@ -166,7 +167,7 @@ module rename_map_table
                             for (int older_or_self = 0; older_or_self <= cp_lane; older_or_self++) begin
                                 if (lane_valid_i[older_or_self] && rd_write_en_i[older_or_self]
                                  && (rd_addr_i[older_or_self] == ARCH_IDX_WIDTH'(arch))
-                                 && (rd_addr_i[older_or_self] != '0)) begin
+                                 && (!HAS_ZERO_REG || rd_addr_i[older_or_self] != '0)) begin
                                     checkpoint_map_q[checkpoint_create_tag_i[cp_lane]][arch]
                                         <= new_dst_preg_i[older_or_self];
                                 end

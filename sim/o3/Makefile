@@ -191,3 +191,9 @@ run-l7-predict:
 run-l7b-rvc:
 	$(RISCV_GCC) -march=rv64imc_zicsr -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l7b_rvc.S -o $(BUILD_DIR)/l7b_rvc.elf
 	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK --image $(BUILD_DIR)/l7b_rvc.elf --trace $(BUILD_DIR)/l7b_rvc.jsonl --tohost-address 0x801ff000 --max-cycles 200000 --max-retires 30000
+
+# L9 current complete F/D RTL: small self-check, no transitional T07A masking.
+.PHONY: run-l9-fp
+run-l9-fp:
+	$(RISCV_GCC) -march=rv64imfdc_zicsr -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l9_fp.S -o $(BUILD_DIR)/l9_fp.elf
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK --image $(BUILD_DIR)/l9_fp.elf --trace $(BUILD_DIR)/l9_fp.jsonl --tohost-address 0x801ff000 --max-cycles 100000 --max-retires 10000

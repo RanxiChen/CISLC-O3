@@ -1,85 +1,15 @@
 /**
- * 本次实现（O3-T03）：L5：产生六种 Zicsr 与 M 系统串行字段；非法编码和 ECALL/EBREAK 进入异常元信息。
- *
- * 【2026-10-02 框架：目标机制与缺口】
- * 需要补充实现（指令集范围：RV64GC/Linux，C 已由前端展开）：
- * 当前实现状态：闭环简化（L6）：M 编码已接通；测试 sim/cocotb/mul_fusion_detect/、sim/o3/。
- * - M：MUL/MULH/MULHSU/MULHU/MULW、DIV/DIVU/REM/REMU 及 W 变体 → ext.fu_class=FU_MUL/FU_DIV、ext.mdu_op（B13/B21）。
- * - A：LR/SC、AMO*.W/D，保留 aq/rl → FU_AMO、ext.amo_op/aq/rl（B09）。
- * - F/D：FLW/FLD/FSW/FSD、算术/FMA/比较/分类/转换/FMV → ext.fp_op/fp_fmt/rm；
- *   每个源与目的独立给出寄存器域（ext.rs*_dom/rd_dom），FMA 给第三源 rs3（B15）。
- *   FMV.X/FCLASS/比较写整数域，FMV.F/I2F 写 FP 域，不能按 FU 推断目的域。
- * - Zicsr：CSRRW/RS/RC 及立即数形式 → FU_CSR、ext.csr_*，ext.serialize=1。
- *   CSR 指令 ext.block_younger=1（B22 Decode→Rename 串行阻塞）；FS Dirty/fflags 退休合并见 B40。
- * - Zifencei / SYSTEM：FENCE、FENCE.I、SFENCE.VMA、ECALL、EBREAK、MRET、SRET、WFI → FU_SYS、ext.sys_op。
- *   SFENCE.VMA 需保留 rs1/rs2 是否为 x0（由 rs1/rs2 编号判断，不用值，D26）。
- *   FENCE/FENCE.I/SFENCE.VMA/WFI 置 ext.block_younger=1；FENCE 保留 ext.fence_pred/succ（B23）。
- *   ECALL/EBREAK 异常、xRET（B27）、WFI（B38）的合法性按既有特权规则（B29 复用 Breeze）。
- * - 现有 FENCE 作为无副作用整数 uop 完成，是单请求内存模型下的占位；目标在 ROB 队头等待
- *   先前访存到顺序点（含已提交未 drain 的 store），具体握手随访存与 commit_ctrl 闭合。
- * RV64I + L5 系统编码已实现；M/FP/S/U 的译码仍待后续级。
- * 指令解码器 - 纯组合逻辑
- *
- * 当前已经实现的功能：
- * - 从 32 位指令中直接提取 rs1 / rs2 / rd 编码字段
- * - 为 RV64I 中直接走整数 ALU 的 U/R/I/word 算术指令给出 decode queue / rename 阶段需要的语义位：
- *   1) rs1_read_en
- *   2) rs2_read_en
- *   3) rd_write_en
- *   4) use_imm
- *   5) imm_type / imm_raw
- *   6) int_alu_op
- *   7) is_int_uop
- * - 目前输出形态固定为 `decode_out_t`，字段含义如下：
- *   1) `rs1/rs2/rd`：直接来自指令编码位段 `[19:15] / [24:20] / [11:7]`
- *   2) `rs1_read_en/rs2_read_en/rd_write_en`：当前 rename 是否真的要读源寄存器、分配目的寄存器
- *   3) `use_imm`：第二操作数是否选择立即数
- *   4) `imm_type/imm_raw`：立即数类型与原始编码，覆盖 I/S/B/U/J
- *   5) `int_alu_op`：整数 ALU 操作类型，和 `int_execute_unit` 共用同一套编码
- *   6) `is_int_uop`：当前是否先归入统一整数数据流
- *   7) `illegal_instruction`：当前编码是否未被本阶段识别
- * - 当前覆盖的指令如下：
- *   1) U-type：`LUI/AUIPC`
- *   2) R-type：`ADD/SUB/SLL/SLT/SLTU/XOR/SRL/SRA/OR/AND`
- *   3) I-type：`ADDI/SLLI/SLTI/SLTIU/XORI/SRLI/SRAI/ORI/ANDI`
- *   4) RV64 word：`ADDIW/SLLIW/SRLIW/SRAIW/ADDW/SUBW/SLLW/SRLW/SRAW`
- *   5) RV64I Load/Store、六种条件分支、`JAL/JALR`以及`FENCE`
- * - 对于已覆盖的 I-type 算术指令：
- *   1) `use_imm=1`
- *   2) `imm_type=IMM_TYPE_I`
- *   3) `imm_raw=instruction[31:20]`
- * - 对于已覆盖的 R-type 算术指令：
- *   1) `use_imm=0`
- *   2) `imm_type=IMM_TYPE_NONE`
- *   3) `imm_raw=0`
- * - 对未覆盖 opcode 或未识别的 `funct3/funct7` 组合：
- *   1) 不产生寄存器读写副作用
- *   2) `imm_type` 保持全 0，表示立即数无效
- *   3) `illegal_instruction=1`，由 Decode Stage 形成精确异常元数据
- *
- * 当前没有实现的功能：
- * - 不覆盖 system；当前FENCE在单请求软件memory模型中作为无寄存器副作用的
- *   整数uop完成，尚未形成面向多 outstanding 外部总线的独立屏障状态机
- * - 不区分 ALU / BRU / LSU / MUL / DIV 等更细执行类型
- * - 不输出 CSR / 异常 / trap / commit 相关信息
- *
- * 扩展入口：
- * - 后续若要接 issue / execute，可在 `decode_out_t` 中继续增加 branch/load/store/jump 等控制语义
- * - 后续若要支持异常、CSR、分支恢复，应在这里补齐更完整的控制语义
- * - 本轮U-type/word扩展由`sim/o3`退休轨迹定向测试覆盖
- *
- * 时序行为：
- * - 周期 N 组合阶段：
- *   1) `decode_i.instruction` 被直接拆分出 `rs1/rs2/rd/opcode`
- *   2) 根据 `opcode/funct3/funct7` 组合地产生 `read_en/write_en/use_imm/imm_type/imm_raw/int_alu_op/is_int_uop`
- *   3) `decode_o` 在同一周期对下游可见
- * - 周期 N 上升沿：
- *   1) 本模块没有内部状态，不更新任何寄存器
- *   2) 下游若在该拍锁存 `decode_o`，拿到的是本周期组合结果
- * - 周期 N+1：
- *   1) 输出继续完全由新的 `decode_i.instruction` 组合决定
+ * RV64 integer and scalar F/D decode (L9 spec section 3).
+ * Produces source/destination register domains, three-source FMA, conversion control
+ * and uses_arch_rm. Static reserved rm/unsupported format encodings are illegal.
+ * FP memory ignores fmt bits (they belong to immediate); f0 is ordinary writable state.
+ * INT destinations x0 retain their routing domain with rd_write_en=0, so FP flags
+ * still complete through the INT domain. Illegal instructions carry no execution semantics.
+ * Dynamic rm and FS checks occur at rename entry after serialized CSR state changes.
+ * 当前实现状态：闭环简化（L9）；T07b arithmetic enabled, lint/测试未运行。
+ * Pure combinational decode in N; downstream queue captures only on accepted transfer.
+ * Existing CSR/system serialization and M-extension decode are retained.
  */
-
 module decoder
     import o3_pkg::*;
 #(
@@ -407,6 +337,137 @@ module decoder
                 end
             end
 
+            7'h07, 7'h27: begin // FLW/FLD/FSW/FSD; fmt bits belong to immediate here.
+                if (funct3 inside {3'b010,3'b011}) begin
+                    decode_o.illegal_instruction=0;
+                    decode_o.rs1_read_en=1;
+                    decode_o.ext.rs1_dom=o3_types_pkg::RD_INT;
+                    decode_o.ext.fu_class=o3_types_pkg::FU_LDST;
+                    decode_o.mem_size=funct3==3 ? MEM_SIZE_8B : MEM_SIZE_4B;
+                    decode_o.use_imm=1;
+                    if (opcode==7'h07) begin
+                        decode_o.is_load=1; decode_o.rd_write_en=1;
+                        decode_o.ext.rd_dom=o3_types_pkg::RD_FP;
+                        decode_o.imm_type=IMM_TYPE_I;
+                        decode_o.imm_raw[11:0]=decode_i.instruction[31:20];
+                    end else begin
+                        decode_o.is_store=1; decode_o.rs2_read_en=1;
+                        decode_o.ext.rs2_dom=o3_types_pkg::RD_FP;
+                        decode_o.imm_type=IMM_TYPE_S;
+                        decode_o.imm_raw[11:0]={decode_i.instruction[31:25],decode_i.instruction[11:7]};
+                    end
+                end
+            end
+            7'h43,7'h47,7'h4b,7'h4f,7'h53: begin
+                decode_o.ext.fp_fmt=o3_types_pkg::fp_fmt_e'(decode_i.instruction[25]);
+                decode_o.ext.fp_src_fmt=decode_o.ext.fp_fmt;
+                decode_o.ext.rm=funct3;
+                decode_o.ext.rd_dom=o3_types_pkg::RD_FP;
+                decode_o.ext.rs1_dom=o3_types_pkg::RD_FP;
+                decode_o.ext.rs2_dom=o3_types_pkg::RD_FP;
+                decode_o.rs1_read_en=1; decode_o.rs2_read_en=1; decode_o.rd_write_en=1;
+                decode_o.ext.uses_arch_rm=1;
+                if (decode_i.instruction[26:25] inside {2'b00,2'b01}) begin
+                    if (opcode!=7'h53) begin
+                        decode_o.illegal_instruction=0;
+                        decode_o.ext.fu_class=o3_types_pkg::FU_FMA;
+                        decode_o.ext.rs3=decode_i.instruction[31:27];
+                        decode_o.ext.rs3_dom=o3_types_pkg::RD_FP;
+                        decode_o.ext.rs3_read_en=1;
+                        case (opcode)
+                            7'h43: decode_o.ext.fp_op=o3_types_pkg::FOP_MADD;
+                            7'h47: decode_o.ext.fp_op=o3_types_pkg::FOP_MSUB;
+                            7'h4b: decode_o.ext.fp_op=o3_types_pkg::FOP_NMSUB;
+                            7'h4f: decode_o.ext.fp_op=o3_types_pkg::FOP_NMADD;
+                            default: ;
+                        endcase
+                    end else begin
+                        case (decode_i.instruction[31:27])
+                            5'b00000,5'b00001,5'b00010: begin
+                                decode_o.illegal_instruction=0;
+                                decode_o.ext.fu_class=o3_types_pkg::FU_FMA;
+                                case (decode_i.instruction[31:27])
+                                    0: decode_o.ext.fp_op=o3_types_pkg::FOP_ADD;
+                                    1: decode_o.ext.fp_op=o3_types_pkg::FOP_SUB;
+                                    2: decode_o.ext.fp_op=o3_types_pkg::FOP_MUL;
+                                    default: ;
+                                endcase
+                            end
+                            5'b00011: begin
+                                decode_o.illegal_instruction=0;
+                                decode_o.ext.fu_class=o3_types_pkg::FU_FDIVSQRT;
+                                decode_o.ext.fp_op=o3_types_pkg::FOP_DIV;
+                            end
+                            5'b01011: if (decode_o.rs2==0) begin
+                                decode_o.illegal_instruction=0; decode_o.rs2_read_en=0;
+                                decode_o.ext.fu_class=o3_types_pkg::FU_FDIVSQRT;
+                                decode_o.ext.fp_op=o3_types_pkg::FOP_SQRT;
+                            end
+                            5'b00100: if (funct3<=2) begin
+                                decode_o.illegal_instruction=0; decode_o.ext.uses_arch_rm=0;
+                                decode_o.ext.fu_class=o3_types_pkg::FU_FMISC;
+                                case (funct3)
+                                    0: decode_o.ext.fp_op=o3_types_pkg::FOP_SGNJ;
+                                    1: decode_o.ext.fp_op=o3_types_pkg::FOP_SGNJN;
+                                    2: decode_o.ext.fp_op=o3_types_pkg::FOP_SGNJX;
+                                    default: ;
+                                endcase
+                            end
+                            5'b00101: if (funct3<=1) begin
+                                decode_o.illegal_instruction=0; decode_o.ext.uses_arch_rm=0;
+                                decode_o.ext.fu_class=o3_types_pkg::FU_FMISC;
+                                decode_o.ext.fp_op=funct3==0 ? o3_types_pkg::FOP_MIN:o3_types_pkg::FOP_MAX;
+                            end
+                            5'b10100: if (funct3<=2) begin
+                                decode_o.illegal_instruction=0; decode_o.ext.uses_arch_rm=0;
+                                decode_o.ext.rd_dom=o3_types_pkg::RD_INT;
+                                decode_o.ext.fu_class=o3_types_pkg::FU_FMISC;
+                                case (funct3)
+                                    0: decode_o.ext.fp_op=o3_types_pkg::FOP_LE;
+                                    1: decode_o.ext.fp_op=o3_types_pkg::FOP_LT;
+                                    2: decode_o.ext.fp_op=o3_types_pkg::FOP_EQ;
+                                    default: ;
+                                endcase
+                            end
+                            5'b01000: if (decode_o.rs2<=1 && decode_o.rs2[0]!=decode_i.instruction[25]) begin
+                                decode_o.illegal_instruction=0; decode_o.rs2_read_en=0;
+                                decode_o.ext.fp_src_fmt=o3_types_pkg::fp_fmt_e'(decode_o.rs2[0]);
+                                decode_o.ext.fu_class=o3_types_pkg::FU_FCONV;
+                                decode_o.ext.fp_op=o3_types_pkg::FOP_CVT_F2F;
+                            end
+                            5'b11000,5'b11010: if (decode_o.rs2<=3) begin
+                                decode_o.illegal_instruction=0; decode_o.rs2_read_en=0;
+                                decode_o.ext.fu_class=o3_types_pkg::FU_FCONV;
+                                decode_o.ext.fp_int_fmt=o3_types_pkg::fp_int_fmt_e'(decode_o.rs2[1]);
+                                decode_o.ext.fp_unsigned=decode_o.rs2[0];
+                                if (decode_i.instruction[28]) begin
+                                    decode_o.ext.fp_op=o3_types_pkg::FOP_CVT_I2F;
+                                    decode_o.ext.rs1_dom=o3_types_pkg::RD_INT;
+                                end else begin
+                                    decode_o.ext.fp_op=o3_types_pkg::FOP_CVT_F2I;
+                                    decode_o.ext.rd_dom=o3_types_pkg::RD_INT;
+                                end
+                            end
+                            5'b11100: if (decode_o.rs2==0 && funct3<=1) begin
+                                decode_o.illegal_instruction=0; decode_o.rs2_read_en=0;
+                                decode_o.ext.uses_arch_rm=0; decode_o.ext.rd_dom=o3_types_pkg::RD_INT;
+                                decode_o.ext.fu_class=funct3==1 ? o3_types_pkg::FU_FMISC:o3_types_pkg::FU_FCONV;
+                                decode_o.ext.fp_op=funct3==1 ? o3_types_pkg::FOP_CLASS:o3_types_pkg::FOP_MV_F2X;
+                            end
+                            5'b11110: if (decode_o.rs2==0 && funct3==0) begin
+                                decode_o.illegal_instruction=0; decode_o.rs2_read_en=0;
+                                decode_o.ext.uses_arch_rm=0; decode_o.ext.rs1_dom=o3_types_pkg::RD_INT;
+                                decode_o.ext.fu_class=o3_types_pkg::FU_FCONV;
+                                decode_o.ext.fp_op=o3_types_pkg::FOP_MV_X2F;
+                            end
+                            default: ;
+                        endcase
+                    end
+                end
+                if (decode_o.ext.uses_arch_rm && (funct3 inside {3'd5,3'd6}))
+                    decode_o.illegal_instruction=1;
+            end
+
             OPCODE_MISC_MEM: begin
                 if (funct3==0 || funct3==1) begin
                     decode_o.ext.sys_op = funct3==0 ? o3_types_pkg::SYSOP_FENCE : o3_types_pkg::SYSOP_FENCE_I;
@@ -469,6 +530,25 @@ module decoder
                 7: decode_o.ext.mdu_op=o3_types_pkg::MDU_REMU;
                 default: ;
             endcase
+        end
+        // Every source is domain qualified. INT destination x0 keeps its routing domain
+        // for FP flags/completion, but never allocates a physical register.
+        if (!decode_o.illegal_instruction) begin
+            if (decode_o.rs1_read_en && decode_o.ext.rs1_dom==o3_types_pkg::RD_NONE)
+                decode_o.ext.rs1_dom=o3_types_pkg::RD_INT;
+            if (decode_o.rs2_read_en && decode_o.ext.rs2_dom==o3_types_pkg::RD_NONE)
+                decode_o.ext.rs2_dom=o3_types_pkg::RD_INT;
+            if (decode_o.rd_write_en && decode_o.ext.rd_dom==o3_types_pkg::RD_NONE)
+                decode_o.ext.rd_dom=o3_types_pkg::RD_INT;
+            if (!decode_o.rs1_read_en) decode_o.ext.rs1_dom=o3_types_pkg::RD_NONE;
+            if (!decode_o.rs2_read_en) decode_o.ext.rs2_dom=o3_types_pkg::RD_NONE;
+            if (decode_o.ext.rd_dom==o3_types_pkg::RD_INT && decode_o.rd==0)
+                decode_o.rd_write_en=0;
+        end else begin
+            decode_o.rs1_read_en=0; decode_o.rs2_read_en=0; decode_o.rd_write_en=0;
+            decode_o.is_int_uop=0; decode_o.is_load=0; decode_o.is_store=0;
+            decode_o.is_branch=0; decode_o.is_jal=0; decode_o.is_jalr=0; decode_o.needs_checkpoint=0;
+            decode_o.ext='0;
         end
     end
 

@@ -24,6 +24,15 @@ async def reserved_and_integer_boundaries(d):
         d.in_i.value=raw;await Timer(1,unit='ns')
         assert int(d.legal_o.value)==1,hex(raw)
         assert int(d.out_o.value)==expanded,(hex(raw),hex(int(d.out_o.value)))
-    for raw in [0x2000,0xa000,0x2002,0xa002,0x8002,0x0002,0x2001,0x9c41,0xffff]:
+    for raw in [0x8002,0x0002,0x2001,0x9c41,0xffff,0x6181]:
         d.in_i.value=raw;await Timer(1,unit='ns')
         assert int(d.legal_o.value)==0,hex(raw)
+
+@cocotb.test()
+async def fp_load_store_vectors(d):
+    # RV64C: FLD/FSD f8,0(x8); FLDSP/FSDSP f0,0(sp). f0 is writable.
+    for raw,expanded in [(0x2000,0x00043407),(0xa000,0x00843027),
+                         (0x2002,0x00013007),(0xa002,0x00013027)]:
+        d.in_i.value=raw;await Timer(1,unit='ns')
+        assert int(d.legal_o.value)==1,hex(raw)
+        assert int(d.out_o.value)==expanded,(hex(raw),hex(int(d.out_o.value)))
