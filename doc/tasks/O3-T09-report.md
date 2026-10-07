@@ -394,3 +394,80 @@ M3 命令为 `make -j4 -C sim/cocotb/memsys GEOMETRY=<pressure|default> MSHRS=<1
 I Read 使用独立客户端，不把 L1I 加入目录；随机 memory agent 将 golden 与 backing 分开。
 MSHRS 是独立 sweep，压力几何保留 2 sets/2 ways/1 WB 与 L2 2 sets/2 ways/2 slots。
 文件为 `sim/cocotb/memsys/{memsys_tb_top.sv,system_agents.py,test_memsys.py,Makefile}`。
+
+### M4 完整通过与提交
+
+按 spec 第 12 节 M4 行更新 load_queue / store_queue / load_store_unit / backend_issue_queue /
+mmu / icache / commit_ctrl；另迁移 load_store_unit_l5、backend_issue_queue_l3、
+prf_read_arbiter 的既有套件。候选均保存准确 SHA、cwd、命令、exit、日志与 XML；
+实际执行 Alan，cloud_chen 每次预检连接超时 255。工具版本同 M3。
+
+失败与定位：
+
+| 候选 / item | 首个失败 | 根因与处理 |
+| --- | --- | --- |
+| f7cbaa10 / m4-lq-public | 编译 enum mask assignment | wrapper mask 常量改为显式 enum cast；不是 RTL 功能失败 |
+| 81923826 / m4-lsu-public | blocked load 的旧 store 未完成 | 独立 cache model 错把 SQ load-query 的 block 施加到 STA；按 is_sta 区分，golden 不变 |
+| 81923826 / m4-lsu-public | transaction 0，结果 mask 9，期望 8 | **RTL**：同拍正确解析先清 FIFO，再 whole-entry push 覆盖；fifo_new 在写入前清解析位 |
+| 81923826 / m4-lsu-public | FIFO 两拍消费后仍比较下一项 id | driver 已消费两项并回绕，读到无效槽的历史 payload；改在首次消费后一拍检查第二项 valid/id，第二次后检查 empty |
+| 81923826 / m4-sq-public | 正确响应不能清 committed_empty | **RTL**：错误 sq_idx 的响应清 dc_inflight_q；后来的正确响应被忽略。响应状态/等待/释放均按 inflight/src/head sq_idx 匹配 |
+| 81923826 / m4-mmu-dual | reason enum 默认值编译失败 | 明确 LDW_NONE，保留原 MMU tests 全部 golden |
+| 81923826 / m4-icache-public | 同行第二 fetch fault 等待超时 | 原四 beat 延迟消失，第二请求尚未到 S3 merge 就返回 whole-line error；增加 4 拍公共 pipeline 推进并检查没有第二笔 Read，再要求两个 waiter 均 fault |
+| d8e23a28 / m4-lsu-resolve-fix | 第二测试记录 reset 前历史 result | driver 在 reset 结束清观察列表；没有改变 DUT/实际运行断言 |
+| d476464c / m4-iql3-mem | cycle 2 issue_valid 与独立队列不符 | 旧 wrapper/codec 未设置 L9 加入的 source domain，RD_NONE 不读 PRF；显式 RD_INT，原 ready model 与 650 拍规模保留 |
+
+RTL 修复单独提交 `120a130`：`fix(lsu): retain drain identity and clear resolved FIFO dependencies`。
+目标验证：LSU 5/5（0084e188 / m4-lsu-reset-s2）、SQ 6/6（d8e23a28 / m4-sq-id-fix），
+包括原错误身份断言、160 笔随机数据/branch mask、同拍旧 STA 保留与年轻 load 取消，0 skip。
+开发证据根为 `/home/chen/FUN/cislc-o3-t09-evidence/t09/<candidate8>/<item>/`。
+下层完整重跑结果与接受提交见下表。
+
+接口迁移依据与自行决定：
+
+- spec 6.3：LQ 由一位代际改为八位；保持 500 拍 allocate/release/wrap 与 240 次 recovery/reuse。
+  wrapper 只读观察 entry 的 valid/ready/executed/gen/VA/mask，刺激全部走公共 capture/update/wake。
+- spec 6.1：新增逐原因 wait/wake；MSHR 检查 wrong id 无效，FULL/WB 检查错误资源事件无效，
+  TLB/OLDER_STORE_ADDR/OLDER_STORE_DATA/AD 检查无事件持续等待；CONFLICT/SNAP/BANK 立即 ready。
+  同拍两 replay、wait-write 与 install.err/wb_free 同拍、取消后 12 拍迟到事件与旧 generation 均检查。
+- spec 7.1：删除旧单 replay 槽 allow_load 门控与 load 按序 gate；IQ 继续选择 oldest READY，
+  原 12/10/5 拍 stall 检查与 ROB wrap 保留；新增两个独立 handshake；L3 随机 650 拍不变。
+- X5：原 committed_dtcm_store 改在 0x80040008 走缓存，原 0x55 数据不变，local ready 不能完成，
+  必须等待 cached PS completion。SQ 80 batches / trap 40 次 / partial forward 等 golden 不变，另加双 STA/查询。
+- spec 7.2：DTLB port1 从 tied-off 改为独立输入；已有 6 项 MMU 自查不改，增加 40 次 dual Bare 与
+  40 次 dual Sv39 resident、port1 miss 时 port0 hit/PTW 完成后 port1 hit。
+- spec 8：ICache 整行 ReadData/ID，保留字节值、3 拍 hit latency、同 bank 连续四请求与 12 次随机 hit；
+  旧 recall case 因接口已删除迁移为 resident copy 保持至显式 invalidation，随后重新 Read 并逐值比较。
+- spec 7/9：LSU 采用固定 S0/S1/S2 响应与独立 LQ wait/replay model；L5 精确异常保留 150 次、
+  load/store fault cause 5/7、原 VA/ROB、flush 与已经在途 S2 响应的取消。原任意延迟单 pending 槽已被冻结流水替代。
+- spec 7.1/X3：PRF 仲裁测试增加第二 MEM 候选，完整 source set 原子分配、ROB age 与所有 read 地址
+  逐值比较不变，800 拍随机规模保留。FENCE.I wrapper 公开 clean req/次拍 ack，原 commit 300 拍等检查保留。
+
+M4 接受提交 `74cddf7ec54ecc0d7e0e8d1464fdbae3fada4861`，`test(memsys): L8a test layer M4 pass`。
+最终候选 `521a3ab145528cb30c0c483a96664b3d4f2c99c3` 与接受提交完整 tree 均为
+`47b02f4674168caa54f4421aa39baba6dcd51f67`。证据根
+`/home/chen/FUN/cislc-o3-t09-evidence/t09/521a3ab1/`，cwd
+`/home/chen/FUN/20261007-t09-521a3ab1`，32 runs / 108 cases，全部 exit 0、0 skip。
+命令 `make -j4 -C sim/cocotb/<suite> RANDOM_SEED=<1|7|29>`，L3 IQ 再加 `KIND=<0|1|2>`；
+每项独立 XML/log/manifest，seed 7/29 在相同 SHA/host 上复用已编译二进制，重新执行刺激。
+
+| M4 suite / spec 第12节项 | seed 1 | seed 7 | seed 29 | 覆盖 |
+| --- | --- | --- | --- | --- |
+| load_queue | 6/6 | 6/6 | 6/6 | 全等待原因、同拍 wait/wake、错误id、cancel/late/gen、500生命周期、240恢复 |
+| store_queue | 6/6 | 6/6 | 6/6 | 双STA/query、partial forward、乱序地址/数据阻塞、drain身份、cached PS、80 batches/40 traps |
+| load_store_unit | 5/5 | 5/5 | 5/5 | 160随机事务，逐相关事务旧STA/M同拍、双lane、FIFO backpressure/顺序/满、年轻load取消 |
+| load_store_unit_l5 | 1/1 | 1/1 | 1/1 | 150精确异常，原cause/VA/ROB，flush迟到S2取消 |
+| backend_issue_queue | 3/3 | N/A | N/A | oldest READY、双独立handshake、删除旧ordered-load gate |
+| backend_issue_queue_l3 KIND 0/1/2 | 各1/1 | 各1/1 | 各1/1 | 每项650拍独立随机队列，源domain显式INT |
+| prf_read_arbiter | 1/1 | 1/1 | 1/1 | 800拍、两个MEM候选、整套source原子仲裁/ROB年龄/read地址gold |
+| mmu | 7/7 | 7/7 | 7/7 | 原6项、双Bare40/双Sv39 40、port1 miss/port0 hit |
+| icache | 4/4 | 4/4 | 4/4 | 3拍hit、同bank、合并fault、invalidate、权限重查，旧recall按spec8迁移 |
+| commit_ctrl | 6/6 | N/A | N/A | 原300拍等、FENCE.I等committed SQ empty/次拍clean ack |
+
+RTL 修复之后下层全矩阵：M3 八组合各2/2（2000 CPU + 500 I Read，seed61/62）；
+M2 单/四 MSHR 25/25、27/27；M1 pressure/slot-full/default 12/12、1/1、10/10，全部 exit0、0skip。
+M3 前七项实际 SHA `34d39ec030206723477aebe358dcc6c08c942eb0`，
+最后 `default-m4-r1` 及 M2/M1 实际 SHA `521a3ab145528cb30c0c483a96664b3d4f2c99c3`。
+两 SHA 的唯一 diff 为 LSU Python testcase 补回8行旧STA同拍检查；所有生产RTL和M1～M3参与源码完全相同。
+各实际 SHA 根下 item `m3-m4-full-<geometry>-m<1|4>-r<0|1>`、
+`m2-m4-full-one/four`、`m1-m4-full-pressure/slot-full/default`；命令与M1～M3相同，完整参数见 manifest。
+模块退休数 N/A。本层通过不声明 M5～M6 或12.8通过。所有提交留本地，未推送 origin。
