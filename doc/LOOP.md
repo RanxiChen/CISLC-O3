@@ -24,14 +24,14 @@
 | L5 | Spike 逐条比对；M 模式 CSR、精确异常、ecall/ebreak/illegal、MRET、committed_next_pc | 按 2026-10-06 用户策略带已知问题收口 | **已知问题退出**：Alan `2cc8a91` build、固定 11/11、新增局部 5/5、riscv-tests 5/5 PASS；随机 178/200（14 rd_wdata、8 mem_kind 失败）；M 模式 84 退休后 MRET timeout；ACT4 M 模式 Sail 签名 trap loop 暂不处理。根因未定位项留待上板抓波形，停止 T03 bug 修复，详见 [T03 报告](tasks/O3-T03-report.md) |
 | L6 | M 扩展（MUL 采用 DSP，B43）、完成 FIFO/提前唤醒、JALR；首次 OOC 综合 | 按 2026-10-06 策略：定向 cocotb + lint + 整核短程序 + OOC | 机制及简化功能验证收口：Alan 定向 6/6、lint PASS、整核 297 周期 / 71 条退休 / Spike 0 差异。整核 OOC 812 秒后崩溃，整核 PPA 未取得；局部 MUL/DIV OOC PASS，MUL 16 DSP，见 [T04 报告](tasks/O3-T04-report.md) |
 | O3-T04b（L7 前） | 整核 BRAM 映射与 OOC 资源/时序基线；不改机制 | 每个 cache 现有 cocotb + 整核 smoke；整核 OOC 耗时/资源/WNS/最差路径 | **定位报告已提交，改造暂停**：同步 BRAM 与 L1D 接纳前 tag 判定、L2 握手当拍写回 error 存在逐拍合同冲突；用户要求保持接口时序，先提交定位报告。另发现原 OOC 的 DTCM 2 Mbit RAM 推断硬错误；整核基线仍未取得，见 [T04b 报告](tasks/O3-T04b-report.md) |
-| L7a | uBTB/BTB/TAGE、FTQ 恢复、RAS、F1 预解码修正与 M-mode HPM | 冻结 spec 与 T05 分步门禁 | T05a `5f25616`、T05b `b122d59` 已有 Alan 报告；按本次用户要求先写完 T05c/d RTL，测试由用户随后处理。当前为未提交、未功能验证的工作区实现，非闭环验收完成，见 [代码交接](tasks/O3-T05cd-report.md) |
-| L7b | RVC、跨块 edge 指令与 IALIGN=16 | 草稿待审查冻结 | 草稿 `28ff6b7`；未实施，须在 L7a 完成后开始 |
+| L7a | uBTB/BTB/TAGE、FTQ 恢复、RAS、F1 预解码修正与 M-mode HPM | 冻结 spec 与 T05 分步门禁 | **实现与定向功能验收完成**：T05c/d `cbe3372`，Alan cocotb 68/68、四源恢复与两组 l7_predict 正确性/性能 PASS，lint 与整核构建 PASS，见 [T05cd 报告](tasks/O3-T05cd-report.md) |
+| L7b | 整数 RVC、跨块 edge 指令与 IALIGN=16 | V1～V8 冻结；T06a→T06b 门禁 | **实现与定向功能验收完成**：spec `01c939a`，T06a `2614064`、T06b `2b50184`；Alan 70/70、77/77 cocotb，四个整核回归与 l7b_rvc 自查 PASS；不含 Spike/ACT4/FPGA，见 [T06 报告](tasks/O3-T06-report.md) |
 | L8 | 多 MSHR、重放、同 line 非对齐、A 扩展、FENCE/FENCE.I | RV64IMAC + litmus + 死锁 watchdog | 未开始 |
 | L9 | F/D：拆分 CVFPU、FP 重命名、fflags/FS 退休 | ACT4 RV64GC（用户态） | 未开始 |
 | L10 | S/U、Sv39 MMU、SFENCE.VMA/satp/PMP、A/D、WFI | 特权测试 + riscv-tests p/v | 未开始 |
 | L11 | SoC：L2 + DDR4（MIG）+ CLINT/PLIC + UART + SD（AXI Quad SPI，B44）+ SD DMA + FASE | 仿真启动 OpenSBI + Linux；上板经 SD 卡启动 Linux | 未开始 |
 
-## 2. L4 缓存取指闭环（历史范围；当前工作为 L7a）
+## 2. L4 缓存取指闭环（历史范围；L7a/L7b 已完成定向验收）
 
 ### 2.1 范围
 
@@ -94,9 +94,9 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
 
 | 模块 | 状态 | 后续工作 | 测试 |
 |---|---|---|---|
-| `frontend/bpu.sv` | **闭环简化（L7a）**：快/慢预测、入口 history/RAS 快照、训练原子握手已接通；旧 32B 合同已删除 | RVC/edge 在 L7b；BRAM 映射留后级 | T05b `b122d59` Alan BPU 4/4 PASS；本次未改行为 |
-| `frontend/bpu_slow_check.sv` | **闭环简化（L7a）**：候选排序、缺目标、快慢覆盖与入口 RAS 已实现 | RVC/edge 在 L7b | T05b `b122d59` Alan 1/1 PASS；本次未改行为 |
-| `frontend/ftq.sv` | **闭环简化（L7a）**：brief RAS、赢家接受拍、快慢/最终 next_pc 与提交分类事件 | RVC 空区域回收在 L7b | T05b `b122d59` Alan BPU 目录 FTQ fixture 2/2 PASS；本次未改行为 |
+| `frontend/bpu.sv` | **闭环简化（L7b）**：快/慢预测、history/RAS 快照、训练；真实长度/edge 与返回地址 | BRAM 映射留后级 | Alan BPU 5/5 PASS，见 T06 报告 |
+| `frontend/bpu_slow_check.sv` | **闭环简化（L7b）**：候选排序、缺目标、快慢覆盖；核对长度/edge、真实历史/RAS 地址 | 完整 ISA 一致性留后级 | Alan 1/1 PASS，含字段比较定向向量 |
+| `frontend/ftq.sv` | **闭环简化（L7b）**：实际长度/edge 训练；年轻区域任意提交关闭更老空区域 | 完整一致性留后级 | Alan FTQ fixture 3/3 PASS；整核 RVC PASS |
 | `frontend/icache.sv` | **闭环简化（L4）**：整行双 bank、S0–S3、单 demand MSHR/四拍回填；按行 recall；ITCM 已移除 | ITLB/PMP/PMA、预取、多 MSHR、性能事件与综合时序待后级 | `sim/cocotb/icache/` Alan 3/3 PASS（`1d2caeb`） |
 | `memory/l2_cache.sv` | **闭环简化（L4）**：256 set/4-way 配置、tree-PLRU、AXI 回填、双 L1 回收、脏行 AXI 写回 | 普通请求单未决；B03/B41 并发、DMA/维护协调与完整 L1D 数据路径未实现 | `sim/cocotb/l2_cache/` Alan 2/2 PASS（`1d2caeb`） |
 | `lsu/dcache.sv` | **闭环简化（L3）**：4 个 16B word bank、整行 tag/valid/dirty、两级查询、单行 miss、hit-under-miss、脏 victim 写回、L2 回填、probe | 多 MSHR/同 line 合并、PTW/AMO/预取、DMA 行保护；clean_all 不会虚假确认但尚未执行 | Alan 3/3 PASS（`022f90c`）；整核基本数据门禁 PASS |
@@ -104,20 +104,21 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
 | `backend/backend_issue_queue.sv` | **闭环简化（L3）**：Memory 选择可越过源未就绪队头；依赖 replay 槽占用时仅放行 store | 多项 replay、多 load 在途及真正多管线发射 | Alan 1/1 PASS（`f038f34`）；整核 replay 门禁 PASS |
 | `backend/load_store_unit.sv` | **闭环简化（L3）**：单个 blocked load 让出执行级，SQ 变化唤醒重查；错误路径可取消，仍保留单 load pending | 多项 LQ replay、翻译/异常、跨行与 MMIO | Alan replay/恢复/单 pending/迟到/Result 背压 3/3 PASS（`ac2aed1`，seed 1/7/29），整核 replay PASS |
 | `frontend/fetch_return_queue.sv` | **闭环简化（L7a）**：单槽身份匹配、年龄清除；kill 拍保留槽接收匹配响应 | 单槽吞吐限制保留，多项返回队列留后级 | T05b `b122d59` Alan 3/3 PASS；本次未改行为 |
-| `frontend/ifu_f0.sv` | **闭环简化（L1）**：完整 32 位指令识别 | RVC 与跨块拼接待 L2 | `sim/cocotb/ifu_f0/` Alan 2/2 PASS；整核 L1 PASS |
-| `frontend/ifu_f1.sv` | **闭环简化（L7a）**：a～f 核对、异常截断、交付字段与寄存式修正已写入工作区 | RVC/edge 在 L7b；本次新增行为待测试 | 未运行；旧 2/2 用例不是新增预解码行为证据 |
-| `frontend/redirect_arbiter.sv` | **闭环简化（L7a）**：四源年龄仲裁、busy 替换、接受拍计数；本次接入 F1 寄存请求 | 本次 F1 总装行为待测试；SYS committed 上下文仍为已知边界 | T05b `b122d59` Alan 仲裁器 2/2 PASS；T05c 总装未运行 |
-| `frontend/fetch_buffer.sv` | **闭环简化（L7a）**：按 FTQ 身份/槽位选择性保留，kill 拍阻塞握手 | 本次 F1 截断与恢复总装待测试 | T05b `b122d59` Alan 2/2 PASS；本次未改行为 |
-| `system/hpm_counters.sv` / `system/csr_file.sv` | **闭环简化（L7a）**：8 个 HPM、统一 cycle/instret、FE/BE 事件选择与 CSR 行为已写入工作区 | 功能验收未运行；S/U 与 Sscofpmf 在 L10 | 本次新增行为未运行，见代码交接 |
-| `frontend/frontend.sv` | 总装（连线） | L1 路径已接通；其余空壳仍待后级 | `sim/o3` Alan PASS |
-| `backend/backend.sv` 旧数据流 | **闭环简化（L3）**：INT/MEM/BR IQ、BRU 恢复、SQ/LSU→DCache；Memory IQ 可越过未就绪队头并受 replay 槽控制 | 四宽/16 项；U3 退休 FTQ 通知、U4 M/Bare/PMP update=0；正确解析正常推进，M 保留恢复边界；JALR/RVC 待后级 | Alan backend 2/2 与 backend_control 同拍合同 PASS（`ac2aed1`）；smoke/分支/数据/replay/dense 门禁 PASS；最终提交复验见报告 |
-| `backend/rob.sv` | **闭环简化（L3）**：四宽拍初 complete 前缀退休；保存动态 FTQ id/slot/last；C 推进，M 取消年轻并保留 JAL WB | 精确异常/系统提交待 L5 | Alan normal/C/M、full/异常/回绕/U3 合同 PASS（`ac2aed1`，seed 1/7/29） |
+| `frontend/rvc_expander.sv` | **闭环简化（L7b）**：整数 RV64C 纯组合展开，浮点/保留编码非法 | 浮点 RVC 在 L9 | Alan 2/2 PASS，含 Flow 向量与整数边界 |
+| `frontend/ifu_f0.sv` | **闭环简化（L7b）**：四条/拍、首拍出队、hold/pend、整数 RVC 展开、edge/D34、kill/截断 | 浮点 RVC 在 L9；ITLB/PTW 在 L10 | Alan 6/6 PASS，含 120 拍 RV64I 随机事务 |
+| `frontend/ifu_f1.sv` | **闭环简化（L7b）**：按长度/位置 a～f 核对；直接截断、零指令拍 c′、寄存式请求 | 完整 ISA 一致性留后级 | Alan 18/18 PASS，保留 L7a 17 项 |
+| `frontend/redirect_arbiter.sv` | **闭环简化（L7a）**：四源年龄仲裁、busy 替换、接受拍计数；F1 寄存请求已接入 | SYS committed 上下文仍为已知边界 | Alan 仲裁器 2/2、l7_recovery 2/2 PASS；T06 复验通过 |
+| `frontend/fetch_buffer.sv` | **闭环简化（L7a）**：按 FTQ 身份/槽位选择性保留，kill 拍阻塞握手 | 吞吐与综合时序留后级 | Alan 2/2、l7_recovery 2/2 PASS；T06 复验通过 |
+| `system/hpm_counters.sv` / `system/csr_file.sv` | **闭环简化（L7b）**：8 HPM、统一 cycle/instret、事件/CSR；MISA 含 C、mepc 保留 bit1 | S/U 与 Sscofpmf 在 L10 | Alan HPM 17/17、CSR 3/3、l7_predict 两组 PASS |
+| `frontend/frontend.sv` | 总装：F0/F1 拍有效、末拍、pending、截断与年龄头指针连线 | ITLB/PTW、预取仍待后级 | Alan 四个整核回归与 RVC 自查 PASS |
+| `backend/backend.sv` 旧数据流 | **闭环简化（L3）**：INT/MEM/BR IQ、BRU 恢复、SQ/LSU→DCache；Memory IQ 可越过未就绪队头并受 replay 槽控制 | 四宽/16 项；U3 退休 FTQ 通知、U4 M/Bare/PMP update=0；正确解析正常推进，M 保留恢复边界；L7b 已接 ROB 实际指令长度，RVC 整核自查通过 | Alan backend 2/2 与 backend_control 同拍合同 PASS（`ac2aed1`）；smoke/分支/数据/replay/dense 门禁 PASS；最终提交复验见报告 |
+| `backend/rob.sv` | **闭环简化（L3）**：四宽拍初 complete 前缀退休；保存动态 FTQ id/slot/last；C 推进，M 取消年轻并保留 JAL WB；L7b inst_len/succ_pc 按实际长度 | L5 已知问题见 T03；完整一致性留后级 | Alan normal/C/M、full/异常/回绕/U3 合同 PASS（`ac2aed1`，seed 1/7/29） |
 | `backend/uop_queue.sv` | **闭环简化（L3）**：四宽、16 项、bank/回绕/满空/前缀握手/M flush | 更深流水按 B42 时序触发 | Alan WQ 900 周期 PASS（`ac2aed1`，seed 1/7/29） |
 | `backend/rename_stage.sv`、`rename_map_table.sv`、`free_list.sv` | **闭环简化（L3）**：四 lane RAW/WAW/x0、原子资源前缀、checkpoint 恢复 | FP 域待 L9；R1 按 B42 时序触发 | Alan WR/RAT/free-list 合同 PASS（`ac2aed1`，seed 1/7/29） |
 | `backend/branch_checkpoint_file.sv` | **闭环简化（L3）**：C 释放/清 parent 与不同 tag create 合并；只看拍初空闲，不同拍复用 | 系统整体恢复待 L5 | Alan CK full/C/M 700 周期 PASS（`ac2aed1`，seed 1/7/29） |
 | `backend/rename_dispatch_queue.sv`、`dispatch_stage.sv` | **闭环简化（L3）**：四宽连续前缀分流，C 正常推进/清新旧 mask，M 保留老项 | M/FP/系统分类待后级 | Alan RDQ/三个 IQ/backend_control PASS（`ac2aed1`，seed 1/7/29） |
 | `backend/backend_issue_queue.sv`、`prf_read_arbiter.sv` | **闭环简化（L3）**：C 选择/删除/入队/唤醒与四读口竞争；M grants=0；未 grant 不删除 | FP/M 读口归属待后级 | Alan INT/MEM/BR IQ 与 RR 合同 PASS（`ac2aed1`，seed 1/7/29）；既有 Memory IQ 门禁保留 |
-| `backend/branch_unit.sv`、`alu_pipe.sv` | **闭环简化（L3）**：one-shot C/M 与 JAL 链接解耦；ALU 独立 kill 保留旧 Result | JALR/完整目标边界待后级 | Alan 缺口 2 具名/700 事务 DUT/真实 WB 竞争与总装 C 合同 PASS（`ac2aed1`，seed 1/7/29） |
+| `backend/branch_unit.sv`、`alu_pipe.sv` | **闭环简化（L3）**：one-shot C/M 与 JAL 链接解耦；ALU 独立 kill 保留旧 Result | JALR 在 L6；L7b IALIGN=16 已接入，完整目标边界留后级 | Alan 缺口 2 具名/700 事务 DUT/真实 WB 竞争与总装 C 合同 PASS（`ac2aed1`，seed 1/7/29） |
 | `backend/load_queue.sv` | **闭环简化（L3）**：四宽；C 合并正常记账，M 仅取消年轻并保留旧 execute/request/response | 多事务代际/异常待 L8/L5 | Alan LQ-C/M PASS（`ac2aed1`）；240 事务复用/迟到合同 PASS（`1b7885d`，seed 1/7/29） |
 | `core/o3_core.sv` | 总装（连线） | ICache/L2/AXI、直接控制流恢复及基础 DCache 数据路径已接通 | 整核 Alan smoke、分支及基础数据门禁 PASS（`6b4c540`） |
 | `sim/o3/` | AXI RAM 2 MiB、JSONL v2、进程内固定版本 Spike、LSU/ROB 访存观测、ACT4 迁移、3000 动态退休随机生成与五类自测 | 循环控制流差异已修复；CSR/异常由 O3-T03、RVC 等由后续任务闭合 | Alan `3cbd759` 固定 6/6、自测 5/5、ACT4 51/51、随机 200/200 全部通过，0 差异；准确命令/日志见 O3-T02 报告 §7 |
@@ -199,6 +200,6 @@ L5 F0 已保留非法短编码位置及返回队列取指错误，交给 ROB 精
 | fu_completion_fifo | 预留信用、双入队、WB 背压、选择性取消 | fu_completion_fifo |
 | mul_fusion_detect / rename_stage / dispatch_stage | 两条架构指令、整对接纳、单次执行 | mul_fusion_detect、整核 L6 短程序 |
 | backend_issue_queue / backend / writeback_arbiter | 共享 INT IQ 的 MUL/DIV 可用性、额外写回、早唤醒和头部 bypass | early_wakeup、整核 L6 短程序 |
-| branch_unit / branch_execute_unit | JALR 重定向 / 链接保持 / RAS 提示 / 当前 IALIGN=32 异常 | jalr、整核 L6 短程序 |
+| branch_unit / branch_execute_unit | JALR 重定向 / 链接保持 / RAS 提示；L6 时 IALIGN=32，L7b 已改 IALIGN=16（见 T06） | jalr、整核 L6 短程序 |
 
 最终实现与综合证据以 [T04 报告](tasks/O3-T04-report.md) 为准。
