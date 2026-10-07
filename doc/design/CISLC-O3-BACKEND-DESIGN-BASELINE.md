@@ -1,6 +1,6 @@
 # CISLC-O3 后端设计基线与决策记录
 
-更新日期：2026-10-07。**最新：第 39 节 B50（L8 访存以 Breeze v1 MESI 协议与 L2 Home 为机制来源，按乱序高吞吐修改；B08/B41 的协调方式被取代）。此前：第 38 节 B49（能由硬件处理的不交给软件 trap：跨 line/跨页非对齐硬件拆分、`time` CSR 硬件读、Sstc；B31 的“跨 line 报异常”部分被取代）。此前：第 37 节 B48（性能计数器 Zihpm + Sscofpmf）；B45 已暂停。此前：第 36 节 B42～B47（v1 实施计划确认，见 [`../O3-v1-plan.md`](../O3-v1-plan.md)）；B01 改为四宽；B16/B17/B19/B20 已移入附录 A。**
+更新日期：2026-10-07。**最新：第 40 节 B51（L8 乱序访存微架构：三类等待者与重放接口、64B 行/512 位链路、访存 32 位物理地址、32KB 8 路 L1D 双管道 bank 化、4 MSHR、256KB 8 路 L2、store 所有权预取、L8c 依赖推测、L1I 只读客户端与简化 FENCE.I）。此前：第 39 节 B50（L8 访存以 Breeze v1 MESI 协议与 L2 Home 为机制来源，按乱序高吞吐修改；B08/B41 的协调方式被取代）。此前：第 38 节 B49（能由硬件处理的不交给软件 trap：跨 line/跨页非对齐硬件拆分、`time` CSR 硬件读、Sstc；B31 的“跨 line 报异常”部分被取代）。此前：第 37 节 B48（性能计数器 Zihpm + Sscofpmf）；B45 已暂停。此前：第 36 节 B42～B47（v1 实施计划确认，见 [`../O3-v1-plan.md`](../O3-v1-plan.md)）；B01 改为四宽；B16/B17/B19/B20 已移入附录 A。**
 
 原更新日期：2026-10-02。目标工程：`/home/chen/work/CISLC-O3`。本文暂存于 Flow，仅记录设计与只读源码核对；不代表 RTL、编译、仿真、时序或 FPGA 验证完成。
 
@@ -108,6 +108,8 @@ Decode Queue → R1 依赖预处理 → 级间暂存 → R2 完整 rename → �
 - 不取消 A 扩展；其执行方案见 B09。值预测不进入 CISLC-O3，本轮只保留为以后 Breeze V2 的研究方向。
 - L2 不要求复杂多核目录，但下级不能静默成为全部访存的全局串行瓶颈：独立命中继续服务、多个下级请求的能力是设计目标，具体 L2/AXI 组织尚未冻结。
 
+> **2026-10-07 B51：** 具体配置已定，见第 40 节（32KB/8 路/64B、8 个字 bank、4 MSHR、两条都能做 load 与 store 地址的管道）。
+
 **尚属建议的具体配置**：16 KiB/4-way/64 B line/4 个数据 bank/8 个 L1 MSHR，以及“一条 load 地址流水线 + 一条 load/store 地址流水线”。这些不是已确认参数。bank 按整行或行内 word 映射也未冻结；最近建议偏向 word 交错，以避免相邻 load 集中到一个 bank。不能将这些例子升级成用户决定。
 
 ## 6. B04：Load 生命周期与事件重放（已定主流程）
@@ -149,7 +151,7 @@ R2 分配 ROB/SQ → 地址/数据准备 → 翻译与访问检查 → 执行完
 - 执行完成要求地址、数据和提交前必要检查已具备，不表示已经写 cache。提交前不得产生目标 store 的可见写入。
 - 普通 store 检查通过后允许 ROB 退休，再由 SQ drain；不采用所有普通 store 均留在 ROB 等 cache 写完的旧建议。
 - 已提交 SQ 项不被年轻路径恢复取消；未提交项按恢复范围撤销。SQ 满允许背压。
-- 首版 SQ 兼任 committed store buffer，按序 drain；先不新增独立 SBuffer，也不要求多笔 store drain 并发。
+- 首版 SQ 兼任 committed store buffer，按序 drain；先不新增独立 SBuffer，也不要求多笔 store drain 并发。（2026-10-07 B51：保持，另加 store 所有权预取，见 40.4 节。）
 - cache 请求接受与写完成分开。命中写完得到确认再释放 SQ；miss/资源冲突/DMA 行保护时保留项，等待事件后重试，不重复发送仍在途的同一请求。
 - 等待 drain 的 store，包括已提交项，仍可供年轻 load 转发。store 等 miss 不占住 bank 流水级，不全局阻塞独立 load 命中。
 - 普通 store 写入 L1 成功即可释放 SQ；以后脏行排出由 cache 负责，不要求原 SQ 项等 DDR。
@@ -448,6 +450,8 @@ CSR 首版按一条在途的请求/完成握手设计，可先尝试源寄存器
 
 **普通 FENCE**：首版 Decode 保留 `pred/succ` 编码，按 `pred` 是否含普通内存写 `W` 选择额外等待；无需动态扫描此前执行过的指令。FENCE 到 ROB 队头时，更老的 load、CSR 和不缓存 MMIO 已按 B05/B22 的完成后退休合同结束，年轻指令尚未进入执行。若 `pred.W=1` 且存在需要排序的后继集合，串行项等待 SQ 后台 drain 至空：所有更老普通 store 均得到 DCache 写完成确认，不能以请求接受代替。SQ 的 drain 在 ROB 无老项时仍自主推进；可给出维持到完成的加速请求，但不绕过 DCache 冲突或完成握手。若 `pred.W=0`，不为该 FENCE 强制排空普通 SQ，队头即可完成；例如仅含 I/O 的 FENCE 不因普通缓存 store 未排空而等待。`pred=0` 或 `succ=0` 的无排序提示编码不需要额外等待。由于年轻指令在 Decode 被统一阻塞，首版不依 `succ` 区分年轻指令放行范围；`FENCE.TSO` 可按更强的 `FENCE RW,RW` 处理。此方案依赖已定的 CSR/MMIO 完成握手覆盖其对外效果，并依赖 DCache 写完成与下级内存排序合同；这里不新增全 DCache 脏行写回作为普通 FENCE 动作。规范允许简单实现采用更强排序：[RISC-V FENCE](https://docs.riscv.org/reference/isa/v20260120/unpriv/rv32.html)；CSR 读写在 FENCE 中分别按 `I/O` 归类：[Zicsr CSR ordering](https://docs.riscv.org/reference/isa/v20260120/unpriv/zicsr.html)。
 
+> **2026-10-07 B51：** FENCE.I 不再遍历 L1D 写回脏行，`fencei_dcache_evict_cycles` 取消，见 40.7 节；下段只作历史记录。
+
 **FENCE.I**：用户选择低频、低硬件复杂度的保守数据侧路径，具体前端顺序见 D25。串行项暂停新取指、预取并丢弃 Decode/前端中比 FENCE.I 年轻的旧指令，同时等待 SQ 中老 store 全部写入 DCache 并收到完成确认。然后遍历 L1D 的全部 tag/meta，跳过非脏行；每个脏行复用 B08 按物理行 clean+invalidate 维护能力，将最新行数据可靠写到 L2，确认后置该行无效。等全部扫描及在途脏行写回完成，再处理旧 ICache miss/预取结果并全量失效本地 ICache。前端返回同步完成后，该 ROB 项才可标记完成并退休；退休后从 FENCE.I 下一 PC 重取，不能只凭 SQ 空、写回请求发出或单拍 flush 脉冲放行年轻指令。若所有有效 DCache 行都脏，最坏要写回并逐出全部这些行；干净 DCache 行不因 FENCE.I 扫描而逐出。写回目标是 ICache 回填可见的 L2，不要求把整个 DCache 或 L2 写到 DDR，也不对普通 ICache miss 增加逐行探测。该维护控制器要在 B08 既有单行 DMA 协调与写回响应之间保证仲裁和前进；具体 FSM、端口、写回并发度及周期数待实现。规范依据：[Zifencei](https://docs.riscv.org/reference/isa/unpriv/zifencei.html)。
 
 首版增加两个逻辑上为 64 位的性能计数器，读取地址、清零、快照和溢出规则留待性能计数 ABI 统一确定：
@@ -591,6 +595,8 @@ CSRFile 承接 M/S pending、enable、delegation、trap entry/return 及软件 S
 
 ### 35.1 B32：保守 load/store 依赖
 
+> **2026-10-07 B51：** L8a 维持本节；L8c 改为推测越过 + store 地址确定时查 LQ 冲刷 + 1 位等待表，取代“首版不加入推测越过与违例恢复”，见 40.5 节。“不能用固定超时无条件越过”继续有效。
+
 - load 遇到地址未知的更老 store 时，等待相关依赖条件解除（该 store 地址写入 SQ，或被取消/提交排出后重新判定）。
 - 不能把“等几拍”实现成固定超时后无条件越过；首版不加入未知旧 store 地址下的推测越过与违例恢复。替代 B04 6.2 节末“尚未冻结”的表述。
 
@@ -651,7 +657,7 @@ CSRFile 承接 M/S pending、enable、delegation、trap entry/return 及软件 S
 
 ### 35.10 B41：L2 inclusive 与回收（2026-10-07 由 B50 取代回收与协调方式）
 
-> **2026-10-07 B50：** L2 的包含关系、替换、回收与 L1 探测改按 Breeze MESI L2 Home 的目录与 probe 机制，见第 39 节；本节“组相联、PLRU”“容量替换不清 LR/SC reservation”“不在普通访问路径增加查询口或流水级”继续有效，其余以第 39 节为准。
+> **2026-10-07 B50：** L2 的包含关系、替换、回收与 L1 探测改按 Breeze MESI L2 Home 的目录与 probe 机制，见第 39 节；本节“组相联、PLRU”“容量替换不清 LR/SC reservation”“不在普通访问路径增加查询口或流水级”继续有效，其余以第 39 节为准。**2026-10-07 B51：** L2 只对 L1D inclusive，L1I 不进目录、不被回收，见 40.7 节。
 
 - L2 已纳入首版，不是可选的新增模块。采用 inclusive，覆盖 L1I 和 L1D。**2026-10-02 用户同时确认 L2 组相联、PLRU 替换**；框架按 tree-PLRU 落实（每 set ways-1 位，命中与安装时更新，选 victim 时跳过正在回收、在途或受保护的 way，路数取 2 的幂）。
 - L2 淘汰前保护目标行，定向失效两个 L1，协调在途回填，防止旧响应重新安装。L1D 脏副本先交回最新数据再确认失效；inclusive 不代表 L2 数据始终最新。首版每次探测两个 L1，不要求先建精确的 L1 驻留目录。
@@ -783,6 +789,7 @@ CSRFile 承接 M/S pending、enable、delegation、trap entry/return 及软件 S
 - L8 不自行重新设计缓存一致性：采用 Breeze v1 访存子系统（`~/flow-mem`，分支 `feat/v1-mem-skeleton`，参考 `docs/coherence-l2-rtl-spec.md`、`docs/l1d-rtl-spec.md` 与 `design/src/main/scala/{l1d,l2,coherence}/`）的 MESI 协议与 L2 Home 结构。
 - 单核配置 `nCores=1`：客户端为 O3 的 L1D、L1I 与 SD DMA 各一个（Breeze 协议已有这三类客户端，见其 spec 1.1 节）。DMA 一致性由协议保证，取代 B08 的按行 clean+invalidate 协调与 B41 的自建回收/探测方式。
 - **复用层次是机制，不是逐行翻译。** 沿用：协议消息与 MESI 状态、目录、L1D 的 MSHR/写回/probe 状态机、L2 的慢槽/probe 引擎/内存引擎状态机、流水级划分、节拍安排与同拍冲突规则。按乱序核的高吞吐要求修改规模与并发度。
+- （2026-10-07 B51：参考改为 `/home/chen/leisure/flow` 提交 `a304cc2`，见第 40 节。）
 - 开工时间：Breeze 访存仿真测试稳定后（其 `docs/v1-mem-plan.md` 第 4～7 步）。开工时重新核对当时的 Breeze 提交，并在 L8 spec 中固定参考提交号。
 
 ### 39.2 按乱序吞吐修改的已知项
@@ -796,6 +803,8 @@ CSRFile 承接 M/S pending、enable、delegation、trap entry/return 及软件 S
 
 ### 39.3 待定（L8 spec 闭合）
 
+> **2026-10-07 B51：** 下表各项已在 40.2 节闭合。
+
 | 项 | Breeze v1 | O3 现状 | 待定内容 |
 | --- | --- | --- | --- |
 | 行大小 | 锁定 32B（一行一拍 256 位链路） | 64B（D11，ICache 按 64B） | 保持 64B 并改链路为 512 位或两拍，或 O3 改 32B（牵动 ICache、B31/B49 跨 line 判定） |
@@ -807,6 +816,101 @@ CSRFile 承接 M/S pending、enable、delegation、trap entry/return 及软件 S
 
 - B47 的等价检查只适用于逐行翻译的组件，不适用于本节（结构已修改）。L8 用 O3 自己的测试，借用 Breeze 的校验思路：黄金内存逐 load 比对、SWMR 与目录一致性监视、看门狗、极小 cache 压力配置。
 - 验收仍按 2026-10-06 策略：本级机制定向测试 + 整核自查；litmus 与完整一致性测试推迟到 FPGA。
+
+## 40. B51：L8 乱序访存微架构（2026-10-07，用户确认）
+
+在 B50 的方向下闭合 39.3 节待定项，并确定 Breeze v1 访存改为乱序核所需的结构。机制参考固定为 Breeze `/home/chen/leisure/flow` 分支 `feat/pcie-fase-20260920` 提交 `a304cc2`（Breeze 访存计划第 4～6 步的 Alan 证据在此提交；`~/flow-mem` 的 `feat/v1-mem-skeleton` 停在骨架阶段，不再作为参考）。L8 spec 开工时如 Breeze 有新提交，重新核对后再改参考号。
+
+### 40.1 组织原则：三类等待者
+
+- **流水线**只做固定拍数的工作，永不因慢请求停顿。L1D 的 S0/S1/S2/PS 与 L2 主流水、快路径沿用 Breeze。
+- **行事务状态机**管理以 cache 行为单位的慢操作：L1D MSHR、写回槽、probe 处理，L2 慢槽、probe 引擎、内存引擎，以及 PTW。机制沿用 Breeze，数量放大。
+- **LQ/SQ** 管理指令身份与等待原因。慢请求离开流水线回到 LQ/SQ 项，状态机完成后发出事件（如“MSHR k 安装完成”“MSHR 有空位”“PTW 完成”），等待者重新发射并再走快路径（即 B04 6.2 节的流程）。
+- 取代 Breeze 的 `s2Hold`（后端停在 WB 等 L1D）：L1D 在 S2 给出 `Hit`（带数据）、`Miss(mshr_id)` 或 `Replay(原因)`。`s1Kill/s2Kill` 改为请求自带 LQ/SQ/ROB 身份与代际，按身份取消，迟到结果丢弃。
+- 例外：AMO、aq/rl LR/SC、MMIO 等到 ROB 队头才执行的独占类请求，沿用 Breeze 的独占路径（B05、B09）。
+
+### 40.2 几何与宽度（闭合 39.3 节）
+
+| 项 | 决定 | 理由 |
+| --- | --- | --- |
+| 行大小 | 64B（D11 不变）；L1D/L1I/DMA 与 L2 之间的协议链路数据 512 位，一拍一行 | 保留 Breeze “一行一拍”的节拍与同拍冲突规则；一行等于 KCU105 64 位 DDR4 的一次 BL8 突发；ICache 不改行大小 |
+| 物理地址 | 架构可见部分保持 `paddr_bits=56`（satp、PTE、TLB、PMP）；L1D/L1I/L2/链路使用参数 `mem_paddr_bits=32` | KCU105 的 DDR 与 MMIO 均在 4 GiB 以下；与 Breeze 一致，省 tag/目录。进入 cache 之前由 PMA 把 ≥2^32 判为不存在，报 access fault，PTW 读也一样，不得截断高位 |
+| L1D | 32KB、8 路、64 组（每路 4KB，VIPT 无别名） | 64 组时 BRAM 深度用不满，16KB→32KB 的 BRAM 块数相近；代价是 8 路 tag 比较 |
+| L1D MSHR / 写回槽 | 4 / 2，参数化；支持同行合并 | 覆盖两条 AGU 的常见并行度 |
+| L1I 在途 Read | 等于 ICache MSHR 数（现为 4），链路 `id` 2 位 | Breeze L1I 为 2（demand + 预取），O3 前端已有 4 |
+| L2 | 256KB、8 路（512 组），参数化；BRAM 不足时退回 128KB 8 路，L11 综合后调整 | inclusive 下 L2 约为 L1 总量的 8 倍；8 路减少替换造成的 L1 回收 |
+| L2 慢槽 | 8，参数化 | 满时 REQ 反压（Breeze 依赖纪律允许 REQ 接收依赖其他链路）|
+| RSP↓ 输出 FIFO | 每个客户端深度 = 该客户端最大在途响应数（L1D = MSHR + 写回槽 = 6） | 沿用 Breeze 规则，S2 写入时必有空位 |
+| AXI 内存引擎 | 读在途 = 慢槽数；写缓冲 2～4；数据位宽在 L11 随 MIG 定 | |
+
+### 40.3 L1D 结构
+
+- 两条 load 管道，S0/S1/S2 沿用 Breeze 三级划分。**两条 AGU 管道都能执行 load 和 store 地址**，都连接 SQ 查询（取代 B03 的“一条 load + 一条 load/store”草案）。
+- 数据阵列按 8B 字分 8 个 bank。两条管道访问不同 bank 时并行；同 bank 不同 set 时较年轻的一条 `Replay(bank)`。整行操作（回填安装、写回读出、probe 读出）一拍访问全部 bank，一拍完成，取代 Breeze 每拍一字的串行整行操作（Breeze 不分 bank 是因为 4 核 BRAM 不够；O3 为单核）。
+- tag/状态阵列提供两个读口：放 LUTRAM 并复制两份，写时两份同写。具体实现可由 spec 调整，但必须保证两条管道同拍查 tag。
+- 沿用 Breeze：快照失效（同 set 在读阵列与判定之间被改写则重查，改为 `Replay`）、S0 与 PS 的冲突检查、PS 写级、锁定 way 的 PLRU、refill 错误只清 tag、LR/SC reservation、AMO 独占路径、阻塞 MMIO、`PtwMemIO` 形式的 PTW 入口。
+- MSHR 只跟踪行事务（地址、GetS/GetM、目标 way、回填数据与错误），不保存原请求，也不负责回放。等待同一行的 load 记在 LQ 项里（等待原因 + `mshr_id`），可以有多个；安装完成后唤醒它们，重新走快路径（B04 已定“先安装后唤醒”）。回填数据直接转给等待 load 的旁路以后由测量决定。
+- 预留一个 MSHR 给 PTW 和 ROB 队头请求，保证前进（B07）。预取永远不占用最后一个空闲 MSHR。
+
+### 40.4 Store 路径
+
+- 保持 B05：SQ 兼任 committed store buffer，按序 drain，经 PS 写入 L1D；不新增独立 SBuffer。
+- **新增 store 所有权预取（RFO）**：store 地址翻译并检查通过后（可早于提交），若该行不在 L1D 或只是 S 态，就以低优先级发 GetM 预取。它不改变架构可见顺序，只为让提交后的 drain 命中，避免 SQ 队头 miss 卡住全部 store。遵守 40.6 节的预取纪律。
+
+### 40.5 访存依赖
+
+| 关系 | 处理 | 阶段 |
+| --- | --- | --- |
+| store→load 同地址 | SQ 转发：程序序最近的一条更老 store 完整覆盖时转发，部分重叠则等待（B04 6.1 节不变） | L8a |
+| 更老 store 地址未知 | L8a 保持 B32 保守等待；L8c 改为推测，见下 | L8a / L8c |
+| load→load 同地址，DMA 改写 | L1D 处理使某一行失效的 probe 时，在 LQ 中查找该行上已执行、未退休的 load，从最老的一条起冲刷重做（保守但低频）| L8b |
+| store→store | SQ 按序 drain，天然满足 | — |
+| FENCE、AMO、LR/SC、MMIO | 到 ROB 队头，按 B09/B23 先等 SQ 排空再执行；aq/rl 按语义处理 | L8b |
+
+**L8c 访存依赖推测（取代 B32 “首版不推测”的部分）：**
+1. load 可以越过地址未知的更老 store 先执行。
+2. store 地址确定时，在 LQ 中查找更年轻、已执行、字节重叠的 load；查到就从该 load 起冲刷重做。这一步是正确性保障，必须完整。
+3. 按 load PC 索引的 1 位“必须等待”表：发生第 2 步冲刷的 load 置位，置位后按 B32 等待；周期性清零。表深在 spec 中定。
+4. 测得冲刷仍多时再升级为 Store Set。B32“不能用固定超时无条件越过”继续有效。
+
+### 40.6 预取
+
+| 预取 | 阶段 |
+| --- | --- |
+| store 所有权预取（40.4 节） | L8a |
+| L1I 下一行预取 | 保留 O3 前端现有的 |
+| L1D stride 预取（B07） | L8c |
+| load 地址预测（B25） | L8c，在 stride 之后 |
+| L2 流式预取 | 暂不做，FPGA 实测 DDR 延迟确实是瓶颈后再定 |
+
+共同纪律：与现有 MSHR 和 cache 内容去重；不占用最后一个空闲 MSHR；不访问 MMIO，不为预取启动 PTW；失败静默丢弃，不产生架构异常；带 useful/late/unused 计数（B10、B48）。
+
+### 40.7 L1I 与 FENCE.I（取代 B23、D25 的数据侧部分）
+
+- L1I 是协议的只读客户端：只发 `Read`，不进 L2 目录，不接收 snoop，没有 MESI 状态。L2 处理 `Read` 时，若该行在 L1D 为 UNIQUE，先向 L1D 发 Down probe 拿到最新数据（Breeze L2 spec 4.4 节），所以 L1I 每次 miss 都拿到 L2 层面的最新数据。
+- L2 对 L1I 不是 inclusive 的：L2 替换不回收 L1I 行，删除 O3 现有 L2 对 L1I 的回收逻辑（B41 的“覆盖 L1I”部分不再适用）。L1I 只读，取指与 store 的一致性由 FENCE.I 保证。
+- **FENCE.I** 改为：(1) 等 SQ 排空，所有更老 store 都得到 L1D 写完成确认；(2) 整个 L1I 置无效；(3) 冲刷前端（fetch buffer、FTQ 中年轻项、预解码结果），并按 D25 隔离旧 ICache miss/预取的迟到返回；(4) 从下一条重新取指。**不再遍历 L1D 写回脏行**：L1I 重新 miss 时，L2 会通过 probe 拿到 L1D 的脏数据。这与 Breeze 的做法一致（FENCE.I 只等 `drained`）。
+- B23 的两个计数器中，`fencei_retired` 保留；`fencei_dcache_evict_cycles` 不再有对应阶段，取消。现有 RTL 中 `dcache.sv` 的 clean-all 路径、`commit_ctrl.sv` 的 `dcache_clean_all_busy_i` 与事件 `BE_FENCEI_DCACHE_EVICT_CYCLE` 在 L8b 删除；事件编码是否保留为恒 0 由 spec 定。
+- 软件责任：自修改代码/JIT、加载程序，以及 DMA 写入代码页之后，由软件执行 FENCE.I。
+
+### 40.8 L2
+
+- Breeze L2 Home 机制整体沿用：S0～S2 主流水、REQ 到 S2 才握手、同 set 串行、快路径 + 慢槽、probe 引擎、Put 缓冲、精确目录（`nCores=1`，客户端为 L1D、L1I、DMA）。
+- 规模按 40.2 节。L2 数据阵列一行 512 位：spec 先核对 Breeze L2 读数据的方式；倾向先比 tag 再只读命中的那一路，不要 8 路同时读 512 位。
+
+### 40.9 分步与验收
+
+| 步 | 内容 | 验收 |
+| --- | --- | --- |
+| L8a | 非阻塞底座：40.1 节重放接口、bank 化 L1D 与两条管道、4 MSHR + 合并、L2 Home 与 8 慢槽、协议链路、L1I 改为客户端、store 所有权预取 | 移植 Breeze 单核测试思路（黄金内存、SWMR 与目录监视、看门狗），MSHR=1 与 4 各跑，加极小 cache 压力配置随机测试；整核既有回归 |
+| L8b | A 扩展、FENCE、FENCE.I（40.7 节）、PTW 与硬件 A/D 接回、B49 跨行拆分、DMA 客户端、probe 触发的 load 顺序冲刷 | 定向测试 + 整核自查 + 看门狗 |
+| L8c | 访存依赖推测与 1 位等待表、L1D stride 预取、B25 | 冲刷正确性定向测试；IPC 与性能事件前后对比 |
+
+litmus 与完整一致性测试按 2026-10-06 策略推迟到 FPGA。按 B47，结构已修改的组件不做逐行等价检查。
+
+### 40.10 资源
+
+按上述几何，BRAM 粗估为 L1D 数据约 16～32 块 BRAM36、L2 约 60～70 块，合计约 100/600。LUT 主要花在 LQ/SQ 地址比较、两条管道的 8 路 tag 比较、512 位多路选择和 L2 慢槽上，数字以 L11 综合为准。
 
 ## 附录 A：已被取代的历史决策
 
