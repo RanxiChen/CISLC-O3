@@ -76,7 +76,8 @@
 | `scause`、`mcause` | WLRL，O3 实现为：合法值 = 中断位 0 且异常码 ∈ {0,1,2,3,4,5,6,7,8,9,11,12,13,15}，或中断位 1 且中断码 ∈ {1,3,5,7,9,11,13}；其余位为 0。非法写**整次忽略，保留旧值**（Q1）。（**修正**：Breeze 原样存） |
 | `stval`、`mtval`、`sscratch`、`mscratch` | 原样 |
 | `satp` | MODE ∈ {0 Bare, 8 Sv39}，其他 MODE 写入忽略（整次写不生效，同 Breeze）；ASID 16 位全可写；PPN 44 位。写入触发 6.2 同步 |
-| `menvcfg` | 可写 STCE(63)、ADUE(61)（X10）；其余 0 |
+| `misa` | 只读 `0x800000000014112C`（RV64 IMFDC + S(bit 18)、U(bit 20)；在 L9 的 `0x800000000000112C` 上增加）；写忽略（Q4）。L9 用例的精确期望随之更新 |
+| `menvcfg` | 可写 STCE(63)、ADUE(61)（X10）；其余 0。ADUE 有效变化时的同步见 6.4（Q7） |
 | `senvcfg` | 实现为全 0 只读（**修正**：Breeze 未实现会使访问非法；Linux 可能访问，按 B49 不让它 trap） |
 | `mcounteren`、`scounteren` | 32 位全可写（3.3） |
 | `stimecmp` | 3.4 |
@@ -117,7 +118,7 @@
 ### 3.3 计数器访问（B48 L10 部分）
 
 - `mcounteren`/`scounteren` 的 CY/TM/IR/HPMn 位控制 `cycle`/`time`/`instret`/`hpmcounterN` 的访问：S 模式需 `mcounteren` 对应位；U 模式需 `mcounteren` 与 `scounteren` 都置位；否则非法指令。
-- Sscofpmf：`mhpmevent` 的 OF(63)、MINH(62)、SINH(61)、UINH(60) 可写；计数时按当前特权与 *INH 位过滤；从全 1 回绕且 OF=0 时置 OF 并置 `mip.LCOFIP`。`scountovf`（0xDA0）只读：M 模式读各计数器 OF 位；S 模式读 `OF & mcounteren.HPMn`（未授权位读 0，不报非法）；U 模式访问非法（S 级 CSR）。
+- Sscofpmf：`mhpmevent` 的 OF(63)、MINH(62)、SINH(61)、UINH(60) 可写；计数时按当前特权与 *INH 位过滤；从全 1 回绕且 OF=0 时置 OF 并置 `mip.LCOFIP`。**同拍冲突（Q5）**：本拍 OF 的判定基准 = 本拍软件写入 `mhpmevent` 的 OF 值（若有写）否则旧值；溢出且基准为 0 时 OF 与 LCOFIP 都置 1，硬件置位优先于同拍软件清 OF/LCOFIP。软件显式写该计数器时，写入值替代本拍增量（本拍不产生溢出）；写 `mhpmevent` 的事件选择/过滤位时，本拍增量仍按旧配置计算。`scountovf`（0xDA0）只读：M 模式读各计数器 OF 位；S 模式读 `OF & mcounteren.HPMn`（未授权位读 0，不报非法）；U 模式访问非法（S 级 CSR）。
 - `hpm_counters.sv` 增加 `priv_i` 输入用于 *INH 过滤。
 
 ### 3.4 `time` 与 Sstc（B49）
@@ -164,7 +165,7 @@
 - S0 收请求读阵列，S1 比较、权限检查与响应（同 Breeze 两拍）。每拍可收一个请求。
 - **有效特权**：数据访问 `eff = (priv == M && MPRV) ? MPP : priv`；取指 `eff = priv`。`eff == M` 或 `satp.MODE == Bare` 时直通：`paddr = vaddr`（取 PADDR_W 低位，高位非零由 PMA 判不存在）。
 - 非规范 VA（Sv39 下 `VA[63:39]` 不全等于 `VA[38]`）→ page fault（取指 12、load 13、store 15）。注：Breeze 用 `[63:38]`，即同一判定。
-- 权限（同 Breeze `Sv39Tlb.scala:51-54`，A/D 部分按第 8 节修改）：
+- 权限（同 Breeze `Sv39Tlb.scala:51-54`，A/D 部分按第 8 节修改）。**顺序（Q8，规范翻译算法）**：先检查本次访问的叶子权限，失败直接 page fault，不尝试 A/D 更新；权限通过后才处理 A/D（第 8 节），A/D 物理检查失败按 8.2 报 access fault。
   - 取指需 X；load 需 R 或（MXR 且 X）；store 需 W；
   - U 模式需 `pte.U`；S 模式访问 `pte.U=1` 的页：取指一律失败，数据需 `SUM=1`；
   - A=0 或 store 且 D=0：**不报错**，走第 8 节。
@@ -247,6 +248,7 @@
 
 ### 6.4 其他
 
+- **`menvcfg.ADUE` 有效变化（Q7）**：CSR 写生效后 `xlate_epoch++`，`needs_refetch=1`，本条退休后 `flush_all` 重定向到后继（复用 `SYS_SATP` 类同步，kind 实现自选）；不清 TLB（TLB 不缓存 A=0 的项，D=0 的项在每次 store 时按当前 ADUE 处理）。旧 epoch 不再发起新的 A/D 写；已被 DCache 接受的原子操作照常完成，其后的迟到翻译不交付。只改 STCE 不触发此同步。
 - `mstatus` 中影响翻译的位（SUM、MXR、MPRV、MPP）只影响数据访问，且 CSR 指令 `block_younger`，年轻访存尚未 rename，不需额外同步；特权变化只经 trap/xRET（flush 型重定向）。
 
 ## 7. 前端同步控制（`frontend_sync_ctrl.sv`）
@@ -277,6 +279,7 @@
 ### 8.4 `menvcfg.ADUE`（X10）
 
 - ADUE=1：上述硬件 A/D；ADUE=0：Svade 行为，A=0 或 store D=0 直接报 page fault（即 Breeze 新 MMU 的行为，实现代价很小）。
+- **TLB 不缓存 A=0 的叶子**（两种模式都如此，Q7 依赖此性质）：ADUE=1 时先置 A 再回填；ADUE=0 时 PTW 把 A=0 的叶子作为 page fault 返回（按 4.3 的 pending fault 交付，不回填），这与 Breeze 新 MMU“回填后在命中时判 !A”不同。D=0 的项可以缓存，每次 store 命中时按当时的 ADUE 处理（page fault 或 `needs_D`）。
 - 规范（Machine-Level ISA 1.13，menvcfg）：实现 Svadu 时 ADUE **必须可写**；ADUE=0 时表现为 Svade。规范未规定复位值。O3 复位 ADUE=1（与 QEMU“只声明 svadu”配置一致）；L11 设备树只声明 `svadu`、不声明 `svade`，Linux 据此认为启动时硬件 A/D 已开启。
 
 ## 9. PMP 与 PMA（X11、X12）
@@ -284,7 +287,7 @@
 ### 9.1 PMP（`pmp_checker.sv`）
 
 - 条目数 `pmp_entries`：见 X11。CSR `pmpcfg0`、`pmpcfg2` 与 `pmpaddr0～15` 均可访问；超出条目数的部分读 0、写忽略。
-- 粒度 G=0（4 字节），支持 OFF/TOR/NA4/NAPOT；`pmpaddr` 54 位；cfg 的 [6:5] 写 0；`W=1,R=0` 写为 `W=0`（同 Breeze）；L 位锁定 cfg 与 addr（TOR 时下一项的 L 也锁本项 addr）。
+- **粒度 G=2（16 字节，Q6）**：与取指区域（16B 对齐）相同，取指按整个区域检查即与按实际指令字节检查等价，不需逐指令保护信息。支持 OFF/TOR/NAPOT；NA4 不可选（写 A=NA4 时 A 字段保持旧值）。`pmpaddr` 54 位全部可存；读出时 NAPOT 模式 `pmpaddr[0]` 读 1，OFF/TOR 模式 `pmpaddr[1:0]` 读 0（底层存储值不变，规范 G≥2 规则）。OpenSBI 启动时探测粒度，不依赖 G=0；cfg 的 [6:5] 写 0；`W=1,R=0` 写为 `W=0`（同 Breeze）；L 位锁定 cfg 与 addr（TOR 时下一项的 L 也锁本项 addr）。
 - 检查：编号最小的匹配项决定结果，访问字节须全部落在该项内，否则失败；无匹配时 M 允许、S/U 拒绝；M 模式仅在匹配项 L=1 时受限。
 - 三处使用：取指（ICache S2/S3，eff=priv，X）、数据（LSU，eff 按 MPRV，R/W，访问字节数）、PTW 读（S 模式、8 字节、R）。
 
@@ -332,7 +335,7 @@
 | `csr_file`（改） | S CSR 读写与 WARL（mstatus/sstatus 视图、medeleg/mideleg 掩码、sie/sip 视图、satp MODE 非法写忽略）；委托进 S 与进 M；MRET/SRET 特权与 MPRV；TSR/TVM 非法；计数器 counteren 门控；Sstc：STCE=1 时 STIP 跟随比较、STCE=0 时可写；中断优先级与全局使能各一例；scountovf |
 | `hpm_counters`（改） | *INH 过滤一例；回绕置 OF 与 LCOFIP 一例 |
 | `mmu`（新，含 ITLB/DTLB/PTW/walk cache，Python 页表遍历器参考模型） | 翻译 Breeze T1～T17 中适用者：Bare/M 直通、非规范 VA、三级遍历、walk cache 两级捷径、2M/1G 大页、大页未对齐、保留位、PTE 读 access fault、权限矩阵（含 SUM/MXR/U）、ASID/G、四种 SFENCE 范围（含 walk cache 在 rs1≠x0 时保留、x0/rs2 时保留 G 项）、非叶子 G 累计（含 walk cache 捷径恢复）、A/D 写 PMP 拒绝报 access fault、kill 前/后、轮转仲裁、随机遍历对照；**新增**：miss 期间其他 VPN 命中仍返回（非阻塞）、epoch 变化丢弃迟到返回、A=0 触发 A 更新并以新 PTE 回填、比较失败重新遍历 |
-| `pmp_checker`（新） | OFF/TOR/NA4/NAPOT、优先级、部分覆盖失败、M 模式与 L 位、锁定写忽略 |
+| `pmp_checker`（新） | OFF/TOR/NAPOT、NA4 写入保持旧值、G=2 的 pmpaddr 读出掩码、优先级、部分覆盖失败、M 模式与 L 位、锁定写忽略 |
 | `commit_ctrl`（改） | SRET/MRET 重定向 kind；SFENCE 序列（SQ 空 → PTW idle → sfence → 前端同步 → 退休）；satp/PMP needs_refetch；中断在指令边界接受、`epc=committed_next_pc`；WFI 睡眠/同拍不睡/唤醒；needs_D store 队头处理 |
 | `frontend_sync_ctrl`（改） | SFENCE kind 不发 `inv_all`；FENCE.I 原用例保留 |
 | 回归 | L7a/L7b/L9 全部 cocotb 与受影响的非访存 cocotb；`scripts/lint.sh` 0 errors |
@@ -366,7 +369,7 @@
 | X8 | SFENCE 时在途 PTW | 等 PTW idle | D26 允许“等待或取消”；单 walker、PTW 读不被 kill，等待有界，比取消简单。satp 仍按 D27 用 epoch，不等待 |
 | X9 | D 位更新方式 | 队头串行：重新遍历 + 原子比较置位，期间阻止年轻 load 越过 | 规范不允许推测置 D（B36 已定）；首次写一页才发生，频率低 |
 | X10 | `menvcfg.ADUE` | 可写；复位为 1（默认硬件 A/D）；=0 时 Svade 行为 | 规范要求实现 Svadu 时 ADUE 可写，不能只读为 1；复位值规范未定，取 1 符合 B49。L11 设备树只声明 `svadu`（Linux 视为启动即硬件 A/D）。OpenSBI 的 FWFT 开关需同时声明 svade+svadu，首版不需要 |
-| X11 | PMP 条目数 | 16 | 规范上限内最多，cfg 已是 16；OpenSBI 通常只用 3～5 项。备选 8（Breeze，省三处并行比较器的面积）。面积留 L11 综合核对 |
+| X11 | PMP 条目数 | 16（粒度见 Q6：G=2） | 规范上限内最多，cfg 已是 16；OpenSBI 通常只用 3～5 项。备选 8（Breeze，省三处并行比较器的面积）。面积留 L11 综合核对 |
 | X12 | PMA 地址图 | 主存 `0x8000_0000～0xFFFF_FFFF`、DTCM、其余不存在 | 与 B50 倾向一致；L11 加 MMIO 区 |
 | X13 | `senvcfg` | 实现为全 0 只读 | 按 B49 不让 Linux 访问时 trap；Breeze 未实现 |
 | X14 | WFI 在 S/U 的非法判定 | U 立即非法；S 且 TW=1 立即非法（不设超时） | 规范允许超时后非法也允许立即；立即最简单 |
@@ -380,3 +383,8 @@
 | Q1 | `mcause/scause` 合法集合与非法写 | 异常码 {0～9,11,12,13,15}、中断码 {1,3,5,7,9,11,13}，其余位 0；非法写整次忽略、保留旧值（规范为 WLRL，只保证保存支持的编码） | 2.2 |
 | Q2 | 非叶子 PTE 的 G | 路径累计 G（取或）；walk cache 增加累计 G，G=1 项跨 ASID 命中；SFENCE x0/rs2 时 walk cache 保留 G 项。覆盖 4.2 原“walk cache 不带 G” | 4.2、4.3、4.4、4.5 |
 | Q3 | A/D 条件写的物理检查与失败归属 | S 模式、8 字节、PMP R/W 均允许、PMA 可放页表；失败不写，交付原访问类型的 access fault 1/5/7，tval=原 VA | 8.2 |
+| Q4 | `misa` 是否公告 S/U | 公告：`0x800000000014112C`，写忽略；更新 L9 用例期望 | 2.2 |
+| Q5 | HPM 溢出与软件同拍清 OF/LCOFIP | OF 判定基准取本拍软件写入值；溢出且基准为 0 时硬件置位优先；显式写计数器替代本拍增量；配置写本拍按旧配置计数 | 3.3 |
+| Q6 | 取指 PMP 检查粒度 | 不逐指令传递保护信息；改 PMP 粒度为 G=2（16B），整区域检查即精确。覆盖 9.1 原“G=0、支持 NA4”（Codex 原建议为逐指令检查并改 `fetch_return_queue`，未采用） | 9.1 |
+| Q7 | ADUE 切换的同步 | epoch++、退休后 flush 重取，不清 TLB；旧 epoch 不发新 A/D 写；STCE 单独变化不同步 | 6.4 |
+| Q8 | 权限检查与 A/D 先后 | 先权限后 A/D；权限失败直接 page fault 不更新 A/D | 4.3 |
