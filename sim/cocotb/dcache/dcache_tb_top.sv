@@ -21,6 +21,7 @@ module dcache_tb_top import o3_types_pkg::*; #(
     input logic snp_valid_i,output logic snp_ready_o,input coh_snp_t snp_i,
     output logic idle_o,output fatal_evt_t fatal_o,output be_perf_t perf_o,
     output logic init_done,
+    output logic mon_ps_valid,mon_ps_write,mon_probe_hold,mon_probe_read,mon_ps_alloc,
     output logic [MSHRS-1:0] mon_ms_valid,
     output logic [WBS-1:0] mon_wb_valid,
     output logic [SETS*WAYS*2-1:0] mon_state,
@@ -42,6 +43,9 @@ module dcache_tb_top import o3_types_pkg::*; #(
     assign resp0=ld_resp_o[0];assign resp1=ld_resp_o[1];
     dcache #(.CFG(CFG)) dut(.*);
     assign init_done=dut.init_done_q;
+    assign mon_ps_valid=dut.ps_valid_q;assign mon_ps_write=dut.ps_write;
+    assign mon_ps_alloc=dut.ps_lane>=0;
+    assign mon_probe_hold=dut.probe_hold;assign mon_probe_read=dut.probe_read;
     assign widths={8'(LQ_IDX_W),8'(SQ_IDX_W),8'(ROB_IDX_W),8'(CKPT_N)};
     for(genvar n=0;n<MSHRS;n++) assign mon_ms_valid[n]=dut.ms_state[n]!=DM_IDLE;
     for(genvar n=0;n<WBS;n++) assign mon_wb_valid[n]=dut.wb_valid[n];

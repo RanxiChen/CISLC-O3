@@ -336,11 +336,10 @@ async def cancellation_keeps_plru_and_mshr(dut):
 
 @cocotb.test()
 async def wb_capacity_full_wait_contract(dut):
-    """Spec 5.4 says WB capacity failure is MSHR_FULL; 6.1 needs mshr_free.
+    """X11 (eb1432c): WB capacity replay is WB_LINE and waits on wb_free.
 
     Both writeback slots retain unacknowledged Puts after the associated MSHRs
-    have installed and freed. Releasing B/PutAck cannot create an MSHR event.
-    This test keeps the frozen reason and event requirements explicit.
+    have installed and freed. PutAck must wake this request without mshr_free.
     """
     e=await env(dut)
     for k in range(e.ways):
@@ -354,8 +353,8 @@ async def wb_capacity_full_wait_contract(dut):
     r=(await e.issue(Cpu(BASE+(e.ways+2)*e.sets*64)))[0]
     dut._log.info('WB_FULL witness cycle=%d status=%d reason=%d MSHR_busy=%d WB_busy=%d',
                  e.cycle,r['status'],r['reason'],int(dut.mon_ms_valid.value),int(dut.mon_wb_valid.value))
-    assert r['status']==REPLAY and r['reason']==FULL, 'spec 5.4 requires MSHR_FULL for full victim WB slots'
-    # Model the spec 6.1 waiter: only an mshr_free event can make it replayable.
+    assert r['status']==REPLAY and r['reason']==WB_LINE, 'spec 5.4 X11 requires WB_LINE for full victim WB slots'
+    # Model the X11/spec 6.1 waiter: a wb_free event makes it replayable.
     start=len(e.wakes)
     e.block_putacks=False
     await e.until(lambda: int(dut.mon_wb_valid.value)==0)
@@ -363,6 +362,7 @@ async def wb_capacity_full_wait_contract(dut):
         await e.tick()
     dut._log.info('WB_FULL release wake_events=%s MSHR_busy=%d WB_busy=%d',
                  e.wakes[start:],int(dut.mon_ms_valid.value),int(dut.mon_wb_valid.value))
-    assert any(w['free'] for _,w in e.wakes[start:]), 'spec 6.1 waiter never wakes: only wb_free arrived'
+    assert any(w['wb_free'] for _,w in e.wakes[start:]), 'X11 waiter never wakes: missing wb_free'
+    assert not any(w['free'] for _,w in e.wakes[start:]), 'PutAck must not fabricate mshr_free'
     assert (await e.load(BASE+(e.ways+2)*e.sets*64))['data']==e.golden(BASE+(e.ways+2)*e.sets*64)
     await e.idle()

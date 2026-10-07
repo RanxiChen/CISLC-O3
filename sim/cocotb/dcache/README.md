@@ -1,9 +1,11 @@
-# DCache L8a M2 (blocked, no layer pass)
+# DCache L8a M2 (X11)
 
 Run only on the host chosen by rereading the shared simulation-host configuration
 and preflighting its environment. `make MSHRS=4` executes the three migrated
-existing cases and 23 L8a cases. The full layer currently fails
-`wb_capacity_full_wait_contract`; see `doc/tasks/O3-T09-report.md`.
+existing cases, 23 L8a cases and supplemental PS/probe coverage.
+`make MSHRS=1` runs every applicable case plus a single-MSHR full/free case.
+The three cases that require four concurrent MSHRs run unchanged at MSHRS=4.
+See `doc/tasks/O3-T09-report.md` for results.
 
 Focused reproduction:
 
@@ -25,7 +27,7 @@ waits for install before replay. Monitors never modify DUT state.
 
 `wb_capacity_full_wait_contract` fills both writeback slots while withholding
 PutAck, waits for every associated MSHR to complete, then requests another
-same-set line. Frozen spec 5.4 requires MSHR_FULL, whereas current RTL returns
-WB_LINE. A reason-only RTL correction reaches the next check and fails because
-PutAck emits wb_free without mshr_free, leaving the spec 6.1 waiter asleep.
-The reason-only diagnostic change was not retained in production RTL.
+same-set line. Approved X11 (eb1432c) requires WB_LINE and wb_free.
+The test verifies PutAck emits wb_free without a fabricated mshr_free, then
+reissues the request and checks replacement completion against golden memory.
+The original failing evidence and reason-only diagnostic remain in the report.
