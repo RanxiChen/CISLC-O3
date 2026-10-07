@@ -18,9 +18,9 @@
  *   慢路径都在旁侧。
  * 待定：AGU 管线条数与 load/store 组合。
  * O3-T02: ENABLE_RETIRE_INFO adds held load address/size observation only.
- * 当前实现状态：闭环简化（L10 T08a）。单发射、单 Load 在途；DTCM 或已接线 DCache，
+ * 当前实现状态：闭环简化（L10）。单发射、单 Load 在途；DTCM 或已接线 DCache，
  * SQ 查询命中完整覆盖时转发；一个依赖等待 replay 槽让 blocked load 让出执行级，
- * SQ 变化后重查。访问错误交给精确 trap；Bare 数据范围按有效特权检查 PMP/PMA；DTLB 在 T08b、多 load pending/MMIO/AMO 在后级。
+ * SQ 变化后重查。访问错误交给精确 trap；Bare 数据范围按有效特权检查 PMP/PMA；DTLB/PTW 与 LDW_TLB_MISS 单槽 replay 已接入；多 load pending/MMIO/AMO 在 L8。
  * 测试：sim/cocotb/load_store_unit/；整核 sim/o3/。
  * Single-issue Load/Store execution unit with DTCM and external memory
  *
@@ -170,20 +170,55 @@ module load_store_unit
     mem_execute_uop_t work_uop;
     logic replay_valid_q, replay_check_q, replay_service;
 
+    logic tlb_lookup[CFG.lsu.agu_pipes],tlb_store[CFG.lsu.agu_pipes],tlb_resp_valid[CFG.lsu.agu_pipes];
+    o3_types_pkg::vaddr_t tlb_va[CFG.lsu.agu_pipes];
+    o3_types_pkg::tlb_resp_t tlb_resp[CFG.lsu.agu_pipes],xlate_resp_q;
+    logic [63:0] xlate_owner_va_q;
+    logic [ROB_IDX_WIDTH-1:0] xlate_owner_rob_q;
+    logic tlb_owner_match;
+    assign tlb_owner_match=xlate_owner_va_q==effective_addr && xlate_owner_rob_q==work_uop.rob_idx;
+    logic xlate_busy_q,xlate_done_q,translation_ready,translation_fault,translation_page;
+    logic [63:0] translated_addr;
+    assign translation_ready=!USE_DCACHE || (xlate_done_q && tlb_owner_match) || (t_csr_i.satp_mode!=8 || t_csr_i.priv_eff==3);
+    assign translation_fault=USE_DCACHE && xlate_done_q && tlb_owner_match && (xlate_resp_q.page_fault || xlate_resp_q.access_fault);
+    assign translation_page=translation_fault && xlate_resp_q.page_fault;
+    assign translated_addr=USE_DCACHE && t_csr_i.satp_mode==8 && t_csr_i.priv_eff!=3 ?
+        64'(o3_types_pkg::sv39_pa(xlate_resp_q.ppn,effective_addr,xlate_resp_q.level)) : effective_addr;
+    for(genvar p=0;p<CFG.lsu.agu_pipes;p++) begin
+        assign tlb_lookup[p]=(p==0) && USE_DCACHE && t_csr_i.satp_mode==8 && t_csr_i.priv_eff!=3 && work_uop.valid && !xlate_busy_q && !xlate_done_q && !killed(work_uop.branch_mask);
+        assign tlb_va[p]=effective_addr;assign tlb_store[p]=work_uop.is_store;
+    end
+    dtlb #(.CFG(CFG)) u_dtlb(.clk(clk),.rst(rst),.kill_i(flush_all_i || (resolution_valid_i && resolution_mispredict_i)),
+        .lookup_valid_i(tlb_lookup),.lookup_vaddr_i(tlb_va),.lookup_is_store_i(tlb_store),
+        .resp_valid_o(tlb_resp_valid),.resp_o(tlb_resp),.ptw_req_valid_o(t_ptw_req_valid_o),
+        .ptw_req_ready_i(t_ptw_req_ready_i),.ptw_req_o(t_ptw_req_o),.ptw_resp_i(t_ptw_resp_i),
+        .csr_i(t_csr_i),.sfence_i(t_sfence_i),.sfence_done_o(t_sfence_done_o),.perf_o());
+    always_ff @(posedge clk) begin
+        if(rst) begin xlate_busy_q<=0;xlate_done_q<=0;xlate_resp_q<='0;xlate_owner_va_q<=0;xlate_owner_rob_q<=0;end
+        else begin
+            if(tlb_lookup[0]) begin xlate_busy_q<=1;xlate_owner_va_q<=effective_addr;xlate_owner_rob_q<=work_uop.rob_idx;end
+            if(tlb_resp_valid[0]) begin
+                xlate_busy_q<=0;
+                if(!tlb_resp[0].miss && tlb_owner_match) begin xlate_done_q<=1;xlate_resp_q<=tlb_resp[0];end
+            end
+            if((mem_uop_i.valid && mem_ready_o) || (replay_service && (load_forward_fire || load_request_fire || bad_address)) ||
+                flush_all_i || killed(work_uop.branch_mask)) begin xlate_busy_q<=0;xlate_done_q<=0;end
+        end
+    end
     logic pending_valid_q;
     logic pending_store_q, pending_killed_q;
     logic [63:0] pending_addr_q;
     logic store_probe, store_probe_fire, store_local, bad_address;
-    assign store_local=access_in_dtcm(mem_uop_i.base_value+mem_uop_i.imm_value,size_mask(mem_uop_i.mem_size));
+    assign store_local=access_in_dtcm(translated_addr,size_mask(work_uop.mem_size));
     // T08a Bare: effective privilege includes MPRV only in M; protection
     // checks every byte before either forwarding, SQ address completion or DCache.
-    assign bad_address=USE_DCACHE &&
-        (!(o3_types_pkg::pma_main(effective_addr,1<<int'(work_uop.mem_size)) ||
-           o3_types_pkg::pma_dtcm(effective_addr,1<<int'(work_uop.mem_size))) ||
-         !o3_types_pkg::pmp_allow(t_pmp_i,o3_types_pkg::paddr_t'(effective_addr),
-             1<<int'(work_uop.mem_size),t_csr_i.priv_eff,work_uop.is_load,work_uop.is_store,1'b0));
+    assign bad_address=translation_fault || (USE_DCACHE && translation_ready &&
+        (!(o3_types_pkg::pma_main(translated_addr,1<<int'(work_uop.mem_size)) ||
+           o3_types_pkg::pma_dtcm(translated_addr,1<<int'(work_uop.mem_size))) ||
+         !o3_types_pkg::pmp_allow(t_pmp_i,o3_types_pkg::paddr_t'(translated_addr),
+             1<<int'(work_uop.mem_size),t_csr_i.priv_eff,work_uop.is_load,work_uop.is_store,1'b0)));
     assign store_probe=CHECK_STORE_ACCESS && USE_DCACHE && work_uop.valid && work_uop.is_store
-                       && !store_local && !pending_valid_q && !killed(work_uop.branch_mask) && !bad_address;
+                       && !store_local && translation_ready && !pending_valid_q && !killed(work_uop.branch_mask) && !bad_address;
     assign store_probe_fire=store_probe && !sq_drain_valid_i && t_dc_ld_req_ready_i[0];
     logic [INST_ID_WIDTH-1:0] pending_instruction_id_q;
 `ifdef O3_SIM
@@ -289,20 +324,21 @@ module load_store_unit
     assign work_uop = replay_service ? replay_uop_q : mem_uop_i;
     assign replay_busy_o = replay_valid_q;
     assign replay_capture_o = !replay_valid_q && mem_uop_i.valid
-                            && mem_uop_i.is_load && sq_query_block_i
+                            && mem_uop_i.is_load && !bad_address && ((translation_ready && sq_query_block_i) ||
+                               (tlb_resp_valid[0] && tlb_resp[0].miss && tlb_owner_match))
                             && !killed(mem_uop_i.branch_mask);
     assign effective_addr = work_uop.base_value + work_uop.imm_value;
     assign access_mask = size_mask(work_uop.mem_size);
     assign load_result_o = load_result_q;
 
     assign lq_execute_valid_o = work_uop.valid && work_uop.is_load
-                              && !killed(work_uop.branch_mask)
+                              && translation_ready && !killed(work_uop.branch_mask)
                               && (!replay_valid_q || replay_service);
     assign lq_execute_idx_o = work_uop.lq_idx;
     assign lq_execute_addr_o = effective_addr;
     assign sq_query_valid_o = lq_execute_valid_o;
     assign sq_query_rob_idx_o = work_uop.rob_idx;
-    assign sq_query_addr_o = effective_addr;
+    assign sq_query_addr_o = translated_addr;
     assign sq_query_mask_o = access_mask;
 
     assign load_can_forward = lq_execute_valid_o && !pending_valid_q && !sq_query_block_i
@@ -317,7 +353,7 @@ module load_store_unit
     // SRAM，否则整笔事务交给外部memory，跨边界请求不会拆成两笔。
     assign memory_req_valid = sq_drain_valid_i || load_can_request || store_probe;
     assign memory_req_write = sq_drain_valid_i;
-    assign sram_req_addr = sq_drain_valid_i ? sq_drain_addr_i : effective_addr;
+    assign sram_req_addr = sq_drain_valid_i ? sq_drain_addr_i : translated_addr;
     assign sram_req_wdata = sq_drain_valid_i ? sq_drain_data_i : '0;
     assign sram_req_wmask = sq_drain_valid_i ? sq_drain_mask_i : access_mask;
     assign sram_req_tag = {lq_execute_generation_i, work_uop.lq_idx};
@@ -332,7 +368,7 @@ module load_store_unit
             always_comb begin
                 t_dc_ld_req_o[port] = '0;
                 t_dc_ld_req_o[port].src = o3_types_pkg::DC_SRC_LOAD;
-                t_dc_ld_req_o[port].paddr = o3_types_pkg::paddr_t'(effective_addr);
+                t_dc_ld_req_o[port].paddr = o3_types_pkg::paddr_t'(translated_addr);
                 t_dc_ld_req_o[port].size = 2'(work_uop.mem_size);
                 t_dc_ld_req_o[port].lq_tag.idx = o3_types_pkg::lq_idx_t'(work_uop.lq_idx);
                 t_dc_ld_req_o[port].lq_tag.gen = o3_types_pkg::LQ_GEN_W'(lq_execute_generation_i);
@@ -355,7 +391,7 @@ module load_store_unit
 
     // Store在SQ成功接收AGU结果后即可离开；Load在转发或目标memory请求握手后离开。
     assign mem_ready_o = !mem_uop_i.valid
-                       || (mem_uop_i.is_store && !killed(mem_uop_i.branch_mask)
+                       || (mem_uop_i.is_store && translation_ready && !killed(mem_uop_i.branch_mask)
                            && (!CHECK_STORE_ACCESS || store_local || store_probe_fire || bad_address))
                        || (bad_address && work_uop.valid)
                        || (!replay_valid_q && (replay_capture_o
@@ -364,7 +400,7 @@ module load_store_unit
     assign sq_execute_valid_o = mem_uop_i.valid && mem_uop_i.is_store
                               && mem_ready_o && !killed(mem_uop_i.branch_mask) && !bad_address;
     assign sq_execute_idx_o = mem_uop_i.sq_idx;
-    assign sq_execute_addr_o = mem_uop_i.base_value + mem_uop_i.imm_value;
+    assign sq_execute_addr_o = translated_addr;
     assign sq_execute_data_o = mem_uop_i.store_value;
     assign sq_execute_mask_o = size_mask(mem_uop_i.mem_size);
     assign store_complete_valid_o = (sq_execute_valid_o && (!CHECK_STORE_ACCESS || store_local))
@@ -442,13 +478,13 @@ module load_store_unit
                 replay_uop_q.branch_mask <= resolved_mask(mem_uop_i.branch_mask);
             end else if (replay_valid_q) begin
                 if (killed(replay_uop_q.branch_mask)
-                 || (replay_service && (load_forward_fire || load_request_fire))) begin
+                 || (replay_service && (load_forward_fire || load_request_fire || bad_address))) begin
                     replay_valid_q <= 1'b0;
                     replay_check_q <= 1'b0;
                 end else if (replay_service) begin
                     // Dependency wait is event-driven; once cleared, cache/
                     // result-slot backpressure is checked until acceptance.
-                    replay_check_q <= !sq_query_block_i || sq_change_i;
+                    replay_check_q <= !sq_query_block_i || sq_change_i || !translation_ready;
                 end else if (sq_change_i) begin
                     replay_check_q <= 1'b1;
                 end
@@ -525,9 +561,7 @@ module load_store_unit
 
     // L3 scope: maintenance, translation, AMO, precise exceptions and
     // prefetch training are not routed through this single-load LSU yet.
-    assign t_ptw_req_valid_o = 1'b0;
-    assign t_ptw_req_o = '0;
-    assign t_sfence_done_o = 1'b0;
+
     assign t_dc_st_req_valid_o = 1'b0; // committed stores enter DCache from SQ
     assign t_dc_st_req_o = '0;
     assign t_dc_amo_req_valid_o = 1'b0;
@@ -541,8 +575,8 @@ module load_store_unit
                    : o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ACCESS_FAULT),tval:pending_addr_q};
         if (bad_address && work_uop.valid && !killed(work_uop.branch_mask)) begin
             t_exc_valid_o=1; t_exc_rob_idx_o=work_uop.rob_idx;
-            t_exc_o='{valid:1'b1,cause:(work_uop.is_store ? o3_isa_pkg::EXCEPTION_CAUSE_STORE_ACCESS_FAULT
-                     : o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ACCESS_FAULT),tval:effective_addr};
+            t_exc_o='{valid:1'b1,cause:(translation_page ? (work_uop.is_store ? o3_isa_pkg::EXCEPTION_CAUSE_STORE_PAGE_FAULT : o3_isa_pkg::EXCEPTION_CAUSE_LOAD_PAGE_FAULT) : (work_uop.is_store ? o3_isa_pkg::EXCEPTION_CAUSE_STORE_ACCESS_FAULT
+                     : o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ACCESS_FAULT)),tval:effective_addr};
         end
     end
     assign t_pf_train_valid_o = 1'b0;

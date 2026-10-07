@@ -382,6 +382,7 @@ module frontend
         .pf_req_ready_o      (pf_req_ready),
         .pf_req_i            (pf_req),
         .pf_resp_o           (pf_resp),
+        .xlate_kill_i        (fe_kill.valid),
         .ptw_req_valid_o     (ptw_req_valid_o),
         .ptw_req_ready_i     (ptw_req_ready_i),
         .ptw_req_o           (ptw_req_o),

@@ -212,7 +212,7 @@ module dcache
         return XLEN'(data >> (int'(req.paddr[5:0]) * 8));
     endfunction
 
-    assign input_req = st_req_valid_i ? st_req_i : ld_req_i[0];
+    assign input_req = ptw_req_valid_i ? ptw_req_i : st_req_valid_i ? st_req_i : ld_req_i[0];
     assign input_set = set_t'(input_req.paddr[6 +: SET_W]);
     assign input_tag = tag_t'(input_req.paddr[PADDR_W-1:6+SET_W]);
     assign input_line_pending = mstate_q != M_IDLE
@@ -254,14 +254,15 @@ module dcache
         && (!stage_valid_q || stage_consume)
         && !stage_store_hit && !(stage_valid_q && !stage_hit)
         && !input_line_pending && (mstate_q == M_IDLE || input_hit);
-    assign st_req_ready_o = accept_window;
+    assign ptw_req_ready_o=accept_window;
+    assign st_req_ready_o = accept_window && !ptw_req_valid_i;
     for (genvar port = 0; port < LOAD_PORTS; port++) begin : g_load_port
-        assign ld_req_ready_o[port] = (port == 0) && accept_window && !st_req_valid_i;
-        assign ld_resp_o[port] = (port == 0) ? ld_resp_q : '0;
+        assign ld_req_ready_o[port] = (port == 0) && accept_window && !st_req_valid_i && !ptw_req_valid_i;
+        assign ld_resp_o[port] = (port == 0 && ld_resp_q.src==DC_SRC_LOAD) ? ld_resp_q : '0;
     end
     assign accept_store = st_req_valid_i && st_req_ready_o;
     assign accept_load = ld_req_valid_i[0] && ld_req_ready_o[0];
-    assign stage_fire = accept_store || accept_load;
+    assign stage_fire = accept_store || accept_load || (ptw_req_valid_i && ptw_req_ready_o);
     assign bank_read_en = stage_fire || probe_fire;
     assign bank_read_set = probe_fire ? probe_set : input_set;
 
@@ -410,7 +411,7 @@ module dcache
                                      line_paddr:{stage_req_q.paddr[PADDR_W-1:6], 6'b0}};
                         mstate_q <= M_FAULT;
                     end else begin
-                        ld_resp_q <= '{valid:1'b1, src:DC_SRC_LOAD,
+                        ld_resp_q <= '{valid:1'b1, src:stage_req_q.src,
                             status:DC_ERROR, lq_tag:stage_req_q.lq_tag, sq_idx:'0,
                             rdata:'0, sc_fail:1'b0};
                     end
@@ -421,7 +422,7 @@ module dcache
                             status:DC_OK, lq_tag:'0, sq_idx:stage_req_q.sq_idx,
                             rdata:'0, sc_fail:1'b0};
                     end else begin
-                        ld_resp_q <= '{valid:1'b1, src:DC_SRC_LOAD,
+                        ld_resp_q <= '{valid:1'b1, src:stage_req_q.src,
                             status:DC_OK, lq_tag:stage_req_q.lq_tag, sq_idx:'0,
                             rdata:extract_load(stage_line, stage_req_q), sc_fail:1'b0};
                     end
@@ -471,7 +472,7 @@ module dcache
                                              line_paddr:m_line_q};
                                 mstate_q <= M_FAULT;
                             end else begin
-                                ld_resp_q <= '{valid:1'b1, src:DC_SRC_LOAD,
+                                ld_resp_q <= '{valid:1'b1, src:m_req_q.src,
                                     status:DC_ERROR, lq_tag:m_req_q.lq_tag, sq_idx:'0,
                                     rdata:'0, sc_fail:1'b0};
                                 mstate_q <= M_IDLE;
@@ -489,7 +490,7 @@ module dcache
                             status:DC_OK, lq_tag:'0, sq_idx:m_req_q.sq_idx,
                             rdata:'0, sc_fail:1'b0};
                     end else begin
-                        ld_resp_q <= '{valid:1'b1, src:DC_SRC_LOAD,
+                        ld_resp_q <= '{valid:1'b1, src:m_req_q.src,
                             status:DC_OK, lq_tag:m_req_q.lq_tag, sq_idx:'0,
                             rdata:extract_load(m_data_q, m_req_q), sc_fail:1'b0};
                     end
@@ -502,8 +503,7 @@ module dcache
 
     assign amo_req_ready_o = 1'b0;
     assign amo_resp_o = '0;
-    assign ptw_req_ready_o = 1'b0;
-    assign ptw_resp_o = '0;
+    assign ptw_resp_o = ld_resp_q.src==DC_SRC_PTW ? ld_resp_q : '0;
     assign pf_req_ready_o = 1'b0;
     // A dirty DCache must never claim that FENCE.I cleaned it. The maintenance
     // sequencer is a separate pending closure; a request remains unacknowledged.

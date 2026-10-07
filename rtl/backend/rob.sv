@@ -144,6 +144,7 @@ module rob #(
     input logic [2:0] t_alloc_inst_len_i [MACHINE_WIDTH-1:0],
     input logic [31:0] t_alloc_instruction_i [MACHINE_WIDTH-1:0],
     input o3_types_pkg::preg_t t_alloc_src1_i [MACHINE_WIDTH-1:0],
+    input o3_types_pkg::preg_t t_alloc_src2_i [MACHINE_WIDTH-1:0],
     input logic [4:0] t_alloc_rs1_i [MACHINE_WIDTH-1:0],
     input logic t_succ_valid_i,
     input o3_types_pkg::vaddr_t t_succ_pc_i,
@@ -324,7 +325,7 @@ module rob #(
                     rd_write_en:alloc_rd_write_en_i[lane],new_preg:alloc_new_dst_preg_i[lane],old_preg:alloc_old_dst_preg_i[lane],
                     is_load:alloc_is_load_i[lane],is_store:alloc_is_store_i[lane],lq_idx:alloc_lq_idx_i[lane],sq_idx:alloc_sq_idx_i[lane],
                     sys_op:t_alloc_ext_i[lane].sys_op,ext:t_alloc_ext_i[lane],exc:t_alloc_exc_i[lane],
-                    instruction:t_alloc_instruction_i[lane],src1_preg:t_alloc_src1_i[lane],rs1:t_alloc_rs1_i[lane],
+                    instruction:t_alloc_instruction_i[lane],src1_preg:t_alloc_src1_i[lane],src2_preg:t_alloc_src2_i[lane],rs1:t_alloc_rs1_i[lane],
                     succ_pc:t_alloc_pc_i[lane]+o3_types_pkg::vaddr_t'(t_alloc_inst_len_i[lane]),fuse_role:o3_types_pkg::FUSE_NONE,default:'0};
             end
             if (t_exc_valid_i) meta_q[t_exc_idx_i].exc <= t_exc_i;

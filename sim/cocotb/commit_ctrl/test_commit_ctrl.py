@@ -8,6 +8,7 @@ async def edge(d):
 @cocotb.test()
 async def prefix_trap_serial_and_refetch(d):
     for n in ['clk','head_valid_i','head_exc_i','head_serial_i','head_csr_i','csr_resp_valid_i','csr_illegal_i','sysop_i','pc_i','target_i','commit_valid_i','sq_empty_i','sync_ready_i','sync_done_i','trap_redirect_i']:getattr(d,n).value=0
+    d.ptw_idle_i.value=1;d.sf_ack_i.value=0
     d.priv_i.value=3;d.status_i.value=0;d.irq_i.value=0;d.refetch_i.value=0;d.refetch_kind_i.value=6;d.wfi_stall_i.value=0
     d.rst.value=1;await edge(d);d.rst.value=0
     pc=0x80000000;rng=random.Random(int(os.getenv('TEST_SEED','1')))
@@ -30,6 +31,7 @@ async def prefix_trap_serial_and_refetch(d):
 async def reset_l10(d):
     for n in ('clk','head_valid_i','head_exc_i','head_serial_i','head_csr_i','csr_resp_valid_i','csr_illegal_i','sysop_i','pc_i','target_i','commit_valid_i','sq_empty_i','sync_ready_i','sync_done_i','trap_redirect_i','status_i','irq_i','refetch_i','wfi_stall_i'):
         getattr(d,n).value=0
+    d.ptw_idle_i.value=1;d.sf_ack_i.value=0
     d.priv_i.value=3;d.refetch_kind_i.value=6
     d.rst.value=1;await edge(d);d.rst.value=0;await settle()
 
@@ -72,3 +74,18 @@ async def l10_xret_legality_wfi_and_refetch(d):
         assert int(d.serial_done_o.value)==1
         d.commit_valid_i.value=1;await settle()
         assert int(d.redirect_o.value)==1 and int(d.redirect_kind_o.value)==kind and int(d.flush_o.value)==1
+
+@cocotb.test()
+async def sfence_waits_for_store_completion_ptw_and_both_sides(d):
+    await reset_l10(d);d.head_valid_i.value=1;d.head_serial_i.value=1;d.sysop_i.value=8
+    d.sq_empty_i.value=0;d.ptw_idle_i.value=0;await settle()
+    assert int(d.sf_valid_o.value)==0 and int(d.sync_o.value)==0
+    d.sq_empty_i.value=1;await settle();assert int(d.sf_valid_o.value)==0
+    d.ptw_idle_i.value=1;await settle();assert int(d.sf_valid_o.value)==1
+    await edge(d);assert int(d.sf_valid_o.value)==0 and int(d.sync_o.value)==0
+    d.sf_ack_i.value=1;await edge(d);d.sf_ack_i.value=0;d.sync_ready_i.value=1
+    await settle();assert int(d.sync_o.value)==1 and int(d.serial_done_o.value)==0
+    await edge(d);d.sync_done_i.value=1;await edge(d);d.sync_done_i.value=0
+    assert int(d.serial_done_o.value)==1
+    d.pc_i.value=0x80000000;d.commit_valid_i.value=1;await settle()
+    assert int(d.redirect_kind_o.value)==4 and int(d.flush_o.value)==1

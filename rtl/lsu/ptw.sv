@@ -1,71 +1,88 @@
-/**
- * PTW —— 共享页表遍历器（ITLB 与 DTLB 共用），经 DCache 物理入口读页表
- *
- * 作用（已定方向，B07）：
- * - 接收 ITLB（前端）与 DTLB 的 miss 请求；Sv39 遍历；使用 DCache 物理访问入口读取 PTE，
- *   不递归翻译页表地址，与需求访问仲裁，共享最新数据、miss 处理与下级接口。
- *   独立 PTW 接 L2/Home 的旧建议不采用。
- * - 小型 walk cache 减少重复遍历；必须具有满足 D26 VA/ASID 定向失效的上下文。
- * - 前进保证：PTW 仲裁与资源分配不能被等待翻译的请求占尽其依赖的 cache/MSHR/回填资源；
- *   具体保留份额待定。
- * - PTW 读取页表的物理权限检查与最终目标访问权限分开（B06）。
- * - SFENCE.VMA：先前页表写入需到达 PTW 可见的位置；必须等待或取消相关旧 PTW，防止失效后
- *   重新安装旧翻译（D26）。satp 切换：取消旧 PTW 状态、隔离迟到返回，不强制等待旧遍历结束（D27）。
- *
- * - 硬件 A/D（B36）：叶 PTE A=0 时经 pte_ad_updater 原子置 A，完成更新后才交付可使用的翻译；
- *   store 需要 D 而 D=0 时不在推测遍历中写 D：返回翻译并标记需要 D（resp 中 perm_d=0），释放
- *   PTW 槽位，由 LSU 标记 needs_D，到 ROB 队首后非推测更新。mismatch 时按 updater 请求重新遍历。
- *   取消/SFENCE.VMA/satp 切换既过滤旧响应，也阻止失效上下文发起新的 PTE 写入。
- *
- * 细节待定：在途遍历数（CFG.mmu.ptw_slots）、walk cache 层级/组织、大页/ASID/global 处理细节、
- * 与 SFENCE 的等待-取消握手。
- *
- * 当前实现状态：空壳。只有端口与注释，没有逻辑，输出未驱动。
- *
- * 目标周期行为：请求握手后进入遍历状态机；每级发 DCache 物理读，响应后检查 PTE；
- * 叶子或故障时广播 resp_o（src 字段区分 ITLB/DTLB），idle_o 表示无在途遍历。
- *
- * 本阶段不写测试代码和仿真代码。
+/** Shared L10 Sv39 walker: round-robin I/D, one physical request owner.
+ * N accept snapshot; N+1 walk-cache lookup; REQ/WAIT/CHECK per level.
+ * Physical S-mode R/PMA check precedes every read. Epoch invalidation drains
+ * an accepted read and returns its old identity solely to release ownership.
+ * T08b Svade: permission check precedes A/D faults; no PTE writes yet.
+ * SFENCE waits for idle outside this module. Tests: sim/cocotb/mmu/.
  */
-module ptw
-    import o3_types_pkg::*;
-#(
-    parameter  o3_cfg_pkg::backend_cfg_t CFG
-) (
-    input  logic          clk,
-    input  logic          rst,
-
-    // ITLB（前端 ICache）与 DTLB 请求
-    input  logic          itlb_req_valid_i,
-    output logic          itlb_req_ready_o,
-    input  ptw_req_t      itlb_req_i,
-    input  logic          dtlb_req_valid_i,
-    output logic          dtlb_req_ready_o,
-    input  ptw_req_t      dtlb_req_i,
-    output ptw_resp_t     resp_o,                 // 广播；ITLB/DTLB 按 src 与 epoch 过滤
-
-    // DCache 物理访问入口（src = DC_SRC_PTW）
-    output logic          mem_req_valid_o,
-    input  logic          mem_req_ready_i,
-    output dcache_req_t   mem_req_o,
-    input  dcache_resp_t  mem_resp_i,
-
-    input  dmmu_csr_t     csr_i,
-    input  pmp_state_t    pmp_i,                  // 页表访问的物理权限检查
-    input  sfence_req_t   sfence_i,
-    output logic          sfence_done_o,
-    output logic          idle_o,
-
-    // A 位更新（B36）与 updater 发起的重新遍历
-    output logic          a_upd_req_valid_o,
-    input  logic          a_upd_req_ready_i,
-    output pte_ad_req_t   a_upd_req_o,
-    input  pte_ad_resp_t  a_upd_resp_i,
-    input  logic          rewalk_req_valid_i,
-    output logic          rewalk_req_ready_o,
-    input  ptw_req_t      rewalk_req_i,
-
-    output be_perf_t      perf_o
+module ptw import o3_types_pkg::*; #(parameter o3_cfg_pkg::backend_cfg_t CFG)(
+    input logic clk,rst,
+    input logic itlb_req_valid_i,output logic itlb_req_ready_o,input ptw_req_t itlb_req_i,
+    input logic dtlb_req_valid_i,output logic dtlb_req_ready_o,input ptw_req_t dtlb_req_i,
+    output ptw_resp_t resp_o,
+    output logic mem_req_valid_o,input logic mem_req_ready_i,output dcache_req_t mem_req_o,input dcache_resp_t mem_resp_i,
+    input dmmu_csr_t csr_i,input pmp_state_t pmp_i,input sfence_req_t sfence_i,
+    output logic sfence_done_o,idle_o,
+    output logic a_upd_req_valid_o,input logic a_upd_req_ready_i,output pte_ad_req_t a_upd_req_o,input pte_ad_resp_t a_upd_resp_i,
+    input logic rewalk_req_valid_i,output logic rewalk_req_ready_o,input ptw_req_t rewalk_req_i,
+    output be_perf_t perf_o
 );
-    // 未实现：遍历状态机、walk_cache 例化、PTE 检查、epoch 隔离。
+    typedef enum logic[2:0] {IDLE,LOOKUP,REQ,WAIT,CHECK,RETURN} state_t;
+    state_t state_q;
+    ptw_req_t req_q;
+    logic last_d_q,g_q,af_q,pf_q;
+    logic[1:0] level_q;
+    logic[43:0] base_q;
+    logic[63:0] pte_q;
+    paddr_t pte_pa_q,address;
+    logic wc_hit,wc_g,wc_fill,physical_ok,bad_pte,leaf,permission_ok,misaligned;
+    logic[1:0] wc_level;
+    logic[43:0] wc_ppn;
+    logic[8:0] vpn_index;
+    assign idle_o=state_q==IDLE;
+    assign rewalk_req_ready_o=idle_o && rewalk_req_valid_i;
+    assign dtlb_req_ready_o=idle_o && !rewalk_req_valid_i && (!itlb_req_valid_i || !last_d_q);
+    assign itlb_req_ready_o=idle_o && !rewalk_req_valid_i && (!dtlb_req_valid_i || last_d_q);
+    assign vpn_index=level_q==2 ? req_q.vpn[26:18] : level_q==1 ? req_q.vpn[17:9] : req_q.vpn[8:0];
+    assign address={base_q,vpn_index,3'b0};
+    assign physical_ok=pma_main({8'b0,address},8) && pmp_allow(pmp_i,address,8,2'b01,1'b1,1'b0,1'b0);
+    assign bad_pte=!pte_q[0] || (!pte_q[1] && pte_q[2]) || |pte_q[63:54];
+    assign leaf=pte_q[1] || pte_q[3];
+    assign misaligned=(level_q==2 && |pte_q[27:10]) || (level_q==1 && |pte_q[18:10]);
+    assign permission_ok=sv39_perm(pte_q,req_q.priv,req_q.src==PTW_SRC_IFETCH,req_q.is_store,req_q.sum,req_q.mxr);
+    assign wc_fill=state_q==CHECK && !af_q && !bad_pte && !leaf && level_q!=0 && req_q.epoch==csr_i.epoch;
+    walk_cache #(.CFG(CFG)) u_walk_cache(.clk(clk),.rst(rst),.lookup_valid_i(state_q==LOOKUP),
+        .lookup_vpn_i(req_q.vpn),.lookup_asid_i(req_q.asid),.hit_o(wc_hit),.hit_level_o(wc_level),
+        .hit_next_ppn_o(wc_ppn),.hit_global_o(wc_g),.fill_valid_i(wc_fill),.fill_vpn_i(req_q.vpn),
+        .fill_asid_i(req_q.asid),.fill_global_i(g_q || pte_q[5]),.fill_level_i(level_q),
+        .fill_next_ppn_i(pte_q[53:10]),.fill_epoch_i(req_q.epoch),.cur_epoch_i(csr_i.epoch),.sfence_i(sfence_i));
+    always_comb begin
+        mem_req_valid_o=state_q==REQ && physical_ok && req_q.epoch==csr_i.epoch;
+        mem_req_o='0;mem_req_o.src=DC_SRC_PTW;mem_req_o.paddr=address;mem_req_o.size=3;
+        resp_o='0;resp_o.valid=state_q==RETURN;resp_o.vpn=req_q.vpn;resp_o.asid=req_q.asid;
+        resp_o.epoch=req_q.epoch;resp_o.src=req_q.src;resp_o.ppn=pte_q[53:10];resp_o.level=level_q;
+        resp_o.perm_r=pte_q[1];resp_o.perm_w=pte_q[2];resp_o.perm_x=pte_q[3];resp_o.perm_u=pte_q[4];
+        resp_o.perm_g=g_q || pte_q[5];resp_o.perm_a=pte_q[6];resp_o.perm_d=pte_q[7];
+        resp_o.access_fault=af_q;resp_o.page_fault=pf_q;resp_o.pte_paddr=pte_pa_q;resp_o.pte=pte_q;
+        a_upd_req_valid_o=0;a_upd_req_o='0;
+        sfence_done_o=sfence_i.valid && idle_o;
+        perf_o='0;perf_o[BE_PTW_WALK]=BE_PERF_INC_W'(idle_o &&
+            ((itlb_req_valid_i && itlb_req_ready_o) || (dtlb_req_valid_i && dtlb_req_ready_o) || rewalk_req_valid_i));
+        perf_o[BE_WALK_CACHE_HIT]=BE_PERF_INC_W'(state_q==LOOKUP && wc_hit);
+    end
+    always_ff @(posedge clk) begin
+        if(rst) begin state_q<=IDLE;req_q<='0;last_d_q<=0;g_q<=0;af_q<=0;pf_q<=0;level_q<=0;base_q<=0;pte_q<=0;pte_pa_q<=0;end
+        else case(state_q)
+            IDLE: if(rewalk_req_valid_i || (dtlb_req_valid_i && dtlb_req_ready_o) || (itlb_req_valid_i && itlb_req_ready_o)) begin
+                if(rewalk_req_valid_i) req_q<=rewalk_req_i;
+                else if(dtlb_req_valid_i && dtlb_req_ready_o) begin req_q<=dtlb_req_i;last_d_q<=1;end
+                else begin req_q<=itlb_req_i;last_d_q<=0;end
+                g_q<=0;af_q<=0;pf_q<=0;pte_q<=0;state_q<=LOOKUP;
+            end
+            LOOKUP: begin
+                base_q<=wc_hit ? wc_ppn : req_q.root_ppn;level_q<=wc_hit ? wc_level-1'b1 : 2;
+                g_q<=wc_hit && wc_g;state_q<=REQ;
+            end
+            REQ: if(req_q.epoch!=csr_i.epoch) begin pf_q<=1;state_q<=RETURN;end
+                else if(!physical_ok) begin af_q<=1;state_q<=RETURN;end
+                else if(mem_req_ready_i) begin pte_pa_q<=address;state_q<=WAIT;end
+            WAIT: if(mem_resp_i.valid) begin pte_q<=mem_resp_i.rdata;af_q<=mem_resp_i.status==DC_ERROR;state_q<=CHECK;end
+            CHECK: if(req_q.epoch!=csr_i.epoch || af_q || bad_pte || (leaf && (misaligned || !permission_ok || !pte_q[6] || (req_q.is_store && !pte_q[7]))) || (!leaf && level_q==0)) begin
+                pf_q<=!af_q;state_q<=RETURN;
+            end else if(leaf) state_q<=RETURN;
+            else begin g_q<=g_q || pte_q[5];base_q<=pte_q[53:10];level_q<=level_q-1'b1;state_q<=REQ;end
+            RETURN: state_q<=IDLE;
+            default: state_q<=IDLE;
+        endcase
+    end
 endmodule

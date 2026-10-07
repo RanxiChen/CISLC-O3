@@ -226,10 +226,13 @@ package o3_cfg_pkg;
     } dcache_cfg_t;
 
     typedef struct packed {
-        int unsigned dtlb_entries;        // 待定
-        int unsigned dtlb_ways;           // 待定
-        int unsigned walk_cache_entries;  // 待定：walk cache 层级与组织未定（B07）
-        int unsigned ptw_slots;           // 待定：在途页表遍历数（D27 提到“唯一 PTW 槽”只是情形）
+        int unsigned dtlb_entries;        // L10: 8 sets x 4 ways
+        int unsigned dtlb_ways;           // L10: tree PLRU
+        int unsigned walk_cache_upper_sets; // L10: 1x4
+        int unsigned walk_cache_upper_ways;
+        int unsigned walk_cache_middle_sets; // L10: 2x4
+        int unsigned walk_cache_middle_ways;
+        int unsigned ptw_slots;           // L10: one walker, round-robin I/D
     } mmu_cfg_t;
 
     // L2 已定结构（B41，2026-10-02 用户确认）：首版纳入；inclusive（覆盖 L1I 与 L1D）；组相联；
@@ -406,7 +409,10 @@ package o3_cfg_pkg;
             mmu: '{
                 dtlb_entries:       32,
                 dtlb_ways:          4,
-                walk_cache_entries: 8,
+                walk_cache_upper_sets: 1,
+                walk_cache_upper_ways: 4,
+                walk_cache_middle_sets: 2,
+                walk_cache_middle_ways: 4,
                 ptw_slots:          1
             },
             l2: '{

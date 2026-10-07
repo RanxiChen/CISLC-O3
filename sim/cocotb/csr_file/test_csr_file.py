@@ -292,3 +292,14 @@ async def l10_overflow_dominates_mip_software_clear(d):
     assert (await t.csr(0xb03))[0]==17
     assert (await t.csr(0xda0))[0]==0
     assert not ((await t.csr(0x344))[0]&(1<<13))
+
+@cocotb.test()
+async def sv39_satp_warl_and_refetch(d):
+    t=PrivTb(d);await t.reset()
+    value=0x8123000000080000
+    assert (await t.csr(0x180,value,True))[2]==1
+    assert (await t.csr(0x180))[0]==value
+    assert (await t.csr(0x180,0x9123000000080001,True))[2]==0
+    assert (await t.csr(0x180))[0]==value
+    assert (await t.csr(0x180,0,True))[2]==1
+    assert (await t.csr(0x180))[0]==0

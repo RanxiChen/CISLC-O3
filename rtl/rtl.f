@@ -136,6 +136,9 @@ rtl/backend/fpu/fpu_conv_fu.sv
 
 // ---------- 8. 后端：访存 ----------
 rtl/memory/simple_data_sram.sv
+rtl/lsu/dtlb.sv
+rtl/lsu/walk_cache.sv
+rtl/lsu/ptw.sv
 rtl/lsu/dcache.sv
 rtl/backend/load_queue.sv
 rtl/backend/store_queue.sv

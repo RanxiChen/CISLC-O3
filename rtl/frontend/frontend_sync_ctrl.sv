@@ -63,20 +63,22 @@ module frontend_sync_ctrl
     typedef enum logic [1:0] {IDLE,WAIT_IDLE,WAIT_INV,DONE} state_t;
     state_t state_q;
     sys_redirect_kind_e kind_q;
+    sfence_req_t sf_q;
     assign sync_req_ready_o=state_q==IDLE;
     assign hold_o=state_q!=IDLE;
     assign icache_inv_all_o=state_q==WAIT_IDLE && icache_idle_i && kind_q==SYS_FENCE_I;
     assign sync_done_o=state_q==DONE;
     assign f0_clear_o=state_q==DONE;
-    assign sfence_o='0; assign pmp_update_o=state_q==WAIT_IDLE && icache_idle_i && kind_q==SYS_PMP; // T08a: CSR-derived permissions change without invalidating ICache.
+    always_comb begin sfence_o=sf_q;sfence_o.valid=state_q==WAIT_IDLE && icache_idle_i && kind_q==SYS_SFENCE;end
+    assign pmp_update_o=state_q==WAIT_IDLE && icache_idle_i && kind_q==SYS_PMP; // T08a: CSR-derived permissions change without invalidating ICache.
     // N request capture; drain in-flight reads before invalidation. Edge of INV
     // clears cache tags; next INV acknowledgement leads to a one-cycle DONE.
     always_ff @(posedge clk_i) begin
-        if (rst_i) begin state_q<=IDLE;kind_q<=SYS_FENCE_I;end
+        if (rst_i) begin state_q<=IDLE;kind_q<=SYS_FENCE_I;sf_q<='0;end
         else case (state_q)
-            IDLE: if (sync_req_valid_i) begin state_q<=WAIT_IDLE;kind_q<=sync_req_i.kind;end
-            WAIT_IDLE: if (icache_idle_i) state_q<=kind_q==SYS_FENCE_I ? WAIT_INV : DONE;
-            WAIT_INV: if (icache_inv_done_i) state_q<=DONE;
+            IDLE: if (sync_req_valid_i) begin state_q<=WAIT_IDLE;kind_q<=sync_req_i.kind;sf_q<=sync_req_i.sfence;end
+            WAIT_IDLE: if (icache_idle_i) state_q<=kind_q inside {SYS_FENCE_I,SYS_SFENCE} ? WAIT_INV : DONE;
+            WAIT_INV: if (kind_q==SYS_SFENCE ? sfence_done_i : icache_inv_done_i) state_q<=DONE;
             DONE: state_q<=IDLE;
             default: state_q<=IDLE;
         endcase

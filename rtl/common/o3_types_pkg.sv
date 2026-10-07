@@ -423,31 +423,73 @@ package o3_types_pkg;
     // ============================================================
     // 翻译：ITLB ↔ 共享 PTW（B07：PTW 共享 DCache；D26/D27）
     // ============================================================
+    localparam int SV39_VPN_W = 27;
+    typedef logic [SV39_VPN_W-1:0] sv39_vpn_t;
+    typedef logic [63:0] sv39_pte_t;
     typedef enum logic [1:0] {
         PTW_SRC_IFETCH   = 2'd0,
         PTW_SRC_PREFETCH = 2'd1,
+        PTW_SRC_DCOMMIT  = 2'd3,
         PTW_SRC_DTLB     = 2'd2       // 后端 DTLB，同一 PTW；后端接入时确认
     } ptw_src_e;
 
     typedef struct packed {
-        logic [VPN_W-1:0] vpn;
-        asid_t            asid;
-        xlate_epoch_t     epoch;
-        ptw_src_e         src;
+        sv39_vpn_t vpn;
+        asid_t asid;
+        xlate_epoch_t epoch;
+        ptw_src_e src;
+        logic [43:0] root_ppn;
+        logic [1:0] priv;
+        logic is_store, sum, mxr, adue;
     } ptw_req_t;
 
-    // 页表权限位与页大小。global 为遍历路径上的有效 G（D26）。
     typedef struct packed {
-        logic             valid;
-        logic [VPN_W-1:0] vpn;
-        xlate_epoch_t     epoch;      // 与当前 epoch 不符的迟到结果丢弃，不安装（D27）
-        ptw_src_e         src;
+        logic valid;
+        sv39_vpn_t vpn;
+        asid_t asid;
+        xlate_epoch_t epoch;
+        ptw_src_e src;
         logic [PPN_W-1:0] ppn;
-        logic [1:0]       level;      // Sv39：0=4KiB，1=2MiB，2=1GiB
-        logic             perm_r, perm_w, perm_x, perm_u, perm_g, perm_a, perm_d;
-        logic             page_fault;
-        logic             access_fault; // PTW 读取页表的物理权限错误（B06）
+        logic [1:0] level;
+        logic perm_r, perm_w, perm_x, perm_u, perm_g, perm_a, perm_d;
+        logic page_fault, access_fault;
+        paddr_t pte_paddr;
+        sv39_pte_t pte;
     } ptw_resp_t;
+
+    function automatic logic sv39_canonical(input vaddr_t va);
+        return va[63:39] == {25{va[38]}};
+    endfunction
+    function automatic logic sv39_covers(input sv39_vpn_t entry_vpn,
+        input sv39_vpn_t vpn, input logic [1:0] level);
+        case(level)
+            2: return entry_vpn[26:18]==vpn[26:18];
+            1: return entry_vpn[26:9]==vpn[26:9];
+            default: return entry_vpn==vpn;
+        endcase
+    endfunction
+    function automatic paddr_t sv39_pa(input logic [43:0] ppn,
+        input vaddr_t va, input logic [1:0] level);
+        case(level)
+            2: return {ppn[43:18],va[29:0]};
+            1: return {ppn[43:9],va[20:0]};
+            default: return {ppn,va[11:0]};
+        endcase
+    endfunction
+    function automatic logic sv39_perm(input logic [63:0] pte,
+        input logic [1:0] priv, input logic fetch,store,sum,mxr);
+        return (fetch ? pte[3] : store ? pte[2] : (pte[1] || (mxr && pte[3])))
+            && (priv!=0 || pte[4]) && (priv!=1 || !pte[4] || (!fetch && sum));
+    endfunction
+    function automatic logic [2:0] mmu_plru_touch(input logic [2:0] old,
+        input int way);
+        logic [2:0] p;
+        p=old; p[0]=(way<2); if(way<2) p[1]=(way==0); else p[2]=(way==2);
+        return p;
+    endfunction
+    function automatic int mmu_plru_victim(input logic [2:0] p);
+        return p[0] ? (p[2] ? 3 : 2) : (p[1] ? 1 : 0);
+    endfunction
 
     // SFENCE.VMA 范围描述：保留寄存器编号是否为 x0，不用值为零代替（D26）。
     typedef struct packed {
@@ -1013,7 +1055,7 @@ package o3_types_pkg;
         logic             miss;
         logic [PPN_W-1:0] ppn;
         logic [1:0]       level;
-        logic             perm_r, perm_w, perm_x, perm_u, perm_a, perm_d;
+        logic             perm_r, perm_w, perm_x, perm_u, perm_g, perm_a, perm_d;
         logic             page_fault;
         logic             access_fault;
     } tlb_resp_t;
@@ -1214,6 +1256,7 @@ package o3_types_pkg;
         uop_ext_t            ext;
         logic [31:0]         instruction;
         preg_t               src1_preg;
+        preg_t               src2_preg;
         logic [4:0]          rs1;
         logic                complete;
         exc_info_t           exc;

@@ -150,7 +150,7 @@ module o3_tandem_top
             u_core.u_frontend.perf_arb,u_core.u_frontend.perf_rq,u_core.u_frontend.perf_f0,
             u_core.u_frontend.perf_f1,u_core.u_frontend.perf_ibuf,u_core.u_frontend.perf_icache,
             u_core.u_frontend.perf_pf}),
-        .be_sources_i('{u_core.u_backend.perf_commit,u_core.u_backend.perf_lsu,u_core.u_backend.perf_dcache}),
+        .be_sources_i('{u_core.u_backend.perf_commit,u_core.u_backend.perf_lsu,u_core.u_backend.perf_dcache,u_core.u_backend.perf_ptw}),
         .fe_frontend_i(u_core.u_frontend.fe_perf_o),.fe_core_i(u_core.fe_perf),
         .fe_backend_i(u_core.u_backend.fe_perf_i),.fe_csr_i(u_core.u_backend.u_csr_file.fe_perf_i),
         .fe_hpm_i(u_core.u_backend.u_csr_file.u_hpm_counters.fe_perf_i),

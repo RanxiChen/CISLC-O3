@@ -215,3 +215,10 @@ run-replay-order:
 run-l10-priv:
 	$(RISCV_GCC) -march=rv64im_zicsr -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l10_priv.S -o $(BUILD_DIR)/l10_priv.elf
 	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK --image $(BUILD_DIR)/l10_priv.elf --trace $(BUILD_DIR)/l10_priv.jsonl --tohost-address 0x801ff000 --max-cycles 100000 --max-retires 10000
+
+# T08b uses Svade; T08c enables full hardware A/D in this same program.
+VM_AD ?= 0
+.PHONY: run-l10-vm
+run-l10-vm:
+	$(RISCV_GCC) -DVM_AD=$(VM_AD) -march=rv64im_zicsr -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l10_vm.S -o $(BUILD_DIR)/l10_vm.elf
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK --image $(BUILD_DIR)/l10_vm.elf --trace $(BUILD_DIR)/l10_vm.jsonl --tohost-address 0x801ff000 --max-cycles 200000 --max-retires 20000

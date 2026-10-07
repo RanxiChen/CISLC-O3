@@ -36,6 +36,7 @@ module ICache
 ) (
     input  logic clk,
     input  logic rst,
+    input logic xlate_kill_i=1'b0,
 
     // Legacy ports are retained only for source compatibility; no old
     // request path is active. The frontend uses req_* and resp_o below.
@@ -127,6 +128,8 @@ module ICache
         set_idx_t set_idx;
         word_idx_t word_idx;
         tag_t tag;
+        paddr_t pa;
+        logic page_fault,access_fault;
         logic [WAYS-1:0] valid_bits;
     } lookup_meta_t;
 
@@ -167,6 +170,30 @@ module ICache
     logic fill_write, fill_last;
     logic [BANKS-1:0][WAYS-1:0] tag_write_en, data_write_en;
 
+    logic tlb_valid,tlb_hit,tlb_miss,tlb_pf,tlb_af,xlate_done,xlate_saved_q;
+    logic [43:0] tlb_ppn;
+    logic [1:0] tlb_level;
+    paddr_t translated_pa,saved_pa_q;
+    logic saved_pf_q,saved_af_q;
+    fe_perf_t tlb_perf;
+    itlb #(.CFG(CFG)) u_itlb(.clk_i(clk),.rst_i(rst),.kill_i(xlate_kill_i),
+        .s0_valid_i(s0_fire || (s1_valid_q && !xlate_done)),
+        .s0_vaddr_i(s0_fire ? req_i.region_base : s1_meta_q.req.region_base),
+        .s1_valid_o(tlb_valid),.s1_hit_o(tlb_hit),.s1_miss_o(tlb_miss),
+        .s1_ppn_o(tlb_ppn),.s1_level_o(tlb_level),.s1_page_fault_o(tlb_pf),.s1_access_fault_o(tlb_af),
+        .ptw_req_valid_o(ptw_req_valid_o),.ptw_req_ready_i(ptw_req_ready_i),.ptw_req_o(ptw_req_o),
+        .ptw_resp_i(ptw_resp_i),.csr_i(csr_i),.sfence_i(sfence_i),.sfence_done_o(sfence_done_o),.perf_o(tlb_perf));
+    assign translated_pa=xlate_saved_q ? saved_pa_q : sv39_pa(tlb_ppn,s1_meta_q.req.region_base,tlb_level);
+    assign xlate_done=xlate_saved_q || (tlb_valid && (tlb_hit || tlb_pf || tlb_af));
+    always_ff @(posedge clk) begin
+        if(rst || inv_all_i) begin xlate_saved_q<=0;saved_pa_q<=0;saved_pf_q<=0;saved_af_q<=0;end
+        else begin
+            if(s1_valid_q && xlate_done && !s2_ready && !xlate_saved_q) begin
+                xlate_saved_q<=1;saved_pa_q<=translated_pa;saved_pf_q<=tlb_pf;saved_af_q<=tlb_af;
+            end
+            if(s1_ready) xlate_saved_q<=0;
+        end
+    end
     assign req_pa = paddr_t'(req_i.region_base);
     assign req_bank = bank_idx_t'(req_pa[6]);
     assign req_set = req_pa[7 +: SET_W];
@@ -188,6 +215,8 @@ module ICache
     logic [BEAT_W-1:0] beat_q;
     word_idx_t install_word_q;
     logic recent_valid_q;
+    xlate_epoch_t recent_epoch_q,m_epoch_q;
+    logic [1:0] recent_priv_q,m_priv_q;
     paddr_t recent_line_q;
     logic [ICACHE_BLOCK_SIZE_BYTES*8-1:0] recent_data_q;
     logic inv_done_q;
@@ -242,23 +271,23 @@ module ICache
     logic pmp_valid,pmp_allow_result,pmp_fault;
     logic pma_exec,pma_cached,pma_exists,pma_fault_q,s3_fault;
     pmp_checker #(.CFG(CFG)) u_pmp_checker(.clk_i(clk),.rst_i(rst),
-        .s2_valid_i(s2_valid_q),.s2_paddr_i(paddr_t'(s2_meta_q.req.region_base)),
+        .s2_valid_i(s2_valid_q),.s2_paddr_i(s2_meta_q.pa),
         .stall_i(!s3_ready),.bytes_i(7'(FETCH_BYTES)),.read_i(1'b0),.write_i(1'b0),.exec_i(1'b1),
         .s3_valid_o(pmp_valid),.s3_allow_o(pmp_allow_result),.s3_fault_o(pmp_fault),
         .cfg_i(pmp_i),.priv_i(csr_i.priv),.cfg_update_done_o(pmp_update_done_o));
-    pma_checker #(.CFG(CFG)) u_pma_checker(.paddr_i(s2_meta_q.req.region_base),.bytes_i(7'(FETCH_BYTES)),
+    pma_checker #(.CFG(CFG)) u_pma_checker(.paddr_i(64'(s2_meta_q.pa)),.bytes_i(7'(FETCH_BYTES)),
         .exec_ok_o(pma_exec),.cacheable_o(pma_cached),.exists_o(pma_exists),.read_ok_o(),.write_ok_o());
     always_ff @(posedge clk) begin
         if(rst || inv_all_i) pma_fault_q<=0;
         else if(s3_ready) pma_fault_q<=!pma_exec;
     end
-    assign s3_fault=pmp_fault || pma_fault_q;
+    assign s3_fault=pmp_fault || pma_fault_q || s3_meta_q.page_fault || s3_meta_q.access_fault;
     // N S2 range/PMA checks; edge N latches candidates alongside way matches;
     // N+1 S3 permission has priority over hit or allocation of a demand MSHR.
     word_data_t s3_selected_data;
     paddr_t s3_line;
-    assign s3_line = line_addr(s3_meta_q.req.region_base);
-    assign s3_recent_hit = recent_valid_q && s3_line == recent_line_q;
+    assign s3_line = line_addr(64'(s3_meta_q.pa));
+    assign s3_recent_hit = recent_valid_q && s3_line == recent_line_q && recent_epoch_q==csr_i.epoch && recent_priv_q==csr_i.priv;
     assign s3_cache_hit = |s3_way_hit_q;
     assign s3_hit = s3_cache_hit || s3_recent_hit;
     assign m_resp = (mstate_q == M_RESP);
@@ -277,10 +306,10 @@ module ICache
     // at S3 if the single MSHR is busy, propagating backpressure losslessly.
     assign s3_ready = !s3_valid_q || (!m_resp && (s3_hit || s3_fault || mstate_q == M_IDLE));
     assign s2_ready = !s2_valid_q || s3_ready;
-    assign s1_ready = !s1_valid_q || s2_ready;
+    assign s1_ready = !s1_valid_q || (s2_ready && xlate_done);
     assign req_ready_o = !rst && !inv_all_i && !recall_valid_i && s1_ready
         && !(fill_write && req_bank == m_bank_q)
-        && !(mstate_q != M_IDLE && {req_pa[PADDR_W-1:6], 6'b0} == m_line_q);
+&& !(mstate_q != M_IDLE && (csr_i.satp_mode!=8 || csr_i.priv==3) && line_addr(req_i.region_base)==m_line_q); // Sv39 compares physical lines after S1.
     assign s0_fire = req_valid_i && req_ready_o;
 
     always_ff @(posedge clk) begin
@@ -308,9 +337,14 @@ module ICache
                 end
             end
             if (s2_ready) begin
-                s2_valid_q <= s1_valid_q;
-                if (s1_valid_q) begin
+                s2_valid_q <= s1_valid_q && xlate_done;
+                if (s1_valid_q && xlate_done) begin
                     s2_meta_q <= s1_meta_q;
+                    s2_meta_q.pa <= translated_pa;
+                    s2_meta_q.tag <= translated_pa[PADDR_W-1:TAG_LSB];
+                    s2_meta_q.page_fault <= xlate_saved_q ? saved_pf_q : tlb_pf;
+                    s2_meta_q.access_fault <= (xlate_saved_q ? saved_af_q : tlb_af) ||
+                        ((csr_i.satp_mode!=8 || csr_i.priv==3) && |s1_meta_q.req.region_base[63:56]);
                     for (int way = 0; way < WAYS; way++) begin
                         s2_tags_q[way] <= tag_read_data[s1_meta_q.bank][way];
                         s2_data_q[way] <= data_read_data[s1_meta_q.bank][way];
@@ -348,7 +382,7 @@ module ICache
             resp_o.ftq_id = s3_meta_q.req.ftq_id;
             resp_o.data = s3_selected_data;
             resp_o.exc_valid=s3_fault;
-            resp_o.exc_cause=EXCEPTION_CAUSE_INST_ACCESS_FAULT;
+            resp_o.exc_cause=s3_meta_q.page_fault ? EXCEPTION_CAUSE_INST_PAGE_FAULT : EXCEPTION_CAUSE_INST_ACCESS_FAULT;
         end
     end
 
@@ -376,7 +410,7 @@ module ICache
             m_error_q <= 1'b0;
             beat_q <= '0;
             install_word_q <= '0;
-            recent_valid_q <= 1'b0;
+            recent_valid_q <= 1'b0;recent_epoch_q<=0;recent_priv_q<=0;m_epoch_q<=0;m_priv_q<=0;
             recent_line_q <= '0;
             recent_data_q <= '0;
             valid_q <= '0;
@@ -391,7 +425,7 @@ module ICache
             end else if (fill_last) begin
                 valid_q[m_bank_q][m_way_q][m_set_q] <= 1'b1;
                 tag_shadow_q[m_bank_q][m_way_q][m_set_q] <= m_tag_q;
-                recent_valid_q <= 1'b1;
+                recent_valid_q <= 1'b1;recent_epoch_q<=m_epoch_q;recent_priv_q<=m_priv_q;
                 recent_line_q <= m_line_q;
                 recent_data_q <= m_data_q;
             end
@@ -410,8 +444,8 @@ module ICache
             case (mstate_q)
                 M_IDLE: begin
                     if (s3_valid_q && !s3_hit && !s3_fault && s3_ready && !inv_all_i) begin
-                        m_req_q <= s3_meta_q.req;
-                        m_line_q <= line_addr(s3_meta_q.req.region_base);
+                        m_req_q <= s3_meta_q.req;m_epoch_q<=csr_i.epoch;m_priv_q<=csr_i.priv;
+                        m_line_q <= line_addr(64'(s3_meta_q.pa));
                         m_bank_q <= s3_meta_q.bank;
                         m_set_q <= s3_meta_q.set_idx;
                         m_tag_q <= s3_meta_q.tag;
@@ -467,9 +501,8 @@ module ICache
     assign out_error = 1'b0;
     assign pf_req_ready_o = 1'b0;
     assign pf_resp_o = '0;
-    assign ptw_req_valid_o = 1'b0;
-    assign ptw_req_o = '0;
 
-    assign sfence_done_o = 1'b0;
-    assign perf_o = '0;
+
+
+    assign perf_o = tlb_perf;
 endmodule

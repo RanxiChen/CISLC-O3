@@ -137,3 +137,44 @@ s4=7 记录三种 S 中断。CSR 用例另验证中断 cause 的最高位与委�
 B49 的跨行拆分、L8 L1D clean、MMIO/平台中断器件未扩展；独立 LSU/访存 cocotb 按 spec 未运行。
 Q7 的 TLB 不缓存 A=0、ADUE=0 时由 PTW 交付一次 pending page fault，将由 T08b/c 接入；
 本步没有 TLB 回填路径，不能把上述 CSR 同步测试作为该性质的证明。
+
+## T08b（2026-10-07 用户修订）
+
+实现 Sv39 ITLB/DTLB（8×4 + 4 大页、树 PLRU）、共享单 PTW 与轮转仲裁、
+1×4/2×4 walk cache、路径累计 G、四种精确 SFENCE、satp.MODE=8、epoch 隔离，
+以及 ICache 物理 tag/PA、LSU 翻译请求与单槽 TLB-miss replay、SQ 保存 PA、共享 DCache PTW 物理读口。
+本步 PTW 按 Svade 判 A/D；不做硬件写 PTE。
+
+开发目录：Alan `/home/chen/FUN/CISLC-O3-runs/20261007-t08b-bc4a62d-work/`。
+开发快照基于 T08a clone，允许范围文件 rsync；开发证据不冒充同 SHA 验收。
+`evidence/t08b-gate02/commands.jsonl` 记录全部命令/cwd/exit；37 个模块套件共 126/126 PASS；
+八项整核回归与 T08a `run-l10-priv` 全通过；`scripts/lint.sh` 0 errors。
+`run-l10-vm VM_AD=0` exit 2，首个失败为 backend 的正确分支推进断言；保留断言并追加诊断上下文。
+同 SHA 交付门禁在本步代码提交后运行，结果补在收尾报告。
+
+开发失败与修复：
+
+- ICache 接入时误移除 Bare 同物理行未决回压，既有用例失败；恢复该回压，4/4 PASS。
+- 新 PTW 性能源接入后，whole-core 参考聚合遗漏该源；扩展只读参考聚合的源数组，保留全部断言。
+- 复制来的旧生成目录引用错误 cocotb 路径；采用每轮独立 `SIM_BUILD`，不修改 RTL/期望来绕过构建失败。
+
+## 自行决定（T08b；T08c 追加）
+
+| 问题 | 决定 | 依据 | 涉及文件 |
+| --- | --- | --- | --- |
+| MMU 内部 VPN 宽度与存储 | 保留外部 `VPN_W=52`，内部 `sv39_vpn_t=27`；TLB 用寄存器，组织固定 X4 并断言 cfg 一致 | spec 4.2/4.3 允许实现自选；B49 | o3_types_pkg、itlb、dtlb、walk_cache |
+| 请求身份/上下文 | PTW 请求快照 root/ASID/epoch/有效特权/访问类型/SUM/MXR/ADUE；pending fault 只给相同上下文的重试 | RISC-V Sv39 访问权限与 satp 上下文；X7、D27 | o3_types_pkg、itlb、ptw |
+| 多命中优先级 | 4K 项优先大页，各阵列选最低编号；同键 walk-cache 重遍历覆盖原项 | spec 4.1 不允许多命中断言；规范允许软件重叠映射 | itlb、walk_cache |
+| DTLB 请求口 | 现有 LSU 只使用端口 0；额外 AGU 口显式 tie-off 留 L8；miss 入已有 replay 槽，不占 DCache MSHR | L3 单发射简化，X2/X16；不扩展 L8 | dtlb、load_store_unit |
+| 取指慢路径 | S1 翻译 miss 保留该请求并重查；缓存阵列 S0 并行读，S2 使用翻译 PA；最近行键为 PA+epoch+priv | spec 5.1；D27 | icache |
+| SFENCE 源操作数/epoch | ROB 保存第二源 preg；队头借用两个 PRF 读口；数据侧发一次范围失效、CSR epoch++，再同步前端 ITLB | spec 6.1；B22/B24、D26 | rob、backend、commit_ctrl、csr_file、frontend_sync_ctrl |
+| PTW 取消 | drain 已接受物理读，返回旧 epoch 身份仅供 owner 释放；TLB 不回填/不交付旧结果 | spec 4.5、D27；PTW 读不被 kill | ptw、itlb |
+
+规范依据：[RISC-V Supervisor ISA 1.13 的 Sv39/翻译算法与 SFENCE](https://docs.riscv.org/reference/isa/v20260120/priv/supervisor.html)。
+
+## 已知问题（收尾时按最终 SHA 更新）
+
+- T08b `run-l10-vm`：首个失败 `rtl/backend/backend.sv` 的 `decode_ready == uopq_enq_ready` 断言。
+  最后退休前缀 cycle 15839、PC `0x80000154`；未经同 SHA 诊断前不把它归因为 MRET 或 MMU。
+  复现：Alan 对应代码目录 `make -C sim/o3 run-l10-vm SPIKE_ARGS=+L7_CHECK VM_AD=0`。
+  按 2026-10-07 修订继续 T08c；不删除断言、失败程序或自查期望。

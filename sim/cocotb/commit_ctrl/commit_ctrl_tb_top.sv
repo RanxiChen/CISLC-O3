@@ -1,4 +1,6 @@
 module commit_ctrl_tb_top import o3_types_pkg::*; (
+ input logic ptw_idle_i,sf_ack_i,
+ output logic sf_valid_o,
  input logic [1:0] priv_i,
  input logic [63:0] status_i,
  input logic irq_i,refetch_i,wfi_stall_i,
@@ -11,6 +13,8 @@ module commit_ctrl_tb_top import o3_types_pkg::*; (
  input logic sq_empty_i,sync_ready_i,sync_done_i,trap_redirect_i,
  output logic csr_req_o,serial_done_o,trap_o,flush_o,block_o,sync_o,redirect_o,
  output logic [63:0] committed_pc_o,output logic [3:0] ftq_valid_o);
+ sfence_req_t sf;
+ assign sf_valid_o=sf.valid;
  rob_commit_t head,commits[3:0];csr_resp_t resp;ftq_commit_t ftq[4];trap_req_t trap;sys_redirect_t redir;
  always_comb begin
  head='0;head.valid=head_valid_i;head.pc=pc_i;head.complete=1;head.exc.valid=head_exc_i;
@@ -28,7 +32,7 @@ module commit_ctrl_tb_top import o3_types_pkg::*; (
  .ftq_commit_o(ftq),.sq_commit_valid_o(),.sq_commit_idx_o(),.fp_retire_o(),.committed_next_pc_o(committed_pc_o),
  .sys_redirect_o(redir),.fe_sync_valid_o(sync_o),.fe_sync_ready_i(sync_ready_i),.fe_sync_o(),.fe_sync_done_i(sync_done_i),
  .sq_committed_empty_i(sq_empty_i),.dcache_clean_all_o(),.dcache_clean_all_done_i(1'b0),.dcache_clean_all_busy_i(1'b0),
- .sfence_o(),.sfence_done_i(1'b0),.st_d_req_valid_o(),.st_d_req_ready_i(1'b0),.st_d_done_i(1'b0),
+ .sfence_o(sf),.sfence_done_i(sf_ack_i),.ptw_idle_i(ptw_idle_i),.st_d_req_valid_o(),.st_d_req_ready_i(1'b0),.st_d_done_i(1'b0),
  .csr_req_valid_o(csr_req_o),.csr_req_o(),.csr_resp_i(resp),.csr_operand_i(64'd3),.block_younger_cycle_i(1'b0),
  .priv_i(priv_i),.status_i(status_i),.irq_cause_i(IRQ_MSI),.irq_take_i(irq_i),.trap_req_o(trap),.trap_redirect_valid_i(trap_redirect_i),.trap_redirect_pc_i(target_i),
  .rsv_clear_valid_o(),.rsv_clear_reason_o(),.wfi_retire_o(wfi_retire_o),.wfi_stall_i(wfi_stall_i),.isolate_i(1'b0),.flush_all_o(flush_o),.perf_o());

@@ -19,7 +19,7 @@
  *
  * M/S/U CSR、WLRL cause、PMP 锁定与 counteren 以冻结 L10 spec 为准。
  *
- * 当前实现状态：闭环简化（L10 T08a）：M/S/U、CSR、中断/Sstc/PMP 已实现；satp 暂限 Bare。
+ * 当前实现状态：闭环简化（L10）：M/S/U、CSR、中断/Sstc/PMP 已实现；satp 接受 Bare/Sv39；SFENCE 和 satp/ADUE 写推进 epoch。
  * - B48 M-mode HPM / mcycle / minstret 由 hpm_counters 统一持有；L10 扩展特权过滤和溢出；门禁见 O3-T08-report.md。
  *
  * 逐周期说明（目标）：
@@ -34,6 +34,7 @@ module csr_file
 #(
     parameter  o3_cfg_pkg::backend_cfg_t CFG
 ) (
+    input logic sfence_epoch_i=1'b0,
     input  logic            clk,
     input  logic            rst,
 
@@ -190,7 +191,7 @@ module csr_file
             12'h106,12'h306: write_value_o=modify_value & 64'hffffffff;
             12'h10a: write_value_o=0;
             12'h30a: write_value_o=modify_value & 64'ha000000000000000;
-            12'h180: if(modify_value[63:60]!=0) write_value_o=satp_q; // T08a Bare only; T08b enables Sv39.
+            12'h180: if(!(modify_value[63:60] inside {0,8})) write_value_o=satp_q; // Sv39 and Bare are the supported WARL modes.
             default: if(hpm_implemented) write_value_o=hpm_write;
         endcase
         csr_write=req_valid_i && implemented && !access_illegal && req_i.write_en && !trap_update_valid_i;
@@ -215,7 +216,7 @@ module csr_file
             for(int n=0;n<8;n++) write_value_o[n*8+:8]=pmp_next[n+(req_i.addr==12'h3a2 ? 8 : 0)].cfg;
         end
         for(int n=0;n<PMP_N;n++) if(req_i.addr==12'(12'h3b0+n)) write_value_o=64'(pmp_addr_read(pmp_next[n]));
-        satp_write=csr_write && req_i.addr==12'h180 && modify_value[63:60]==0;
+        satp_write=csr_write && req_i.addr==12'h180 && (modify_value[63:60] inside {0,8});
         adue_change=csr_write && req_i.addr==12'h30a && write_value_o[61]!=menvcfg_q[61];
         resp_o='0;resp_o.valid=req_valid_i;resp_o.rdata=old_value;
         resp_o.illegal=!implemented || access_illegal;
@@ -258,6 +259,7 @@ module csr_file
             satp_q<=0;menvcfg_q<=64'h2000000000000000;stimecmp_q<='1;
             mcounteren_q<=0;scounteren_q<=0;frm_q<=0;fflags_q<=0;pmp_q<=0;epoch_q<=0;
         end else begin
+            if(sfence_epoch_i) epoch_q<=epoch_q+1'b1;
             pmp_q<=pmp_next;
             if(trap_update_valid_i) begin
                 assert(!req_valid_i && (trap_update_i.is_xret || retire_count_i==0));
