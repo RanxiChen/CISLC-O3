@@ -47,6 +47,8 @@ L0～L4 及 L3 的已有证据见 `LOOP.md`。v1 从 L3 收尾开始。
 
 **2026-10-06 顺序调整：先跳过访存。** L6 之后按 L7 → L9 → L10 → L8 → L11 推进。L8 之前访存只要求现有基础实现（L3 闭环的 L1D/L2/DTCM/LSU）能用，不做完整非阻塞访存、BRAM 化或 T04b 所列改造；L9/L10 中需要访存的部分（FLD/FSD、PTW 访存、A/D 更新）接在现有 LSU 上，只做到功能可用。表中级号保持不变，以便沿用既有决策与任务引用。
 
+**2026-10-08 顺序调整：L11 先于 L8c。** L8a、L8b 完成后先做 L11（拆为 L11a LiteX 接入与首次上板 → L11b SD 与 Linux → L11c FASE/perf/优化，见 `spec/l11a-litex-soc-spec.md` 第 13 节），L8c（访存依赖推测、stride 预取、地址预测，纯性能）排在 L11 之后。目的是先在 FPGA 上跑通 Linux。
+
 **2026-10-06 验收调整：完整一致性测试推迟到 FPGA。** L7～L10 表中“验收”列的 ACT4（RV64IMC/RV64GC）、特权测试、riscv-tests p/v、litmus、随机程序及新增 Spike 比对不再作为级门禁，统一推迟到 L11 后在 FPGA 上运行（bootrom 测试程序 + ILA 调试）。现有 Spike 逐条比对与 ACT4 回归也不再运行。各级只要求：手写的本级机制简单定向 testbench 通过；未通过项记为已知问题后继续推进。`sim/cocotb/` 中已有的非访存模块 testbench 可在改动对应模块时顺带运行；访存类（`dcache`、`l2_cache`、`load_queue`、`store_queue`、`load_store_unit`、`load_store_unit_l5`）在 L8 前不运行。
 
 | 级 | 内容 | 主要决策 | 验收 |
