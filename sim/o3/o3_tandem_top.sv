@@ -223,6 +223,22 @@ module o3_tandem_top
                     u_core.u_backend.mem_exc_idx[0],u_core.u_backend.mem_exc_ready[0],u_core.u_backend.t_sq_committed_empty,
                     u_core.u_backend.sq_replay_valid[0],u_core.u_backend.lq_replay_valid[0]);
             end
+            if ($test$plusargs("L8A_AD_DEBUG") && debug_cycle_q>=16300 &&
+                (debug_cycle_q<16600 || debug_cycle_q%1024==0)) begin
+                $display("[l8a-ad] c=%0d owner=%0d pending=%b refresh=%b sq=%b/%b/%0d lq=%b/%b/%0d ag=%b/%0d s1=%b/%0d/%h sta=%b blocked=%b tlb=%b/%b D=%b s2=%b/%0d rsp=%b/%0d/%0d upd=%b/%0d exe=%b clear=%b",
+                    debug_cycle_q,u_core.u_backend.u_load_store_unit.d_uop_q.rob_idx,
+                    u_core.u_backend.u_load_store_unit.d_pending_q,u_core.u_backend.u_load_store_unit.d_refresh_q,
+                    u_core.u_backend.sq_replay_valid[0],u_core.u_backend.sq_replay_ready[0],u_core.u_backend.sq_replay[0].uop.rob_idx,
+                    u_core.u_backend.lq_replay_valid[0],u_core.u_backend.lq_replay_ready[0],u_core.u_backend.lq_replay[0].uop.rob_idx,
+                    u_core.u_backend.u_load_store_unit.ag_q[0].valid,u_core.u_backend.u_load_store_unit.ag_q[0].r.uop.rob_idx,
+                    u_core.u_backend.u_load_store_unit.s1_q[0].valid,u_core.u_backend.u_load_store_unit.s1_q[0].r.uop.rob_idx,
+                    u_core.u_backend.t_dc_s1[0].paddr,u_core.u_backend.t_dc_s1[0].is_sta,u_core.u_backend.t_dc_s1[0].blocked,
+                    u_core.u_backend.u_load_store_unit.tlb_rsp_valid[0],u_core.u_backend.u_load_store_unit.tlb_rsp[0].hit,
+                    u_core.u_backend.u_load_store_unit.tlb_rsp[0].perm_d,
+                    u_core.u_backend.u_load_store_unit.s2_q[0].valid,u_core.u_backend.u_load_store_unit.s2_q[0].r.uop.rob_idx,
+                    u_core.u_backend.t_dc_ld_resp[0].valid,u_core.u_backend.t_dc_ld_resp[0].status,u_core.u_backend.t_dc_ld_resp[0].reason,
+                    u_core.u_backend.sq_update[0],u_core.u_backend.mem_update[0].reason,u_core.u_backend.sq_execute_valid[0],u_core.u_backend.d_clear);
+            end
             debug_cycle_q <= debug_cycle_q + 1;
             if ($test$plusargs("L5_DEBUG") && debug_cycle_q < 2000) begin
                 $display("[l5] cycle=%0d head=%b/%0d pc=%h done=%b exc=%b flush=%b csr=%b serial=%b AG=%b/%b LDreq=%b/%b rsp=%b/%b SQreq=%b/%b SQrsp=%b",
