@@ -719,3 +719,78 @@ trap身份、前缀条数、缺少成功tohost和定长目标全序列检查。
 已有特权 trace 按批准规则比较：T08 前缀436（419退休+17trap）/豁免3，
 T09 前缀436（419退休+17trap）/豁免1，exit0；仅用于核实解释，不代替本轮M5重跑。
 继续步骤4～6，先固定候选，完整重跑 M1～M4。其他冻结行为冲突仍按任务书停止。
+
+
+#### 批准解释后的同 SHA 重跑与 A/D 修复（2026-10-08，进行中）
+
+首个固定候选为 `0a20358301c49e77c83e71b8169e5a9450279b4b`。全部执行于
+cloud_chen（`cloud_chen@47.96.71.231:22`），每项重新读取共享主机配置并预检；
+SSH/环境/Verilator/cocotb/GCC/磁盘/内存均通过，没有因测试失败切换主机。
+环境为 Verilator5.050、cocotb2.1.0、Python3.12、GCC13.2.0。
+独立 cwd `/home/cloud_chen/work/20261008-t09-0a203583`，证据根
+`/home/cloud_chen/evidence/t09/0a203583`；每项 manifest 记录完整 SHA、实际 cwd、命令、
+配置快照与预检结果；run.log/exit/results.xml 为原始证据，本地副本同名位于
+`/tmp/t09-resume-evidence/0a203583`。此前远端结果未知的任务未复用。
+
+M1～M4 完整重跑48项、226用例，全部exit0、failure/error/skip0：M1三项23用例；
+M2 MSHRS1/4分别26/28（包括新增 PMP 客户端）；M3八组合每组合4例，原 seed61/62
+各2000 CPU操作+500 I Read，以及两个 M5 序列回归；M4三个seed1/7/29全部
+LQ/SQ/LSU/L5/PRF/MMU/ICache、IQ L3 kind0/1/2、独立PTE，另加直接IQ与commit。
+PTE三个seed各2/2。完整逐项清单为证据根的 lower-plan.json 和各 lower-* 目录，
+每项 XML 原始用例数与 exit 已核查。这是该候选的结果，不与其他 SHA 拼接验收。
+
+M5 build exit0，九项既有目标的原检查及截止前缀比较全部通过；逐程序数据如下。
+比较参考为未变程序的 T08 `1d0d6f8369fa69476d07538157be234a88db08bf` 原 trace，
+三项定长 dcache/unified 的参考则由各原 golden 逐条转换，保留数据值。
+references/manifest.json 区分两类参考来源；定长目标无 tohost，严格比较全部事件。
+
+| 程序 | 周期 | 全事件 | 截止前缀 | 豁免尾部 | 前缀正常退休/trap | exit |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| l10_priv | 3987 | 437 | 436 | 1 | 419/17 | 0 |
+| l3_branch_dense | 2478 | 365 | 365 | 0 | 365/0 | 0 |
+| l7_predict_a | 44296 | 19396 | 19393 | 3 | 19393/0 | 0 |
+| l7_predict_b | 44362 | 19445 | 19444 | 1 | 19444/0 | 0 |
+| l7b_rvc | 6361 | 2214 | 2213 | 1 | 2213/0 | 0 |
+| l9_fp | 2361 | 615 | 614 | 1 | 613/1 | 0 |
+| l9_fp_smoke | 1370 | 265 | 264 | 1 | 264/0 | 0 |
+| replay-integer | 624 | 20 | 18 | 2 | 18/0 | 0 |
+| rv64i_instructions | 576 | 14 | 14 | 0 | 14/0 | 0 |
+| icache_smoke | 545 | 4 | 4 | 0 | 4/0 | 0 |
+
+随后 run-l10-ad 超时（make exit2，驱动exit3）：cycle26319、6234 events、没有成功tohost；
+最后退休cycle16319、PC0x80000174，首个不前进指令PC0x80000178 `sd t1,0(t0)`，
+VA0x7000、PA0x80103000、值0x55667788。因此无合法截止前缀、无尾部豁免，不能计为通过。
+M5停止于该项；未运行剩余三项/VM观察，未进入M6，未提交M5通过声明。
+
+复现命令（在上述 cwd，先 source `/home/cloud_chen/setup/activate-o3.sh`）：
+
+```bash
+make -j4 -C sim/o3 run-l10-ad MEM_PIPES=1 MSHRS=4 RFO=1 \
+  BUILD_DIR=/home/cloud_chen/evidence/t09/0a203583/m5-build/build
+```
+
+原始失败证据 m5-run-l10-ad/run.log 与 exit；失败trace在build/l10_ad.jsonl，
+本地额外保留 l10-ad-failed.jsonl。诊断提交 `5c4b247` 仅新增允许文件中的只读
+`+L8A_AD_DEBUG`：其 ad-diagnostic 日志确认 D 更新/DTLB 刷新已完成，但年轻LQ
+ROB15反复重放，占满每管道两个结果保留名额；SQ owner ROB14 ready但ready握手恒0。
+该诊断运行仍在cloud_chen，exit2，同样cycle26319/6234events，不冒充验收结果。
+中间出现过短SHA guard拒绝、file协议和子模块路径/缺少build目录的基础设施错误；
+均纠正后在完整SHA/准确子模块pin下重新执行，不算RTL测试或主机故障。
+
+先退回M3：`88b5c1f` 增加公共 PTE A/D 接口驱动和同段物理序列，压力几何MSHRS4/RFO1
+定向测试 l10_ad_first_writer_refresh_sequence 1/1、exit0，证据 ad-m3-reproducer/。
+未改变原随机规模/seed/golden，新增序列每个load独立比对，包括PTE A/D和最终store值。
+再退回M4：`cea1f12` 的 dirty_refresh_keeps_young_load_asleep_until_owner_revalidates
+在260ns断言“D refresh wakes younger LQ before owner revalidation”，1例失败exit2，
+证据 ad-m4-reproducer/。前一版驱动漏采单拍d_mark导致watchdog，已修为在真实握手沿采样，
+未放宽断言或watchdog。
+
+根因与修复：LSU把 d_refresh 同时作为SQ重验证和LQ AD_ORDER唤醒，违反spec6.1
+“needs_D慢路径完成”后才唤醒年轻访问。`4e80146` 独立RTL修复拆分SQ刷新重发与LQ完成唤醒，
+保留内部来源/LQ/IQ仲裁优先级；无D owner时完成条件保持有效，避免晚到S2等待错过唤醒。
+backend只改相应连线，测试top适配新输出。修复后M4定向1/1、510ns、exit0，证据
+`/home/cloud_chen/evidence/t09/4e801461/ad-m4-fixed/{run.log,exit,results.xml}`。
+`617b485` 保持共享LSU代理兼容L5固定端口fixture。未改spec/design/程序/golden/main.cpp。
+
+下一步固定新的完整候选，从M1开始重跑全部下层（加入M3新序列和M4新断言），
+全部通过后再跑完整M5。上述0a203583和诊断SHA不能拼接为新候选的门禁证据。
