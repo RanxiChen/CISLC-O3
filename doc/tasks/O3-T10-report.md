@@ -300,3 +300,7 @@ MSHR1的新20例首次调用未覆盖Makefile旧名称筛选，进程exit0但XML
 M5/M6严格截止前缀与N1时记录全部一致，周期数也相同；M6 l8a_mem仍为123750周期、有效前缀62785、合法尾部1，MSHR/RFO/bank/probe/writeback统计均非零且相同。原T09参考及批准的l9_fp副本不再改动。RTL修复后下层M1～M4共48次237例、M5/M6和N1完整复跑，未漏下层。
 
 Y11：两配置run-l10-vm仍tohost=3（make exit2），首个失败仍PC0x800001f8返回0x20040c07、PC0x80000204跳fail。额外`n2-y11-core-debug`使用已有L10_DEBUG/L8A_AD_DEBUG，直接驱动exit1原样保留，不计作通过。N2单cache的实际PTE值序列在A更新完成后普通load正确返回0x20040c47，未复现整核的旧值；按12.2/12.3表规定，继续在N3检查组合访问时序，尚未改B36，未声称VM修复。
+
+## N3 开始：Y11 只读时序定位
+
+仿真顶层增加L8B_PTE_DEBUG日志，仅在明确plusarg启用时输出PTW交付、PTE更新握手、cache实际写入、目标VA0x7000/PA0x80102038的cache判定。监视没有DUT输入或状态修改，未改RTL、程序或黄金值，用于将普通PTE load与A更新的顺序绑定准确周期；尚未声明N3通过。

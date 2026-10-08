@@ -213,6 +213,41 @@ module o3_tandem_top
                     u_core.u_backend.u_load_store_unit.ag_q[0].valid,u_core.u_backend.u_load_store_unit.ag_q[0].r.uop.rob_idx,
                     u_core.u_backend.u_load_store_unit.ag_q[0].r.va,u_core.u_backend.u_ptw.state_q,u_core.u_backend.t_dmmu_csr.epoch);
             end
+            if ($test$plusargs("L8B_PTE_DEBUG")) begin
+                if (u_core.u_backend.u_dcache.pte_ad_req_valid_i &&
+                    u_core.u_backend.u_dcache.pte_ad_req_ready_o)
+                    $display("[l8b-pte-request] c=%0d pa=%h expected=%h A=%b D=%b epoch=%0d",
+                        debug_cycle_q,u_core.u_backend.u_dcache.pte_ad_req_i.pte_paddr,
+                        u_core.u_backend.u_dcache.pte_ad_req_i.expected_pte,
+                        u_core.u_backend.u_dcache.pte_ad_req_i.set_a,
+                        u_core.u_backend.u_dcache.pte_ad_req_i.set_d,
+                        u_core.u_backend.u_dcache.pte_ad_req_i.epoch);
+                if (u_core.u_backend.u_dcache.ps_write)
+                    $display("[l8b-cache-write] c=%0d pa=%h data=%h pte=%b head=%b",
+                        debug_cycle_q,u_core.u_backend.u_dcache.ps_req_q.paddr,
+                        u_core.u_backend.u_dcache.ps_req_q.wdata,
+                        u_core.u_backend.u_dcache.ps_is_ad_q,u_core.u_backend.u_dcache.ps_req_q.head);
+                for (int p=0;p<o3_cfg_pkg::O3_CFG.be.lsu.agu_pipes;p++)
+                    if (u_core.u_backend.u_dcache.s2_q[p].valid &&
+                        (u_core.u_backend.u_dcache.s2_q[p].req.vaddr==64'h7000 ||
+                         u_core.u_backend.u_dcache.s2_q[p].req.paddr==56'h80102038))
+                        $display("[l8b-pte-access] c=%0d lane=%0d src=%0d rob=%0d va=%h pa=%h status=%0d reason=%0d data=%h",
+                            debug_cycle_q,p,u_core.u_backend.u_dcache.s2_q[p].req.src,
+                            u_core.u_backend.u_dcache.s2_q[p].req.rob_idx,
+                            u_core.u_backend.u_dcache.s2_q[p].req.vaddr,
+                            u_core.u_backend.u_dcache.s2_q[p].req.paddr,
+                            u_core.u_backend.u_dcache.decision[p].status,
+                            u_core.u_backend.u_dcache.decision[p].reason,
+                            u_core.u_backend.u_dcache.decision[p].rdata);
+                if (u_core.u_backend.u_ptw.resp_o.valid &&
+                    u_core.u_backend.u_ptw.resp_o.vpn==27'd7)
+                    $display("[l8b-pte-translation] c=%0d src=%0d epoch=%0d A=%b D=%b pf=%b af=%b pte=%h",
+                        debug_cycle_q,u_core.u_backend.u_ptw.resp_o.src,
+                        u_core.u_backend.u_ptw.resp_o.epoch,
+                        u_core.u_backend.u_ptw.resp_o.perm_a,u_core.u_backend.u_ptw.resp_o.perm_d,
+                        u_core.u_backend.u_ptw.resp_o.page_fault,u_core.u_backend.u_ptw.resp_o.access_fault,
+                        u_core.u_backend.u_ptw.resp_o.pte);
+            end
             if ($test$plusargs("L8A_DEBUG") &&
                 ((debug_cycle_q>=3750 && debug_cycle_q<4000) || debug_cycle_q%1024==0)) begin
                 $display("[l8a] c=%0d head=%b/%0d pc=%h complete=%b exc=%b/%0d flush=%b M=%b IQ=%b grant=%b ready=%b/%b RR=%b AG=%b S1=%b S2=%b DC=%b/%0d/%0d FIFO=%0d EXC=%b/%0d ready=%b SQempty=%b SQreplay=%b LQreplay=%b",
