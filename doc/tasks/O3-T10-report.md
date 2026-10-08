@@ -304,3 +304,43 @@ Y11：两配置run-l10-vm仍tohost=3（make exit2），首个失败仍PC0x800001
 ## N3 开始：Y11 只读时序定位
 
 仿真顶层增加L8B_PTE_DEBUG日志，仅在明确plusarg启用时输出PTW交付、PTE更新握手、cache实际写入、目标VA0x7000/PA0x80102038的cache判定。监视没有DUT输入或状态修改，未改RTL、程序或黄金值，用于将普通PTE load与A更新的顺序绑定准确周期；尚未声明N3通过。
+
+### Y11 根因与 B36 合同停止点
+
+动态监视候选2a05dca078790424fceff500654d8673d4dd351c，实际主机cloud_chen，cwd=/home/cloud_chen/work/20261008-t10-2a05dca0。n3-y11-build编译exit0；n3-y11-core-confirm驱动exit1、tohost=3。原程序和自查完全不变，VM_AD=1，Y13开启。ordering-proof.json逐条断言目标PA、原值/新值、唯一匹配次数、顺序及退休记录；其日志/trace哈希在该文件内。此处不是PTW漏写A，也不是cache写后读旧数据。
+
+| 实际执行拍 | 事件 |
+| --- | --- |
+| 16655 | 年老VA0x7000 load（ROB1）DTLB miss |
+| 16661 | PTW读叶PTE PA0x80102038，返回0x20040c07 |
+| 16663 | 年轻普通PTE load（ROB4）提前执行，返回0x20040c07 |
+| 16664 | cache接受该PTE A更新请求，expected=0x20040c07、set_a=1、set_d=0 |
+| 16669 | PS真实写入0x20040c47（A=1、D=0） |
+| 16671 | PTW交付可用翻译，pte=0x20040c47、A=1、D=0，无fault |
+| 16676 | 年老VA0x7000 load访问PA0x80103000并得到0x11223344 |
+| 16678 | 年老load在order6282退休；年轻PTE load在order6285/PC0x800001f8退休，保留其提前读到的旧值 |
+| 16688 | order6288/PC0x80000204跳fail，最终tohost=3 |
+
+首个失败用例：run-l10-vm（VM_AD=1），sim/o3/tests/l10_vm.S:121的PTE读回在:122掩码后为0、:123期望0x40、:124分支失败。冻结B36在doc/design/CISLC-O3-BACKEND-DESIGN-BASELINE.md:632只要求A更新完成后交付翻译，实际16669→16671→16676已经满足；:633定义了D=0年轻访存排序，未定义A更新后已执行的年轻PTE load重放。冻结L8b spec第10节:258的order_flush触发仅为dma_write Inv，不含内部PTE A写入。由此判断，若保持原程序/黄金值，必须补充内部A更新与显式PTE load的排序合同，不能擅自扩大DMA触发定义。
+
+已经尝试的定位：N2顺序“CAS完成→普通load”返回新值；N3整核时序监视两次得到相同早读/后写顺序。首次debug命令含set -e使SSH外壳在驱动exit1时提前退出、没有写外层exit文件，原日志保留，未伪称其完整交付；n3-y11-core-confirm重新执行、去除errexit，明确记录exit1与相同首个失败点。确认运行ELF SHA256=56488a189a8cdb91fcb3990508c4999f174f7428938883100442469ca09429da；既有M5 ELF SHA256=43ba45b93280faa4821b073d91ccd8230a989b4e2ae5061f6fe1edc6ca9d8408。两者整体哈希不同；ordering-proof.json逐段校验所有PT_LOAD的地址、文件/内存大小和加载字节完全相同，差异位于非加载内容，不是程序迁移。
+
+N3组合路径另有候选7e5721a2f399e6ad46384a3d076380cb80220165，新增test_l8b_y11_repro.py，仅复现已观察的物理访问顺序，不修改原VM程序或其黄金值。cloud_chen上的n3-y11-memsys-pressure-m1与n3-y11-memsys-default-m4各1个诊断用例exit0、XML无failure/error/skip：PTW先读旧PTE，年轻普通load在CAS之前读旧值，CAS成功后数据load及新的PTE load读到正确新值。此诊断区分cache正常早读响应与核级缺失重放，不把原VM失败改判通过。N3随机AMO/LR/SC/DMA门禁尚未加入/通过，当前因B36合同停止点暂停后续实现。
+
+准确复现（环境激活、该SHA独立cwd下执行；完整命令和实时主机配置见n3-y11-core-confirm/manifest.json）：
+
+```sh
+source /home/cloud_chen/setup/activate-o3.sh
+cd /home/cloud_chen/work/20261008-t10-2a05dca0
+env -u O3_INJECT /home/cloud_chen/evidence/t10/2a05dca0/n3-y11-build/build/Vo3_tandem_top +L7_CHECK +L8B_PTE_DEBUG --image /home/cloud_chen/evidence/t10/2a05dca0/n3-y11-core-confirm/l10_vm.elf --trace /tmp/l10_vm-repro.jsonl --tohost-address 0x801ff000 --max-cycles 200000 --max-retires 20000
+```
+
+### 待用户批准的具体合同补丁（尚未修改 spec/design/RTL）
+
+建议在B36的A更新条款后增加：
+
+> 成功把PTE的A位从0置1时，在cache实际写入的同拍向LQ广播该PTE物理行。已执行、未退休的同行普通load（包括SQ转发的load）必须标记order_flush；同拍完成的load结果也不能漏标。被取消、有异常或由HEU完成的load沿用现有排除规则。到ROB队头按既有refetch流程冲刷该load及更年轻指令并重取。比较不匹配、写入失败、写前取消不产生此广播。内部PTW更新仍不受HEU队头门控，常用命中路径不增加流水级。
+
+相应在冻结L8b spec第10节增加这一内部成功A更新触发，并明确它与DMA Inv分别接入、同拍两个不同物理行均不得丢失；不伪造dma_write位，不计DMA事务/读写事件，实际重取仍计ld_order_flush。D=0的既有队头合同保持。N3加入已观察顺序的回归，N4补两来源同拍/排除/队头重取测试，原VM程序、自查及trap计数全部保留。具体端口编码与仲裁可在批准后自行决定并记录。
+
+此建议要求修改冻结spec及doc/design的B36，触发任务书停止条件，当前仅写入本报告供审批。未实施上述RTL，不宣称N3通过，不进入N4/N5/N6，不推送origin、不开始L8c。
