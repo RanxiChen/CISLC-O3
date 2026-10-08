@@ -78,6 +78,7 @@ class CacheBench:
         self.snp = None
         self.snp_sent = False
         self.snp_dma_write = False
+        self.dma_invalidations = []
         self.cpu = [None, None]
         self.prev_cpu = [None, None]
         self.st, self.ptw, self.ad = None, None, None
@@ -177,7 +178,9 @@ class CacheBench:
             'cpu_ready','resp0','resp1','st_req_ready_o','st_resp_o','ptw_req_ready_o','ptw_resp_o',
             'pte_ad_req_ready_o','pte_ad_resp_o','wake_o','l2_req_valid_o','l2_req_o','l2_req_ready_i',
             'l2_resp_ready_o','rsp_up_valid_o','rsp_up_o','snp_ready_o','full_line_busy_o',
-            'internal_busy_o','idle_o','fatal_o','mon_ms_valid','mon_plru')}
+            'internal_busy_o','idle_o','fatal_o','mon_ms_valid','mon_plru',
+            'dma_invalidate_o','dma_line_o')}
+        dma_before = self.state(v['dma_line_o'] << 6) if v['dma_invalidate_o'] else None
         assert v['fatal_o'] == 0
         for p, r in enumerate(self.cpu):
             if r:
@@ -255,6 +258,10 @@ class CacheBench:
         d.clk.value = 1
         await Timer(5, unit='ns')
         self.cycle += 1
+        if v['dma_invalidate_o']:
+            line = v['dma_line_o']
+            self.dma_invalidations.append((self.cycle - 1, line, dma_before))
+            assert self.state(line << 6) == 0, 'DMA broadcast did not coincide with tag becoming I'
         return v
 
     async def issue(self, *requests):

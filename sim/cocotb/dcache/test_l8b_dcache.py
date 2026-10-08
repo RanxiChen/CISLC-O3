@@ -104,6 +104,7 @@ for _op, _name in enumerate(('swap', 'add', 'xor', 'and', 'or', 'min', 'max', 'm
     def _make(op, name):
         async def test(d): await arithmetic_coverage(d, op)
         test.__name__ = 'amo_' + name + '_w_offsets_and_d_boundary_oracle'
+        test.__qualname__ = test.__name__
         return cocotb.test()(test)
     globals()['amo_' + _name] = _make(_op, _name)
 
@@ -255,16 +256,10 @@ async def lr_window_holds_inv_sc_success_then_latest_response_and_dma_broadcast(
         assert not int(d.mon_probe_read.value) and not int(d.dma_invalidate_o.value)
     assert not (await atomic(e, BASE, SC, 0x8877665544332211))['sc_fail']
     assert not int(d.mon_rsv_valid.value)
-    # Record the edge before Inv acknowledgement; the invalidation pulse's line
-    # is sampled with the data/permission transition rather than after the edge.
-    broadcast = []
-    while e.snp is not None:
-        d.clk.value = 0
-        from cocotb.triggers import Timer
-        await Timer(1, unit='ns')
-        if int(d.dma_invalidate_o.value): broadcast.append((e.cycle, int(d.dma_line_o.value)))
-        await e.tick()
-    assert broadcast == [(e.up[-1][0], BASE >> 6)]
+    await e.until(lambda: e.snp is None)
+    assert len(e.dma_invalidations) == 1
+    cycle, line, previous_state = e.dma_invalidations[0]
+    assert line == BASE >> 6 and previous_state == 3 and cycle <= e.up[-1][0]
     assert e.up[-1][1]['dirty'] and e.up[-1][1]['data'] == e.gold[BASE >> 6] and e.state(BASE) == 0
     await e.idle()
 

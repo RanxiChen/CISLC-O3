@@ -266,3 +266,9 @@ N1 通过后继续 N2，不开始 N3。
 cache wrapper 增加上下文选择及 reservation 清除输入、只读 reservation/保护窗口/原子安装保持/DMA 广播监视；未启用测试上下文选择时仍为既有 M 态，所有旧刺激字段的默认打包位保持逐位一致。新增9个 AMO 运算独立用例（.W偏移0/4、.D，5组边界输入，8字节整词检查另一半不变）、miss/升级/refill错误、RMW同行probe、WAIT共享者Inv/INSTALL保持、LR/SC精确配对/一次成功、reservation清除表、窗口内SC与DMA广播、IO/PMA/页错误/取消、权限寄存与上下文切换、实际Y11 PTE值的访问序列。
 
 权限变化测试先排空旧请求并flush再切上下文，遵循核的串行合同；Y13断言始终开启。Y11使用实际PA0x80102038、旧PTE0x20040c07与期望0x20040c47。若cache单模块未复现整核的旧值读回，按spec继续在N3组合时序中定位，不改B36。
+
+### N2 首轮失败（b4fdff00，cloud_chen）
+
+MSHR=1 的 n2-cache-m1 共18例，14例通过；DMA广播新测试错误地要求广播与InvAck同拍，实际前一拍广播（107）、后一拍Ack（108）。冻结spec要求广播与tag置I同拍，与Ack无此要求。修正新测试代理在每个时钟沿前采样广播/原状态、沿后严格检查tag=I，并要求唯一广播/正确行/M→I，保留SC成功、脏应答与全行黄金数据断言。不是旧测试迁移或黄金常量更改。9个AMO用例另设置各自qualname以便日志/XML唯一命名，操作、5组输入和断言完全不变。
+
+随后取消用例在43857ns触发dcache.sv:430的atomic install retry exceeded bound；最后两例由于仿真终止尚未执行，不计作独立功能失败。取消用例发出AMO GetM后flush，释放迟到授权，要求50拍内没有RMW/reservation且读取原值；该原断言和规模保持。根因：line transaction 的atomic标记跨flush保留，安装迟到行后仍启动待重发保护，但HEU已取消，不再重发，16拍界限触发。须修RTL，保持断言16不变；不涉及B36。
