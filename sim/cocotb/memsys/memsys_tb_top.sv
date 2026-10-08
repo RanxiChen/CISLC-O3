@@ -77,7 +77,6 @@ module memsys_tb_top import o3_types_pkg::*; #(
     l2_home_tb_top #(.SETS(L2_SETS),.WAYS(L2_WAYS),.SLOTS(SLOTS)) home(
         .l1d_req_valid_i(l2_req_valid_o),.l1d_req_ready_o(l2_req_ready_i),.l1d_req_i(l2_req_o),
         .l1d_resp_valid_o(l2_resp_valid_i),.l1d_resp_ready_i(l2_resp_ready_o),.l1d_resp_o(l2_resp_i),
-        
         .rsp_up_valid_i(rsp_up_valid_o),.rsp_up_ready_o(rsp_up_ready_i),.rsp_up_i(rsp_up_o),
         .snp_valid_o(snp_valid_i),.snp_ready_i(snp_ready_o),.snp_o(snp_i),
         .fatal_o(l2_fatal_o),.perf_o(),.init_done(l2_init_done),

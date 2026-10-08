@@ -119,6 +119,7 @@ module backend
 
     logic heu_start_valid,heu_start_ready,heu_sq_valid,heu_lq_valid,heu_dc_valid,heu_dc_ready;
     logic heu_done,heu_exc_valid,heu_exc_ready,heu_irreversible,dc_irreversible;
+    logic [CFG.rob.entries-1:0] lq_rob_order_flush;
     logic dma_invalidate,pte_a_write,lq_order_flush; o3_types_pkg::coh_addr_t dma_line,pte_a_line;
     logic heu_d_valid,heu_d_ready,heu_d_done,up_d_ready,up_d_done;
     o3_types_pkg::exc_info_t up_d_exc;
@@ -1296,7 +1297,7 @@ module backend
         .t_fflags_valid_i(rob_complete_valid),.t_fflags_i(rob_complete_fflags),
         .t_exc_valid_i(rob_exc_valid),.t_exc_idx_i(rob_exc_idx),.t_exc_i(rob_exec_exc),
         .t_head_valid_o(head_valid),.t_head_o(rob_head_info),.t_head_serial_done_i(head_serial_done),.t_d_mark_valid_i(d_mark),.t_d_clear_valid_i(d_clear),.t_d_idx_i(d_idx),
-        .t_commit_o(rob_commit),.t_flush_all_i(global_flush),.t_commit_block_i(rob_commit_block),
+        .t_commit_o(rob_commit),.t_flush_all_i(global_flush),.t_commit_block_i(rob_commit_block),.t_order_flush_i(lq_rob_order_flush),
         .t_succ_valid_i(exec_resolve_o.valid),.t_succ_pc_i(exec_resolve_o.redirect_pc),
         .alloc_ready_i(rename_fire),
         .complete_valid_i(rob_complete_valid),
@@ -1365,7 +1366,7 @@ module backend
 
     load_queue #(.CFG(CFG)) u_load_queue (
         .clk(clk),.rst(rst),.flush_i(global_flush),.rob_head_i(rob_head),.dma_invalidate_i(dma_invalidate),.dma_line_i(dma_line),.pte_a_write_i(pte_a_write),.pte_a_line_i(pte_a_line),
-        .order_flush_o(lq_order_flush),.heu_valid_o(heu_lq_valid),.heu_entry_o(heu_lq_entry),.heu_done_i(heu_complete),.heu_done_idx_i(heu_complete_idx),.alloc_req_i(lq_alloc_req),.alloc_fire_i(rename_fire),
+        .order_flush_o(lq_order_flush),.rob_order_flush_o(lq_rob_order_flush),.heu_valid_o(heu_lq_valid),.heu_entry_o(heu_lq_entry),.heu_done_i(heu_complete),.heu_done_idx_i(heu_complete_idx),.alloc_req_i(lq_alloc_req),.alloc_fire_i(rename_fire),
         .alloc_rob_idx_i(rob_idx),.alloc_branch_mask_i(rename_branch_mask),.alloc_idx_o(lq_idx),.free_count_o(lq_free_count),.tail_o(lq_tail),
         .capture_valid_i(lq_capture),.capture_i(mem_capture),.capture_tag_o(mem_lq_tag),
         .update_valid_i(lq_update),.update_i(mem_update),.dc_wake_i(dc_wake),.tlb_wake_i(t_ptw_resp.valid),.sq_change_i(sq_changed),.ad_wake_i(ad_wake),

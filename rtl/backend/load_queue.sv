@@ -8,6 +8,7 @@ module load_queue import o3_pkg::*; #(
     input o3_types_pkg::rob_idx_t rob_head_i,
     input logic dma_invalidate_i,input o3_types_pkg::coh_addr_t dma_line_i,
     input logic pte_a_write_i,input o3_types_pkg::coh_addr_t pte_a_line_i,
+    output logic [CFG.rob.entries-1:0] rob_order_flush_o,
     output logic order_flush_o,heu_valid_o,output lq_replay_t heu_entry_o,
     input logic heu_done_i,input o3_types_pkg::rob_idx_t heu_done_idx_i,
     input logic alloc_req_i[RENAME_WIDTH-1:0],input logic alloc_fire_i,
@@ -34,7 +35,11 @@ module load_queue import o3_pkg::*; #(
              (pte_a_write_i && o3_types_pkg::coh_addr_t'(pa>>6)==pte_a_line_i));
     endfunction
     always_comb begin
-        int before_lane;before_lane=0;order_flush_o=0;heu_valid_o=0;heu_entry_o='0;
+        int before_lane;before_lane=0;order_flush_o=0;rob_order_flush_o='0;heu_valid_o=0;heu_entry_o='0;
+        for(int n=0;n<DEPTH;n++) if(valid_q[n] &&
+            !(resolution_valid_i && resolution_mispredict_i && entry_q[n].uop.branch_mask[resolution_tag_i]))
+            rob_order_flush_o[entry_q[n].uop.rob_idx]=order_q[n] ||
+                (order_hit(pa_q[n]) && executed_q[n] && !entry_q[n].exc.valid && !head_done_q[n]);
         for(int n=0;n<DEPTH;n++) if(valid_q[n] && entry_q[n].uop.rob_idx==rob_head_i &&
             !(resolution_valid_i && resolution_mispredict_i && entry_q[n].uop.branch_mask[resolution_tag_i])) begin
             order_flush_o=order_q[n] || (order_hit(pa_q[n]) && executed_q[n] && !entry_q[n].exc.valid && !head_done_q[n]);

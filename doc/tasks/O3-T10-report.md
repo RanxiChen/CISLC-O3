@@ -348,3 +348,7 @@ env -u O3_INJECT /home/cloud_chen/evidence/t10/2a05dca0/n3-y11-build/build/Vo3_t
 ## B36 / Y11 用户批准补丁实施
 
 用户已批准前述具体合同补丁并要求继续到 N6。同步 B36 与 L8b 第10节；DCache 在成功的物理 A 0→1 写入拍独立输出 pte_a_write/pte_a_line，LQ 对两个来源分别匹配，包含同拍普通 load 完成、SQ 转发结果。DMA 位与事件不复用。比较失败、权限失败无 PS 写入因而无广播。保留现有不可撤销写入边界与内部 epoch 判定。尚未声明修复通过，随后在准确 SHA 上运行 lint、下层 M1～M6/N1/N2，并确认原 run-l10-vm。
+
+### B36 首轮整核复跑：退休前缀漏拦截
+
+92659708 的 lint/M1/M2/N1/N2 通过，M5/M6 既有29程序自查和严格截止前缀通过，l8a_mem周期123750/前缀62785/尾部1。VM_AD=1 两配置仍tohost=3；y11-after-b36-debug保存原日志和trace。默认配置年轻PTE load c16649早读0x20040c07，成功A写c16655，翻译交付c16657，年老load c16662完成；c16664同拍四条退休包含ROB4/PC0x800001f8。根因为ROB只通过commit_ctrl的队头order_flush禁止整拍退休，退休宽度4的更年轻lane可跨过标记项。补充LQ的按ROB索引标记bitmap，ROB逐条退休前缀遇标记停止，只让更老连续前缀退休；标记load成为队头后沿现有同步/refetch流程重取。这实现已批准的“不退休、到队头重取”行为，不新增合同。首轮全部失败证据保留。RTL再修复后完整重跑下层。

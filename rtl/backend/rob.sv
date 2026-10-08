@@ -143,6 +143,7 @@ module rob #(
     output o3_types_pkg::rob_commit_t  t_commit_o         [RETIRE_WIDTH-1:0],
     // 提交端整体清空（异常/xRET/系统重定向）：使用 committed map 恢复（未设计）
     input logic t_commit_block_i,
+    input logic [NUM_ROB_ENTRIES-1:0] t_order_flush_i='0,
     input logic [o3_pkg::PC_WIDTH-1:0] t_alloc_pc_i [MACHINE_WIDTH-1:0],
     input logic [2:0] t_alloc_inst_len_i [MACHINE_WIDTH-1:0],
     input logic [31:0] t_alloc_instruction_i [MACHINE_WIDTH-1:0],
@@ -283,7 +284,7 @@ module rob #(
                     prior_idx = wrap_idx(head_q, prior);
                     if (!(entry_valid_q[prior_idx]
                        && entry_complete_q[prior_idx]
-                       && !entry_exception_q[prior_idx] && !meta_q[prior_idx].needs_d
+                       && !entry_exception_q[prior_idx] && !meta_q[prior_idx].needs_d && !t_order_flush_i[prior_idx]
                        && (!meta_q[prior_idx].ext.serialize || (prior_idx==head_q && t_head_serial_done_i)))) begin
                         retire_prefix_valid = 1'b0;
                     end
