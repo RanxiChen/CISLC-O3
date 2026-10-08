@@ -1,7 +1,7 @@
 SIM ?= verilator
 TOPLEVEL_LANG := verilog
 COCOTB_TOPLEVEL := o3_tandem_top
-COCOTB_TEST_MODULES := test_backend
+COCOTB_TEST_MODULES := test_backend,test_l8b_backend
 REPO_ROOT := $(abspath ../../..)
 # Use all sources from the authority, including the L9 pinned CVFPU.
 RTL_SOURCES := $(shell sed -n '/^[^\/ +].*\.[sv]*v$$/p' $(REPO_ROOT)/rtl/rtl.f)
