@@ -32,9 +32,9 @@ module load_queue_tb_top import o3_pkg::*; #(
     fmt_capture_uop_mem_size,fmt_capture_va,fmt_capture_wait_reason,fmt_capture_mshr_id,fmt_capture_exc,
     fmt_capture_tag_idx,fmt_capture_tag_gen,
     output o3_types_pkg::dcache_resp_t fmt_update_valid,fmt_update_status,fmt_update_reason,
-    fmt_update_mshr_id,fmt_update_lq_tag_idx,fmt_update_lq_tag_gen,fmt_update_exc, 
+    fmt_update_mshr_id,fmt_update_lq_tag_idx,fmt_update_lq_tag_gen,fmt_update_exc,
     output lq_replay_t fmt_capture_uop_valid,
-    output lq_replay_t fmt_capture_uop_dst_write_en, 
+    output lq_replay_t fmt_capture_uop_dst_write_en,
     output o3_types_pkg::dcache_resp_t fmt_update_paddr,
     output o3_types_pkg::dcache_resp_t fmt_update_io);
     load_queue #(.CFG(CFG)) dut(.*);

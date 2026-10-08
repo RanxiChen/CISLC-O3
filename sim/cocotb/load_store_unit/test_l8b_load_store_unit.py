@@ -42,3 +42,34 @@ async def atomic_agu_uses_sq_and_no_translation_or_l1d(d):
     for _ in range(8):await e.tick()
     assert not e.requests and not e.results and len(e.stores)==1
     assert not val(d.ptw_req_valid_o)
+
+
+@cocotb.test()
+async def head_high_half_translation_fault_preserves_first_high_va(d):
+    def bits(*pairs):
+        value=0
+        for width,part in pairs:value=(value<<width)|part
+        return value
+    for write in (0,1):
+        e=Bench(d);await e.reset()
+        # Sv39 S-mode, valid low half comes from a separate mapped page.
+        d.csr_i.value=bits((2,1),(2,1),(1,0),(2,0),(1,1),(1,0),(1,0),
+                           (4,8),(16,0),(44,0x80100),(8,0))
+        hi=0x5000
+        d.heu_req_i.value=codec(d,'request',head=1,vaddr=hi,size=3,bytes=7,split=1,raw=1,check_only=1,write=write,rob_idx=0)
+        d.heu_valid_i.value=1
+        await e.until(lambda:val(d.heu_ready_o));await e.tick();d.heu_valid_i.value=0
+        await e.until(lambda:val(d.ptw_req_valid_o))
+        d.ptw_req_ready_i.value=1;await e.tick();d.ptw_req_ready_i.value=0
+        d.ptw_resp_i.value=bits((1,1),(27,5),(16,0),(8,0),(2,2),(44,0),
+            (2,0),(1,0),(1,0),(1,0),(1,0),(1,0),(1,0),(1,0),
+            (1,1),(1,0),(56,0),(64,0))
+        await e.tick();d.ptw_resp_i.value=0
+        for _ in range(4):await e.tick()
+        e.head_replies.clear();d.heu_valid_i.value=1
+        await e.until(lambda:val(d.heu_ready_o));await e.tick();d.heu_valid_i.value=0
+        await e.until(lambda:bool(e.head_replies))
+        response=e.head_replies[-1];exc=field(d,'response',response,'exc')
+        assert field(d,'response',response,'status')==3
+        assert exc==(1<<70)|((15 if write else 13)<<64)|hi
+        assert not e.stores and not e.results,'check-only half must have no architectural writes'
