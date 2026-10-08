@@ -252,3 +252,11 @@ lower-m5-run-l10-vm 是独立的既有问题观察，make exit2，不计为正�
 9c265302 的 M1/M2/M3 共13次117例全部通过；M4 seed1 的 LQ/SQ/LSU 18例通过。随后 lower-m4-load_store_unit_l5-s1 编译 exit2，在 load_store_unit_l5_tb_top.sv:43 漏接 atomic_i、heu_valid_i、heu_ready_o、heu_req_i、heu_resp_o、sq_kind_o 六端口。与常规 LSU wrapper 相同，将普通访存的 atomic_i/HEU valid/request 绑定0、未使用输出显式留空；不改 DUT RTL、不改测试刺激/黄金值/规模/种子。编译失败日志保留。
 
 该接口连接修复不属于旧行为黄金迁移，未引入架构变化；此前通过套件的 RTL、wrapper 和刺激文件逐字节未变，复用已有证据并在新候选 SHA 继续剩余 M4。最终 spec12.8 仍必须全部在最终同一 SHA 重跑。
+
+## N1 层通过
+
+新增11个正常用例+1个精确 DMA op 断言负例通过；L8a 下层 M1～M4 共48次237例全部通过，MSHR=1/4、RFO=0/1、压力/默认几何、固定种子1/7/29和原有规模保持不变；M5/M6 共29个程序通过自查与严格截止前缀，前缀比较器既有5例通过。Y13 开启。VM 的两配置只记录既有失败观察，按 Y11 留待 N2/N3，不误计通过。
+
+证据候选9c2653023f6704841a28d48e9a1d6806e09cdef4覆盖 N1、M1～M3、M4前3套、M5/M6；0fc47e4d2e50fbbdd09953ecb8034ee65f8dd8c6覆盖补接 wrapper 后的剩余 M4。两候选逐文件 Git diff 仅含报告与 L5 wrapper 的6端口连接，全部 RTL 和其他测试源码逐字节相同，RTL 固定为 dc261d24。不存在 RTL 修复后漏跑下层。完整 n1-layer-audit.json 记录逐项 SHA/次数/用例数；日志/XML/退出码/参考/退休 trace 保留于 /home/cloud_chen/evidence/t10/{9c265302,0fc47e4d}，本地完成快照 /tmp/o3-t10-evidence/<对应SHA前8位>/completed-evidence-snapshot.tar.gz。最终同 SHA 总门禁尚未执行。
+
+N1 通过后继续 N2，不开始 N3。
