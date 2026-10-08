@@ -20,12 +20,14 @@ module bpu_tb_top
     input logic [$bits(ras_ckpt_t)-1:0] ras_recover_bits_i,
     input logic [1:0] ras_fix_i,
     input logic [VADDR_W-1:0] ras_push_i,
+    output logic [TRAIN_CREDIT_W-1:0] train_free_o,
     output logic alloc_valid_o, train_ready_o,
     output logic [$bits(bpu_pred_t)-1:0] pred_bits_o, slow_pred_bits_o,
     output logic [$bits(hist_snapshot_t)-1:0] snapshot_bits_o,
     output logic [$bits(ras_ckpt_t)-1:0] ras_bits_o,
     output logic slow_valid_o, slow_override_o,
     output logic [$bits(ftq_id_t)-1:0] slow_id_o,
+    output logic [$bits(loop_meta_t)-1:0] slow_loop_bits_o,
     output logic [TAGE_META_W-1:0] slow_meta_o,
     output logic [$bits(redirect_req_t)-1:0] override_bits_o,
     output logic [PE_NUM-1:0][PERF_INC_W-1:0] perf_bits_o,
@@ -58,7 +60,7 @@ module bpu_tb_top
         .ras_fix_i(ras_action_e'(ras_fix_i)), .ras_fix_push_addr_i(ras_push_i),
         .ras_recover_done_o(ras_done_o), .ras_recover_done_id_o(ras_done_id_o),
         .hold_i(hold_i), .train_valid_i(train_valid_i), .train_ready_o(train_ready_o),
-        .train_i(bpu_train_t'(train_bits_i)), .perf_o(perf_bits_o)
+        .train_free_o(train_free_o),.train_i(bpu_train_t'(train_bits_i)), .perf_o(perf_bits_o)
     );
     assign pred_bits_o = pred;
     assign snapshot_bits_o = snapshot;
@@ -66,6 +68,7 @@ module bpu_tb_top
     assign slow_valid_o = slow.valid;
     assign slow_pred_bits_o = slow.pred;
     assign slow_id_o = slow.ftq_id;
+    assign slow_loop_bits_o=slow.loop_meta;
     assign slow_meta_o = slow.tage_meta;
     assign slow_override_o = slow.override;
     assign override_bits_o = override_req;

@@ -4,6 +4,7 @@ module mmu_tb_top import o3_types_pkg::*; (
     output logic d1_resp_o,d1_hit_o,d1_miss_o,d1_pf_o,d1_af_o,d1_dirty_o,
     output logic [55:0] d1_pa_o,
     input logic d_commit_i,output logic d_commit_ready_o,d_commit_done_o,d_commit_exc_o,
+    output logic [26:0] mon_i_plru_o,output logic mon_i_fault_o,
     input logic i_probe_i,
     output logic i_walk_o,output fe_perf_t i_perf_o,
     input logic i_valid_i,d_valid_i,d_store_i,input logic [63:0] i_va_i,d_va_i,
@@ -48,6 +49,8 @@ module mmu_tb_top import o3_types_pkg::*; (
         .lookup_valid_i(dv),.lookup_vaddr_i(da),.lookup_is_store_i(ds),.resp_valid_o(dr),.resp_o(dp),
         .ptw_req_valid_o(d_req_valid),.ptw_req_ready_i(d_ready),.ptw_req_o(d_req),.ptw_resp_i(resp),
         .csr_i(csr),.sfence_i(sf),.sfence_done_o(d_sf),.perf_o());
+    for(genvar s=0;s<8;s++) assign mon_i_plru_o[s*3+:3]=i_tlb.u_tlb.plru_q[s];
+    assign mon_i_plru_o[24+:3]=i_tlb.u_tlb.sp_plru_q;assign mon_i_fault_o=i_tlb.u_tlb.fault_q;
     assign i_walk_o=i_req_valid;
     assign i_pa_o=sv39_pa(i_ppn,i_va_i,i_level);
     assign d1_resp_o=dr[1];assign d1_hit_o=dp[1].hit;assign d1_miss_o=dp[1].miss;

@@ -28,7 +28,7 @@ class Bench:
                     ras=decode(r.ras, int(d.ras_bits_o.value)),
                     valid=int(d.alloc_valid_o.value), ready=int(d.train_ready_o.value),
                     slow_valid=int(d.slow_valid_o.value), slow_id=int(d.slow_id_o.value),
-                    slow=slow, disagree=int(d.slow_override_o.value),
+                    loop_meta=int(d.slow_loop_bits_o.value),slow=slow, disagree=int(d.slow_override_o.value),
                     req=decode(r.req, int(d.override_bits_o.value)),
                     perf=lambda e:(perf >> (e*self.incw)) & ((1<<self.incw)-1))
 
@@ -212,3 +212,32 @@ async def compressed_and_edge_call_training_and_return_address(d):
         _,slow=await b.step(hold=True)
         assert slow['slow_valid'] and slow['slow']['cfi_is_rvc']==rvc and slow['slow']['is_edge']==edge
         assert not slow['disagree']
+
+@cocotb.test()
+async def training_credit_and_t0_t1_drain(d):
+ b=await bench(d);await b.reset()
+ assert int(d.train_free_o.value)==4
+ await b.step(train=dict(region_base=0x4000,cfi_valid=1,cfi_type=2,cfi_slot=0,cfi_target=0x5000))
+ assert int(d.train_free_o.value)==3
+ for _ in range(8):
+  await b.step(train=dict(region_base=0x4000,cfi_valid=1,cfi_type=2,cfi_slot=0,cfi_target=0x5000))
+  assert int(d.train_free_o.value)==3,'one packet accepted and one dispatched per cycle'
+ await b.step();assert int(d.train_free_o.value)==4
+ for _ in range(2):await b.step()
+ await b.goto(0x4000);before,_=await b.step(ready=True,fid=1)
+ assert before['pred']['cfi_valid'] and before['pred']['cfi_target']==0x5000
+
+@cocotb.test()
+async def slow_winner_retains_its_loop_action_on_kill(d):
+ b=await bench(d);await b.reset()
+ packet=dict(region_base=0x4000,br_commit_mask=4,br_taken_mask=0,tage_meta=4<<40,loop_train=0)
+ await b.step(train=packet)
+ packet.update(loop_train=0x108,tage_meta=4<<40)
+ for loop in range(4):
+  for _ in range(200):await b.step(train=dict(packet,br_taken_mask=4,cfi_valid=1,cfi_type=1,cfi_slot=2,cfi_target=0x4000))
+  await b.step(train=packet)
+ for _ in range(3):await b.step()
+ await b.goto(0x4000);await b.step(ready=True,fid=2);await b.step()
+ before,_=await b.step(kill=True)
+ assert before['slow_valid'] and (before['loop_meta']>>90)&1
+ assert (before['loop_meta']>>81)&1,'recovery must replay the winner action even when its speculative edge is killed'

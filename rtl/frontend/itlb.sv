@@ -2,7 +2,8 @@
  * N accepts a lookup and captures its context; N+1 returns hit/miss/fault.
  * A single queued/granted miss never blocks resident hits (X2). Faults are
  * delivered once on retry, cleared by kill/epoch. SFENCE VA uses two cycles.
- * Prefetch translation remains disabled in L10. Tests: sim/cocotb/mmu/.
+ * L7c probes are hit-only and do not walk, consume faults, touch PLRU or count
+ * demand ITLB events. Tests: sim/cocotb/mmu/.
  */
 module sv39_tlb import o3_types_pkg::*; #(
     parameter bit INSTRUCTION=0

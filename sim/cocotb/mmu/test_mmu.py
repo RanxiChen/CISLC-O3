@@ -243,8 +243,13 @@ async def instruction_probe_never_walks_or_counts(d):
  assert not t.reads and t.get('idle_o')
  t.put('i_probe_i',0);t.map(0x4000,0x80010000)
  assert (await t.access(0x4000,'fetch','hit'))['pa']==0x80010000
- before=len(t.reads);t.put('i_probe_i',1)
+ t.map(0xc000,0x80020000)
+ assert (await t.access(0xc000,'fetch','hit'))['pa']==0x80020000
+ before=len(t.reads);plru=t.get('mon_i_plru_o');t.put('i_probe_i',1)
  for _ in range(8):
   assert (await t.lookup(0x4000,'fetch'))['hit']
-  assert not t.get('i_walk_o') and not t.get('i_perf_o')
+  assert not t.get('i_walk_o') and not t.get('i_perf_o') and t.get('mon_i_plru_o')==plru
+ t.put('priv_i',0)
+ assert (await t.lookup(0x4000,'fetch'))['pf']
+ assert not t.get('mon_i_fault_o') and not t.get('i_walk_o') and t.get('mon_i_plru_o')==plru
  assert len(t.reads)==before

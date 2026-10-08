@@ -37,7 +37,7 @@ class Records:
         self.req = [('valid', 1), ('src', 2), ('sys_kind', 3), ('ftq_id', idw),
                     ('slot', slotw), ('kill_self', 1), ('target_pc', addr),
                     ('hist_inject', 1), ('hist_branch_pc', addr),
-                    ('hist_target_pc', addr), ('ras_fix', 2), ('ras_push_addr', addr)]
+                    ('hist_target_pc', addr), ('ras_fix', 2), ('ras_push_addr', addr), ('exec_br_valid', 1), ('exec_br_taken', 1)]
         self.resolve = [('valid', 1), ('mispredict', 1), ('ftq_id', idw), ('slot', slotw),
                         ('branch_pc', addr), ('inst_len', 3), ('cfi_type', 2),
                         ('ras_action', 2), ('actual_taken', 1),

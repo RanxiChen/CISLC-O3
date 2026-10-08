@@ -257,3 +257,11 @@ run-l8b-misalign:
 run-l8b-dma:
 	$(RISCV_GCC) -march=rv64imac_zicsr_zifencei -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l8b_dma.S -o $(BUILD_DIR)/l8b_dma.elf
 	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) --image $(BUILD_DIR)/l8b_dma.elf --trace $(BUILD_DIR)/l8b_dma.jsonl --tohost-address 0x801ff000 --max-cycles $(L8B_MAX_CYCLES) --max-retires $(L8B_MAX_RETIRES)
+
+.PHONY: run-l7c-frontend
+run-l7c-frontend:
+	$(RISCV_GCC) -march=rv64im_zicsr_zifencei -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l7c_frontend.S -o $(BUILD_DIR)/l7c_on.elf
+	$(RISCV_GCC) -DFE_OFF -march=rv64im_zicsr_zifencei -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l7c_frontend.S -o $(BUILD_DIR)/l7c_off.elf
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK --image $(BUILD_DIR)/l7c_on.elf --trace $(BUILD_DIR)/l7c_on.jsonl --tohost-address 0x801ff000 --max-cycles 1500000 --max-retires 150000
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK --image $(BUILD_DIR)/l7c_off.elf --trace $(BUILD_DIR)/l7c_off.jsonl --tohost-address 0x801ff000 --max-cycles 1500000 --max-retires 150000
+	python3 $(SIM_DIR)/check_l7c_frontend.py --on $(BUILD_DIR)/l7c_on.jsonl --off $(BUILD_DIR)/l7c_off.jsonl --output $(BUILD_DIR)/l7c_summary.json

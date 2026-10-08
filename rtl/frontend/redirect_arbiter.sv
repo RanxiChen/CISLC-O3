@@ -67,6 +67,8 @@ module redirect_arbiter
         exec_req.ftq_id = exec_i.ftq_id;
         exec_req.slot = exec_i.slot;
         exec_req.target_pc = exec_i.redirect_pc;
+        exec_req.exec_br_valid=exec_i.cfi_type==CFI_BR;
+        exec_req.exec_br_taken=exec_i.actual_taken;
         exec_req.hist_inject = exec_i.cfi_type == CFI_BR && exec_i.actual_taken;
         exec_req.hist_branch_pc = exec_i.branch_pc;
         exec_req.hist_target_pc = exec_i.actual_target;

@@ -147,6 +147,17 @@ module frontend
     bpu_slow_t       bpu_slow;
     redirect_req_t   bpu_override;
     logic            bpu_train_valid, bpu_train_ready;
+    loop_meta_t ftq_loop_meta,loop_recover_meta_q;
+    ras_ckpt_t ras_recover_ckpt_q;
+    // Preserve the accepted winner before selective kill can free its FTQ
+    // entry. Snapshot RAM responds next cycle, at the recovery edge.
+    always_ff @(posedge clk_i) begin
+        if(rst_i) begin loop_recover_meta_q<='0;ras_recover_ckpt_q<='0;end
+        else if(arb_bpu_redirect_valid && arb_winner.src!=REDIR_SYS) begin
+            loop_recover_meta_q<=ftq_loop_meta;
+            ras_recover_ckpt_q<=ftq_ras_ckpt_rd;
+        end
+    end
     bpu_train_t      bpu_train;
     logic [TRAIN_CREDIT_W-1:0] train_free;
     ftq_id_t snap_train_resp_id;
@@ -247,6 +258,7 @@ module frontend
         .ras_recover_done_o      (ras_recover_done),
         .ras_recover_done_id_o   (ras_done_id),
         .hold_i                  (sync_hold),
+        .fe_feat_i(csr_i.fe_feat),.loop_recover_meta_i(loop_recover_meta_q),.loop_winner_i(arb_winner),
         .train_valid_i           (bpu_train_valid),
         .train_ready_o           (bpu_train_ready),
         .train_free_o            (train_free),
@@ -304,6 +316,7 @@ module frontend
         .head_id_o             (ftq_head_id),
         .ras_ckpt_rd_id_i      (arb_snap_rd_ftq_id),
         .ras_ckpt_rd_o         (ftq_ras_ckpt_rd),
+        .loop_meta_rd_o(ftq_loop_meta),
         .snap_train_rd_req_o   (snap_train_req),
         .snap_train_rd_id_o    (snap_train_id),
         .snap_train_resp_valid_i(snap_train_valid),
@@ -338,7 +351,7 @@ module frontend
         .ras_done_i          (ras_recover_done),
         .recover_busy_o      (recover_busy),
         .ras_recover_ckpt_o  (arb_ras_recover_ckpt),
-        .ftq_ras_ckpt_i      (ftq_ras_ckpt_rd),
+        .ftq_ras_ckpt_i      (ras_recover_ckpt_q),
         .ras_recover_id_o    (arb_ras_recover_id),
         .ras_done_id_i       (ras_done_id),
         .redirect_o          (redirect_o),

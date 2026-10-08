@@ -15,7 +15,7 @@ VERILOG_SOURCES := $(REPO_ROOT)/rtl/common/o3_sram_1r1w.sv  \
   $(REPO_ROOT)/rtl/frontend/branch_history.sv \
   $(REPO_ROOT)/rtl/frontend/ras.sv \
   $(REPO_ROOT)/rtl/frontend/bpu_slow_check.sv \
-  $(REPO_ROOT)/rtl/frontend/bpu.sv \
+  $(REPO_ROOT)/rtl/frontend/loop_predictor.sv $(REPO_ROOT)/rtl/frontend/bpu.sv \
   $(CURDIR)/bpu_tb_top.sv
 SIM_BUILD := $(CURDIR)/sim_build/$(COCOTB_TOPLEVEL)/$(if $(filter 1,$(WAVES)),waves,plain)
 COCOTB_RESULTS_FILE := $(CURDIR)/$(COCOTB_TOPLEVEL)-results.xml

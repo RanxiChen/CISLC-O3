@@ -41,7 +41,8 @@ class Bench:
             candidates.append(dict(valid=1,src=2,ftq_id=exec_['ftq_id'],slot=exec_['slot'],
                 target_pc=exec_['redirect_pc'],hist_inject=int(exec_['cfi_type']==1 and exec_['actual_taken']),
                 hist_branch_pc=exec_['branch_pc'],hist_target_pc=exec_['actual_target'],
-                ras_fix=exec_['ras_action'],ras_push_addr=exec_['branch_pc']+exec_['inst_len']))
+                ras_fix=exec_['ras_action'],ras_push_addr=exec_['branch_pc']+exec_['inst_len'],
+                exec_br_valid=int(exec_['cfi_type']==1),exec_br_taken=exec_['actual_taken']))
         def key(q):
             return (((q['ftq_id']%self.depth)-(head%self.depth))%self.depth,q['slot'],-q['src'])
         selected=min(candidates,key=key) if candidates else None

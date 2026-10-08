@@ -209,7 +209,7 @@ package o3_types_pkg;
         tage_meta_t  meta;
     } tage_resp_t;
 
-    localparam int LOOP_ENTRIES=8,LOOP_ITER_BITS=10,LOOP_IDX_W=3;
+    localparam int LOOP_ENTRIES=o3_cfg_pkg::O3_CFG.fe.loop.entries,LOOP_ITER_BITS=o3_cfg_pkg::O3_CFG.fe.loop.iter_bits,LOOP_IDX_W=$clog2(LOOP_ENTRIES);
     localparam int TRAIN_CREDIT_W=$clog2(o3_cfg_pkg::O3_CFG.fe.ftq.train_queue_depth+1);
     typedef logic [LOOP_ENTRIES-1:0][LOOP_ITER_BITS-1:0] loop_ckpt_t;
     typedef struct packed {
@@ -417,6 +417,7 @@ package o3_types_pkg;
         // 原始长度再执行一次；不能沿用错误的 BTB 预测类型。
         ras_action_e   ras_fix;
         vaddr_t        ras_push_addr; // PC + 2/4
+        logic exec_br_valid,exec_br_taken;
     } redirect_req_t;
 
     // 广播给各级的取消边界：比边界年轻的项失效。all=1 清除全部推测路径。

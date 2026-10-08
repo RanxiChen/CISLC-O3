@@ -43,6 +43,9 @@ module bpu
     // 同步期间暂停预测（frontend_sync_ctrl）
     input  logic                          hold_i,
 
+    input fe_feat_t fe_feat_i='0,
+    input loop_meta_t loop_recover_meta_i='0,
+    input redirect_req_t loop_winner_i='0,
     // 提交训练
     input  logic                          train_valid_i,
     output logic                          train_ready_o,
@@ -60,6 +63,30 @@ module bpu
         ras_ckpt_t ras_before;
     } query_t;
     query_t p1_q, p2_q;
+    logic loop_hit,loop_hit_q,loop_spec_valid,loop_path_valid;
+    logic [LOOP_IDX_W-1:0] loop_idx,loop_idx_q;
+    loop_train_t loop_prediction;
+    loop_ckpt_t loop_ckpt;
+    bpu_slow_t slow_raw;
+    assign loop_path_valid=p2_q.valid && loop_prediction.hit &&
+        (!slow_raw.pred.cfi_valid || loop_prediction.slot<=slow_raw.pred.cfi_slot);
+    assign loop_spec_valid=loop_path_valid && !kill_i.valid;
+    loop_predictor #(.CFG(CFG)) u_loop(.clk_i(clk_i),.rst_i(rst_i),.lookup_pc_i(p1_q.fast.region_base),
+        .lookup_hit_o(loop_hit),.lookup_idx_o(loop_idx),.query_hit_i(loop_hit_q),.query_idx_i(loop_idx_q),
+        .query_pc_i(p2_q.fast.region_base),.entry_slot_i(p2_q.fast.entry_slot),.btb_i(btb_q),.fe_feat_i(fe_feat_i),
+        .prediction_o(loop_prediction),.ckpt_o(loop_ckpt),.spec_valid_i(loop_spec_valid),
+        .spec_taken_i(slow_raw.pred.cfi_valid && slow_raw.pred.cfi_slot==loop_prediction.slot),
+        .recover_valid_i(ras_recover_valid_i),.recover_meta_i(loop_recover_meta_i),.winner_i(loop_winner_i),
+        .train_valid_i(t1_train_valid_q),.train_i(t1_train_q));
+    always_comb begin
+        slow_o=slow_raw;
+        slow_o.loop_meta='{train:loop_prediction,upd_valid:loop_path_valid,
+            upd_taken:(slow_raw.pred.cfi_valid && slow_raw.pred.cfi_slot==loop_prediction.slot),ckpt:loop_ckpt};
+    end
+    always_ff @(posedge clk_i) begin
+        if(rst_i || kill_i.valid) begin loop_hit_q<=0;loop_idx_q<=0;end
+        else begin loop_hit_q<=loop_hit;loop_idx_q<=loop_idx;end
+    end
     vaddr_t pred_pc_q;
     bpu_pred_t fast;
     btb_resp_t btb_resp, btb_q;
@@ -153,7 +180,7 @@ module bpu
         .clk_i(clk_i), .rst_i(rst_i), .fast_valid_i(p2_q.valid),
         .fast_ftq_id_i(p2_q.id), .fast_i(p2_q.fast), .fast_ras_ckpt_i(p2_q.ras_before),
         .btb_valid_i(btb_valid_q), .btb_i(btb_q), .tage_valid_i(tage_valid),
-        .tage_i(tage_resp), .kill_i('0), .slow_o(slow_o),
+        .tage_i(tage_resp),.loop_i(loop_prediction), .kill_i('0), .slow_o(slow_raw),
         .override_o(override_o), .perf_o(perf_slow)
     );
 

@@ -1,6 +1,8 @@
 /**
  * One synchronous read and one synchronous write port. The caller must
- * exclude same-address read/write; FPGA read-during-write behavior varies.
+ * exclude same-address read/write by default. ALLOW_COLLISION requires an
+ * external write bypass: FPGA collision results are unspecified, and simulation
+ * deliberately poisons the read word by inverting its previous value.
  *
  * Cycle N: read_en_i samples read_addr_i at the edge.
  * Cycle N+1: read_data_o holds that word until the next enabled read.

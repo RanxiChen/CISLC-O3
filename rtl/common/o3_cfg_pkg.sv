@@ -111,6 +111,8 @@ package o3_cfg_pkg;
         int unsigned meta_bits;                       // 待定：随 FTQ 保存到提交训练的 provider 等元数据宽度
     } tage_cfg_t;
 
+    typedef struct packed {int unsigned entries,tag_bits,iter_bits,conf_bits,age_bits;} loop_cfg_t;
+
     typedef struct packed {
         int unsigned depth;               // 暂定 16：RAS 项数，循环覆盖最旧项（第 6.2 节）
         // 2026-10-02 D29：取消 undo log（原 undo_log_depth 字段删除），改为 FTQ 保存
@@ -151,6 +153,7 @@ package o3_cfg_pkg;
         btb_cfg_t      btb;
         tage_cfg_t     tage;
         ras_cfg_t      ras;
+        loop_cfg_t     loop;
         icache_cfg_t   icache;
         itlb_cfg_t     itlb;
         prefetch_cfg_t prefetch;
@@ -339,6 +342,7 @@ package o3_cfg_pkg;
                 entries: 32,
                 ways:    4
             },
+            loop: '{entries:8,tag_bits:14,iter_bits:10,conf_bits:2,age_bits:3},
             prefetch: '{
                 xlate_reuse_entries: 4,
                 mshr_reserve:        1

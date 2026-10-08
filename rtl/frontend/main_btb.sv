@@ -31,7 +31,8 @@
  * - 周期 N 组合：s0_valid_i 且 !stall_i/kill_i 时选中 set；先前查询的
  *   resp_o/resp_valid_o 可被下游消费。
  * - 周期 N 上升沿：锁存该 set 的所有 way、请求 tag 和有效位；同时可以提交训练。
- *   同 set 同拍读写按旧值读，训练的新值从下次查询开始可见。
+ *   查询与 T1 写同 set/way 碰撞按新值旁路。训练 T0 读训练副本，T1 写两份副本；
+ *   相邻同址训练包使用前一笔 T1 写旁路。数据 RAM 不复位，valid 保持 FF。
  * - 周期 N+1：组合 tag 比较给出该查询的 resp_o；stall_i 时寄存结果保持且
  *   resp_valid_o 暂不输出，解除 stall 后重现一次；kill_i 立即压低 valid，
  *   并在上升沿清除在途查询。训练不受查询 stall/kill 影响。

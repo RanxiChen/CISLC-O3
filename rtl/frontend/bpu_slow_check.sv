@@ -21,6 +21,7 @@ module bpu_slow_check
     input  logic          tage_valid_i,
     input  tage_resp_t    tage_i,
 
+    input loop_train_t loop_i='0,
     input  fe_kill_t      kill_i,
 
     output bpu_slow_t     slow_o,
@@ -45,7 +46,7 @@ module bpu_slow_check
                 if (slot >= int'(fast_i.entry_slot)) begin
                     pred.br_mask[slot] = btb_i.br_mask[slot];
                     pred.jal_mask[slot] = btb_i.jal_mask[slot];
-                    candidates[slot] = (btb_i.br_mask[slot] && tage_i.taken_mask[slot])
+                    candidates[slot] = (btb_i.br_mask[slot] && ((loop_i.used && loop_i.slot==fetch_slot_t'(slot)) ? loop_i.pred:tage_i.taken_mask[slot]))
                                      || btb_i.jal_mask[slot]
                                      || (btb_i.cfi_type == CFI_JALR && btb_i.cfi_slot == fetch_slot_t'(slot));
                 end

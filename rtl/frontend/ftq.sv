@@ -168,6 +168,7 @@ module ftq
     output o3_types_pkg::ftq_id_t           head_id_o,
     input  o3_types_pkg::ftq_id_t           ras_ckpt_rd_id_i,
     output o3_types_pkg::ras_ckpt_t         ras_ckpt_rd_o,
+    output o3_types_pkg::loop_meta_t loop_meta_rd_o,
 
     // 提交训练：读快照训练上下文，组装 bpu_train_t
     output logic                            snap_train_rd_req_o,
@@ -204,6 +205,7 @@ module ftq
         ftq_id_t id;
         bpu_pred_t fast_pred, final_pred;
         ras_ckpt_t ras_ckpt;
+        loop_meta_t loop_meta;
         vaddr_t slow_next_pc, final_next_pc;
         tage_meta_t tage_meta;
         logic slow_done, demand_issued, pf_issued, commit_last;
@@ -307,11 +309,18 @@ module ftq
             brief_o.pred = entries_q[brief_rd_id_i.idx].final_pred;
             brief_o.ras_ckpt = entries_q[brief_rd_id_i.idx].ras_ckpt;
         end
+        loop_meta_rd_o='0;
         ras_ckpt_rd_o = '0;
         if (int'(ras_ckpt_rd_id_i.idx) < DEPTH &&
             entries_q[ras_ckpt_rd_id_i.idx].valid &&
             entries_q[ras_ckpt_rd_id_i.idx].id == ras_ckpt_rd_id_i)
-            ras_ckpt_rd_o = entries_q[ras_ckpt_rd_id_i.idx].ras_ckpt;
+            begin ras_ckpt_rd_o = entries_q[ras_ckpt_rd_id_i.idx].ras_ckpt;
+            loop_meta_rd_o=entries_q[ras_ckpt_rd_id_i.idx].loop_meta;
+            // A winning slow override writes metadata and requests recovery
+            // on the same edge. Capture its pre-update checkpoint directly.
+            if(slow_i.valid && slow_i.ftq_id==ras_ckpt_rd_id_i)
+                loop_meta_rd_o=slow_i.loop_meta;
+            end
     end
 
     assign ho_sel=add_idx(head_q,int'(ho_busy_q));
@@ -324,6 +333,7 @@ module ftq
         bpu_train_o='0;
         bpu_train_o.region_base=entries_q[head_q].fast_pred.region_base;
         bpu_train_o.folds=snap_train_i.folds;
+        bpu_train_o.loop_train=entries_q[head_q].loop_meta.train;
         bpu_train_o.tage_meta=entries_q[head_q].tage_meta;
         bpu_train_o.br_commit_mask=entries_q[head_q].committed_br;
         bpu_train_o.br_taken_mask=entries_q[head_q].committed_taken;
@@ -376,6 +386,7 @@ module ftq
             entries_d[slow_i.ftq_id.idx].final_pred = slow_i.pred;
             entries_d[slow_i.ftq_id.idx].slow_next_pc = slow_i.pred.next_pc;
             entries_d[slow_i.ftq_id.idx].final_next_pc = slow_i.pred.next_pc;
+            entries_d[slow_i.ftq_id.idx].loop_meta=slow_i.loop_meta;
             entries_d[slow_i.ftq_id.idx].tage_meta = slow_i.tage_meta;
             entries_d[slow_i.ftq_id.idx].slow_done = 1'b1;
         end
@@ -597,6 +608,8 @@ module ftq
             perf_o[PE_FTQ_FULL_CYCLE] = PERF_INC_W'(alloc_valid_i && !alloc_ready_o);
             if (train_fire) begin
                 perf_o[PE_CMT_REGION] = 1;
+                perf_o[PE_CMT_LOOP_USED]=PERF_INC_W'(entries_q[head_q].loop_meta.train.used && entries_q[head_q].committed_br[entries_q[head_q].loop_meta.train.slot]);
+                perf_o[PE_CMT_LOOP_WRONG]=PERF_INC_W'(entries_q[head_q].loop_meta.train.used && entries_q[head_q].committed_br[entries_q[head_q].loop_meta.train.slot] && entries_q[head_q].loop_meta.train.pred!=entries_q[head_q].committed_taken[entries_q[head_q].loop_meta.train.slot]);
                 perf_o[PE_CMT_COND_BR]=PERF_INC_W'($countones(entries_q[head_q].committed_br));
                 perf_o[PE_CMT_COND_MISPRED]=PERF_INC_W'($countones(entries_q[head_q].committed_br & entries_q[head_q].mispred_mask));
                 for(int slot=0;slot<REGION_SLOTS;slot++)

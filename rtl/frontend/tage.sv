@@ -14,12 +14,13 @@
  * provider 与最终方向。高位清零；它属于原预测上下文，FTQ 须原样保存。
  * provider_hit_mask 表示该槽有 tagged provider，不表示最终使用了 provider。
  * 部分 tag 可以碰撞，后端纠错；没有显式失效/别名计数。首版不包含 SC、
- * loop、ITTAGE，也未优化 FPGA SRAM 映射或读口物理时序。perf_o 暂为零：
+ * ITTAGE。L7c 将查询/训练各置于一份同步 SRAM，loop 在 BPU 中独立覆盖。perf_o 暂为零：
  * 本模块不知道哪些槽实际是 BR，不能把八个方向位误算为八条条件预测。
  *
  * 周期 N：s0_valid_i 时组合算 index/tag；上升沿锁存为 S1。
  * 周期 N+1：S1 同步读 base/tagged 各行；上升沿锁存为 S2。同拍训练
- * 同行时读旧值，训练新值从后续读口可见。
+ * 与 T1 同行写入碰撞时按写新值旁路；stall 关闭 BRAM 读使能以保持输出。
+ * 提交训练 T0 读训练副本，T1 写两份副本；连续同址包使用前一笔 T1 写旁路。
  * 周期 N+2：S2 组合比较 tag、选方向并输出 resp_o；stall_i 立即抑制
  * resp_valid_o 且冻结 S1/S2，解除后重新呈现；kill_i 立即抑制 valid，
  * 并在上升沿清除在途查询。训练独立于 stall/kill。

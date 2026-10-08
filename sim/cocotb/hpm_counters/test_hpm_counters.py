@@ -163,13 +163,20 @@ async def event_select_fe_and_be(d):
 
 
     # Keep T08c 0x26..0x29 and check every added L8a selector 0x2a..0x37.
-    assert tb.benum == 0x38
-    for event in range(0x26,0x38):
+    assert tb.benum == 0x42
+    for event in range(0x26,tb.benum):
         await tb.access(hpme(3),RW,0x0200|event)
         await clear_counters(tb)
         tb.drive_perf(be={event:3})
         await tb.cycles(4);tb.drive_perf()
         assert (await tb.peek(hpmc(3)))[0] == 12, hex(event)
+
+    # Every L7c FE selector must accumulate its full increment.
+    for event in range(0x34,tb.fenum):
+        await tb.access(hpme(3),RW,0x0100|event)
+        await clear_counters(tb);tb.drive_perf(fe={event:3})
+        await tb.cycles(4);tb.drive_perf()
+        assert (await tb.peek(hpmc(3)))[0]==12,hex(event)
 
 
 @cocotb.test()
@@ -190,7 +197,7 @@ async def varying_increment_accumulates(d):
 async def disabled_and_unknown_events_do_not_count(d):
     """Event 0, FE numbering holes (0x16..0x1F), beyond-last numbers, unknown sources."""
     tb = await setup(d)
-    sel = [0x0000, 0x0100, 0x0116, 0x011F, 0x0134, 0x0200 | tb.benum, 0x0301, 0x0001]
+    sel = [0x0000, 0x0100, 0x0116, 0x011F, 0x0100 | tb.fenum, 0x0200 | tb.benum, 0x0301, 0x0001]
     for i, s in enumerate(sel):
         await tb.access(hpme(3 + i), RW, s)
     await clear_counters(tb)

@@ -322,3 +322,11 @@ async def frontend_feature_csr_warl_nonserial_privilege(d):
  assert int(d.priv_o.value)==1
  assert (await access(0x7c0,0,True))[1]==1
  assert int(d.pf_dis_o.value)==1
+
+ # Take an undelegated trap back to M, then MRET to U; this CSR remains M-only.
+ d.trap_i.value=1;d.xret_i.value=0;d.cause_i.value=2;await edge(d);d.trap_i.value=0
+ assert int(d.priv_o.value)==3
+ await access(0x300,0,True)
+ d.trap_i.value=1;d.xret_i.value=1;await edge(d);d.trap_i.value=0;d.xret_i.value=0
+ assert int(d.priv_o.value)==0
+ assert (await access(0x7c0,0,True))[1]==1 and int(d.pf_dis_o.value)==1
