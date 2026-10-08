@@ -6,7 +6,7 @@ REPO_ROOT := $(abspath ../../..)
 # Use all sources from the authority, including the L9 pinned CVFPU.
 RTL_SOURCES := $(shell sed -n '/^[^\/ +].*\.[sv]*v$$/p' $(REPO_ROOT)/rtl/rtl.f)
 VERILOG_SOURCES := $(addprefix $(REPO_ROOT)/,$(RTL_SOURCES)) \
-  $(REPO_ROOT)/sim/o3/o3_tandem_top.sv
+  $(REPO_ROOT)/sim/o3/o3_tandem_top.sv $(REPO_ROOT)/sim/o3/o3_mmio_model.sv
 SIM_BUILD := $(CURDIR)/sim_build/$(if $(filter 1,$(WAVES)),waves,plain)
 COCOTB_RESULTS_FILE := $(CURDIR)/results.xml
 TEST_SEED ?= 1
