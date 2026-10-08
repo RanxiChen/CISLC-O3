@@ -133,15 +133,16 @@ _start:
 side_loop:
     div t0,a4,a4
     beqz t0,wrong_path
-    ld t1,0(a0)
-    bne t1,a2,fail
-    addi a2,a2,1
     andi t0,a2,1
     beqz t0,even_side
+    ld t1,0(a0)
+    bne t1,a2,fail
     j side_join
 even_side:
-    nop
+    ld t1,0(a0)
+    bne t1,a2,fail
 side_join:
+    addi a2,a2,1
     blt a2,a3,side_loop
     j after_wrong
 wrong_path:

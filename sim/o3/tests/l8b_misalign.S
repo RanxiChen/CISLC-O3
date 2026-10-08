@@ -5,7 +5,7 @@ _start:
     boot
     li t0,0x6000
     csrs mstatus,t0
-    li t0,0x24
+    li t0,0x224
     csrw 0x323,t0
     csrw 0xb03,zero
     li s6,0
