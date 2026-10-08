@@ -34,7 +34,7 @@ module load_store_unit import o3_pkg::*; #(
     input logic d_done_i,input o3_types_pkg::exc_info_t d_exc_i,
     output logic d_mark_o,d_clear_o,output o3_types_pkg::rob_idx_t d_idx_o,
     output o3_types_pkg::vaddr_t d_va_o,output o3_types_pkg::sq_idx_t d_sq_o,
-    output logic ad_wake_o,output o3_types_pkg::be_perf_t perf_o);
+    output logic ad_wake_o,sq_ad_wake_o,output o3_types_pkg::be_perf_t perf_o);
     typedef struct packed {logic valid,replay;lq_replay_t r;} pipe_t;
     pipe_t replay_rr_q[P],ag_q[P],s1_q[P],s2_q[P];
     logic tlb_valid[P],tlb_store[P],tlb_rsp_valid[P];o3_types_pkg::vaddr_t tlb_va[P];o3_types_pkg::tlb_resp_t tlb_rsp[P];
@@ -134,7 +134,9 @@ module load_store_unit import o3_pkg::*; #(
     o3_types_pkg::dcache_req_t s1_req_q[P];logic ad_block_s2_q[P],d_need_s2_q[P];
     always_comb begin
         d_mark_o=0;d_clear_o=0;d_idx_o=d_uop_q.rob_idx;d_va_o=d_va_q;d_sq_o=d_uop_q.sq_idx;
-        ad_wake_o=d_refresh_q || ((d_pending_q || d_reserved_q) && killed(d_uop_q));
+        // The owner must revalidate after DTLB refresh. Younger LQ entries
+        // remain asleep until that revalidation clears needs_D, otherwise
+        // their retries can consume every result reservation ahead of SQ.
         for(int p=0;p<P;p++) begin
             update_o[p]=dc_resp_i[p];
             if(ad_block_s2_q[p]) begin update_o[p].status=o3_types_pkg::DC_REPLAY;update_o[p].reason=o3_types_pkg::LDW_AD_ORDER;end
@@ -164,6 +166,9 @@ module load_store_unit import o3_pkg::*; #(
             fifo_new[p].load.va=s2_q[p].r.va;fifo_new[p].load.size=s2_q[p].r.uop.mem_size;
             fifo_new[p].exc=update_o[p].exc;
         end
+        // Idle is also a completed condition for late S2 AD_ORDER responses.
+        ad_wake_o=d_clear_o || !(d_pending_q || d_reserved_q) || killed(d_uop_q);
+        sq_ad_wake_o=d_refresh_q || ad_wake_o;
         perf_o=dtlb_perf;
         for(int p=0;p<P;p++) begin
             perf_o[o3_types_pkg::BE_SQ_FORWARD]+=o3_types_pkg::BE_PERF_INC_W'(sq_query_valid_o[p] && sq_query_forward_valid_i[p]);

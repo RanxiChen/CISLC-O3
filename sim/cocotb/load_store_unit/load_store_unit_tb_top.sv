@@ -47,7 +47,7 @@ module load_store_unit_tb_top import o3_pkg::*; #(
         assign dc_req_ready_i[p]=1'b1;
     end
     load_store_unit #(.CFG(CFG)) dut(.lq_tag_i(lq_tag_i),.dc_req_ready_i(dc_req_ready_i),
-        .sfence_i('0),.sfence_done_o(),.rob_head_i('0),.perf_o(),.*);
+        .sfence_i('0),.sfence_done_o(),.rob_head_i('0),.sq_ad_wake_o(),.perf_o(),.*);
     assign cfg_tags_o=CFG.rename.checkpoints;assign cfg_rob_o=CFG.rob.entries;assign cfg_lq_o=CFG.lsu.lq_depth;
     always_comb begin
         fmt_uop_valid='0;fmt_uop_valid.valid='1;

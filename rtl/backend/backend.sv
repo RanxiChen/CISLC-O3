@@ -570,7 +570,7 @@ module backend
     logic [XLEN-1:0] sq_drain_addr, sq_drain_data;
     logic [7:0] sq_drain_mask;
     logic sq_commit_valid [RETIRE_WIDTH-1:0];
-    logic st_d_valid,st_d_ready,st_d_done,d_mark,d_clear;
+    logic st_d_valid,st_d_ready,st_d_done,d_mark,d_clear,sq_ad_wake;
     o3_types_pkg::exc_info_t st_d_exc;
     o3_types_pkg::rob_idx_t d_idx;
     o3_types_pkg::vaddr_t d_va;
@@ -1328,7 +1328,7 @@ module backend
         .t_dc_req_o(t_sq_dc_req), .t_dc_resp_i(t_sq_dc_resp),
         .t_committed_empty_o(t_sq_committed_empty),
         .dc_wake_i(dc_wake),.capture_valid_i(sq_capture),.capture_i(mem_capture),.update_valid_i(sq_update),.update_i(mem_update),
-        .tlb_wake_i(t_ptw_resp.valid),.ad_wake_i(ad_wake),.replay_valid_o(sq_replay_valid),.replay_o(sq_replay),.replay_ready_i(sq_replay_ready),
+        .tlb_wake_i(t_ptw_resp.valid),.ad_wake_i(sq_ad_wake),.replay_valid_o(sq_replay_valid),.replay_o(sq_replay),.replay_ready_i(sq_replay_ready),
         .resolution_valid_i(branch_resolution_i.valid),
         .resolution_mispredict_i(branch_resolution_i.mispredict),
         .resolution_tag_i(branch_resolution_i.branch_tag), .restore_tail_i(restore_sq_tail)
@@ -1416,7 +1416,7 @@ module backend
         .ptw_req_valid_o(t_dtlb_ptw_req_valid),.ptw_req_ready_i(t_dtlb_ptw_req_ready),.ptw_req_o(t_dtlb_ptw_req),.ptw_resp_i(t_ptw_resp),
         .csr_i(t_dmmu_csr),.pmp_i(t_pmp),.sfence_i(t_sfence),.sfence_done_o(t_dtlb_sf_done),.rob_head_i(rob_head),
         .d_done_i(st_d_done),.d_exc_i(st_d_exc),.d_mark_o(d_mark),.d_clear_o(d_clear),.d_idx_o(d_idx),.d_va_o(d_va),.d_sq_o(d_sq),
-        .ad_wake_o(ad_wake),.perf_o(perf_lsu));
+        .ad_wake_o(ad_wake),.sq_ad_wake_o(sq_ad_wake),.perf_o(perf_lsu));
     assign sq_drain_ready=0;
 
     // 分支单元（原样迁出到 branch_unit；内部例化 branch_execute_unit）。

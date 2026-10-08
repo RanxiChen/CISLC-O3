@@ -43,7 +43,7 @@ module load_store_unit_l5_tb_top import o3_pkg::*; #(
     load_store_unit #(.CFG(CFG)) dut(.lq_tag_i(lq_tag_i),.dc_req_ready_i(dc_req_ready_i),
         .ptw_req_valid_o(),.ptw_req_ready_i(1'b0),.ptw_req_o(),.ptw_resp_i('0),
         .sfence_i('0),.sfence_done_o(),.rob_head_i('0),.d_done_i(1'b0),.d_exc_i('0),
-        .d_mark_o(),.d_clear_o(),.d_idx_o(),.d_va_o(),.d_sq_o(),.ad_wake_o(),.perf_o(),.*);
+        .d_mark_o(),.d_clear_o(),.d_idx_o(),.d_va_o(),.d_sq_o(),.ad_wake_o(),.sq_ad_wake_o(),.perf_o(),.*);
     assign cfg_tags_o=CFG.rename.checkpoints;assign cfg_rob_o=CFG.rob.entries;assign cfg_lq_o=CFG.lsu.lq_depth;
     always_comb begin
         fmt_uop_valid='0;fmt_uop_valid.valid='1;
