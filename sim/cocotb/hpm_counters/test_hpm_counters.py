@@ -162,9 +162,9 @@ async def event_select_fe_and_be(d):
         assert (await tb.peek(hpmc(n)))[0] == e, (n, e, (await tb.peek(hpmc(n)))[0])
 
 
-    # T08c allocates BE 0x26..0x29. Check their full increments explicitly.
-    assert tb.benum == 0x2a
-    for event in range(0x26,0x2a):
+    # Keep T08c 0x26..0x29 and check every added L8a selector 0x2a..0x37.
+    assert tb.benum == 0x38
+    for event in range(0x26,0x38):
         await tb.access(hpme(3),RW,0x0200|event)
         await clear_counters(tb)
         tb.drive_perf(be={event:3})
