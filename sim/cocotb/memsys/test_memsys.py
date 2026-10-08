@@ -91,3 +91,35 @@ async def l10_protected_load_then_store_fault_sequence(dut):
         assert not e.sent and not e.held and not e.gold
     await e.loads([Cpu(0x80004000)])
     await e.finish()
+
+
+@cocotb.test()
+async def l10_ad_first_writer_refresh_sequence(dut):
+    """Physical cache sequence at l10_ad PC 0x80000178; translation is in M4."""
+    e = SystemBench(dut,65)
+    await e.reset()
+    pte_addr,data_addr = 0x80102038,0x80103000
+    leaf = 0x20040c07
+    original = e.initial
+    image = {pte_addr >> 6: leaf << (8*(pte_addr & 63)),
+             data_addr >> 6: 0x11223344}
+    e.initial = lambda line: image.get(line,original(line))
+    await e.loads([Cpu(pte_addr)])
+    for bit in (0x40,0x80):
+        if bit == 0x80:
+            await e.loads([Cpu(data_addr)])
+            await e.loads([Cpu(pte_addr)])
+            await e.sta(Cpu(data_addr,sta=True,rob=14))
+        before = len(e.ad_responses)
+        e.ad = (pte_addr,leaf,int(bit==0x40),int(bit==0x80),0)
+        await e.until(lambda:len(e.ad_responses)>before,5000)
+        assert e.ad_responses[-1][1] == 12
+        leaf |= bit
+        e.gold[pte_addr >> 6] = leaf << (8*(pte_addr & 63))
+        e.history.setdefault(pte_addr >> 6,[]).append((e.cycle-1,e.gold[pte_addr >> 6]))
+        await e.loads([Cpu(pte_addr)])
+    await e.sta(Cpu(data_addr,sta=True,rob=14))
+    await e.store(data_addr,0x55667788)
+    await e.loads([Cpu(data_addr,rob=15),Cpu(pte_addr,rob=16,lane=1)])
+    assert e.golden(data_addr) == 0x55667788 and e.golden(pte_addr) == 0x20040cc7
+    await e.finish()

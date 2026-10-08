@@ -76,7 +76,9 @@ class SystemBench(CacheBench):
         for name,r in (('st',self.st),('ptw',self.ptw)):
             getattr(d,name+'_req_valid_i').value = int(r is not None)
             getattr(d,name+'_req_i').value = self.req_bits(r)
-        d.pte_ad_req_valid_i.value = 0
+        d.pte_ad_req_valid_i.value = int(self.ad is not None)
+        if self.ad:
+            d.pte_ad_req_i.value = pack(*zip((56,64,1,1,8), self.ad))
         if self.ipresent is None and self.i_script and len(self.iout)<4:
             tid = next(i for i in range(4) if i not in self.iout)
             self.ipresent = (tid, self.i_script.popleft(), self.cycle)
@@ -108,7 +110,8 @@ class SystemBench(CacheBench):
                  'snp_i','fatal_o','l2_fatal_o','l1i_req_ready_o','l1i_resp_valid_o','l1i_resp_o',
                  'm_axi_arvalid','m_axi_arready','m_axi_araddr','m_axi_arid','m_axi_arlen','m_axi_arsize','m_axi_arburst',
                  'm_axi_awvalid','m_axi_awready','m_axi_awaddr','m_axi_awid','m_axi_awlen','m_axi_awsize','m_axi_awburst',
-                 'm_axi_wvalid','m_axi_wready','m_axi_wdata','m_axi_wstrb','m_axi_wlast','m_axi_rready','m_axi_bready')
+                 'm_axi_wvalid','m_axi_wready','m_axi_wdata','m_axi_wstrb','m_axi_wlast','m_axi_rready','m_axi_bready',
+                 'pte_ad_req_ready_o','pte_ad_resp_o')
         v = {n:int(getattr(d,n).value) for n in names}
         self.check(not v['fatal_o'] and not v['l2_fatal_o'], 'fatal event')
         if int(d.init_done.value) and int(d.l2_init_done.value):
@@ -125,6 +128,8 @@ class SystemBench(CacheBench):
             r = self.resp_fields(v[key])
             if r['valid']:
                 dest.append((self.cycle,r))
+        if v['pte_ad_resp_o'] & 8:
+            self.ad_responses.append((self.cycle,v['pte_ad_resp_o']))
         w = unpack(v['wake_o'], [('valid',1),('mshr',2),('err',1),('free',1),('wb_free',1)])
         if v['wake_o']:
             self.wakes.append((self.cycle,w))
@@ -226,6 +231,7 @@ class SystemBench(CacheBench):
         if self.bhold is not None and v['m_axi_bready']:self.bhold=None
         if self.st and v['st_req_ready_o']:self.st=None
         if self.ptw and v['ptw_req_ready_o']:self.ptw=None
+        if self.ad and v['pte_ad_req_ready_o']:self.ad=None
         self.prev_cpu=list(self.cpu);self.cpu=[None,None]
         d.clk.value=1
         await Timer(5,unit='ns')
