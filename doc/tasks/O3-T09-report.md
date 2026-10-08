@@ -1,11 +1,11 @@
 # O3-T09：L8a 实施与分层验证记录
 
-日期：2026-10-08。M1～M5 已通过，正在进入M6。X11 与 spec12退休解释均按用户批准执行。前半部分保留历史实施/停点记录，当前结果见文末；尚未声明12.8总门禁通过。
+日期：2026-10-08。M1～M5已通过；M6整核开发目标通过，但完整复验因既有JALR预期冲突停止，尚未提交M6通过声明。X11 与 spec12退休解释均按用户批准执行。前半部分保留历史实施/停点记录，当前结果见文末；尚未声明12.8总门禁通过。
 
 ## 基线与源码
 
 - 分支：`feat/L1-closure`；实施前 HEAD：`0e241e3477b6b61e3a149ef60e40b708b01c3338`。
-- 唯一行为依据：`doc/spec/l8a-nonblocking-mem-spec.md`；执行依据：`doc/tasks/O3-T09-l8a-tasks.md`。未改冻结 spec、`doc/design/` 或 `doc/LOOP.md`。
+- 唯一行为依据：`doc/spec/l8a-nonblocking-mem-spec.md`；执行依据：`doc/tasks/O3-T09-l8a-tasks.md`。实施时未改冻结 spec、`doc/design/` 或 `doc/LOOP.md`；L8a收尾按任务书更新LOOP，见文末。
 - Breeze 参考固定为 `/home/chen/leisure/flow @ a304cc2`，阅读该提交的两份协议规格及 coherence/l1d/l1i/l2 Scala 源码；未修改 Breeze，也未以其当前工作树代替固定参考。
 - RTL 提交：`0611b5c912369913c6833a33a17aebfd5ebdf55b`，标题 `feat(memsys): implement L8a non-blocking memory RTL (untested)`。
 - RTL 提交 tree：`fe8ec1122255135b215c254de165234029653a9d`。候选对象先在远端完成门禁，全部通过后才接受到本地实施分支。报告单独提交，不改变 RTL。
@@ -855,3 +855,124 @@ run-l10-vm只作为已知问题观察，未算入通过目标。make exit2、驱
 0x20040c07，AND0xc0得0，而程序期望A=0x40；跳到fail并在PC0x80000420写tohost=3。
 这里记录观察到的首个失败及寄存器值，不声称完整VM正确，不修改程序/断言/golden。
 原trace与run.log/exit保存在m5-run-l10-vm/。M6及最终SHA将再次观察，按任务书不因它停下。
+
+
+#### M6 开发与复验（2026-10-08，进行中）
+
+M5通过提交为 `df0fb15`。`efdd5e6` 新增自查程序 `l8a_mem.S`、
+独立RV64I顺序参考生成器及 `run-l8a-mem` 目标，顶层增加只读累计统计；
+main.cpp、原回归程序、golden和终止逻辑不变。统计每个复位后采样拍的MSHR占用和事件，
+平均占用=占用之和/采样拍数；统计不参与RTL决策或程序结束条件。
+新程序遍历64KiB，冷段每循环八个独立load；1024行每行八个store再逐字检查，
+另加同行多load、不同set同bank、代码数据共享行/FENCE.I/取指Down路径。
+独立模型从ELF的PT_LOAD和entry顺序执行到成功tohost，未知指令或自查失败立即失败；
+不取DUT轨迹构造参考，不使用Spike。截止前缀逐事件比较与用户批准解释相同。
+
+`b8d6de5a0daf8d371364e8089dae4e4a825d448d` 默认MEM_PIPES=2/MSHRS=4/RFO=1，
+13个既有目标/14程序均exit0、前缀严格一致。新程序exit0：123750周期、全事件62786，
+前缀62785正常退休/trap0、豁免同拍末尾JAL1。MSHR_sum=71657、采样123750拍，
+平均0.579046；RFO发出932/有用931、bank冲突重放190、probe1、写回2471。
+这些非零统计确认访问模式实际触发相应机制，不宣称性能阈值或完整一致性。
+执行主机为cloud_chen@47.96.71.231，逐项共享配置重读/预检通过；cwd
+`/home/cloud_chen/work/20261008-t09-b8d6de5a`，证据根
+`/home/cloud_chen/evidence/t09/b8d6de5a`。原trace/参考/比较JSON/命令/日志/exit均保留。
+
+该SHA的run-l10-vm仍tohost=3（make exit2、driver exit1），6295事件=6292正常+3trap，
+末事件cycle16671，即推导16672运行周期；没有合法成功截止前缀，豁免0。
+首个失败点与M5相同：PC0x800001f8的PTE读得0x20040c07，PC0x80000204
+在cycle16646/event6288分支到fail，最终PC0x80000420写tohost=3。
+不与T08旧失败混称“未变化”，不算入通过目标。
+
+`b8d6de5a` 保留PMP/PMA原采样和边界，按X5只承认主存，原DTCM探针改为全权限拒绝；
+backend fixture去旧端口，先有界等待真实cache初始化完成，再运行原160功能拍/30000分支拍，
+全部原数据golden/80正确解析/40误预测/重放检查保留；backend_control接空闲公共L8a协议。
+定向PMP/PMA2/2、backend2/2、backend_control1/1均exit0。
+后续既有非访存检查在early_wakeup编译失败：INT-IQ fixture仍连已删除allow_load_i。
+`00d7eb5` 仅移除该旧连接，不改功能断言或RTL。旧候选的下层复验在当前项完成后停止，
+不把不完整结果拼接为新候选通过证据；在新SHA重新完整跑M1～M4及M5/M6。
+本节当前为开发证据，完整新候选复验及12.8尚待完成，不提交M6通过声明。
+
+旧端口清理后early_wakeup首个功能失败为6ns、test_early_wakeup.py:11：未收到MUL promise
+却已有issue。fixture的consumer设置了src1_preg=33/rs1_read_en，但L9域字段仍为RD_NONE；
+现IQ据域判断无源，自然提前就绪。补齐consumer的ext.rs1_dom=RD_INT，恢复原测试意图；
+保留“promise前不得发射”、bypass值63、晚consumer和PRF写后consumer的全部原断言。
+这是无效fixture输入修正，不是放宽测试或改变DUT；失败XML/日志保留在00d7eb52。
+
+35b20b4c上early_wakeup原用例已通过；余下非访存检查在HPM 19例中的
+`event_select_fe_and_be` 于223ns失败（assert benum==0x2a，实际0x38），其他18例通过。
+L8a第11节新增事件已在既有冻结RTL编码0x2a～0x37，测试仍用T08末编号。
+`d184377` 把严格上界更新为0x38，并扩展同一3×4=12精确累计检查到0x26～0x37，
+T08四个原事件均仍被逐项检查，新14个全部加测；未改RTL或事件累计golden。
+失败与迁移证据分别在35b20b4c/final-nonmem-hpm_counters和后续新SHA同目录。
+
+
+#### M5→M6 开发周期对比（非最终同SHA验收）
+
+下表分别引用已通过M5的d7d3db3f与M6开发b8d6de5a；用于按任务书记录默认双管道变化，
+不把两者拼接为最终SHA门禁。每行各阶段均保留前缀与豁免尾部，不以全事件掩盖差异。
+每项原检查/严格前缀比较均exit0；无性能阈值。
+
+| 程序 | M5周期 | M6周期 | M6−M5 | M5前缀/豁免尾部 | M6前缀/豁免尾部 |
+| --- | ---: | ---: | ---: | --- | --- |
+| dcache_data | 589 | 583 | -6 | 7/0 | 7/0 |
+| dcache_replay | 597 | 597 | +0 | 6/0 | 6/0 |
+| icache_smoke | 545 | 545 | +0 | 4/0 | 4/0 |
+| l10_ad | 16393 | 16393 | +0 | 6249/2 | 6249/2 |
+| l10_priv | 3987 | 3987 | +0 | 436/1 | 436/1 |
+| l3_branch_dense | 2478 | 2477 | -1 | 365/0 | 365/0 |
+| l7_predict_a | 44296 | 44300 | +4 | 19393/3 | 19393/3 |
+| l7_predict_b | 44362 | 44345 | -17 | 19444/1 | 19444/1 |
+| l7b_rvc | 6361 | 6361 | +0 | 2213/1 | 2213/1 |
+| l9_fp | 2361 | 2354 | -7 | 614/1 | 614/1 |
+| l9_fp_smoke | 1370 | 1387 | +17 | 264/1 | 264/1 |
+| replay-integer | 624 | 624 | +0 | 18/2 | 18/2 |
+| rv64i_instructions | 576 | 576 | +0 | 14/0 | 14/0 |
+| unified_memory | 630 | 630 | +0 | 18/0 | 18/0 |
+
+新run-l8a-mem仅M6：123750周期，62785/1（前缀正常62785/trap0、全事件62786），
+详细计数及原始证据见上节。最终同SHA两配置对比尚未完成。
+
+#### 当前停止点：既有 JALR 的 IALIGN=32 预期与冻结 L7b 冲突
+
+执行SHA `d1843775b69ac4090a5c8002b8b7a2a9584dae9c`；主机cloud_chen@47.96.71.231，
+逐项实时共享配置重读/SSH环境Verilator5.050/cocotb2.1.0/磁盘内存预检成功。
+cwd `/home/cloud_chen/work/20261008-t09-d1843775`，原始证据
+`/home/cloud_chen/evidence/t09/d1843775/final-nonmem-jalr/{manifest.json,run.log,exit,results.xml}`，
+本地同名完整副本 `/tmp/t09-resume-evidence/d1843775/final-nonmem-jalr/`。
+
+失败用例 `test_jalr.redirect_link_hold_hints_and_alignment`，1/1失败，make exit2，
+failure1/error0/skip0。首个失败114ns，test_jalr.py:21：src=0x80001002、imm=0时，
+旧断言要求exc=1、tval=0x80001002、resolve=0，实测exc=0。
+前面五组RAS/目标/link/保持检查未失败。
+
+复现（先激活上述O3环境）：
+
+```bash
+cd /home/cloud_chen/work/20261008-t09-d1843775
+make -j4 -C sim/cocotb/jalr   SIM_BUILD=/home/cloud_chen/evidence/t09/d1843775/final-nonmem-jalr/build   COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/t09/d1843775/final-nonmem-jalr/results.xml
+```
+
+已核查：冻结 `doc/spec/l7b-rvc-spec.md` 第5节明确删除taken目标bit1异常，
+result_o.exc恒0，JALR仅清bit0；现branch_execute_unit.sv保持该行为。
+所以把RTL改成旧测试期望会违反冻结L7b，不是可接受的L8a修复。
+该JALR套件没有在此前指定的T08子集门禁中暴露出来；本次扩展到spec12.8全部既有套件时发现。
+未尝试改RTL、spec、design、程序或该断言/golden，也未删除/跳过此用例、未换主机。
+
+具体待批准方案：仅迁移 `sim/cocotb/jalr/test_jalr.py` 中该地址的旧IALIGN=32预期，
+保留全部五组原刺激和检查，再对原0x80001002刺激严格检查exc=0、resolve=1、mispredict=1、
+target=0x80001002、link=0x80000024、valid=1；保留reset后invalid检查。
+不改RTL或现有冻结spec。未应用建议补丁，外部审阅稿为
+`/tmp/t09-resume-evidence/jalr-ialign16-proposal.patch`。
+
+停止依据：用户本轮禁止自行改golden/删除旧用例；任务书只允许spec第0节对应文件，
+JALR对应BRU不在L8a模块清单，不能自行扩大测试迁移范围。
+等待用户批准这一文件和该预期迁移后，才可继续完整同SHA复验。
+已停止后续自动调度，当前下层项完成后停止；没有进入L8b，没有提交M6或12.8通过声明，
+LOOP未改、origin未推送。M5通过仍为df0fb15；当前开发结果不替代最终门禁。
+
+停止时原始XML复核（均cloud_chen，不能跨SHA拼接）：b8d6de5a下层6项82/82、
+非访存已执行8套25/25，另early_wakeup编译失败无XML；00d7eb52下层4项49/49、
+early_wakeup1例失败；35b20b4c非访存8套33例中32通过/1失败，M5 build exit0但未跑目标；
+d1843775下层5项77/77，非访存4套44例中43通过/1失败（JALR）。所有已有XML skip/error0。
+所有在途项均已结束，自动调度已停止；没有遗留未知仿真结果。日志/XML/manifest已同步本地。
+继续时最终非访存清单还必须包含bpu目录的独立FTQ harness，不能仅运行普通Makefile目录清单。
