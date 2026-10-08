@@ -45,6 +45,7 @@ module dcache import o3_types_pkg::*; #(
     paddr_t rsv_addr;logic [1:0] rsv_size;
     coh_addr_t rsv_line,rsv_conflict_line; paddr_t rsv_set_pa;logic [1:0] rsv_set_size;
     logic atomic_hold_q;coh_addr_t atomic_line_q;int unsigned atomic_timer_q;
+    logic [N-1:0] atomic_live_q;
     logic [63:0] amo_new[P];
     dc_mshr_state_e ms_state[N];dc_line_txn_t ms_txn[N];
     logic ms_free,ms_alloc,ms_install,ms_install_issue,ms_install_done,ms_free_pulse;
@@ -415,7 +416,7 @@ module dcache import o3_types_pkg::*; #(
     end
     always_ff @(posedge clk) begin
         if(rst) begin
-            atomic_hold_q<=0;atomic_timer_q<=0;atomic_line_q<=0;ps_resp_q<='0;
+            atomic_hold_q<=0;atomic_timer_q<=0;atomic_line_q<=0;atomic_live_q<='0;ps_resp_q<='0;
             init_q<=0;init_done_q<=0;s1_q<='{default:'0};s2_q<='{default:'0};
             line_launch_q<='{default:'0};line_read_q<='0;line_result_q<='0;
             line_data_q<=0;line_state_q<=COH_I;line_way_q<=0;ps_valid_q<=0;ps_req_q<='0;ps_ad_q<='0;
@@ -425,6 +426,15 @@ module dcache import o3_types_pkg::*; #(
             internal_launch_valid_q<='{default:0};internal_launch_q<='{default:'0};internal_ad_launch_q<='{default:'0};
             fatal_o<='0;
         end else begin
+            // A cancelled HEU still drains its retained coherence request.
+            // Keep the transaction's protocol classification, but only a live
+            // head retry may arm the bounded post-install probe guard.
+            if(ms_alloc) atomic_live_q[ms_free_id]<=alloc_txn.atomic;
+            for(int p=0;p<P;p++) if(decision[p].valid && decision[p].status==DC_MISS_WAIT &&
+                s2_q[p].req.src==DC_SRC_AMO && ms_state[decision[p].mshr_id]!=DM_IDLE &&
+                ms_txn[decision[p].mshr_id].atomic) atomic_live_q[decision[p].mshr_id]<=1;
+            if(ms_install_done) atomic_live_q[line_launch_q[1].id]<=0;
+            if(flush_i) atomic_live_q<='0;
             if(atomic_hold_q) begin
                 atomic_timer_q<=atomic_timer_q+1;
                 assert(atomic_timer_q<CFG.dcache.atomic_hold_max) else $fatal(1,"atomic install retry exceeded bound");
@@ -432,7 +442,8 @@ module dcache import o3_types_pkg::*; #(
                     !s2_q[p].req.check_only && coh_addr_t'(s2_q[p].req.paddr>>6)==atomic_line_q) atomic_hold_q<=0;
                 if(flush_i) atomic_hold_q<=0;
             end
-            if(ms_install_done && line_launch_q[1].txn.atomic && !line_launch_q[1].txn.err) begin
+            if(ms_install_done && line_launch_q[1].txn.atomic && atomic_live_q[line_launch_q[1].id] &&
+                !line_launch_q[1].txn.err && !flush_i) begin
                 atomic_hold_q<=1;atomic_timer_q<=0;atomic_line_q<=line_launch_q[1].addr;
             end
             if(!init_done_q) begin

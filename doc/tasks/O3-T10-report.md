@@ -272,3 +272,9 @@ cache wrapper 增加上下文选择及 reservation 清除输入、只读 reserva
 MSHR=1 的 n2-cache-m1 共18例，14例通过；DMA广播新测试错误地要求广播与InvAck同拍，实际前一拍广播（107）、后一拍Ack（108）。冻结spec要求广播与tag置I同拍，与Ack无此要求。修正新测试代理在每个时钟沿前采样广播/原状态、沿后严格检查tag=I，并要求唯一广播/正确行/M→I，保留SC成功、脏应答与全行黄金数据断言。不是旧测试迁移或黄金常量更改。9个AMO用例另设置各自qualname以便日志/XML唯一命名，操作、5组输入和断言完全不变。
 
 随后取消用例在43857ns触发dcache.sv:430的atomic install retry exceeded bound；最后两例由于仿真终止尚未执行，不计作独立功能失败。取消用例发出AMO GetM后flush，释放迟到授权，要求50拍内没有RMW/reservation且读取原值；该原断言和规模保持。根因：line transaction 的atomic标记跨flush保留，安装迟到行后仍启动待重发保护，但HEU已取消，不再重发，16拍界限触发。须修RTL，保持断言16不变；不涉及B36。
+
+### N2 RTL 修复：取消后迟到安装不再启动原子重发保护
+
+独立复现 n2-cancel-repro 在 b4fdff0059775ed937a6582187bd5b7b6d8c8cbe、cloud_chen、1646ns 同样触发 dcache.sv:430 的16拍界限断言，排除前一失败用例的影响。准确复现命令见该项manifest.json：make -j4 -C sim/cocotb/dcache MSHRS=1 COCOTB_TEST_MODULES=test_l8b_dcache COCOTB_TESTCASE=io_fault_alignment_page_fault_and_pre_effect_cancel SIM_BUILD=/home/cloud_chen/evidence/t10/b4fdff00/n2-cache-m1/build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/t10/b4fdff00/n2-cancel-repro/results.xml。
+
+dcache 为每个MSHR增加 atomic_live_q：原子分配/仍存活的原子合并等待建立，flush清除，安装完成释放。迟到一致性请求继续按原协议完成，保留 transaction.atomic 的 WAIT probe 前进规则；只有当前存活的 HEU 原子请求在成功安装后启动 Y5 重发保护。安装与flush同拍也禁止启动。保留原16拍断言和两拍RMW断言，不延长窗口，不改B36。RTL修复独立提交，随后重跑 N1 与 L8a M1～M6 和当前N2。
