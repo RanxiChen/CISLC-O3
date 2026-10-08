@@ -1,7 +1,7 @@
 SIM ?= verilator
 TOPLEVEL_LANG := verilog
 COCOTB_TOPLEVEL := load_queue_tb_top
-COCOTB_TEST_MODULES := test_load_queue
+COCOTB_TEST_MODULES := test_load_queue,test_l8b_load_queue
 REPO_ROOT := $(abspath ../../..)
 VERILOG_SOURCES := $(REPO_ROOT)/rtl/common/o3_isa_pkg.sv $(REPO_ROOT)/rtl/common/o3_cfg_pkg.sv $(REPO_ROOT)/rtl/common/o3_types_pkg.sv $(REPO_ROOT)/rtl/common/o3_pkg.sv $(REPO_ROOT)/rtl/backend/load_queue.sv $(CURDIR)/load_queue_tb_top.sv
 SIM_BUILD := $(CURDIR)/sim_build/$(if $(filter 1,$(WAVES)),waves,plain)

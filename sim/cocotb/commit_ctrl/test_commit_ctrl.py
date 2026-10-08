@@ -7,7 +7,7 @@ async def edge(d):
 
 @cocotb.test()
 async def prefix_trap_serial_and_refetch(d):
-    for n in ['clk','head_valid_i','head_exc_i','head_serial_i','head_csr_i','csr_resp_valid_i','csr_illegal_i','sysop_i','pc_i','target_i','commit_valid_i','sq_empty_i','sync_ready_i','sync_done_i','trap_redirect_i']:getattr(d,n).value=0
+    for n in ['heu_irreversible_i','order_flush_i','head_split_i','clk','head_valid_i','head_exc_i','head_serial_i','head_csr_i','csr_resp_valid_i','csr_illegal_i','sysop_i','pc_i','target_i','commit_valid_i','sq_empty_i','sync_ready_i','sync_done_i','trap_redirect_i']:getattr(d,n).value=0
     d.head_needs_d_i.value=0;d.d_ready_i.value=0;d.d_done_i.value=0
     d.ptw_idle_i.value=1;d.sf_ack_i.value=0
     d.priv_i.value=3;d.status_i.value=0;d.irq_i.value=0;d.refetch_i.value=0;d.refetch_kind_i.value=6;d.wfi_stall_i.value=0
@@ -30,7 +30,7 @@ async def prefix_trap_serial_and_refetch(d):
     d.commit_valid_i.value=1;await settle();assert int(d.redirect_o.value)==1 and int(d.flush_o.value)==1
 
 async def reset_l10(d):
-    for n in ('clk','head_valid_i','head_exc_i','head_serial_i','head_csr_i','csr_resp_valid_i','csr_illegal_i','sysop_i','pc_i','target_i','commit_valid_i','sq_empty_i','sync_ready_i','sync_done_i','trap_redirect_i','status_i','irq_i','refetch_i','wfi_stall_i'):
+    for n in ('heu_irreversible_i','order_flush_i','head_split_i','clk','head_valid_i','head_exc_i','head_serial_i','head_csr_i','csr_resp_valid_i','csr_illegal_i','sysop_i','pc_i','target_i','commit_valid_i','sq_empty_i','sync_ready_i','sync_done_i','trap_redirect_i','status_i','irq_i','refetch_i','wfi_stall_i'):
         getattr(d,n).value=0
     d.head_needs_d_i.value=0;d.d_ready_i.value=0;d.d_done_i.value=0
     d.ptw_idle_i.value=1;d.sf_ack_i.value=0

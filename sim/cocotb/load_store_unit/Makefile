@@ -1,7 +1,7 @@
 SIM ?= verilator
 TOPLEVEL_LANG := verilog
 COCOTB_TOPLEVEL := load_store_unit_tb_top
-COCOTB_TEST_MODULES := test_load_store_unit
+COCOTB_TEST_MODULES := test_load_store_unit,test_l8b_load_store_unit
 REPO_ROOT := $(abspath ../../..)
 VERILOG_SOURCES := \
   $(REPO_ROOT)/rtl/common/o3_isa_pkg.sv \

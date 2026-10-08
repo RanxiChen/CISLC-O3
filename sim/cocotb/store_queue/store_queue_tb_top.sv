@@ -3,6 +3,9 @@ module store_queue_tb_top
     import o3_types_pkg::*;
 (
     input logic clk, rst, flush_all_i,
+ input sq_kind_e kind_i,
+ input logic heu_done_i,input rob_idx_t heu_done_idx_i,rob_head_i,
+ output logic heu_valid_o,output lq_replay_t heu_entry_o,output sq_kind_e heu_kind_o,
     input logic execute1_valid,query1_valid,
     input logic [SQ_IDX_WIDTH-1:0] execute1_idx,
     input logic [XLEN-1:0] execute1_addr,execute1_data,query1_addr,
@@ -88,8 +91,8 @@ module store_queue_tb_top
     assign query_forward_valid=qf[0];assign query1_forward_valid=qf[1];
     assign query_forward_data=qdata[0];assign query1_forward_data=qdata[1];
     store_queue #(.CFG(o3_cfg_pkg::O3_CFG.be), .DCACHE_DRAIN(1'b1)) dut (
-        .alloc_kind_i('{default:SQ_NORMAL}),.execute_kind_i('{default:SQ_NORMAL}),
-        .heu_done_i(1'b0),.heu_done_idx_i('0),.heu_valid_o(),.heu_entry_o(),.heu_kind_o(),
+        .alloc_kind_i('{default:kind_i}),.execute_kind_i('{default:kind_i}),
+        .heu_done_i(heu_done_i),.heu_done_idx_i(heu_done_idx_i),.heu_valid_o(heu_valid_o),.heu_entry_o(heu_entry_o),.heu_kind_o(heu_kind_o),
         .clk(clk), .rst(rst),.flush_all_i(flush_all_i),
         .alloc_req_i(alloc_req), .alloc_fire_i(multi_mode_i ? multi_alloc_count_i != 0 : alloc_valid),
         .alloc_rob_idx_i(alloc_rob_idx), .alloc_branch_mask_i(alloc_branch_mask),
@@ -99,7 +102,7 @@ module store_queue_tb_top
         .execute_mask_i(em),
         .commit_valid_i(commit_valid_arr), .commit_idx_i(commit_idx_arr),
         .query_valid_i(qv), .query_rob_idx_i(qr),
-        .rob_head_i(ROB_IDX_WIDTH'(0)), .query_addr_i(qa),
+        .rob_head_i(rob_head_i), .query_addr_i(qa),
         .query_mask_i(qm), .query_block_o(qb),
         .query_forward_valid_o(qf),
         .query_forward_data_o(qdata),

@@ -35,7 +35,7 @@ build:
 	@test -n "$(SPIKE_PREFIX)" && test -f "$(SPIKE_PREFIX)/lib/pkgconfig/riscv-riscv.pc" || { echo 'Activate cislc-o3 with the pinned Spike installed'; exit 1; }
 	rm -rf $(BUILD_DIR)
 	mkdir -p $(BUILD_DIR)
-	cd $(REPO_ROOT) && $(VERILATOR) $(VERILATOR_FLAGS) $(SIM_DIR)/o3_tandem_top.sv $(SIM_DIR)/main.cpp
+	cd $(REPO_ROOT) && $(VERILATOR) $(VERILATOR_FLAGS) $(SIM_DIR)/o3_tandem_top.sv $(SIM_DIR)/o3_mmio_model.sv $(SIM_DIR)/main.cpp
 
 run: run-smoke
 
@@ -240,3 +240,20 @@ run-l8a-mem:
 	python3 $(SIM_DIR)/tests/make_l8a_reference.py $(BUILD_DIR)/l8a_mem.elf $(BUILD_DIR)/l8a_mem.reference.jsonl
 	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK +L8A_STATS --image $(BUILD_DIR)/l8a_mem.elf --trace $(BUILD_DIR)/l8a_mem.jsonl --tohost-address 0x801ff000 --max-cycles 1500000 --max-retires 200000
 	python3 $(SIM_DIR)/tests/compare_retire_traces.py $(BUILD_DIR)/l8a_mem.reference.jsonl $(BUILD_DIR)/l8a_mem.jsonl --require-tohost > $(BUILD_DIR)/l8a_mem-prefix.json
+
+# L8b N6: self-check and tohost only, no Spike/ACT4 invocation.
+.PHONY: run-l8b-amo run-l8b-mmio run-l8b-misalign run-l8b-dma
+L8B_MAX_CYCLES ?= 2000000
+L8B_MAX_RETIRES ?= 250000
+run-l8b-amo:
+	$(RISCV_GCC) -march=rv64imac_zicsr_zifencei -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l8b_amo.S -o $(BUILD_DIR)/l8b_amo.elf
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) --image $(BUILD_DIR)/l8b_amo.elf --trace $(BUILD_DIR)/l8b_amo.jsonl --tohost-address 0x801ff000 --max-cycles $(L8B_MAX_CYCLES) --max-retires $(L8B_MAX_RETIRES)
+run-l8b-mmio:
+	$(RISCV_GCC) -march=rv64imac_zicsr_zifencei -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l8b_mmio.S -o $(BUILD_DIR)/l8b_mmio.elf
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) --image $(BUILD_DIR)/l8b_mmio.elf --trace $(BUILD_DIR)/l8b_mmio.jsonl --tohost-address 0x801ff000 --max-cycles $(L8B_MAX_CYCLES) --max-retires $(L8B_MAX_RETIRES)
+run-l8b-misalign:
+	$(RISCV_GCC) -march=rv64imafdc_zicsr_zifencei -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l8b_misalign.S -o $(BUILD_DIR)/l8b_misalign.elf
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) --image $(BUILD_DIR)/l8b_misalign.elf --trace $(BUILD_DIR)/l8b_misalign.jsonl --tohost-address 0x801ff000 --max-cycles $(L8B_MAX_CYCLES) --max-retires $(L8B_MAX_RETIRES)
+run-l8b-dma:
+	$(RISCV_GCC) -march=rv64imac_zicsr_zifencei -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l8b_dma.S -o $(BUILD_DIR)/l8b_dma.elf
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) --image $(BUILD_DIR)/l8b_dma.elf --trace $(BUILD_DIR)/l8b_dma.jsonl --tohost-address 0x801ff000 --max-cycles $(L8B_MAX_CYCLES) --max-retires $(L8B_MAX_RETIRES)

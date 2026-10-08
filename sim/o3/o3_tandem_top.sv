@@ -17,6 +17,8 @@ module o3_tandem_top
     input logic [AXI_DATA_W-1:0] axi_init_data_i,
     input logic [AXI_DATA_W/8-1:0] axi_init_wmask_i,
     output logic done_o, fatal_o, inclusion_err_o,
+    output logic [63:0] l8b_events_o[10],
+    output logic [63:0] mmio_side_reads_o,
     output logic cache_init_done_o,output logic [31:0] cfg_l2_sets_o,
     output logic [63:0] retired_inst_count_o,
     output logic [31:0] icache_refill_count_o,
@@ -56,6 +58,20 @@ module o3_tandem_top
     logic [AXI_DATA_W-1:0] wdata, rdata;
     logic [AXI_DATA_W/8-1:0] wstrb;
 
+    logic axil_awvalid,axil_awready,axil_wvalid,axil_wready,axil_bvalid,axil_bready;
+    logic axil_arvalid,axil_arready,axil_rvalid,axil_rready,model_irq;
+    logic [31:0] axil_awaddr,axil_araddr;logic [2:0] axil_awprot,axil_arprot;
+    logic [63:0] axil_wdata,axil_rdata;logic [7:0] axil_wstrb;logic [1:0] axil_bresp,axil_rresp;
+    logic dma_valid,dma_ready,dma_rvalid,dma_rready;dma_req_t dma_request;dma_resp_t dma_response;
+    o3_mmio_model u_mmio(.clk_i(clk_i),.rst_i(rst_i),
+      .awvalid_i(axil_awvalid),.awready_o(axil_awready),.awaddr_i(axil_awaddr),
+      .wvalid_i(axil_wvalid),.wready_o(axil_wready),.wdata_i(axil_wdata),.wstrb_i(axil_wstrb),
+      .bvalid_o(axil_bvalid),.bready_i(axil_bready),.bresp_o(axil_bresp),
+      .arvalid_i(axil_arvalid),.arready_o(axil_arready),.araddr_i(axil_araddr),
+      .rvalid_o(axil_rvalid),.rready_i(axil_rready),.rdata_o(axil_rdata),.rresp_o(axil_rresp),
+      .dma_req_valid_o(dma_valid),.dma_req_ready_i(dma_ready),.dma_req_o(dma_request),
+      .dma_resp_valid_i(dma_rvalid),.dma_resp_ready_o(dma_rready),.dma_resp_i(dma_response),
+      .irq_soft_o(model_irq),.side_reads_o(mmio_side_reads_o));
     logic [63:0] mtime_q;
     integer irq_m_soft_at,irq_m_timer_at,irq_m_ext_at,irq_s_ext_at;
     initial begin
@@ -86,11 +102,17 @@ module o3_tandem_top
         .m_axi_arburst(arburst),
         .m_axi_rvalid(rvalid), .m_axi_rready(rready), .m_axi_rid(rid),
         .m_axi_rdata(rdata), .m_axi_rresp(rresp), .m_axi_rlast(rlast),
-        .dma_req_valid_i(1'b0), .dma_req_ready_o(), .dma_req_i('0), .dma_resp_o(),
+        .dma_req_valid_i(dma_valid), .dma_req_ready_o(dma_ready), .dma_req_i(dma_request), .dma_resp_o(dma_response),
+        .dma_resp_valid_o(dma_rvalid),.dma_resp_ready_i(dma_rready),
+        .m_axil_awvalid(axil_awvalid),.m_axil_awready(axil_awready),.m_axil_awaddr(axil_awaddr),.m_axil_awprot(axil_awprot),
+        .m_axil_wvalid(axil_wvalid),.m_axil_wready(axil_wready),.m_axil_wdata(axil_wdata),.m_axil_wstrb(axil_wstrb),
+        .m_axil_bvalid(axil_bvalid),.m_axil_bready(axil_bready),.m_axil_bresp(axil_bresp),
+        .m_axil_arvalid(axil_arvalid),.m_axil_arready(axil_arready),.m_axil_araddr(axil_araddr),.m_axil_arprot(axil_arprot),
+        .m_axil_rvalid(axil_rvalid),.m_axil_rready(axil_rready),.m_axil_rdata(axil_rdata),.m_axil_rresp(axil_rresp),
         .mtime_i(mtime_q),
         .irq_m_ext_i(irq_m_ext_at>=0 && mtime_q>=64'(irq_m_ext_at)),
         .irq_m_timer_i(irq_m_timer_at>=0 && mtime_q>=64'(irq_m_timer_at)),
-        .irq_m_soft_i(irq_m_soft_at>=0 && mtime_q>=64'(irq_m_soft_at)),
+        .irq_m_soft_i(model_irq || (irq_m_soft_at>=0 && mtime_q>=64'(irq_m_soft_at))),
         .irq_s_ext_i(irq_s_ext_at>=0 && mtime_q>=64'(irq_s_ext_at)),
         .fatal_o(fatal_o), .inclusion_err_o(inclusion_err_o),
         .done_o(done_o), .retired_inst_count_o(retired_inst_count_o),
@@ -317,6 +339,13 @@ module o3_tandem_top
                 l8a_rfo_issued_q,l8a_rfo_useful_q,l8a_bank_replays_q,l8a_probe_q,l8a_writeback_q);
     end
 
+// New L8b events are observational; no threshold is imposed here.
+    localparam int L8B_CODES[10]='{BE_AMO_EXEC,BE_LR_EXEC,BE_SC_FAIL,BE_RSV_PROBE_HOLD_CYCLE,
+        BE_MMIO_READ,BE_MMIO_WRITE,BE_MISALIGNED_CROSSLINE_SPLIT,BE_LD_ORDER_FLUSH,BE_DMA_READ,BE_DMA_WRITE};
+    always_ff @(posedge clk_i) begin
+        if(rst_i) for(int i=0;i<10;i++) l8b_events_o[i]<=0;
+        else for(int i=0;i<10;i++) l8b_events_o[i]<=l8b_events_o[i]+64'(u_core.u_backend.be_perf[L8B_CODES[i]]);
+    end
 endmodule
 
 /** Single outstanding AXI4 read and write transaction, backed by 1 MiB RAM.
