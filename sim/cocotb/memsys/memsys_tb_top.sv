@@ -67,7 +67,10 @@ module memsys_tb_top import o3_types_pkg::*; #(
     input logic l1i_req_valid_i,output logic l1i_req_ready_o,input coh_req_t l1i_req_i,
     output logic l1i_resp_valid_o,input logic l1i_resp_ready_i,output coh_rsp_down_t l1i_resp_o
 );
-    dcache_tb_top #(.SETS(SETS),.WAYS(WAYS),.MSHRS(MSHRS),.WBS(WBS),.RFO(RFO)) cache(.*);
+    dcache_tb_top #(.SETS(SETS),.WAYS(WAYS),.MSHRS(MSHRS),.WBS(WBS),.RFO(RFO)) cache(
+        .context_valid_i(1'b0),.test_priv_i(2'd3),.rsv_clear_i(1'b0),
+        .mon_rsv_valid(),.mon_rsv_window(),.mon_atomic_hold(),
+        .dma_invalidate_o(),.dma_line_o(),.irreversible_o(),.*);
     l2_home_tb_top #(.SETS(L2_SETS),.WAYS(L2_WAYS),.SLOTS(SLOTS)) home(
         .l1d_req_valid_i(l2_req_valid_o),.l1d_req_ready_o(l2_req_ready_i),.l1d_req_i(l2_req_o),
         .l1d_resp_valid_o(l2_resp_valid_i),.l1d_resp_ready_i(l2_resp_ready_o),.l1d_resp_o(l2_resp_i),
