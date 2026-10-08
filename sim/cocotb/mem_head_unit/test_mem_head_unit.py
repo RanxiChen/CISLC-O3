@@ -5,7 +5,7 @@ INPUTS=['clk','rst','start_valid_i','sq_empty_i','flush_i','start_i','rob_head_i
 async def wait(d,port,limit=40):
     for _ in range(limit):
         await settle()
-        if val(getattr(d,port)):return
+        if (field(d,'result',val(d.result_o),'valid') if port=='result_o' else val(getattr(d,port))):return
         await tick(d)
     assert False,'watchdog '+port
 
@@ -46,7 +46,7 @@ async def atomic_result_held_no_reexecution_and_flush_before_effect_cancels(d):
         await tick(d)
     assert field(d,'result',expected,'data')==0xdeadbeef
     d.result_ready_i.value=1;await tick(d);assert not field(d,'result',val(d.result_o),'valid')
-    await start(d);d.flush_i.value=1;await tick(d);d.flush_i.value=0
+    await start(d);d.flush_i.value=1;await tick(d);d.flush_i.value=0;await settle()
     assert not val(d.dc_valid_o) and not val(d.mmio_valid_o) and val(d.start_ready_o)
 
 @cocotb.test()
