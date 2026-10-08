@@ -7,6 +7,7 @@ module load_queue import o3_pkg::*; #(
 )(input logic clk,rst,flush_i,
     input o3_types_pkg::rob_idx_t rob_head_i,
     input logic dma_invalidate_i,input o3_types_pkg::coh_addr_t dma_line_i,
+    input logic pte_a_write_i,input o3_types_pkg::coh_addr_t pte_a_line_i,
     output logic order_flush_o,heu_valid_o,output lq_replay_t heu_entry_o,
     input logic heu_done_i,input o3_types_pkg::rob_idx_t heu_done_idx_i,
     input logic alloc_req_i[RENAME_WIDTH-1:0],input logic alloc_fire_i,
@@ -27,11 +28,16 @@ module load_queue import o3_pkg::*; #(
     logic valid_q[DEPTH],ready_q[DEPTH],executed_q[DEPTH];
     logic [o3_types_pkg::LQ_GEN_W-1:0] gen_q[DEPTH];lq_replay_t entry_q[DEPTH];
     int head_q,tail_q,count_q;int replay_idx[P];
+    function automatic logic order_hit(input o3_types_pkg::paddr_t pa);
+        return CFG.lsu.order_flush_enable &&
+            ((dma_invalidate_i && o3_types_pkg::coh_addr_t'(pa>>6)==dma_line_i) ||
+             (pte_a_write_i && o3_types_pkg::coh_addr_t'(pa>>6)==pte_a_line_i));
+    endfunction
     always_comb begin
         int before_lane;before_lane=0;order_flush_o=0;heu_valid_o=0;heu_entry_o='0;
         for(int n=0;n<DEPTH;n++) if(valid_q[n] && entry_q[n].uop.rob_idx==rob_head_i &&
             !(resolution_valid_i && resolution_mispredict_i && entry_q[n].uop.branch_mask[resolution_tag_i])) begin
-            order_flush_o=order_q[n] || (CFG.lsu.order_flush_enable && dma_invalidate_i && executed_q[n] && !entry_q[n].exc.valid && !head_done_q[n] && o3_types_pkg::coh_addr_t'(pa_q[n]>>6)==dma_line_i);
+            order_flush_o=order_q[n] || (order_hit(pa_q[n]) && executed_q[n] && !entry_q[n].exc.valid && !head_done_q[n]);
             if(entry_q[n].wait_reason==o3_types_pkg::LDW_HEAD && !executed_q[n] && entry_q[n].uop.valid) begin heu_valid_o=1;heu_entry_o=entry_q[n];end
         end
         for(int l=0;l<RENAME_WIDTH;l++) begin alloc_idx_o[l]=IW'((tail_q+before_lane)%DEPTH);before_lane+=int'(alloc_req_i[l]);end
@@ -64,7 +70,7 @@ module load_queue import o3_pkg::*; #(
                 if(valid_q[n] && dead) begin valid_q[n]<=0;ready_q[n]<=0;executed_q[n]<=0;end
                 else if(valid_q[n]) begin
                     kept++;
-                    if(CFG.lsu.order_flush_enable && dma_invalidate_i && executed_q[n] && !entry_q[n].exc.valid && !head_done_q[n] && o3_types_pkg::coh_addr_t'(pa_q[n]>>6)==dma_line_i) order_q[n]<=1;
+                    if(order_hit(pa_q[n]) && executed_q[n] && !entry_q[n].exc.valid && !head_done_q[n]) order_q[n]<=1;
                     if(heu_done_i && entry_q[n].uop.rob_idx==heu_done_idx_i) begin executed_q[n]<=1;head_done_q[n]<=1;end
                     if(resolution_valid_i) entry_q[n].uop.branch_mask[resolution_tag_i]<=0;
                     case(entry_q[n].wait_reason)
@@ -90,7 +96,7 @@ module load_queue import o3_pkg::*; #(
                         if(update_valid_i[p] && update_i[p].lq_tag.idx==n && update_i[p].lq_tag.gen==gen_q[n]) begin
                             entry_q[n].wait_reason<=update_i[p].reason;entry_q[n].mshr_id<=update_i[p].mshr_id;
                             entry_q[n].exc<=update_i[p].exc;pa_q[n]<=update_i[p].paddr;
-                            if(CFG.lsu.order_flush_enable && dma_invalidate_i && update_i[p].status==o3_types_pkg::DC_OK && o3_types_pkg::coh_addr_t'(update_i[p].paddr>>6)==dma_line_i) order_q[n]<=1;
+                            if(order_hit(update_i[p].paddr) && update_i[p].status==o3_types_pkg::DC_OK && !update_i[p].exc.valid && !head_done_q[n] && !(heu_done_i && entry_q[n].uop.rob_idx==heu_done_idx_i)) order_q[n]<=1;
                             executed_q[n]<=update_i[p].status==o3_types_pkg::DC_OK || update_i[p].status==o3_types_pkg::DC_ERROR;
                             ready_q[n]<=update_i[p].status==o3_types_pkg::DC_REPLAY &&
                                 update_i[p].reason inside {o3_types_pkg::LDW_CONFLICT,o3_types_pkg::LDW_SNAP,o3_types_pkg::LDW_BANK};

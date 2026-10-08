@@ -630,6 +630,7 @@ CSRFile 承接 M/S pending、enable、delegation、trap entry/return 及软件 S
 
 - TLB 命中、权限和 A/D 都满足时走原 load/store 流水线，不新增流水级。更新状态机放在旁侧，普通 load/store 不经过它。
 - A 位可以在推测翻译中原子更新，完成更新后才交付可使用的翻译。
+- 成功把 PTE 的 A 位从 0 置 1 时，在 DCache 实际写入的同拍向 LQ 独立广播该 PTE 物理行。已执行、未退休的同行普通 load（含 SQ 转发、同拍成功完成的 load）置 order_flush，到 ROB 队头不退休而冲刷该 load 及更年轻指令并从其 PC 重取。被取消、有异常或由 HEU 完成的 load 不标记。比较不匹配、写入失败、写前取消不广播。与 DMA Inv 同拍的不同物理行分别匹配，不能丢失任一来源；不伪造 dma_write，不计 DMA 事务或读写事件，实际重取计 ld_order_flush。内部 PTW 更新不受 HEU 队头门控，常用命中路径不增加流水级。（2026-10-08，T10 Y11 用户批准补丁。）
 - store 遇到 D=0 时标记 needs_D 并释放 PTW 槽位，到 ROB 队首再做非推测更新；首版慢路径可重新遍历，不要求每个 SQ 项保存完整 PTE 快照。D=0 慢路径阻止年轻访存越过，已执行的年轻访问纳入重放/排序处理。
 - DCache 提供内部“完整 64 位 PTE 比较 + 条件置 A/D”入口。比较不匹配时重新遍历检查，不能直接 OR 后覆盖，也不是立即报 page fault。更新错误归属原指令，在退休前处理。
 - 取消、SFENCE.VMA、satp 切换不仅要过滤旧响应，还必须阻止失效上下文发起新的 PTE 写入。内部 PTW 更新不能被外部 AMO 的 ROB 队首门控卡死。

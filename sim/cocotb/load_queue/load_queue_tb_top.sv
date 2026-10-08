@@ -27,7 +27,7 @@ module load_queue_tb_top import o3_pkg::*; #(
     output o3_types_pkg::dcache_resp_t fmt_update_valid,fmt_update_status,fmt_update_reason,
     fmt_update_mshr_id,fmt_update_lq_tag_idx,fmt_update_lq_tag_gen,fmt_update_exc
 );
-    load_queue #(.CFG(CFG)) dut(.rob_head_i('0),.dma_invalidate_i(1'b0),.dma_line_i('0),.order_flush_o(),.heu_valid_o(),.heu_entry_o(),.heu_done_i(1'b0),.heu_done_idx_i('0),.*);
+    load_queue #(.CFG(CFG)) dut(.rob_head_i('0),.dma_invalidate_i(1'b0),.dma_line_i('0),.pte_a_write_i(1'b0),.pte_a_line_i('0),.order_flush_o(),.heu_valid_o(),.heu_entry_o(),.heu_done_i(1'b0),.heu_done_idx_i('0),.*);
     assign cfg_width_o=W;assign cfg_depth_o=D;assign cfg_rob_o=CFG.rob.entries;
     assign cfg_tags_o=CFG.rename.checkpoints;assign cfg_pipes_o=P;
     for(genvar n=0;n<D;n++) begin

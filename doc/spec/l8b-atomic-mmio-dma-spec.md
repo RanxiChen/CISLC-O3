@@ -251,7 +251,7 @@ HEU 是 LSU 旁边的一个单项状态机，处理四类“到 ROB 队头才执
 - **FENCE.I**：按 L8a 第 9 节约定，正式删除 `dcache.clean_all_req_i / clean_all_done_o / clean_all_busy_o` 与 `commit_ctrl` 的对应端口和连线。流程保持：等 SQ 排空 → 前端同步（ICache 全清）→ 退休重取。`commit_ctrl` 头注释改为当前流程。
 - 驱动 `BE_FENCEI_RETIRED`（`'h22`，退休握手计 1）。`'h23 BE_FENCEI_DCACHE_EVICT_CYCLE` 保留编码、恒 0、注释“已取消（B51 40.7）”，不删除不重排（枚举注释要求只追加）。
 
-## 10. DMA 写引起的 load 顺序冲刷（B51 40.5）
+## 10. DMA 写与内部 PTE A 更新引起的 load 顺序冲刷（B51 40.5、B36）
 
 问题：两个同地址的 load，年轻的先执行读到旧值；然后 DMA 写入；年老的后执行读到新值。按 RVWMO 的同地址读读一致性（CoRR），这是不允许的。
 
@@ -259,6 +259,7 @@ HEU 是 LSU 旁边的一个单项状态机，处理四类“到 ROB 队头才执
 - LQ：所有 `executed = 1`、未退休、PA 与该行相同的 load 置 `order_flush`（含用 SQ 转发得到数据的 load，保守处理）。S0～S2 中尚未判定的 load 由 L8a 的快照失效（`Replay(SNAP)`）覆盖。
 - 处理（Y10）：带 `order_flush` 的 load 到 ROB 队头时，不退休，冲刷它和所有更年轻的指令，从该 load 的 PC 重新取指（复用 `commit_ctrl` 的 refetch 流程）。
 - 被 HEU 处理的 load（MMIO、拆分）不需要标记：它们在队头执行，没有更老的未执行 load。
+- 内部 A 更新（2026-10-08 Y11 用户批准 B36 补丁）：成功把 PTE 的 A 位从 0 置 1 时，在 DCache 实际写入的同拍向 LQ 独立广播该 PTE 物理行。已执行、未退休的同行普通 load（含 SQ 转发、同拍成功完成的 load）置 order_flush，到 ROB 队头不退休而冲刷该 load 及更年轻指令并从其 PC 重取。被取消、有异常或由 HEU 完成的 load 不标记。比较不匹配、写入失败、写前取消不广播。与 DMA Inv 同拍的不同物理行分别匹配，不能丢失任一来源；不伪造 dma_write，不计 DMA 事务或读写事件，实际重取计 ld_order_flush。内部 PTW 更新不受 HEU 队头门控，常用命中路径不增加流水级。
 - 事件：`ld_order_flush`（新增）。
 
 ## 11. 性能事件
@@ -281,7 +282,7 @@ HEU 是 LSU 旁边的一个单项状态机，处理四类“到 ROB 队头才执
 - 本层测试全部通过，再加下一层。
 - 本层失败就修 RTL，不放宽本层或下层的断言、黄金值和用例规模。修 RTL 后，已通过的下层要重跑；L8a 的 M1～M6 视为 N1 之下的既有层，受影响时同样重跑。
 - 每通过一层提交一次，提交信息写明 `L8b test layer Nk pass`。
-- Y11（`run-l10-vm`）：先在 N2/N3 用同样的 PTE A 位写入加普通 load 读回序列复现，再修 RTL。根因在 PTW 或 `pte_ad_updater` 时允许改这两个文件（第 0 节已列），但不改 B36 合同；需要改合同时停下。
+- Y11（`run-l10-vm`）：先在 N2/N3 用同样的 PTE A 位写入加普通 load 读回序列复现，再修 RTL。根因在 PTW 或 `pte_ad_updater` 时允许改这两个文件（第 0 节已列），遵循已批准的 B36 A 更新重放补丁；需要其他合同改动时停下。
 
 | 层 | 测试 | 内容 |
 | --- | --- | --- |

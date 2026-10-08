@@ -119,7 +119,7 @@ module backend
 
     logic heu_start_valid,heu_start_ready,heu_sq_valid,heu_lq_valid,heu_dc_valid,heu_dc_ready;
     logic heu_done,heu_exc_valid,heu_exc_ready,heu_irreversible,dc_irreversible;
-    logic dma_invalidate,lq_order_flush; o3_types_pkg::coh_addr_t dma_line;
+    logic dma_invalidate,pte_a_write,lq_order_flush; o3_types_pkg::coh_addr_t dma_line,pte_a_line;
     logic heu_d_valid,heu_d_ready,heu_d_done,up_d_ready,up_d_done;
     o3_types_pkg::exc_info_t up_d_exc;
     o3_types_pkg::vaddr_t heu_d_va;o3_types_pkg::sq_idx_t heu_d_sq;
@@ -1364,7 +1364,7 @@ module backend
     );
 
     load_queue #(.CFG(CFG)) u_load_queue (
-        .clk(clk),.rst(rst),.flush_i(global_flush),.rob_head_i(rob_head),.dma_invalidate_i(dma_invalidate),.dma_line_i(dma_line),
+        .clk(clk),.rst(rst),.flush_i(global_flush),.rob_head_i(rob_head),.dma_invalidate_i(dma_invalidate),.dma_line_i(dma_line),.pte_a_write_i(pte_a_write),.pte_a_line_i(pte_a_line),
         .order_flush_o(lq_order_flush),.heu_valid_o(heu_lq_valid),.heu_entry_o(heu_lq_entry),.heu_done_i(heu_complete),.heu_done_idx_i(heu_complete_idx),.alloc_req_i(lq_alloc_req),.alloc_fire_i(rename_fire),
         .alloc_rob_idx_i(rob_idx),.alloc_branch_mask_i(rename_branch_mask),.alloc_idx_o(lq_idx),.free_count_o(lq_free_count),.tail_o(lq_tail),
         .capture_valid_i(lq_capture),.capture_i(mem_capture),.capture_tag_o(mem_lq_tag),
@@ -2277,7 +2277,7 @@ module backend
 
     dcache #(.CFG(CFG)) u_dcache (
         .clk(clk),.rst(rst),.ld_req_valid_i(t_dc_ld_req_valid),.ld_req_ready_o(t_dc_ld_req_ready),.ld_req_i(t_dc_ld_req),.ld_s1_i(t_dc_s1),.ld_resp_o(t_dc_ld_resp),
-        .priv_i(t_dmmu_csr.priv_eff),.rsv_clear_i(t_rsv_clear_valid),.dma_invalidate_o(dma_invalidate),.dma_line_o(dma_line),.irreversible_o(dc_irreversible),
+        .priv_i(t_dmmu_csr.priv_eff),.rsv_clear_i(t_rsv_clear_valid),.dma_invalidate_o(dma_invalidate),.dma_line_o(dma_line),.pte_a_write_o(pte_a_write),.pte_a_line_o(pte_a_line),.irreversible_o(dc_irreversible),
         .rob_head_i(rob_head),.flush_i(global_flush),.resolution_valid_i(branch_resolution_i.valid),.resolution_mispredict_i(branch_resolution_i.mispredict),.resolution_tag_i(branch_resolution_i.branch_tag),
         .full_line_busy_o(dc_full_busy),.internal_busy_o(dc_internal_busy),.wake_o(dc_wake),
         .st_req_valid_i(t_sq_dc_req_valid),.st_req_ready_o(t_sq_dc_req_ready),.st_req_i(t_sq_dc_req),.st_resp_o(t_sq_dc_resp),

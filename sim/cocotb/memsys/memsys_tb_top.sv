@@ -21,6 +21,7 @@ module memsys_tb_top import o3_types_pkg::*; #(
     output logic rsp_up_valid_o,output logic rsp_up_ready_i,output coh_rsp_up_t rsp_up_o,
     output logic snp_valid_i,output logic snp_ready_o,output coh_snp_t snp_i,
     output logic idle_o,output fatal_evt_t fatal_o,output be_perf_t perf_o,
+    output logic pte_a_write_o,output coh_addr_t pte_a_line_o,
     output logic init_done,
     output logic mon_ps_valid,mon_ps_write,mon_probe_hold,mon_probe_read,mon_ps_alloc,
     output logic [MSHRS-1:0] mon_ms_valid,

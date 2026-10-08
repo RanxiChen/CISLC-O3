@@ -344,3 +344,7 @@ env -u O3_INJECT /home/cloud_chen/evidence/t10/2a05dca0/n3-y11-build/build/Vo3_t
 相应在冻结L8b spec第10节增加这一内部成功A更新触发，并明确它与DMA Inv分别接入、同拍两个不同物理行均不得丢失；不伪造dma_write位，不计DMA事务/读写事件，实际重取仍计ld_order_flush。D=0的既有队头合同保持。N3加入已观察顺序的回归，N4补两来源同拍/排除/队头重取测试，原VM程序、自查及trap计数全部保留。具体端口编码与仲裁可在批准后自行决定并记录。
 
 此建议要求修改冻结spec及doc/design的B36，触发任务书停止条件，当前仅写入本报告供审批。未实施上述RTL，不宣称N3通过，不进入N4/N5/N6，不推送origin、不开始L8c。
+
+## B36 / Y11 用户批准补丁实施
+
+用户已批准前述具体合同补丁并要求继续到 N6。同步 B36 与 L8b 第10节；DCache 在成功的物理 A 0→1 写入拍独立输出 pte_a_write/pte_a_line，LQ 对两个来源分别匹配，包含同拍普通 load 完成、SQ 转发结果。DMA 位与事件不复用。比较失败、权限失败无 PS 写入因而无广播。保留现有不可撤销写入边界与内部 epoch 判定。尚未声明修复通过，随后在准确 SHA 上运行 lint、下层 M1～M6/N1/N2，并确认原 run-l10-vm。

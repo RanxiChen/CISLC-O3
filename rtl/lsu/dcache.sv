@@ -13,6 +13,7 @@ module dcache import o3_types_pkg::*; #(
     input rob_idx_t rob_head_i,
     input logic rsv_clear_i=1'b0,input logic [1:0] priv_i=2'd3,
     output logic dma_invalidate_o,output coh_addr_t dma_line_o,output logic irreversible_o,
+    output logic pte_a_write_o,output coh_addr_t pte_a_line_o,
     input logic flush_i,resolution_valid_i,resolution_mispredict_i,input br_tag_t resolution_tag_i,
     // Reservations for LSU's IS stage; the CPU S0 request arrives two cycles later.
     output logic full_line_busy_o,output logic internal_busy_o,
@@ -118,6 +119,9 @@ module dcache import o3_types_pkg::*; #(
     end
     assign dma_invalidate_o=probe_done && probe_snp.op==COH_INV && probe_snp.dma_write;
     assign dma_line_o=line_result_q.addr;
+    // B36: broadcast at the successful physical 0->1 A write, independently of DMA.
+    assign pte_a_write_o=ps_write && ps_is_ad_q && ps_ad_q.set_a && !ps_ad_q.expected_pte[6];
+    assign pte_a_line_o=coh_addr_t'(ps_req_q.paddr>>6);
     assign irreversible_o=ps_write && ps_req_q.head;
     dcache_mshr #(.CFG(CFG)) u_mshr(.clk(clk),.rst(rst),.alloc_i(ms_alloc),.alloc_txn_i(alloc_txn),
         .free_o(ms_free),.free_id_o(ms_free_id),.free_count_o(ms_free_count),.state_o(ms_state),.txn_o(ms_txn),
