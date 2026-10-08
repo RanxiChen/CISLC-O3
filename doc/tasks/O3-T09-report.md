@@ -1,6 +1,6 @@
 # O3-T09：L8a 实施与分层验证记录
 
-日期：2026-10-08。M1～M5已通过；M6整核开发目标通过，JALR迁移已获批准并通过；完整复验目前停在旧WB fixture冲突，尚未提交M6通过声明。X11 与 spec12退休解释均按用户批准执行。前半部分保留历史实施/停点记录，当前结果见文末；尚未声明12.8总门禁通过。
+日期：2026-10-08。M1～M6分层复验已通过；本报告与LOOP收尾提交冻结为最终候选，spec12.8交付结论按文末同SHA确认单生效。X11、退休截止解释及两处用户批准的测试迁移均按授权执行。前半部分保留历史实施/停点记录，当前结果见文末。
 
 ## 基线与源码
 
@@ -1082,3 +1082,181 @@ M6/12.8仍未标记通过、LOOP未改、origin未推送；等待上述两文件
 RTL、spec、程序和整核golden不改；这项批准不延伸到其他未知冲突。
 接下来先定向验证，再在稳定候选完整同SHA重跑下层、M5、M6及全部既有套件，
 完成后更新LOOP、总门禁复验、推送并停止，不开始L8b。
+
+
+#### M6 通过：稳定候选完整复验（2026-10-08）
+
+执行完整SHA `4958c9c8cb65758c8b9adc33773a7dc6b832a493`，实际主机
+cloud_chen@47.96.71.231，cwd `/home/cloud_chen/work/20261008-t09-4958c9c8`。
+证据根 `/home/cloud_chen/evidence/t09/4958c9c8`，本地日志/XML/确认单副本
+`/tmp/t09-resume-evidence/4958c9c8`。每项实时重读共享配置、cloud_chen预检成功，
+环境为Verilator5.050/cocotb2.1.0/Python3.12.12/GCC13.2.0；没有退回Alan，没有本地仿真。M3最后组合的SSH返回一度延迟，远端exit0/XML5/5先已核实；原连接自行恢复并继续M4，没有重跑或换主机。后续执行包装增加SSH keepalive，只改仓库外传输工具，不改测试命令/树。
+源码通过Git SSH准确对象传送到独立clone，固定CVFPU/common_cells pin不变，无Git bundle。
+每项启动时核查完整HEAD与tracked tree干净；开发结果未知的旧任务没有复用。
+
+用户批准WB迁移后，原用例定向1/1、4166ns、exit0；全量既有套件再次1/1通过。
+JALR迁移原用例1/1通过，所有原刺激保留。两处批准不扩大到其他测试预期。
+
+| 下层 | 完整配置/规模 | 用例 | exit |
+| --- | --- | ---: | ---: |
+| M1 | 压力12、slot-full1、默认10；原seed51/52 | 23 | 0 |
+| M2 | MSHRS1=26、MSHRS4=28，含PMP内部来源 | 54 | 0 |
+| M3 | MSHRS1→4，压力→默认，RFO0→1；八组合各5例，seed61/62各2000CPU+500I | 40 | 0 |
+| M4 | seed1/7/29各LQ6/SQ6/LSU6/L5异常2/PRF1/MMU7/ICache4/IQ kind0/1/2各1/PTE2；另直接IQ3/commit6 | 120 | 0 |
+
+M1～M4共48项237例全部通过，原始XML failure/error/skip0。
+lower-plan.json及逐项manifest/log/exit/XML绑定此SHA，没有跨SHA拼接。
+PTE三个seed每个2/2；M4真实D-refresh新用例和旧异常FIFO均在本SHA包含。
+退休比较脚本5个边界测试同SHA通过；lint 0 errors/356 warnings、exit0。
+
+既有非访存41项121例全部通过（39个普通目录、bpu独立FTQ、MDU DIV=1），
+逐项XML failure/error/skip0。非访存清单及用例数如下，原始命令在对应manifest，
+默认TEST_SEED=1，独立FTQ显式指定ftq_training_tb_top/test_ftq，DIV显式DIV=1。
+
+| 套件 | 用例 | exit |
+| --- | ---: | ---: |
+| backend | 2 | 0 |
+| backend_control | 1 | 0 |
+| bpu | 5 | 0 |
+| bpu_slow_check | 1 | 0 |
+| branch_checkpoint_file | 1 | 0 |
+| branch_recovery | 4 | 0 |
+| csr_file | 10 | 0 |
+| decoder | 1 | 0 |
+| early_wakeup | 1 | 0 |
+| fetch_buffer | 2 | 0 |
+| fetch_return_queue | 3 | 0 |
+| fpu_fu | 2 | 0 |
+| free_list | 2 | 0 |
+| frontend_sync_ctrl | 3 | 0 |
+| fu_completion_fifo | 1 | 0 |
+| hpm_counters | 19 | 0 |
+| ifu_f0 | 6 | 0 |
+| ifu_f1 | 18 | 0 |
+| jalr | 1 | 0 |
+| l7_recovery | 2 | 0 |
+| main_btb | 2 | 0 |
+| mdu | 1 | 0 |
+| mul_fusion_detect | 1 | 0 |
+| o3_sram_1r1w | 1 | 0 |
+| pmp_checker | 2 | 0 |
+| ras | 2 | 0 |
+| redirect_arbiter | 2 | 0 |
+| rename_dispatch_queue | 1 | 0 |
+| rename_entry_gate | 1 | 0 |
+| rename_map_table | 2 | 0 |
+| rename_stage | 1 | 0 |
+| rob | 4 | 0 |
+| rvc_expander | 3 | 0 |
+| tage | 2 | 0 |
+| trap_ctrl | 1 | 0 |
+| ubtb | 3 | 0 |
+| uop_queue | 1 | 0 |
+| wb_alu_kill | 1 | 0 |
+| wfi_ctrl | 1 | 0 |
+| ftq | 3 | 0 |
+| mdu_div | 1 | 0 |
+
+M5 MEM_PIPES=1、M6 MEM_PIPES=2；两者MSHRS=4/RFO=1，build及全部目标exit0。
+M5九项回归+AD+三项dcache/unified，共13目标14程序；M6相同目标另加run-l8a-mem。
+每个目标原golden/自查均保留；有tohost的目标以--require-tohost自动识别成功截止点，
+两份前缀逐条比较类型/PC/指令/trap cause/tval，仅批准的同拍后槽位末尾JAL可豁免。
+定长目标没有tohost、无尾部豁免，严格比较全部事件。原始trace/比较JSON保留在目标目录。
+
+M5→M6本SHA对比（前缀中正常退休/trap也逐程序列出；全事件=前缀+豁免尾部）：
+
+| 程序 | M5周期 | M6周期 | 差值 | M5前缀/尾部 | M6前缀/尾部 | 前缀正常/trap |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| dcache_data | 589 | 583 | -6 | 7/0 | 7/0 | 7/0 |
+| dcache_replay | 597 | 597 | +0 | 6/0 | 6/0 | 6/0 |
+| icache_smoke | 545 | 545 | +0 | 4/0 | 4/0 | 4/0 |
+| l10_ad | 16393 | 16393 | +0 | 6249/2 | 6249/2 | 6249/0 |
+| l10_priv | 3987 | 3987 | +0 | 436/1 | 436/1 | 419/17 |
+| l3_branch_dense | 2478 | 2477 | -1 | 365/0 | 365/0 | 365/0 |
+| l7_predict_a | 44296 | 44300 | +4 | 19393/3 | 19393/3 | 19393/0 |
+| l7_predict_b | 44362 | 44345 | -17 | 19444/1 | 19444/1 | 19444/0 |
+| l7b_rvc | 6361 | 6361 | +0 | 2213/1 | 2213/1 | 2213/0 |
+| l9_fp | 2361 | 2354 | -7 | 614/1 | 614/1 | 613/1 |
+| l9_fp_smoke | 1370 | 1387 | +17 | 264/1 | 264/1 | 264/0 |
+| replay-integer | 624 | 624 | +0 | 18/2 | 18/2 | 18/0 |
+| rv64i_instructions | 576 | 576 | +0 | 14/0 | 14/0 | 14/0 |
+| unified_memory | 630 | 630 | +0 | 18/0 | 18/0 | 18/0 |
+
+新run-l8a-mem：123750周期、全事件62786、截止前缀62785正常退休/trap0，
+合法同拍末尾JAL豁免1，原自查+tohost和独立顺序模型逐事件比较均exit0。
+MSHR采样123750拍、占用之和71657，平均0.579046；
+RFO发出/有用932/931，bank冲突重放190，
+probe1、写回2471。覆盖64KiB替换/写回、循环八个独立冷load、同行load、
+8192个store逐字复核、代码数据共享行与同bank模式；不设周期/性能阈值。
+
+run-l10-vm继续作为已知问题观察，不计入通过目标。两配置原始观察如下：
+
+| 配置 | make exit | 全事件 | 正常/trap | 推导周期 | 成功前缀 | 豁免 |
+| --- | ---: | ---: | --- | ---: | --- | ---: |
+| m5 | 2 | 6295 | 6292/3 | 16671 | 无（tohost=3） | 0 |
+| m6 | 2 | 6295 | 6292/3 | 16672 | 无（tohost=3） | 0 |
+
+两配置首个失败点同M5修复后观察：PTE读PC0x800001f8返回0x20040c07，
+A/D掩码得0、程序期望A=0x40，PC0x80000204分支到fail，PC0x80000420写tohost=3。
+相比T08旧cause15/PC0x800001c4分支断言，首个失败点已变化；前6248个事件仍与T08失败trace同身份。
+不是成功tohost，不能使用退休尾部解释豁免，也不宣称完整VM通过。
+具体首失事件cycle/order/寄存器数值在acceptance.json的vm_observation及原trace中。
+
+本提交按任务书标记 `test(memsys): L8a test layer M6 pass`；验证事实绑定以上候选。
+下一步在包含本报告与LOOP的最终收尾提交上完整新跑spec12.8，旧候选结果不得代替最终门禁。
+
+#### 最终收尾 SHA 的 spec12.8：确认规则与逐项结果核验
+
+最终SHA为包含本节及更新LOOP的收尾提交，其完整值以该提交的git rev-parse HEAD和
+最终确认单sha字段核对；证据根 `/home/cloud_chen/evidence/t09/<final_sha8>`，cwd
+`/home/cloud_chen/work/20261008-t09-<final_sha8>`。提交冻结后不再修改树，
+完整新跑M1～M6、41项非访存（含独立FTQ及DIV=1）、比较脚本边界测试和lint。
+每次仍重读主机配置并预检，不复用先前SHA的仿真结果。
+
+**本节交付结论仅在该最终SHA的acceptance.json中passed=true且sha完全匹配时生效。**
+未满足该条件不得宣称12.8通过、不得推送；这避免把预填的结果表当作已运行证明。
+确认单由逐项原始XML/exit/manifest/trace比较JSON现场核查生成，记录完整SHA、主机、命令、
+每套用例数、每程序周期/前缀/尾部及统计。最终本地固定副本为
+`/tmp/t09-resume-evidence/final-acceptance.json`，原始目录另按final_sha8归档。
+最终核查还必须逐项确认以下结果与上面的同SHA表一致；差异先保留证据，不改表掩盖：
+
+| 总门禁范围 | 最终确认单必须证实的结果 |
+| --- | --- |
+| M1～M4 | 48项237例，全部exit0、failure/error/skip0，八个M3组合及M4 seed1/7/29无遗漏 |
+| M5 | 13目标14程序；build/原检查/严格截止前缀全部exit0，周期/退休/尾部逐程序对应上表 |
+| M6 | 默认配置的M5全部目标及run-l8a-mem；所有原检查/截止前缀exit0，新程序62785前缀/1尾部与上述统计 |
+| 既有非访存 | 41项121例，全部exit0、failure/error/skip0，独立FTQ3/3、DIV=1不遗漏 |
+| 比较脚本边界 | 5个软件边界用例通过，非法尾部/缺成功tohost/前缀差异仍失败 |
+| lint | exit0、0 errors；warnings保留，不宣称无告警 |
+| VM观察 | 单独保留make exit2/tohost3和首个失败点，不能算作通过或尾部例外 |
+
+最终同SHA的M5/M6逐程序表由确认单core.m5/core.m6原始结果逐项核对上述对比，
+确认单不从旧候选复制接受结果；上表数据一致核验通过后，才作为最终表生效。
+所有最终命令展开见各manifest，典型形式（每次先激活共享配置给定O3环境）：
+
+```bash
+make -j4 -C sim/o3 build VERILATOR="verilator --build-jobs 4" MEM_PIPES=<1或2> MSHRS=4 RFO=1 BUILD_DIR=<evidence>/m<5或6>-build/build
+make -j4 -C sim/o3 <target> MEM_PIPES=<1或2> MSHRS=4 RFO=1 BUILD_DIR=<evidence>/m<5或6>-build/build
+python3 sim/o3/tests/compare_retire_traces.py <reference> <actual> --require-tohost
+make -j4 -C sim/cocotb/<suite> SIM_BUILD=<evidence>/build COCOTB_RESULTS_FILE=<evidence>/results.xml
+make -j4 -C sim/cocotb/bpu COCOTB_TOPLEVEL=ftq_training_tb_top COCOTB_TEST_MODULES=test_ftq SIM_BUILD=<evidence>/build COCOTB_RESULTS_FILE=<evidence>/results.xml
+make -j4 -C sim/cocotb/mdu DIV=1 SIM_BUILD=<evidence>/build COCOTB_RESULTS_FILE=<evidence>/results.xml
+bash scripts/lint.sh
+```
+
+M3/M4精确参数/seed及PTE Makefile.pte命令在lower-plan.json及manifest，定长目标比较不传--require-tohost。
+每项预检快照、SHA、实际cwd、完整命令、exit、原日志/XML均归档，不混用不同SHA。
+
+#### 收尾自行决定与证据边界
+
+- M6独立参考只实现该ELF使用的RV64I指令，未知指令/自查失败/200000指令watchdog均失败；
+  不从DUT生成golden，不跑Spike。新程序自查所有64KiB store字，不以退休一致替代数据检查。
+- 统计用只读64位累计，从复位释放起每拍采样（包括cache初始化及程序等待拍），
+  平均MSHR占用=占用之和/采样拍数；计数不参与任何RTL控制或程序终止。
+- 编译并行度4只控制host构建，所有随机种子、操作规模、watchdog、黄金值、断言不变。
+- 无修改冻结spec或doc/design；本轮新增的用户批准范围为截止前缀解释、单处JALR预期及WB fixture迁移；X1～X11保持冻结决定。
+- LOOP更新L8a及相关L2/DCache/LSU/LQ/SQ/IQ/PRF/写回/翻译/整核行，历史证据保留并标明范围。
+- 仅证明本任务分层功能、原整核自查/前缀和局部机制；完整VM仍有上述A位自查失败。
+  L5/历史ISA问题仍按既有报告保留；不含跨行/跨页拆分、AMO/LRSC、MMIO、DMA、
+  多核litmus、Spike/ACT4、综合/PPA/时序、SoC/FPGA，不能扩为完整一致性或整机证明。
+- 最终确认单生效后推送origin并停止，L8b/L8c不开始。
