@@ -2,6 +2,8 @@ module dcache_tb_top import o3_types_pkg::*; #(
     parameter int SETS=64,WAYS=8,MSHRS=4,WBS=2,
     parameter bit RFO=1
 )(input logic clk,rst,
+    input logic context_valid_i=1'b0,input logic [1:0] test_priv_i=2'd3,
+    input logic rsv_clear_i=1'b0,
     input logic [1:0] cpu_valid, output logic [1:0] cpu_ready,
     input dcache_req_t cpu0,cpu1,s1_cpu0,s1_cpu1,
     output dcache_resp_t resp0,resp1,
@@ -21,6 +23,8 @@ module dcache_tb_top import o3_types_pkg::*; #(
     output logic idle_o,output fatal_evt_t fatal_o,output be_perf_t perf_o,
     output logic init_done,
     output logic mon_ps_valid,mon_ps_write,mon_probe_hold,mon_probe_read,mon_ps_alloc,
+    output logic mon_rsv_valid,mon_rsv_window,mon_atomic_hold,
+    output logic dma_invalidate_o,output coh_addr_t dma_line_o,output logic irreversible_o,
     output logic [MSHRS-1:0] mon_ms_valid,
     output logic [WBS-1:0] mon_wb_valid,
     output logic [SETS*WAYS*2-1:0] mon_state,
@@ -36,22 +40,26 @@ module dcache_tb_top import o3_types_pkg::*; #(
     localparam o3_cfg_pkg::backend_cfg_t CFG=test_config();
     logic ld_req_valid_i[2],ld_req_ready_o[2];
     dcache_req_t ld_req_i[2],ld_s1_i[2];dcache_resp_t ld_resp_o[2];
+    logic [1:0] priv_i;
+    assign priv_i=context_valid_i ? test_priv_i:2'd3;
     assign ld_req_valid_i='{cpu_valid[0],cpu_valid[1]};
     assign ld_req_i='{cpu0,cpu1};
     always_comb begin
         ld_s1_i='{s1_cpu0,s1_cpu1};
         for(int p=0;p<2;p++) begin
-            ld_s1_i[p].priv=3;
-            ld_s1_i[p].permission=dc_permissions(ld_s1_i[p],pmp_i,2'd3);
+            ld_s1_i[p].priv=priv_i;
+            ld_s1_i[p].permission=dc_permissions(ld_s1_i[p],pmp_i,priv_i);
         end
     end
     assign cpu_ready={ld_req_ready_o[1],ld_req_ready_o[0]};
     assign resp0=ld_resp_o[0];assign resp1=ld_resp_o[1];
-    dcache #(.CFG(CFG)) dut(.rsv_clear_i(1'b0),.priv_i(2'd3),.dma_invalidate_o(),.dma_line_o(),.irreversible_o(),.*);
+    dcache #(.CFG(CFG)) dut(.*);
     assign init_done=dut.init_done_q;
     assign mon_ps_valid=dut.ps_valid_q;assign mon_ps_write=dut.ps_write;
     assign mon_ps_alloc=dut.ps_lane>=0;
     assign mon_probe_hold=dut.probe_hold;assign mon_probe_read=dut.probe_read;
+    assign mon_rsv_valid=dut.rsv_valid;assign mon_rsv_window=dut.rsv_window;
+    assign mon_atomic_hold=dut.atomic_hold_q;
     assign widths={8'(LQ_IDX_W),8'(SQ_IDX_W),8'(ROB_IDX_W),8'(CKPT_N)};
     for(genvar n=0;n<MSHRS;n++) assign mon_ms_valid[n]=dut.ms_state[n]!=DM_IDLE;
     for(genvar n=0;n<WBS;n++) assign mon_wb_valid[n]=dut.wb_valid[n];

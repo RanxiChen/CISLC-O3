@@ -260,3 +260,9 @@ lower-m5-run-l10-vm 是独立的既有问题观察，make exit2，不计为正�
 证据候选9c2653023f6704841a28d48e9a1d6806e09cdef4覆盖 N1、M1～M3、M4前3套、M5/M6；0fc47e4d2e50fbbdd09953ecb8034ee65f8dd8c6覆盖补接 wrapper 后的剩余 M4。两候选逐文件 Git diff 仅含报告与 L5 wrapper 的6端口连接，全部 RTL 和其他测试源码逐字节相同，RTL 固定为 dc261d24。不存在 RTL 修复后漏跑下层。完整 n1-layer-audit.json 记录逐项 SHA/次数/用例数；日志/XML/退出码/参考/退休 trace 保留于 /home/cloud_chen/evidence/t10/{9c265302,0fc47e4d}，本地完成快照 /tmp/o3-t10-evidence/<对应SHA前8位>/completed-evidence-snapshot.tar.gz。最终同 SHA 总门禁尚未执行。
 
 N1 通过后继续 N2，不开始 N3。
+
+## N2 测试实施（候选，尚未通过）
+
+cache wrapper 增加上下文选择及 reservation 清除输入、只读 reservation/保护窗口/原子安装保持/DMA 广播监视；未启用测试上下文选择时仍为既有 M 态，所有旧刺激字段的默认打包位保持逐位一致。新增9个 AMO 运算独立用例（.W偏移0/4、.D，5组边界输入，8字节整词检查另一半不变）、miss/升级/refill错误、RMW同行probe、WAIT共享者Inv/INSTALL保持、LR/SC精确配对/一次成功、reservation清除表、窗口内SC与DMA广播、IO/PMA/页错误/取消、权限寄存与上下文切换、实际Y11 PTE值的访问序列。
+
+权限变化测试先排空旧请求并flush再切上下文，遵循核的串行合同；Y13断言始终开启。Y11使用实际PA0x80102038、旧PTE0x20040c07与期望0x20040c47。若cache单模块未复现整核的旧值读回，按spec继续在N3组合时序中定位，不改B36。

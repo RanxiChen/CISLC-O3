@@ -44,6 +44,13 @@ class Cpu:
     branch: int = 0
     va: int = None
     rob: int = 1
+    heu: bool = False
+    check_only: bool = False
+    split: bool = False
+    raw: bool = False
+    need_d: bool = False
+    bytes: int = 0
+    amo: int = 0
 
 
 class CacheBench:
@@ -70,6 +77,7 @@ class CacheBench:
         self.up = []
         self.snp = None
         self.snp_sent = False
+        self.snp_dma_write = False
         self.cpu = [None, None]
         self.prev_cpu = [None, None]
         self.st, self.ptw, self.ad = None, None, None
@@ -89,8 +97,10 @@ class CacheBench:
         lq, sq, rob, branch = self.widths
         return pack((3, r.src), (56, r.addr), (64, r.addr if r.va is None else r.va), (2, r.size),
                     (1, int(r.write)), (1, int(r.sta)), (1, int(r.signed)), (1, int(r.flw)),
-                    (1, int(r.head)), (5, 0), (4, 0), (2, 3), (6, 0), (3, 0), (1, int(r.forward)), (1, int(r.blocked)), (1, int(r.translation_miss)),
-                    (64, r.forward_data), (71, r.exc), (64, r.data), (8, r.mask), (4, 0),
+                    (1, int(r.head)), (1, int(r.heu)), (1, int(r.check_only)), (1, int(r.split)),
+                    (1, int(r.raw)), (1, int(r.need_d)), (4, r.bytes), (2, 3), (6, 0), (3, 0),
+                    (1, int(r.forward)), (1, int(r.blocked)), (1, int(r.translation_miss)),
+                    (64, r.forward_data), (71, r.exc), (64, r.data), (8, r.mask), (4, r.amo),
                     (lq, r.ident & ((1 << lq) - 1)), (8, 1), (sq, r.ident & ((1 << sq) - 1)),
                     (rob, r.rob), (branch, r.branch))
 
@@ -108,6 +118,9 @@ class CacheBench:
                   'l2_resp_i','rsp_up_ready_i','snp_valid_i','snp_i')
         for name in inputs:
             getattr(d, name).value = 0
+        d.context_valid_i.value = 0
+        d.test_priv_i.value = 3
+        d.rsv_clear_i.value = 0
         d.pmp_i.value = (0x1f << 54) | 0x1fffffff
         d.rst.value = 1
         for _ in range(3):
@@ -158,7 +171,7 @@ class CacheBench:
         d.snp_valid_i.value = int(self.snp is not None and not self.snp_sent)
         if self.snp:
             op, owner, line = self.snp
-            d.snp_i.value = pack((1, op), (1, owner), (1, 0), (26, line))
+            d.snp_i.value = pack((1, op), (1, owner), (1, int(self.snp_dma_write)), (26, line))
         await Timer(5, unit='ns')
         v = {name: int(getattr(d, name).value) for name in (
             'cpu_ready','resp0','resp1','st_req_ready_o','st_resp_o','ptw_req_ready_o','ptw_resp_o',
