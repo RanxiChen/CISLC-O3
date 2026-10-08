@@ -119,6 +119,8 @@ module backend
 
     logic heu_start_valid,heu_start_ready,heu_sq_valid,heu_lq_valid,heu_dc_valid,heu_dc_ready;
     logic heu_done,heu_exc_valid,heu_exc_ready,heu_irreversible,dc_irreversible;
+    logic heu_irq_hold_q;
+    o3_types_pkg::rob_idx_t heu_irq_owner_q;
     logic [CFG.rob.entries-1:0] lq_rob_order_flush;
     logic dma_invalidate,pte_a_write,lq_order_flush; o3_types_pkg::coh_addr_t dma_line,pte_a_line;
     logic heu_d_valid,heu_d_ready,heu_d_done,up_d_ready,up_d_done;
@@ -302,7 +304,7 @@ module backend
         .block_younger_cycle_o(gate_block_cycle));
     commit_ctrl #(.CFG(CFG)) u_commit_ctrl (
         .clk(clk),.rst(rst),.boot_pc_i(boot_pc_i),.commit_i(rob_commit),
-        .heu_irreversible_i(heu_irreversible),.order_flush_i(lq_order_flush),.head_split_i(split_table_q[rob_head]),
+        .heu_irreversible_i(heu_irreversible || heu_irq_hold_q),.order_flush_i(lq_order_flush),.head_split_i(split_table_q[rob_head]),
         .head_valid_i(head_valid),.head_i(rob_head_info),.head_serial_done_o(head_serial_done),
         .commit_block_o(rob_commit_block),.ftq_commit_o(ftq_commit_o),.sq_commit_valid_o(),.sq_commit_idx_o(),
         .fp_retire_o(fp_retire),.committed_next_pc_o(committed_next_pc),.sys_redirect_o(sys_redirect_o),
@@ -513,6 +515,26 @@ module backend
     logic [XLEN-1:0]                   wb_complete_data [NUM_INT_ALUS+P:0];
     logic                              rob_retire_valid   [RETIRE_WIDTH-1:0];
     logic [BACKEND_ROB_IDX_WIDTH-1:0]  rob_retire_idx     [RETIRE_WIDTH-1:0];
+    // HEU completion releases its execution resources before ROB retirement.
+    // Keep interrupts behind the owner until its architectural effects commit;
+    // otherwise an IRQ raised by a MMIO write can replay that very write.
+    // Only registered state gates the IRQ decision, avoiding a retire/block loop.
+    always_ff @(posedge clk) begin
+        if (rst || global_flush) begin
+            heu_irq_hold_q <= 1'b0;
+            heu_irq_owner_q <= '0;
+        end else begin
+            if (heu_irreversible) begin
+                heu_irq_hold_q <= 1'b1;
+                heu_irq_owner_q <= rob_head;
+            end
+            for (int lane=0; lane<RETIRE_WIDTH; lane++)
+                if (rob_retire_valid[lane] &&
+                    ((heu_irq_hold_q && rob_retire_idx[lane]==heu_irq_owner_q) ||
+                     (heu_irreversible && rob_retire_idx[lane]==rob_head)))
+                    heu_irq_hold_q <= 1'b0;
+        end
+    end
     logic [BACKEND_PREG_IDX_WIDTH-1:0] rob_retire_old_dst_preg [RETIRE_WIDTH-1:0];
     logic [INST_ID_WIDTH-1:0]          rob_retire_instruction_id [RETIRE_WIDTH-1:0];
     logic [BACKEND_PREG_IDX_WIDTH-1:0] rob_retire_new_dst_preg [RETIRE_WIDTH-1:0];

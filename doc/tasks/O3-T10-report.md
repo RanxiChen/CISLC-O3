@@ -413,3 +413,9 @@ N3共12例，所有XML均无failure/error/skip。证据根为/home/cloud_chen/ev
 | 676eeca318f70e8c80959117aa5a6c87a25bd7e9 | cloud_chen | bash scripts/lint.sh | 0 | 0 errors/359 warnings |
 
 证据/home/cloud_chen/evidence/t10/{676eeca3,b6256b77}。N4到N5只测试和报告变化，未修RTL，不追加下层复跑。最终12.8仍要求全部同一最终SHA新跑。
+
+## N6 MMIO 中断退休空隙修复
+
+并行窗口d49398f在run-l8b-mmio第159行触发IRQ写后陷入重复中断，runner3/make2，250000事件截止，未到tohost；误预测阶段64次副作用读正确，但不能算含中断96次检查通过。主窗口在b6256b77的n6-mmio-repro独立复现原程序；复用676eeca3默认二流水的相同整核仿真输入可执行文件，只重新编译程序集，明确不作为最终同SHA总门禁证据。
+
+根因：HEU在RESULT/DONE被接收后清不可撤销位，ROB完成到实际退休之间存在一拍空隙。IRQ可抢占已产生外部效果的MMIO写，mepc仍指向触发写；清IRQ后mret再次写，无限重复。backend增加带ROB索引的寄存IRQ保护，从HEU产生不可撤销效果保持至对应指令退休；同步异常/整体flush清理该状态。执行资源仍按原HEU完成释放，保护仅用于commit_ctrl的中断准入，不引入retire→block组合环。此修复落实冻结第12.7节每条MMIO恰好一次，未改spec/design、黄金值、断言或程序规模。下一步直接涉及backend/commit/ROB/HEU下层、lint、M6+VM冒烟及N6完整四程序复跑。
