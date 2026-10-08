@@ -282,3 +282,5 @@ dcache 为每个MSHR增加 atomic_live_q：原子分配/仍存活的原子合并
 ### N2 修复后的复跑与组合 wrapper 连接
 
 RTL修复提交7c0b58cee53d73c863a61a277e4859732a369480，在cloud_chen的n2-cache-m1与n2-cache-m4各18例全部通过，lint exit0、0 errors（359 warnings原样保留），N1正常11例通过。下层M1共23例、M2共54例通过；M3编译报memsys_tb_top.sv:70的cache实例漏接新增9个测试端口。补齐上下文/清reservation的常量M态输入，并显式留空监视输出。同步检查共享CacheBench的另一个消费者pte_cache_tb_top，为其补同名输入和监视输出，默认上下文仍为M态。全部DUT RTL、原刺激、断言、规模和种子不变；不属于黄金迁移。失败日志保留，继续重跑其余下层。
+
+补充两例增强取消和清除表的区分：LR GetM已实际发出后flush，迟到安装50拍内每拍无reservation/原子重发保护且读回未变；同行PTE CAS比较不匹配时无成功写、reservation保留并可成功SC。原18例不变，N2完整套件现为20例。

@@ -339,3 +339,38 @@ async def y11_pte_accessed_update_then_ordinary_load_actual_program_values(d):
     assert r['status'] == OK and r['data'] == old | 0x40
     assert r['data'] & 0xc0 == 0x40
     await e.idle()
+
+
+@cocotb.test()
+async def lr_pre_effect_cancel_late_getm_never_creates_reservation(d):
+    e = await env(d)
+    original = e.golden(BASE)
+    e.block_gets = True
+    r = await attempt(e, atomic_req(BASE, LR))
+    assert r['status'] == MISS
+    await e.until(lambda: bool(e.sent))
+    assert not int(d.mon_rsv_valid.value)
+    d.flush_i.value = 1
+    await e.tick()
+    d.flush_i.value = 0
+    e.block_gets = False
+    for _ in range(50):
+        await e.tick()
+        assert not int(d.mon_rsv_valid.value) and not int(d.mon_atomic_hold.value)
+    assert (await e.load(BASE))['data'] == original
+    assert not int(d.mon_rsv_valid.value)
+    await e.idle()
+
+
+@cocotb.test()
+async def failed_pte_cas_same_line_preserves_lr_reservation(d):
+    e = await env(d)
+    await atomic(e, BASE, LR)
+    old = e.golden(BASE + 16)
+    e.ad = (BASE + 16, old ^ 1, 1, 1, 0)
+    await e.until(lambda: bool(e.ad_responses))
+    assert e.ad_responses[-1][1] == 10  # valid + mismatch, no successful write
+    assert int(d.mon_rsv_valid.value) and e.golden(BASE + 16) == old
+    assert not (await atomic(e, BASE, SC, 0x123456789abcdef))['sc_fail']
+    assert (await e.load(BASE))['data'] == 0x123456789abcdef
+    await e.idle()
