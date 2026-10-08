@@ -203,3 +203,52 @@ N1 开始；尚未声明任何功能层通过。
 新增 DMA 适配器 2 例、AXI-Lite 主控 3 例、L2 DMA 定向 4 例与随机 2 例；另单独运行非法 DMA GetS 的 RTL 断言负例，要求进程失败且日志明确命中 l2_home 的端口 op 断言，不能把任意失败算作通过。两随机种子 51/52，各 2000 DMA（1000 Read/1000 MaskWrite）、至少 2000 CPU Get/Put、500 I Read，压力几何 sets=2/ways=2/slots=2。保留原 L8a 全部测试与规模。
 
 代理黄金内存独立于 DUT；CPU store 按代理写入更新，DMA MaskWrite 按 WriteAck 更新，逐字节合并。为明确写入线性化点，同一行 I Read 与 DMA WriteAck 串行，异行 I/D/DMA 并发；同一行 D 副本仍经历真实 Inv/Down 和独立权限监视。DMA response 背压时逐拍校验保持，随机代理不改变原无 DMA 的 RNG 取样规则。
+
+## N1 首轮动态证据
+
+测试候选 SHA=9c2653023f6704841a28d48e9a1d6806e09cdef4，实际主机 cloud_chen@47.96.71.231；cwd=/home/cloud_chen/work/20261008-t10-9c265302；证据根 /home/cloud_chen/evidence/t10/9c265302。每项 manifest.json 记录实际命令、准确 SHA、主机、实时配置哈希、环境/资源预检；run.log、exit、results.xml 原样保留。断言 --assert 全程开启，未设置 SYNTHESIS。
+
+| 证据子目录 | 结果 | 内容 |
+| --- | --- | --- |
+| n1-dma-adapter | exit 0，2/2 | Read/MaskWrite 字段、ID=0、1 credit、请求/响应保持、高位/IO/不存在地址直接报错 |
+| n1-mmio-master | exit 0，3/3 | 全部自然对齐 lane 的 1/2/4/8 字节读写、符号扩展/FLW 装箱、AW/W 任意先后与背压、非 OKAY 精确 cause/tval |
+| n1-l2-directed | exit 0，4/4 | UNIQUE 脏 Inv 合并、miss refill 合并、SHARED Inv、UNIQUE Down 最新值、读错误不安装、dma_write 精确来源 |
+| n1-l2-random | exit 0，2/2 | seed51：75734 拍；seed52：76512 拍；各 DMA=2000、CPU Get/Put=2000、并发 I Read=500，另有最终 16 行读回 |
+| n1-l2-op-assert | 外层 exit 0；负例 make exit 2 | 55ns 精确触发 l2_home.sv:348 的 DMA op 断言；日志原文及 negative-exit 保存，不计作正常用例通过 |
+
+共 11 个正常用例和 1 个预期断言失败负例；XML 无正常 failure/error/skip。N1 的层通过还依赖本 SHA 的 L8a M1～M6 完整复跑，目前进行中，未标记 N1 层通过。T10 本 SHA 的 references/l9_fp.jsonl 已由批准的生成器创建，源/副本哈希与前述记录一致。
+
+### 下层 M5 已通过，Y11 观察保持原失败点
+
+同一候选 SHA 的 lower-m5-build exit0；mem_pipes=1 的 13 个目标（14 个程序）全部 exit0，自查和严格退休截止前缀与 T09 参考一致。其中 l9_fp 使用批准迁移副本，前缀 614 事件（613 retire+1 trap）、合法尾部 1；周期 2361。所有其他参考未改。
+
+lower-m5-run-l10-vm 是独立的既有问题观察，make exit2，不计为正常门禁通过。首个失败点同 T09 最终报告：PC0x800001f8/order6285/cycle16678 的 PTE 普通 load 返回 0x20040c07，PC0x800001fc 掩码后得到0，PC0x80000200 准备期望0x40；PC0x80000204/order6288/cycle16688 分支到 fail，最终 PC0x80000420 写 tohost=3。N2/N3 仍需按 Y11 复现并修复；不能在此提前修 B36。
+
+### 下层 M6 已通过
+
+同一候选 SHA 的 lower-m6-build exit0，默认配置 mem_pipes=2/MSHRS=4/RFO=1 的 13 个既有目标（14 个程序）全部 exit0、严格退休前缀相同；run-l8a-mem exit0，自查+tohost=1、独立架构参考 62785 事件逐条一致，合法同拍尾部1，总退休62786，123750周期。统计 MSHR_sum=71657、平均0.579046、RFO发出932/有用931、bank_replays=190、probes=1、writebacks=2471，全部保留原规模且非零。lower-prefix-checker 的既有5例全部通过。M6 VM观察 make exit2，为同一 A 位读回既有问题，不计正常通过。
+
+下表仅记录周期变化，无性能门槛；截止前缀均一致（包含 trap 类型、cause/tval 与合法尾部规则）。
+
+| 程序 | M5周期 | M6周期 | 前缀事件 |
+| --- | --- | --- | --- |
+| dcache_data | 589 | 583 | 7 |
+| dcache_replay | 597 | 597 | 6 |
+| l10_ad | 16404 | 16404 | 6249 |
+| l10_priv | 4047 | 4047 | 436 |
+| l3_branch_dense | 2478 | 2477 | 365 |
+| l7_predict_a | 44296 | 44300 | 19393 |
+| l7_predict_b | 44362 | 44345 | 19444 |
+| l7b_rvc | 6361 | 6361 | 2213 |
+| l9_fp | 2361 | 2354 | 614 |
+| l9_fp_smoke | 1370 | 1387 | 264 |
+| replay-integer | 624 | 624 | 18 |
+| rv64i_instructions | 576 | 576 | 14 |
+| icache_smoke | 545 | 545 | 4 |
+| unified_memory | 630 | 630 | 18 |
+
+### 下层 M4 wrapper 编译遗漏修复
+
+9c265302 的 M1/M2/M3 共13次117例全部通过；M4 seed1 的 LQ/SQ/LSU 18例通过。随后 lower-m4-load_store_unit_l5-s1 编译 exit2，在 load_store_unit_l5_tb_top.sv:43 漏接 atomic_i、heu_valid_i、heu_ready_o、heu_req_i、heu_resp_o、sq_kind_o 六端口。与常规 LSU wrapper 相同，将普通访存的 atomic_i/HEU valid/request 绑定0、未使用输出显式留空；不改 DUT RTL、不改测试刺激/黄金值/规模/种子。编译失败日志保留。
+
+该接口连接修复不属于旧行为黄金迁移，未引入架构变化；此前通过套件的 RTL、wrapper 和刺激文件逐字节未变，复用已有证据并在新候选 SHA 继续剩余 M4。最终 spec12.8 仍必须全部在最终同一 SHA 重跑。

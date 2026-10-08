@@ -40,7 +40,9 @@ module load_store_unit_l5_tb_top import o3_pkg::*; #(
         assign lq_tag_i[p]='{idx:capture_o[p].uop.lq_idx,gen:8'd1};
         assign dc_req_ready_i[p]=1'b1;
     end
-    load_store_unit #(.CFG(CFG)) dut(.lq_tag_i(lq_tag_i),.dc_req_ready_i(dc_req_ready_i),
+    load_store_unit #(.CFG(CFG)) dut(.atomic_i('{default:0}),.heu_valid_i(1'b0),
+        .heu_ready_o(),.heu_req_i('0),.heu_resp_o(),.sq_kind_o(),
+        .lq_tag_i(lq_tag_i),.dc_req_ready_i(dc_req_ready_i),
         .ptw_req_valid_o(),.ptw_req_ready_i(1'b0),.ptw_req_o(),.ptw_resp_i('0),
         .sfence_i('0),.sfence_done_o(),.rob_head_i('0),.d_done_i(1'b0),.d_exc_i('0),
         .d_mark_o(),.d_clear_o(),.d_idx_o(),.d_va_o(),.d_sq_o(),.ad_wake_o(),.sq_ad_wake_o(),.perf_o(),.*);
