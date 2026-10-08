@@ -231,3 +231,12 @@ run-l10-vm:
 run-l10-ad:
 	$(RISCV_GCC) -march=rv64im_zicsr -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l10_ad.S -o $(BUILD_DIR)/l10_ad.elf
 	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK --image $(BUILD_DIR)/l10_ad.elf --trace $(BUILD_DIR)/l10_ad.jsonl --tohost-address 0x801ff000 --max-cycles 200000 --max-retires 20000
+
+# L8a M6: 64KiB working set, independent misses, RFO, same-line/bank and Down.
+.PHONY: run-l8a-mem
+run-l8a-mem:
+	@test -x "$(RUN_BIN)" || { echo "Run make build first"; exit 1; }
+	$(RISCV_GCC) -march=rv64im_zicsr_zifencei -mabi=lp64 -mcmodel=medany -nostdlib -nostartfiles -static -T$(SIM_DIR)/tests/l7_predict.ld $(SIM_DIR)/tests/l8a_mem.S -o $(BUILD_DIR)/l8a_mem.elf
+	python3 $(SIM_DIR)/tests/make_l8a_reference.py $(BUILD_DIR)/l8a_mem.elf $(BUILD_DIR)/l8a_mem.reference.jsonl
+	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) +L7_CHECK +L8A_STATS --image $(BUILD_DIR)/l8a_mem.elf --trace $(BUILD_DIR)/l8a_mem.jsonl --tohost-address 0x801ff000 --max-cycles 1500000 --max-retires 200000
+	python3 $(SIM_DIR)/tests/compare_retire_traces.py $(BUILD_DIR)/l8a_mem.reference.jsonl $(BUILD_DIR)/l8a_mem.jsonl --require-tohost > $(BUILD_DIR)/l8a_mem-prefix.json

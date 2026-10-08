@@ -252,6 +252,31 @@ module o3_tandem_top
             end
         end
     end
+    // Read-only M6 measurements from the live DCache event interface.
+    logic [63:0] l8a_sample_cycles_q,l8a_mshr_sum_q,l8a_rfo_issued_q,l8a_rfo_useful_q,l8a_bank_replays_q;
+    logic [63:0] l8a_probe_q,l8a_writeback_q;
+    always_ff @(posedge clk_i) begin
+        if(rst_i) begin
+            l8a_sample_cycles_q<=0;l8a_mshr_sum_q<=0;l8a_rfo_issued_q<=0;
+            l8a_rfo_useful_q<=0;l8a_bank_replays_q<=0;l8a_probe_q<=0;l8a_writeback_q<=0;
+        end else begin
+            l8a_sample_cycles_q<=l8a_sample_cycles_q+1;
+            l8a_mshr_sum_q<=l8a_mshr_sum_q+64'(u_core.u_backend.perf_dcache[BE_DC_MSHR_OCCUPANCY]);
+            l8a_rfo_issued_q<=l8a_rfo_issued_q+64'(u_core.u_backend.perf_dcache[BE_RFO_ISSUED]);
+            l8a_rfo_useful_q<=l8a_rfo_useful_q+64'(u_core.u_backend.perf_dcache[BE_RFO_USEFUL]);
+            l8a_bank_replays_q<=l8a_bank_replays_q+64'(u_core.u_backend.perf_dcache[BE_DC_BANK_CONFLICT]);
+            l8a_probe_q<=l8a_probe_q+64'(u_core.u_backend.perf_dcache[BE_DC_PROBE]);
+            l8a_writeback_q<=l8a_writeback_q+64'(u_core.u_backend.perf_dcache[BE_DC_WB_PUT]);
+        end
+    end
+    final begin
+        if($test$plusargs("L8A_STATS"))
+            $display("[l8a-stats] sample_cycles=%0d MSHR_sum=%0d MSHR_average=%0.6f RFO_issued=%0d RFO_useful=%0d bank_replays=%0d probes=%0d writebacks=%0d",
+                l8a_sample_cycles_q,l8a_mshr_sum_q,
+                l8a_sample_cycles_q==0 ? 0.0:real'(l8a_mshr_sum_q)/real'(l8a_sample_cycles_q),
+                l8a_rfo_issued_q,l8a_rfo_useful_q,l8a_bank_replays_q,l8a_probe_q,l8a_writeback_q);
+    end
+
 endmodule
 
 /** Single outstanding AXI4 read and write transaction, backed by 1 MiB RAM.

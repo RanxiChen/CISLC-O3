@@ -83,7 +83,9 @@ def compare(left_path, right_path=None, tohost_address=0x801ff000, require_tohos
     first = next((i for i in range(min(len(lk), len(rk))) if lk[i] != rk[i]),
                  min(len(lk), len(rk)) if len(lk) != len(rk) else None)
     alignment = []
-    for op, i, end_i, j, end_j in SequenceMatcher(None, lk, rk, autojunk=False).get_opcodes():
+    # Exact matches need only a linear identity mapping, including every event.
+    blocks = [('equal',0,len(lk),0,len(rk))] if lk == rk else SequenceMatcher(None,lk,rk,autojunk=False).get_opcodes()
+    for op, i, end_i, j, end_j in blocks:
         block = dict(op=op, left_range=[i, end_i], right_range=[j, end_j])
         if op == 'equal':
             block['pairs'] = [[x, y] for x, y in zip(range(i, end_i), range(j, end_j))]
