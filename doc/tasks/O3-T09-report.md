@@ -447,7 +447,7 @@ M4 接受提交 `74cddf7ec54ecc0d7e0e8d1464fdbae3fada4861`，`test(memsys): L8a 
 `47b02f4674168caa54f4421aa39baba6dcd51f67`。证据根
 `/home/chen/FUN/cislc-o3-t09-evidence/t09/521a3ab1/`，cwd
 `/home/chen/FUN/20261007-t09-521a3ab1`，32 runs / 108 cases，全部 exit 0、0 skip。
-命令 `make -j4 -C sim/cocotb/<suite> RANDOM_SEED=<1|7|29>`，L3 IQ 再加 `KIND=<0|1|2>`；
+命令 `make -j4 -C sim/cocotb/<suite> TEST_SEED=<1|7|29>`，L3 IQ 再加 `KIND=<0|1|2>`；
 每项独立 XML/log/manifest，seed 7/29 在相同 SHA/host 上复用已编译二进制，重新执行刺激。
 
 | M4 suite / spec 第12节项 | seed 1 | seed 7 | seed 29 | 覆盖 |
@@ -471,3 +471,131 @@ M3 前七项实际 SHA `34d39ec030206723477aebe358dcc6c08c942eb0`，
 各实际 SHA 根下 item `m3-m4-full-<geometry>-m<1|4>-r<0|1>`、
 `m2-m4-full-one/four`、`m1-m4-full-pressure/slot-full/default`；命令与M1～M3相同，完整参数见 manifest。
 模块退休数 N/A。本层通过不声明 M5～M6 或12.8通过。所有提交留本地，未推送 origin。
+
+### M5 开发与修复（进行中）
+
+单路整核 top 的 debug 参数由 CFG 传递；`MEM_PIPES=1 MSHRS=4 RFO=1`。
+X5 地址迁移：`unified_memory` 18条操作全部保留，code/data A/data B迁到
+0x80000000/0x80010000/0x80020000；所有实际load/store数据golden保持不变。
+原已删除DTCM末端的8B非对齐读改到主存0x8004fff4（仍跨两个word bank，保留
+0xaabbccddeeff0011），避免违反spec7.5/13的跨line旧异常路径；未实现L8b拆分。
+AUIPC/ADDI/store负offset的地址计算golden随X5重编码，trace仍逐条比较18条。
+
+候选 `5772d580477dd6d5d775a31ad78c1cea109b96c2`，Alan cwd
+`/home/chen/FUN/20261007-t09-5772d580`，证据根相应
+`/home/chen/FUN/cislc-o3-t09-evidence/t09/5772d580/`。
+每项先重读配置并预检：cloud_chen连接超时255，Alan可用；Verilator5.050、
+cocotb2.1.0、Python3.12.12，RISC-V GCC / Spike链接库已预检。CVFPU与common_cells
+分别通过Git submodule从Alan现有准确pin缓存初始化并验证HEAD，未复制第三方源码。
+
+| item | exit | 周期 / 退休 | 首个结果 |
+| --- | --- | --- | --- |
+| m5-build | 0 | N/A | 单路整核编译通过 |
+| m5-run-smoke | 0 | 545 / 4 | 原逐条golden一致 |
+| m5-run-rv64i-instructions | 0 | 见run.log | 原14条golden一致 |
+| m5-run-l3-branch-dense | 2 | 未完成365条 | store_queue.sv:119 committed drain access fault |
+
+失败先退回M3：候选 `216e2121b7b2d43c3c3f82cbccf0d86ebc5ae95b`，
+item `m3-m5-l3-reset-pmp`，默认几何/4MSHR/RFO1，exit2，1项失败、0skip。
+重放L3退休访存序列（82load、41STA、41drain，40组，原数据值）；PMP与整核复位一样全0。
+cycle555第一次store0x80010008报错；原随机M3代理显式PMP全许可，因而未暴露这个边界。
+
+根因：STA在LSU按实际privilege完成PMP检查之后，committed drain在DCache作为内部来源
+再次以S privilege检查；M模式且空PMP时STA合法，drain却被拒绝。
+修复提交 `24415b2637a297492122bad36681da6ec4134f24` 仅改 `rtl/lsu/dcache.sv`：
+committed drain保留已完成的STA授权；PTW/PTE A-D仍在物理入口做S模式PMP检查，
+PMA/高地址/跨line检查不变，未放宽SQ fatal断言。
+目标修复验证候选 `a6c0ca27`（与后续c7a82525仅生产注释不同）：
+`m3-m5-l3-pmp-fix` 1/1通过，41STA/drain+82load；
+`m2-m5-pmp-clients` 1/1通过，合法drain完成且PTW cause5原PA/PTE A-D error均正确拒绝，
+拒绝请求无协议事务/数据改变。原M2用例和断言未改，新增独立test文件并加入选择列表。
+M1～M4完整重跑与M5重编/回归正在进行；本段不声明M5 pass。
+
+#### M5 异常恢复修复与当前停点（2026-10-08）
+
+候选 `c7a82525e5b84bd562565a047a7bd75565931a7a` 的 M5 整核：
+smoke/RV64I/L3/预测器/RVC/FP smoke/完整FP/replay-order 均exit0；
+`run-l10-priv` exit2（仿真timeout返回3），cycle13879、409 events，无tohost。
+L3 2478周期/365条golden一致；完整FP 2361周期/615 events、tohost=1。
+证据在同 SHA 根的 `m5-pmp-run-<target>`，完整命令/host/cwd见 manifest；实际 Alan。
+
+特权失败先回退 M3：`7034dfee` / `m3-m5-priv-denied`，1/1、exit0、0skip。
+按0x80100000的4B load/STA，注入LSU S1权限检查应产生的cause5/7与原VA；
+两次响应均正确，无MSHR/PLRU/目录/数据修改；随后合法load完成。
+问题在 LSU→backend→ROB 的异常接收，而非缓存权限判定。
+
+只读诊断候选 `e51ab9e7` / `m5-priv-debug-live`：
+cycle3887 S2 store fault；3888 FIFO有效且ready=1被消费；3889 ROB cause已变7，
+complete/exception-valid仍0。ROB M恢复分支接受normal completion，却不接受t_exc flags，
+而metadata独立always_ff仍写cause/tval。RTL没有改ROB（不在T09允许文件中）。
+修复 `3064300d94e9af6bcfae05dec0e5cb7937d66ffb`：backend仅在ROB可接收时消费LSU异常；
+`mem_exc_ready`增加 `!branch_mispredict && !global_flush`，FIFO持有存活旧异常到下一拍。
+不改ROB、恢复、精确异常、程序或断言的冻结语义。
+
+验证候选 `36bc5662` / `m5-exc-priv`，实际 Alan、exit0、tohost=1，
+3987周期/437 events。只读日志确认：3888 M=1/FIFO=1/ready=0；
+3889 M=0/FIFO=1/ready=1；3890 ROB complete=1/exception-valid=1/cause7，精确trap。
+M4新增FIFO持有验证 `1f019198` / `m4-m5-old-exc`：原150次异常用例与新load/STA
+旧异常遇M、保持12拍、显式接受后消失，2/2通过、exit0、0skip。
+
+**退休数仍待核对，未宣告M5通过**：T08原Alan trace去掉header为439 events
+（422正常退休+17trap）；M5修复trace去掉header为437（420正常退休+17trap）。
+当前对比脚本把header计入总数并在按PC统计时遇到header无pc而退出；
+已保留 `/tmp/t09-priv-retire-count-comparison.txt`，尚未完成按PC定位差异。
+不得因此把spec12的“退休条数与自查结果必须一致”解释为允许变化；需先核对
+原程序异步中断等待循环与各目标退休数，再决定是否构成必须向用户确认的规格冲突。
+
+补查发现旧独立 `mmu/Makefile.pte`、`pte_cache_tb_top.sv` 使用删除的缓存接口。
+正在迁移到公共L8a协议与现代行为L2，保留两个原用例全部数值比较、80次随机操作、
+各100拍握手/响应watchdog、seed与随机REQ反压。首次 `1f019198/m4-m5-pte-public`
+exit2，0ns基础设施错误：Make `export SETS=64 WAYS=...`把后续文本并入SETS；
+已改各变量单独export。权限切换前的本地driver已收到 `28c53cf7/m4-m5-pte-export` 的2/2 PASS、0skip、
+make正常退出末尾日志；远端exit/XML现在不可查询，尚未跑seed7/29。
+M4已提交的108个主套件用例结果不包含这个独立PTE套件。
+
+生产修复后的下层完整重跑尚未完成：c7a82525下M4基本12runs全通过；seed7全通过，
+seed29 LQ/SQ通过，后续因只读整核diagnostic wrapper变更而被本地exact-tree复用guard
+拒绝（仿真前），不是RTL失败。M3 pressure-m1-r0/r1与default-m1-r0各3/3通过，
+后续同样因candidate tree变化拒绝；不能拼成完整下层通过声明。
+M1/M2最终完整重跑、全部M4补充、剩余M5目标、M6和12.8均未闭合。
+`1f019198/m5-full-build`本地driver已收到完整编译完成日志（127.712s，make正常退出）；
+准确远端exit现在不可查询，未启动该候选后续整核目标。
+
+**上次停止于 M5：执行权限阻断（历史）**。2026-10-08用户环境切为managed；当时工具网络受限、
+`.git`只读且approval policy=never。重新读取共享配置后依序验证cloud_chen/Alan，
+两条SSH均exit255，首个错误均为本地 `socket: Operation not permitted`；
+Alan跳板连接同样被socket限制。不能据此判断远端主机本身不可用。
+既有本地exec session ID在环境切换后均Unknown process id；远端已启动任务是否
+完成尚无法查询，不假定它们已停止或已通过，也不重复启动。
+未在本地运行仿真。当前本地HEAD `3064300d94e9af6bcfae05dec0e5cb7937d66ffb`；诊断/测试迁移与本报告保持工作区改动，
+受`.git`只读约束不能继续提交。所有提交留本地，未推送，未开始L8b。
+
+#### M5 续作：环境恢复与工作区审查（2026-10-08）
+
+完整重读冻结 spec（X1～X11）、任务书与本报告后重新读取共享主机配置。
+当前首选 `cloud_chen@47.96.71.231:22` 的免密 SSH、
+`source /home/cloud_chen/setup/activate-o3.sh` 均 exit 0；实际 hostname
+`iZbp16rhtg91v96m32vggjZ`，Verilator 5.050、cocotb 2.1.0、
+RISC-V GCC 13.2.0，make/g++ 可用，磁盘 76 GiB available、内存 27 GiB available。
+首选主机可用，本轮仿真使用 cloud_chen，不启用备用 Alan。
+Alan 的只读访问仅用来取回 T08/T09 已有 trace，不作为仿真主机切换。
+当前远端 loopback 代理访问 GitHub HTTP 200；没有直连或 Git bundle。
+初次 Git 写预检受 managed 的只读 `.git` 挂载阻断；用户解除沙箱后，
+同一临时写入/删除预检 exit 0。没有把本地权限限制归为远端故障。
+上次启动但未确认的远端任务均不计入本轮证据，重新执行需要的目标。
+
+逐文件审查后按主题提交：
+
+- `964a633`：整核 CFG 开关与 X5 主存地址迁移；MSHRS 检查允许 spec 的 1～4。
+  18 条操作全部保留，逐条核对全部 load/store 数据 golden 不变；只有地址、
+  地址生成指令的结果及负偏移编码随迁移改变。
+- `13e389a`：M2 的 drain/PTW/PTE PMP 客户端用例、M3 的 L3 访问序列与特权拒绝序列、
+  M4 的旧 load/STA 异常 FIFO 持有用例；已有用例、断言和规模保留。
+- `30d012c`：独立 PTE wrapper/driver 改接公共 L8a 协议，行为 L2 只在 REQ 握手时接收。
+  两个原测试函数逐字保留，80 次随机操作、100 拍握手/响应 watchdog 与 seed 保留。
+
+全部测试文件在 spec 第 0 节范围内；报告按任务书更新。用户的未跟踪 `AGENTS.md`
+不纳入提交。BPU XML 与 o3 pycache 移到 `/tmp/t09-resume-20261008-artifacts/` 保留，
+没有提交运行产物，也未改 allowlist 外的忽略规则。`git diff --check` exit 0。
+以上提交是测试迁移与复现快照，不是 M5 pass 声明；退休差异、最终下层矩阵、M5/M6
+及 12.8 仍待执行。当前用户已授权最终报告完成后推 origin，覆盖早期不推送约束。
