@@ -447,6 +447,10 @@ int main(int argc, char** argv) {
             ++cycle;
         }
 
+        std::cout << "[l8b-stats]";
+        const char* l8b_names[]={"amo_exec","lr_exec","sc_fail","rsv_probe_hold_cycle","mmio_read","mmio_write","misaligned_crossline_split","ld_order_flush","dma_read","dma_write"};
+        for(unsigned i=0;i<10;++i) std::cout << " " << l8b_names[i] << "=" << dut.l8b_events_o[i];
+        std::cout << " side_reads=" << dut.mmio_side_reads_o << " cycles=" << cycle << "\n";
         dut.final();
         trace.flush();
 
