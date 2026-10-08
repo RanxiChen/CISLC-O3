@@ -7,8 +7,7 @@ INPUTS=['clk','rst','mem_uop_i','issue_is_load_i','lq_replay_valid_i','lq_replay
         'sq_replay_valid_i','sq_replay_i','sq_query_block_i','sq_query_forward_valid_i',
         'sq_query_forward_data_i','full_line_busy_i','internal_busy_i','dc_resp_i',
         'load_result_ready_i','exc_ready_i','flush_all_i','resolution_valid_i',
-        'resolution_mispredict_i','resolution_tag_i','csr_i','pmp_i',
-        'ptw_req_ready_i','ptw_resp_i','d_done_i','d_exc_i']
+        'resolution_mispredict_i','resolution_tag_i','csr_i','pmp_i']
 
 class Bench:
     def __init__(self,d):
@@ -19,6 +18,9 @@ class Bench:
 
     async def reset(self):
         clear(self.d,INPUTS);self.d.rst.value=1
+        # The L5 precise-exception fixture ties these optional MMU ports off.
+        for name in ('ptw_req_ready_i','ptw_resp_i','d_done_i','d_exc_i'):
+            if hasattr(self.d,name):getattr(self.d,name).value=0
         # M-mode, bare translation, unlocked PMP permits main memory.
         self.d.csr_i.value=3<<(len(self.d.csr_i)-2)
         # The CSR struct starts priv_eff[1:0]; all other fields zero.
