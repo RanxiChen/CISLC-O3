@@ -284,3 +284,19 @@ dcache 为每个MSHR增加 atomic_live_q：原子分配/仍存活的原子合并
 RTL修复提交7c0b58cee53d73c863a61a277e4859732a369480，在cloud_chen的n2-cache-m1与n2-cache-m4各18例全部通过，lint exit0、0 errors（359 warnings原样保留），N1正常11例通过。下层M1共23例、M2共54例通过；M3编译报memsys_tb_top.sv:70的cache实例漏接新增9个测试端口。补齐上下文/清reservation的常量M态输入，并显式留空监视输出。同步检查共享CacheBench的另一个消费者pte_cache_tb_top，为其补同名输入和监视输出，默认上下文仍为M态。全部DUT RTL、原刺激、断言、规模和种子不变；不属于黄金迁移。失败日志保留，继续重跑其余下层。
 
 补充两例增强取消和清除表的区分：LR GetM已实际发出后flush，迟到安装50拍内每拍无reservation/原子重发保护且读回未变；同行PTE CAS比较不匹配时无成功写、reservation保留并可成功SC。原18例不变，N2完整套件现为20例。
+
+### N2 完整复跑结果
+
+全部运行主机cloud_chen@47.96.71.231，每项运行前重新读取共享配置并预检；工具与前述版本相同，Y13/Verilator --assert全程开启。RTL固定为7c0b58cee53d73c863a61a277e4859732a369480。候选36a04c9e2e2f680d0d6c71b1b0d3c214e3d96758只补两测试wrapper接口，643307af7546115027ce295751e67d3368a49fa1另加上述两例与报告，其他RTL及原测试刺激均逐字节相同。
+
+| 候选/证据根 `/home/cloud_chen/evidence/t10/` | 完整通过范围 | 结果 |
+| --- | --- | --- |
+| 7c0b58ce | M1/M2、N1正常与断言负例、M5/M6、lint | M1/M2共5次77例；N1正常11例及精确负例；M5/M6共29程序；lint0 errors、359 warnings |
+| 36a04c9e | M3、退休比较器 | 8组合各5例，共40例；固定61/62种子各2000 CPU+500 I Read，压力/默认、MSHR1/4、RFO0/1全部保留；比较器5例 |
+| 643307af | M4、N2 | M4共35次120例，固定1/7/29种子；N2 MSHR1/4各20例，正常XML无failure/error/skip |
+
+MSHR1的新20例首次调用未覆盖Makefile旧名称筛选，进程exit0但XML为0例；证据`n2-cache-m1`保留，此运行明确拒绝计入通过。显式以COCOTB_TEST_MODULES=test_l8b_dcache、COCOTB_TESTCASE=运行完整新模块，`n2-cache-m1-full`真实20例通过；MSHR4的`n2-cache-m4`真实20例通过。未修改原MSHR1用例筛选、任何断言或规模。逐项审核`n2-layer-audit.json`校验准确SHA、host、cwd、命令、exit、XML条数/失败/跳过；完整日志/XML/退休trace/参考/哈希保留，三个候选均有本地completed-evidence-snapshot.tar.gz。
+
+M5/M6严格截止前缀与N1时记录全部一致，周期数也相同；M6 l8a_mem仍为123750周期、有效前缀62785、合法尾部1，MSHR/RFO/bank/probe/writeback统计均非零且相同。原T09参考及批准的l9_fp副本不再改动。RTL修复后下层M1～M4共48次237例、M5/M6和N1完整复跑，未漏下层。
+
+Y11：两配置run-l10-vm仍tohost=3（make exit2），首个失败仍PC0x800001f8返回0x20040c07、PC0x80000204跳fail。额外`n2-y11-core-debug`使用已有L10_DEBUG/L8A_AD_DEBUG，直接驱动exit1原样保留，不计作通过。N2单cache的实际PTE值序列在A更新完成后普通load正确返回0x20040c47，未复现整核的旧值；按12.2/12.3表规定，继续在N3检查组合访问时序，尚未改B36，未声称VM修复。
