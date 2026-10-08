@@ -101,36 +101,36 @@ AXI RAM 镜像（TB 经 axi_init_* 预装）
 | `frontend/ftq.sv` | **闭环简化（L7b）**：实际长度/edge 训练；年轻区域任意提交关闭更老空区域 | 完整一致性留后级 | Alan FTQ fixture 3/3 PASS；整核 RVC PASS |
 | `frontend/frontend.sv` | **L8a接口接入**：ICache公开Read/ReadData链路与共享PTW，原取指/恢复/精确同步连线保持 | VM_AD=1已在T10通过；预取性能与平台留后级 | 既有前端套件及M5/M6取指回归；见T09报告 |
 | `frontend/icache.sv` / `icache_mshr.sv` | **L8a目标实现**：四行MSHR、按PA合并、公开Read/ReadData整行回填，保留ITLB及异常身份；无I目录/IRecall | 预取性能未验收；VM_AD=1已在T10通过 | M4 seed1/7/29各4/4、M5/M6既有取指回归；见T09报告 |
-| `memory/l2_home.sv` / `l2_slots.sv` / `l2_probe_engine.sv` / `l2_mem_engine.sv` | **L8a目标实现**：512×8、8慢槽/2Put槽/2写回槽、组保护、D目录、Down/Inv、AXI分ID回填与B前保留写回；旧l2_cache/recall/DMA协调器删除 | DMA/AMO/MMIO留L8b/L11 | M1压力/槽满/默认23例、M3八组合与真实AXI代理；见T09报告 |
+| `memory/l2_home.sv` / `l2_slots.sv` / `l2_probe_engine.sv` / `l2_mem_engine.sv` | **L8a/L8b实现**：非阻塞Home保留，第三DMA端口Read/MaskWrite、一致性Down/Inv及字节合并；Y13断言 | SoC/DDR/设备集成留L11 | M1与N1、M3与N3真实AXI/DMA代理；见T10报告 |
 | `frontend/itlb.sv` / `lsu/dtlb.sv` | **L8a接口适配**：DTLB双查询共享数组，I/D各单miss槽、单共享PTW；保留ASID/G/权限/SFENCE/epoch | VM_AD=1已在T10通过；不宣称多walker | MMU seed1/7/29各7/7、公开PTE独立各2/2；见T09报告 |
 | `lsu/ptw.sv` / `walk_cache.sv` | **L8a接口适配**：单walker/PMP/PMA/epoch规则保持，PTW物理读走公共访存协议 | VM_AD=1已在T10通过；单walker | M2 PMP客户端、M3物理序列、M4 MMU/PTE与整核AD；见T09报告 |
 | `lsu/pte_ad_updater.sv` | **L8a接口适配**：公共PTE CAS、队头D owner/重遍历、接受事务drain，AD内部请求具来源授权 | reservation/AMO留后级 | M2 CAS/PMP、M3 A/D序列、M4 D-refresh回归及整核AD；见T09报告 |
-| `lsu/dcache.sv` / `dcache_mshr.sv` / `dcache_writeback.sv` / `dcache_probe.sv` | **L8a目标实现**：64×8/八bank/四MSHR/二WB、双S2重放、整行install/probe/WB、保留资源、STA授权RFO与SQ drain | AMO/跨行/MMIO/DMA留后级；FENCE.I不扫描DCache | M2 MSHRS1/4为26/28例、M3八组合各5例、M6 64KiB自查与统计；见T09报告 |
-| `backend/store_queue.sv` | **L8a目标实现**：双地址执行/双转发查询，最近完整覆盖旧store、SQ事件唤醒与队头drain，DTCM路径移除 | 跨行/AMO/MMIO留后级 | M4 seed1/7/29各6/6、M5/M6原数据golden与AD；见T09报告 |
+| `lsu/dcache.sv` / `dcache_mshr.sv` / `dcache_writeback.sv` / `dcache_probe.sv` | **L8b实现**：9类AMO、LR/SC、原子前进保护、权限寄存、DMA置I广播及成功PTE A写广播；保留L8a多MSHR/RFO | L8c与FPGA留后级 | N2 MSHR1/4各20例，N3四组合，N6 AMO/MMIO/拆分/DMA；见T10报告 |
+| `backend/store_queue.sv` | **L8b实现**：ATOMIC/MMIO/SPLIT项交队头HEU，完成唤醒年轻load，退休直接释放；普通SQ转发/drain保留 | L8c与完整一致性留后级 | N4 seed1/7/29各7例，M5/M6与N6；见T10报告 |
 | `backend/backend_issue_queue.sv` | **L8a目标实现**：MEM双发射，删除旧按序load及allow_load门控；源域/唤醒及INT/BR/FP结构保留 | FP提前唤醒及性能优化留后级 | M4直接IQ3/3、L3 kind0/1/2×seed1/7/29；既有early_wakeup原断言通过；见T09报告 |
-| `backend/load_store_unit.sv` | **L8a目标实现**：双管道/双翻译，每路二项结果FIFO与在途预留；内部AD/PTW/SQ来源优先；D刷新只重验证owner，年轻LQ等完成/取消 | 跨行/跨页/MMIO/AMO留后级；单D owner | M4 seed1/7/29各6/6、L5异常2/2，AD定向首失修复及M5/M6；见T09报告 |
+| `backend/load_store_unit.sv` | **L8b实现**：普通双访存与HEU复用翻译/cache路径，跨行与IO延后到队头，Y14异常不门控S1 SQ查询 | 单D owner/单PTW；L8c留后级 | N4 seed1/7/29各10例、L5各2例；N6跨页fault/D位与全部跨行偏移；见T10报告 |
 | `frontend/fetch_return_queue.sv` | **闭环简化（L7a）**：单槽身份匹配、年龄清除；kill 拍保留槽接收匹配响应 | 单槽吞吐限制保留，多项返回队列留后级 | T05b `b122d59` Alan 3/3 PASS；本次未改行为 |
 | `frontend/rvc_expander.sv` | **闭环简化（L9）**：整数 RV64C 加四条浮点 RVC，C.LUI nzimm 修正 | 完整 ISA 一致性留后级 | Alan 3/3 PASS（`50ff873`），含 FP RVC 与 C.LUI；顺序整核 PASS |
 | `frontend/ifu_f0.sv` | **闭环简化（L7b）**：四条/拍、首拍出队、hold/pend、整数 RVC 展开、edge/D34、kill/截断 | 浮点 RVC 在 L9；ITLB/PTW 在 L10 | Alan 6/6 PASS，含 120 拍 RV64I 随机事务 |
 | `frontend/ifu_f1.sv` | **闭环简化（L7b）**：按长度/位置 a～f 核对；直接截断、零指令拍 c′、寄存式请求 | 完整 ISA 一致性留后级 | Alan 18/18 PASS，保留 L7a 17 项 |
 | `frontend/redirect_arbiter.sv` | **闭环简化（L7a）**：四源年龄仲裁、busy 替换、接受拍计数；F1 寄存请求已接入 | SYS committed 上下文仍为已知边界 | Alan 仲裁器 2/2、l7_recovery 2/2 PASS；T06 复验通过 |
 | `frontend/fetch_buffer.sv` | **闭环简化（L7a）**：按 FTQ 身份/槽位选择性保留，kill 拍阻塞握手 | 吞吐与综合时序留后级 | Alan 2/2、l7_recovery 2/2 PASS；T06 复验通过 |
-| `system/hpm_counters.sv` / `system/csr_file.sv` / `system/backend_perf_events.sv` | **L10/L8a接入**：保留特权CSR/epoch规则，新增DC/L2/MSHR/RFO事件编码0x2a～0x37并沿用原HPM选择/增量链路 | 平台PMU、FPGA验证留后级 | 同SHA CSR10/10、HPM19/19，保留原逐拍增量检查并新增14项L8a事件覆盖；整核统计见T09报告 |
-| `system/commit_ctrl.sv` / `system/wfi_ctrl.sv` | **L8a适配**：FENCE.I数据侧下一拍clean_done、busy=0、不扫描DCache；保留特权/SFENCE/needs_D精确退休规则 | DMA/fatal与平台留后级；VM_AD=1已在T10通过 | M4 commit6/6，既有WFI与特权/AD回归；见T09报告 |
-| `common/pmp_checker.sv` / `common/pma_checker.sv` | **L8a/X5**：16项G=2，PA高位先检查再截断；物理主存仅0x80000000～0x801fffff，旧DTCM拒绝 | MMIO在L11；VM_AD=1已在T10通过 | 原PMP/PMA2/2（保持边界/随机规模）、M2所有内部来源拒绝用例；见T09报告 |
-| `frontend/frontend_sync_ctrl.sv` / `backend/decoder.sv` | **闭环简化（L10/L8a）**：原精确同步/操作数x0身份保持；FENCE.I数据侧按L8a在下一拍确认 | 完整ISA一致性留后级 | 既有sync/decoder与M6共享代码数据行自查；见T09报告 |
+| `system/hpm_counters.sv` / `system/csr_file.sv` / `system/backend_perf_events.sv` | **L8b接入**：misa.A、十项原子/MMIO/拆分/order/DMA事件；特权CSR及HPM逐拍增量保留 | 平台PMU/FPGA留L11 | N4 CSR11例、既有HPM19例、N6事件记录及拆分精确55自查；见T10报告 |
+| `system/commit_ctrl.sv` / `system/wfi_ctrl.sv` | **L8b实现**：FENCE.I只排空committed SQ并同步前端；order_flush队头重取；外部效果至退休间屏蔽IRQ | 平台中断设备留L11 | N4 commit8例、HEU6例；N6中断副作用精确一次；见T10报告 |
+| `common/pmp_checker.sv` / `common/pma_checker.sv` | **L8b实现**：主存[0x80000000,2^32)，IO[0x02000000,0x80000000)，完整访问范围权限；IO无执行/原子且自然对齐 | 实际设备与平台留L11 | N2权限/IO，N6精确cause/tval；既有PMP规模保持；见T10报告 |
+| `frontend/frontend_sync_ctrl.sv` / `backend/decoder.sv` | **L8b接入**：AMO/LR/SC译码与aq/rl，原同步/操作数身份保留，FENCE.I删除clean握手 | 完整ISA一致性留FPGA阶段 | N4全原子合法/非法编码、旧sync与M5/M6；见T10报告 |
 | `frontend/frontend.sv` | **L8a接口接入**：ICache公开Read/ReadData链路与共享PTW，原取指/恢复/精确同步连线保持 | VM_AD=1已在T10通过；预取性能与平台留后级 | 既有前端套件及M5/M6取指回归；见T09报告 |
-| `backend/backend.sv` | **L8a总装**：双访存结果/三INT二FP写口、公开L2/PTW/PTE接口、SQ/LQ独立AD唤醒；mispredict/flush不消费LSU异常 | VM_AD=1已在T10通过；平台在L11 | backend2/2、backend_control1/1、M4旧异常FIFO及M5/M6；见T09报告 |
-| `backend/rob.sv` | **闭环简化（L10）**：原四宽退休/FP/trap，保存 SFENCE 第二 preg 与 needs_D；mark/clear/idx 使任何包含 D 未完成项的前缀停止 | L5 已知问题/完整一致性见报告 | T08c ROB 4/4（含旧前缀可退、D 项及年轻项等待）；整核 AD 正向程序通过 |
+| `backend/backend.sv` | **L8b总装**：统一HEU/AMO/MMIO/跨行、双物理行顺序广播，IRQ保护保持到owner退休 | L8c/平台集成留后级 | backend旧2例与IRQ回归1例、backend_control1例、M5/M6与N6；见T10报告 |
+| `backend/rob.sv` | **L8b接入**：四宽退休前缀遇LQ order标记停止，标记load成为队头后重取；既有D/FP/trap保留 | L5历史问题/完整ISA一致性留后级 | ROB4例、VM_AD=1两配置及N6；见T10报告 |
 | `backend/uop_queue.sv` | **闭环简化（L3）**：四宽、16 项、bank/回绕/满空/前缀握手/M flush | 更深流水按 B42 时序触发 | Alan WQ 900 周期 PASS（`ac2aed1`，seed 1/7/29） |
 | `backend/rename_stage.sv`、`rename_map_table.sv`、`free_list.sv` | **闭环简化（L9）**：INT/FP 独立预算与映射、src3 RAW、f0/p0、共享 tag 恢复 | R1/R2 按 B42 时序触发 | L9 顺序整核功能覆盖；本模块独立门禁未运行；此前 O3-T01 证据仅对应旧版 |
 | `backend/branch_checkpoint_file.sv` | **闭环简化（L3）**：C 释放/清 parent 与不同 tag create 合并；只看拍初空闲，不同拍复用 | 系统整体恢复待 L5 | Alan CK full/C/M 700 周期 PASS（`ac2aed1`，seed 1/7/29） |
 | `backend/rename_dispatch_queue.sv`、`dispatch_stage.sv` | **闭环简化（L9）**：四宽前缀增加 FP 分流；FP 访存走 MEM，异常只消费 RDQ | 后续级 AMO 等 | L9 顺序整核功能覆盖；本模块独立门禁未运行；RDQ 本次未改 |
 | `backend/backend_issue_queue.sv`、`prf_read_arbiter.sv` | **L8a读口适配**：双Memory发射使用INT 6R/FP 8R预算，保留分域源身份与就绪/唤醒合同 | FP提前唤醒及独立完整合同留后级 | M4真实PRF仲裁、IQ kind0/1/2及既有RR/early_wakeup；见T09报告 |
 | `backend/branch_unit.sv`、`alu_pipe.sv` | **闭环简化（L3）**：one-shot C/M 与 JAL 链接解耦；ALU 独立 kill 保留旧 Result | JALR 在 L6；L7b IALIGN=16 已接入，完整目标边界留后级 | Alan 缺口 2 具名/700 事务 DUT/真实 WB 竞争与总装 C 合同 PASS（`ac2aed1`，seed 1/7/29） |
-| `backend/load_queue.sv` | **L8a目标实现**：原VA/uop/generation保存，按MSHR install/error/free、TLB、SQ、AD事件等待/唤醒，两路选择重试；C/M身份规则保留 | 跨行/AMO与完整一致性留后级 | M4 seed1/7/29各6/6，M3随机与M6整核；见T09报告 |
-| `core/o3_core.sv` | **L8a总装**：新L2Home、公开whole-line链路、双访存与性能事件，删除DTCM/旧L2数据路径 | VM_AD=1已在T10通过；L8b/L11未开始 | M5单管道与M6默认全部目标及run-l8a-mem；见T09报告 |
-| `sim/o3/` | **L8a验收接入**：AXI RAM 2MiB、JSONL v2、双配置参数、只读MSHR/RFO/bank统计、独立run-l8a-mem参考与严格成功tohost截止前缀比较 | VM_AD=1已在T10通过；Spike/ACT4/SoC/FPGA不在本次范围 | 同SHA M5/M6全部原自查与退休前缀、比较边界5例；周期/前缀/尾部/统计见T09报告 |
+| `backend/load_queue.sv` | **L8b实现**：HEAD仅队头交HEU；DMA/PTE A独立行匹配，同拍完成不漏标，向ROB给order bitmap；保留L8a等待/双重放 | L8c未开始 | N4 seed1/7/29各9例；N3四组合、VM及DMA整核；见T10报告 |
+| `core/o3_core.sv` | **L8b总装**：AXI4-Lite主口与一致性DMA行口、HEU/事件接入；原公开L2与PTW链路保留 | SoC/设备/FPGA留L11，L8c未开始 | M5/M6两配置、VM_AD=1及N6四程序；见T10报告 |
+| `sim/o3/` | **L8b仿真验收**：4KB MMIO/SLVERR/副作用计数/单笔DMA模型，四新程序及十事件只读统计；严格退休前缀保留 | Spike/ACT4/SoC/FPGA不在T10范围 | N5既有回归与N6四自查程序；最终同SHA证据以T10确认单为准 |
 
 ## 3. 其他模块状态概览
 
@@ -224,11 +224,11 @@ L5 F0 已保留非法短编码位置及返回队列取指错误，交给 ROB 精
 | 模块 | 本次 RTL 行为 | 验证 |
 |---|---|---|
 | `backend/decoder.sv`、`frontend/rvc_expander.sv` | FP 指令表/域/格式/rm、四条浮点 RVC、C.LUI nzimm 合法性 | Alan RVC 3/3 PASS；译码经整核覆盖，独立译码门禁未运行 |
-| `backend/backend.sv` | **L8a总装**：双访存结果/三INT二FP写口、公开L2/PTW/PTE接口、SQ/LQ独立AD唤醒；mispredict/flush不消费LSU异常 | backend2/2、backend_control1/1、M4旧异常FIFO及M5/M6；见T09报告；边界：VM_AD=1已在T10通过；平台在L11 |
+| `backend/backend.sv` | **L8b总装**：统一HEU/AMO/MMIO/跨行、双物理行顺序广播，IRQ保护保持到owner退休；边界：L8c/平台集成留后级 | backend旧2例与IRQ回归1例、backend_control1例、M5/M6与N6；见T10报告 |
 | `backend/physical_regfile.sv`、`preg_ready_table.sv` | **L8a/X3**：INT 6R/3W、FP 8R/2W，FP p0普通寄存器；实际写口同拍旁路/ready保持 | M4真实PRF仲裁、M5/M6整数及FP回归；非独立完整PRF合同证明 |
 | `backend/fpu/fpu_{fma,divsqrt,misc,conv}_fu.sv` | 直接拆分 opgroup；8 项身份侧表、killed 保留到终结、共同结果保持、FMV 旁路轮转 | Alan FU 2/2 PASS（含 32 组固定种子加法）；顺序整核 PASS |
 | `backend/fp_writeback_arbiter.sv`、`writeback_arbiter.sv`、`rob.sv` | **L8a写回接入**：双load头按年龄竞争3 INT/2 FP写口，完成槽随两管道展开；保留kill/flush与FP flags规则 | 经用户批准迁移的WB fixture保持原背压/kill检查，另检查更老load完成；M4旧异常FIFO及M5/M6，见T09报告 |
-| `backend/load_store_unit.sv` | **L8a目标实现**：双管道/双翻译，每路二项结果FIFO与在途预留；内部AD/PTW/SQ来源优先；D刷新只重验证owner，年轻LQ等完成/取消 | M4 seed1/7/29各6/6、L5异常2/2，AD定向首失修复及M5/M6；见T09报告；边界：跨行/跨页/MMIO/AMO留后级；单D owner |
+| `backend/load_store_unit.sv` | **L8b实现**：普通双访存与HEU复用翻译/cache路径，跨行与IO延后到队头，Y14异常不门控S1 SQ查询；边界：单D owner/单PTW；L8c留后级 | N4 seed1/7/29各10例、L5各2例；N6跨页fault/D位与全部跨行偏移；见T10报告 |
 | `system/commit_ctrl.sv`、`csr_file.sv` | 实际退休 OR flags、写 FPR/flags 置 Dirty、CSR 写/FS Off/保留 frm 与 SD | Alan CSR 4/4 PASS；commit_ctrl 经整核覆盖，独立门禁未运行 |
 | `third_party/cvfpu`、`rtl/rtl.f`、`scripts/cvfpu.vlt` | 固定 gitlink 和 common_cells；统一文件清单与限定 CVFPU BLKANDNBLK 豁免 | Alan lint PASS：0 errors / 361 warnings，固定依赖工作树无修改 |
 
