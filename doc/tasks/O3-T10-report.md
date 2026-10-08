@@ -1,5 +1,7 @@
 # O3-T10 L8b 实施报告（进行中）
 
+当前停点：N3全部通过，下一步合并并行窗口并执行N4；Y11/B36已按用户批准修复，原VM_AD=1在mem_pipes1/2都通过。2026-10-08起按任务书加速修订执行，中间层使用结果表和失败修复记录；完整审计留到最终12.8。此前章节中的等待审批、全量下层与快照记录是历史状态。
+
 ## 当前状态与证据边界
 
 - 分支：`feat/L1-closure`；预读与审计起点：`3e52d60c48cafebb2ed4b3b93fd8c734aca8f284`。
@@ -352,3 +354,33 @@ env -u O3_INJECT /home/cloud_chen/evidence/t10/2a05dca0/n3-y11-build/build/Vo3_t
 ### B36 首轮整核复跑：退休前缀漏拦截
 
 92659708 的 lint/M1/M2/N1/N2 通过，M5/M6 既有29程序自查和严格截止前缀通过，l8a_mem周期123750/前缀62785/尾部1。VM_AD=1 两配置仍tohost=3；y11-after-b36-debug保存原日志和trace。默认配置年轻PTE load c16649早读0x20040c07，成功A写c16655，翻译交付c16657，年老load c16662完成；c16664同拍四条退休包含ROB4/PC0x800001f8。根因为ROB只通过commit_ctrl的队头order_flush禁止整拍退休，退休宽度4的更年轻lane可跨过标记项。补充LQ的按ROB索引标记bitmap，ROB逐条退休前缀遇标记停止，只让更老连续前缀退休；标记load成为队头后沿现有同步/refetch流程重取。这实现已批准的“不退休、到队头重取”行为，不新增合同。首轮全部失败证据保留。RTL再修复后完整重跑下层。
+
+### B36 修复后的 VM 确认（N3 诊断，非 N5 层验收）
+
+RTL SHA db83a505baba87c4dadefa3686040d8669db0500，主机 cloud_chen，cwd /home/cloud_chen/work/20261008-t10-db83a505，证据 /home/cloud_chen/evidence/t10/db83a505。lint exit0、0 errors/359 warnings；N1正常11例及精确负例、N2 MSHR1/4各20例通过。M5/M6原有29程序自查与严格截止前缀全部通过。VM_AD=1在mem_pipes1与2均exit0/tohost1；默认17534周期、6434退休。y11-vm-confirm另用原l10_vm.S独立编译执行，exit0；y11-vm-proof校验PC0x800001f8唯一退休、值0x20040c47、先早读旧值/后实际A写入以及最终s3=6（trace有8条trap，包含不计入s3的ecall）；原自查、trap数规则、黄金值未修改。proof.json保存ELF/trace/log的SHA256。原失败记录保持于92659708。
+
+N3随机代理保留独立AXI内存、架构字节黄金模型、实际握手权限/SWMR与目录监视、看门狗。每种几何/MSHR各种子71/72，每种子2000 CPU操作（load/STA/drain/9类AMO/LR/SC）、2000 DMA读写交替、500 I Read；额外检查LR→DMA Inv→SC失败及LR/SC成功。同物理行的I Read与DMA WriteAck串行以确定写入线性化点，异行I Read持续并发，L1D仍经历真实Down/Inv；不改变既有M3刺激序列或断言。A写广播诊断验证目标物理行与成功CAS写入拍完全一致。候选533ee73f仅测试代理改动，RTL沿用db83a505。下层复跑及N3四个组合已完成，结果如下。
+
+
+## N3 层通过（加速修订）
+
+每项实际主机均为cloud_chen@47.96.71.231，执行前读取共享主机配置并成功SSH预检；Verilator5.050/cocotb2.1.0，断言开启。下表SHA为实际代码候选，报告提交不改变RTL或测试。
+
+| SHA | 主机 | 命令（完整参数见运行日志/文本记录） | exit | 用例数 |
+| --- | --- | --- | --- | --- |
+| 533ee73f | cloud_chen | make -j4 -C sim/cocotb/memsys GEOMETRY=pressure MSHRS=1 RFO=1 COCOTB_TEST_MODULES=test_l8b_memsys,test_l8b_y11_repro | 0 | 3 |
+| 533ee73f | cloud_chen | 同上 GEOMETRY=pressure MSHRS=4 | 0 | 3 |
+| 533ee73f | cloud_chen | 同上 GEOMETRY=default MSHRS=1 | 0 | 3 |
+| 533ee73f | cloud_chen | 同上 GEOMETRY=default MSHRS=4 | 0 | 3 |
+| db83a505 | cloud_chen | make -j4 -C sim/cocotb/rob | 0 | 4 |
+| db83a505 | cloud_chen | python3 /tmp/o3-t10-tools/lower.py db83a505baba87c4dadefa3686040d8669db0500；N1/N2驱动 | 0 | M1–M4 237；N1 11正常+1负例；N2 40 |
+| db83a505 | cloud_chen | python3 /tmp/o3-t10-tools/m6.py db83a505baba87c4dadefa3686040d8669db0500 | 0 | M6全部目标及VM_AD=1，共16程序 |
+| db83a505 | cloud_chen | make lint | 0 | 0 errors，359 warnings |
+
+N3共12例，所有XML均无failure/error/skip。证据根为/home/cloud_chen/evidence/t10/{533ee73f,db83a505}；四个N3目录分别为n3-pressure-m1、n3-pressure-m4、n3-default-m1、n3-default-m4，ROB为n3-direct-rob。B36与退休前缀的失败→根因→RTL修复见前两节；直接涉及cache/LQ/ROB下层均已通过，修订生效前额外完成的全下层结果保留为历史证据。
+
+### 自行决定
+
+- 新N3代理按DMA WriteAck线性化同物理行的I Read，排空已发出的同行I请求并暂缓新的同行请求；异行保持并发，黄金内存值、规模、种子和目录断言未变。修复握手采样同时检查实际I valid。
+- 默认几何/MSHR4发生两个驱动重复启动，属于本窗口调度错误；取消其中一个，保留另一实例完整3例exit0/XML结果。取消驱动的143与日志中的Terminated不计作DUT失败或通过。最终总门禁使用全新候选目录。
+- 加速修订之后不新增中间审计JSON、哈希清单、快照包或字节一致性证明；ROB直接套件使用文本SHA/主机/命令/exit记录。
