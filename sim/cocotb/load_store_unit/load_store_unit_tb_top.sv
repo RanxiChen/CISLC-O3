@@ -2,6 +2,12 @@ module load_store_unit_tb_top import o3_pkg::*; #(
     parameter o3_cfg_pkg::backend_cfg_t CFG=o3_cfg_pkg::O3_CFG.be,
     localparam int P=CFG.lsu.agu_pipes
 )(input logic clk,rst,
+    output logic ptw_req_valid_o,input logic ptw_req_ready_i,
+    output o3_types_pkg::ptw_req_t ptw_req_o,input o3_types_pkg::ptw_resp_t ptw_resp_i,
+    input logic d_done_i,input o3_types_pkg::exc_info_t d_exc_i,
+    output logic d_mark_o,d_clear_o,ad_wake_o,
+    output o3_types_pkg::rob_idx_t d_idx_o,output o3_types_pkg::vaddr_t d_va_o,
+    output o3_types_pkg::sq_idx_t d_sq_o,
     input mem_execute_uop_t mem_uop_i[P],input logic issue_is_load_i[P],output logic issue_ready_o[P],
     input logic lq_replay_valid_i[P],input lq_replay_t lq_replay_i[P],output logic lq_replay_ready_o[P],
     input logic sq_replay_valid_i[P],input lq_replay_t sq_replay_i[P],output logic sq_replay_ready_o[P],
@@ -41,9 +47,7 @@ module load_store_unit_tb_top import o3_pkg::*; #(
         assign dc_req_ready_i[p]=1'b1;
     end
     load_store_unit #(.CFG(CFG)) dut(.lq_tag_i(lq_tag_i),.dc_req_ready_i(dc_req_ready_i),
-        .ptw_req_valid_o(),.ptw_req_ready_i(1'b0),.ptw_req_o(),.ptw_resp_i('0),
-        .sfence_i('0),.sfence_done_o(),.rob_head_i('0),.d_done_i(1'b0),.d_exc_i('0),
-        .d_mark_o(),.d_clear_o(),.d_idx_o(),.d_va_o(),.d_sq_o(),.ad_wake_o(),.perf_o(),.*);
+        .sfence_i('0),.sfence_done_o(),.rob_head_i('0),.perf_o(),.*);
     assign cfg_tags_o=CFG.rename.checkpoints;assign cfg_rob_o=CFG.rob.entries;assign cfg_lq_o=CFG.lsu.lq_depth;
     always_comb begin
         fmt_uop_valid='0;fmt_uop_valid.valid='1;

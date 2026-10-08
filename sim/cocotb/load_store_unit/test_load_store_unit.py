@@ -122,3 +122,57 @@ async def mispredict_at_s2_cancels_young_but_keeps_old_store(d):
     await e.tick();d.resolution_valid_i.value=0;d.resolution_mispredict_i.value=0
     assert e.stores[-1][2:]==(0x80000108,0x1122334455667788)
     for _ in range(12):await e.tick();assert not e.results
+
+
+@cocotb.test()
+async def dirty_refresh_keeps_young_load_asleep_until_owner_revalidates(d):
+    """l10_ad first writer: refresh must not wake an AD_ORDER load early."""
+    def bits(*pairs):
+        value=0
+        for width,part in pairs:
+            assert 0 <= part < (1<<width)
+            value=(value<<width)|part
+        return value
+    e=Bench(d);await e.reset()
+    # dmmu_csr_t: priv_eff,priv,mprv,mpp,adue,sum,mxr,mode,asid,root,epoch.
+    d.csr_i.value=bits((2,1),(2,1),(1,0),(2,0),(1,1),(1,0),(1,0),
+                       (4,8),(16,0),(44,0x80100),(8,0))
+    async def fill(dirty):
+        await e.until(lambda:val(d.ptw_req_valid_o))
+        d.ptw_req_ready_i.value=1;await e.tick();d.ptw_req_ready_i.value=0
+        # ptw_resp_t public fields; VPN7 -> PA0x80103000, R/W/A, optional D.
+        d.ptw_resp_i.value=bits((1,1),(27,7),(16,0),(8,0),(2,2),(44,0x80103),
+            (2,0),(1,1),(1,1),(1,0),(1,0),(1,0),(1,1),(1,int(dirty)),
+            (1,0),(1,0),(56,0x80102038),(64,0x20040c47|(0x80 if dirty else 0)))
+        await e.tick();d.ptw_resp_i.value=0
+    e.data=0x11223344
+    await e.issue(e.uop(1,addr=0x7000,rob=1))
+    await fill(False)
+    await e.until(lambda:1 in e.waits)
+    await e.replay(1);await e.until(lambda:bool(e.results))
+    e.hold_result=False;await e.tick();await e.tick()
+    await e.issue(e.uop(2,addr=0x7000,load=False,rob=14,value=0x55667788))
+    await e.until(lambda:val(d.sq_capture_valid_o[0]))
+    owner=val(d.capture_o[0])
+    await e.until(lambda:val(d.d_mark_o));await e.tick()
+    # Younger load reaches AD_ORDER while the owner is waiting on D update.
+    await e.issue(e.uop(3,addr=0x7000,rob=15,lq=2))
+    await e.until(lambda:e.waits.get(2)==10)
+    d.d_done_i.value=1;await e.tick();d.d_done_i.value=0
+    for _ in range(5):
+        await e.tick()
+        assert not val(d.ad_wake_o), 'D refresh wakes younger LQ before owner revalidation'
+    async def owner_replay():
+        await e.until(lambda:val(d.sq_replay_ready_o[0]))
+        d.sq_replay_i[0].value=owner;d.sq_replay_valid_i[0].value=1
+        await e.tick();d.sq_replay_valid_i[0].value=0
+    await owner_replay();await fill(True)
+    for _ in range(5):await e.tick()
+    await owner_replay();await e.until(lambda:val(d.d_clear_o))
+    assert val(d.ad_wake_o) and val(d.d_idx_o)==14 and val(d.d_va_o)==0x7000
+    await e.tick()
+    e.forward=True;e.data=0x55667788
+    await e.replay(2)
+    await e.until(lambda:any(field(d,'result',r,'instruction_id')==3 for _,_,r in e.results))
+    r=next(r for _,_,r in e.results if field(d,'result',r,'instruction_id')==3)
+    assert field(d,'result',r,'result')==0x55667788

@@ -7,7 +7,8 @@ INPUTS=['clk','rst','mem_uop_i','issue_is_load_i','lq_replay_valid_i','lq_replay
         'sq_replay_valid_i','sq_replay_i','sq_query_block_i','sq_query_forward_valid_i',
         'sq_query_forward_data_i','full_line_busy_i','internal_busy_i','dc_resp_i',
         'load_result_ready_i','exc_ready_i','flush_all_i','resolution_valid_i',
-        'resolution_mispredict_i','resolution_tag_i','csr_i','pmp_i']
+        'resolution_mispredict_i','resolution_tag_i','csr_i','pmp_i',
+        'ptw_req_ready_i','ptw_resp_i','d_done_i','d_exc_i']
 
 class Bench:
     def __init__(self,d):
