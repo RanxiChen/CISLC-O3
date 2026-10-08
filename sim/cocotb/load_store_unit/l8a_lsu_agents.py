@@ -13,7 +13,7 @@ class Bench:
     def __init__(self,d):
         self.d=d;self.cycle=0;self.reply=[0,0];self.s0=[None,None]
         self.saved={};self.waits={};self.updates=[];self.results=[];self.stores=[];self.requests=[]
-        self.error=False;self.exceptions=[];self.block=False;self.forward=False;self.data=0;self.miss=False;self.hold_result=True
+        self.head_replies=[];self.error=False;self.exceptions=[];self.block=False;self.forward=False;self.data=0;self.miss=False;self.hold_result=True
         self.d_marks=[];self.d_clears=[];self.ad_wakes=[]
 
     async def reset(self):
@@ -45,6 +45,7 @@ class Bench:
         if hasattr(d,'d_clear_o') and val(d.d_clear_o):self.d_clears.append((self.cycle,val(d.d_idx_o),val(d.d_va_o)))
         if hasattr(d,'ad_wake_o') and val(d.ad_wake_o):self.ad_wakes.append(self.cycle)
         next_reply=[0,0];next_s0=[None,None]
+        if hasattr(d,'heu_resp_o') and val(d.heu_resp_o):self.head_replies.append(val(d.heu_resp_o))
         for p in range(2):
             if val(d.load_result_o[p]):
                 raw=val(d.load_result_o[p])
@@ -71,6 +72,8 @@ class Bench:
                 data=field(d,'request',q,'forward_data') if field(d,'request',q,'forward_valid') else self.data
                 next_reply[p]=codec(d,'response',**{'valid':1,'status':status,'reason':reason,
                                 'mshr_id':0,'lq_tag.idx':idx,'lq_tag.gen':gen,'rdata':data,'exc':exc})
+                if hasattr(d,'fmt_response_head'):
+                    next_reply[p]|=codec(d,'response',head=field(d,'request',q,'head'))
             if val(d.dc_req_valid_o[p]):
                 req=val(d.dc_req_o[p]);next_s0[p]=req
                 self.requests.append((self.cycle,p,field(d,'request',req,'vaddr')))
