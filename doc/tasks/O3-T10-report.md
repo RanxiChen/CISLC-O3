@@ -1,6 +1,6 @@
 # O3-T10 L8b 实施报告（进行中）
 
-当前停点：N3全部通过，N4已完成，下一步执行N5；Y11/B36已按用户批准修复，原VM_AD=1在mem_pipes1/2都通过。2026-10-08起按任务书加速修订执行，中间层使用结果表和失败修复记录；完整审计留到最终12.8。此前章节中的等待审批、全量下层与快照记录是历史状态。
+当前停点：N3全部通过，N5已完成，N6正在定位MMIO中断退休边界；Y11/B36已按用户批准修复，原VM_AD=1在mem_pipes1/2都通过。2026-10-08起按任务书加速修订执行，中间层使用结果表和失败修复记录；完整审计留到最终12.8。此前章节中的等待审批、全量下层与快照记录是历史状态。
 
 ## 当前状态与证据边界
 
@@ -400,3 +400,16 @@ N3共12例，所有XML均无failure/error/skip。证据根为/home/cloud_chen/ev
 证据/home/cloud_chen/evidence/t10/{676eeca3,b6256b77}，每次执行读取实时主机配置、SSH预检成功。第二批其余wrapper仅去尾部空格，RTL及N4其他测试未变，按加速修订复用第一批结果；N6程序的改动不参与旧M6冒烟。VM17534周期/6434退休/tohost1；l8a_mem原规模通过。
 
 自行决定：新o3_tandem_top实例化MMIO模型后，sim/cocotb/backend/Makefile补入o3_mmio_model.sv源文件，避免后续既有backend套件漏编译依赖；属于仿真接线/编译清单修复。HEU测试flush撤销后先settle再采样ready，修复新测试采样时序。N6新拆分计数程序的选择器0x24改为已冻结backend域选择器0x224，期望计数53保持；MMIO两条交替分支路径都执行一条副作用load以覆盖误预测，期望64/96保持。未改黄金值、断言、种子、规模或冻结合同。
+
+
+## N5 层通过
+
+本层无RTL修改。默认配置沿用N4完整整核冒烟（同一RTL及整核top/model/main.cpp输入）；mem_pipes=1完整新跑，原程序、自查与严格截止前缀全部通过。VM_AD=1两配置均tohost1，原trap计数检查保持。
+
+| SHA | 主机 | 命令 | exit | 用例数 |
+| --- | --- | --- | --- | --- |
+| 676eeca318f70e8c80959117aa5a6c87a25bd7e9 | cloud_chen | python3 /tmp/o3-t10-tools/light_core.py 676eeca318f70e8c80959117aa5a6c87a25bd7e9 2 n4-smoke | 0 | M6全部目标+VM_AD=1，16程序 |
+| b6256b775c3144ed78c33586bb661e9fb97da7dc | cloud_chen | python3 /tmp/o3-t10-tools/light_core.py b6256b775c3144ed78c33586bb661e9fb97da7dc 1 n5-p1 | 0 | M5全部目标+VM_AD=1，15程序 |
+| 676eeca318f70e8c80959117aa5a6c87a25bd7e9 | cloud_chen | bash scripts/lint.sh | 0 | 0 errors/359 warnings |
+
+证据/home/cloud_chen/evidence/t10/{676eeca3,b6256b77}。N4到N5只测试和报告变化，未修RTL，不追加下层复跑。最终12.8仍要求全部同一最终SHA新跑。
