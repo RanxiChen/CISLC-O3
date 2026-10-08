@@ -179,6 +179,9 @@ module o3_tandem_top
     end
 
     l10_event_checks l7_checks (
+        .deliver_ready_i(u_core.u_frontend.deliver_ready_i),
+        .deliver_valid_i(u_core.u_frontend.deliver_valid_o),
+        .deliver_mask_i(u_core.u_frontend.deliver_valid_mask_o),
         .clk_i(clk_i),.rst_i(rst_i),
         .fe_sources_i('{u_core.u_frontend.perf_bpu,u_core.u_frontend.perf_ftq,
             u_core.u_frontend.perf_arb,u_core.u_frontend.perf_rq,u_core.u_frontend.perf_f0,
@@ -300,6 +303,30 @@ module o3_tandem_top
                     u_core.u_backend.u_load_store_unit.s2_q[0].valid,u_core.u_backend.u_load_store_unit.s2_q[0].r.uop.rob_idx,
                     u_core.u_backend.t_dc_ld_resp[0].valid,u_core.u_backend.t_dc_ld_resp[0].status,u_core.u_backend.t_dc_ld_resp[0].reason,
                     u_core.u_backend.sq_update[0],u_core.u_backend.mem_update[0].reason,u_core.u_backend.sq_execute_valid[0],u_core.u_backend.d_clear);
+            end
+            if($test$plusargs("L7C_DEBUG") && debug_cycle_q>=1100 && (debug_cycle_q<1230 || debug_cycle_q%512==0)) begin
+                $display("[l7c] c=%0d ftq=%0d h=%0d d=%0d a=%0d dv=%b/%b id=%h issued=%b slow=%b ho=%0d rq=%0d rh=%0d rs=%0d rid=%h brief=%b/%h bv=%b pc=%h recover=%b hold=%b f0=%b/%b ibuf=%b/%b",
+                    debug_cycle_q,u_core.u_frontend.u_ftq.count_q,u_core.u_frontend.u_ftq.head_q,
+                    u_core.u_frontend.u_ftq.demand_q,u_core.u_frontend.u_ftq.alloc_q,
+                    u_core.u_frontend.demand_valid,u_core.u_frontend.demand_ready,u_core.u_frontend.demand_req.ftq_id,
+                    u_core.u_frontend.u_ftq.entries_q[u_core.u_frontend.u_ftq.demand_q].demand_issued,
+                    u_core.u_frontend.u_ftq.entries_q[u_core.u_frontend.u_ftq.demand_q].slow_done,
+                    u_core.u_frontend.u_ftq.train_state_q,u_core.u_frontend.u_fetch_return_queue.count_q,
+                    u_core.u_frontend.u_fetch_return_queue.head_slot,
+                    u_core.u_frontend.u_fetch_return_queue.slots_q[u_core.u_frontend.u_fetch_return_queue.head_slot].state,
+                    u_core.u_frontend.u_fetch_return_queue.slots_q[u_core.u_frontend.u_fetch_return_queue.head_slot].item.ftq_id,
+                    u_core.u_frontend.ftq_brief.slow_done,u_core.u_frontend.ftq_brief.ftq_id,
+                    u_core.u_frontend.alloc_valid,u_core.u_frontend.u_bpu.pred_pc_q,
+                    u_core.u_frontend.recover_busy,u_core.u_frontend.sync_hold,
+                    u_core.u_frontend.rq_deq_valid,u_core.u_frontend.rq_deq_ready,
+                    u_core.u_frontend.deliver_valid_o,u_core.u_frontend.deliver_ready_i);
+                $display("[l7c-cache] c=%0d v=%b%b%b ready=%b%b%b retry=%0d stale=%b hit=%b tlb=%b%b wait=%0d/%0d fill=%b fire=%b",
+                    debug_cycle_q,u_core.u_frontend.u_icache.v1_q,u_core.u_frontend.u_icache.v2_q,u_core.u_frontend.u_icache.v3_q,
+                    u_core.u_frontend.u_icache.s1_ready,u_core.u_frontend.u_icache.s2_ready,u_core.u_frontend.u_icache.s3_ready,
+                    u_core.u_frontend.u_icache.retry_count_q,u_core.u_frontend.u_icache.stale,u_core.u_frontend.u_icache.hit,
+                    u_core.u_frontend.u_icache.tlb_valid,u_core.u_frontend.u_icache.tlb_miss,
+                    u_core.u_frontend.u_icache.free_waiter,u_core.u_frontend.u_icache.ready_waiter,
+                    u_core.u_frontend.u_icache.fill_done,u_core.u_frontend.u_icache.fire);
             end
             debug_cycle_q <= debug_cycle_q + 1;
             if ($test$plusargs("L5_DEBUG") && debug_cycle_q < 2000) begin

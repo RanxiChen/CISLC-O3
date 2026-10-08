@@ -7,6 +7,7 @@ module fetch_return_queue_tb_top
     output logic rsv_ready_o,
     output logic [RQ_IDX_W-1:0] rsv_idx_o,
     input logic rsv_fire_i,
+    input logic [RQ_IDX_W-1:0] rsv_idx_i,
     input logic [$bits(ftq_id_t)-1:0] rsv_ftq_id_i,
     input logic [VADDR_W-1:0] rsv_region_base_i,
     input logic resp_valid_i,
@@ -38,7 +39,7 @@ module fetch_return_queue_tb_top
         req = '0;
         req.ftq_id = ftq_id_t'(rsv_ftq_id_i);
         req.region_base = rsv_region_base_i;
-        req.rq_idx = rsv_idx_o;
+        req.rq_idx = rsv_idx_i;
         resp = '0;
         resp.valid = resp_valid_i;
         resp.rq_idx = resp_rq_idx_i;

@@ -2320,11 +2320,15 @@ module backend
                 for (int lane=0; lane<RETIRE_WIDTH; lane++) assert (!rob_retire_valid[lane]);
             end
             if (branch_resolution_i.valid && !branch_resolution_i.mispredict) begin
+                // A correct resolve never blocks progress itself. An independent
+                // trap or serial redirect may coincide and must still flush.
+                if (!global_flush && !sys_redirect_o.valid) begin
                 assert (decode_ready == uopq_enq_ready)
                     else $fatal(1,"correct-branch progress: decode_ready=%0b enq_ready=%0b block=%0b flush=%0b sys=%0b trap=%0b cause=%0d head_pc=%h",
                         decode_ready,uopq_enq_ready,backend_block,global_flush,sys_redirect_o.valid,trap_req.valid,trap_req.cause,rob_head_info.pc);
                 assert (!u_prf_read_arbiter.issue_block_i);
                 assert (!u_rename_stage.recovery_block_i && !u_dispatch_stage.recovery_block_i);
+                end
                 for (int lane=0; lane<MACHINE_WIDTH; lane++) begin
                     if (rename_lane_valid[lane]) begin
                         assert (!rename_branch_mask[lane][branch_resolution_i.branch_tag]);

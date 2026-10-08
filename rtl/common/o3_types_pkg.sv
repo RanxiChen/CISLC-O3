@@ -772,7 +772,8 @@ package o3_types_pkg;
         PE_IFU_CROSS_REGION = 'h31,
         PE_DELIVER_LT4_BACKEND_READY_CYCLE = 'h32,
         PE_BACKEND_BACKPRESSURE_CYCLE = 'h33,
-        PE_NUM = 'h34
+        PE_RQ_ZOMBIE = 'h3e,
+        PE_NUM = 'h3f
     } fe_perf_evt_e;
 
     typedef logic [PE_NUM-1:0][PERF_INC_W-1:0] fe_perf_t;

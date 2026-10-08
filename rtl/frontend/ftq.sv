@@ -352,7 +352,8 @@ module ftq
             head_d = advance(old_head);
             count_d = count_d - 1'b1;
             train_state_d = TRAIN_IDLE;
-            if (demand_d == old_head) demand_d = head_d;
+            // Issuer may equal a released head after a full-ring wrap.
+            // It then denotes the next allocation, so release must not move it.
             if (pf_d == old_head) pf_d = head_d;
         end
 
@@ -594,6 +595,7 @@ module ftq
     always_comb begin
         perf_o = '0;
         if (!rst_i) begin
+            perf_o[PE_RQ_FULL_CYCLE]=PERF_INC_W'(!hold_i && !kill_i.valid && count_q!=0 && entries_q[demand_q].valid && !entries_q[demand_q].demand_issued && !rq_rsv_ready_i);
             perf_o[PE_FTQ_FULL_CYCLE] = PERF_INC_W'(alloc_valid_i && !alloc_ready_o);
             if (train_fire) begin
                 perf_o[PE_CMT_REGION] = 1;

@@ -1,43 +1,7 @@
-/**
- * 原始取指返回队列 —— 按程序顺序预留、乱序写回、按序出队
- *
- * 作用：
- * - FTQ demand 请求发射前按程序顺序预留槽位；ICache 响应按 rq_idx 写回，允许后发先回。
- * - 队头满足条件才交给 F0：data_ready && slow_done && !killed（D16，第 6.3 节）。
- * - 指令字节存在这里和之后的指令 buffer，FTQ 不存取指数据（第 1 节）。
- *
- * 目标机制：
- * - 暂定 8 项，参数化（D15）。
- * - 已定（D14）：hit under miss，返回按前端程序顺序消费。
- * - 已定（D17）：错误路径已发出的 cache 请求可完成，返回数据丢弃。
- * - 已定（第 10 节）：killed 且仍 pending 的槽位保留至响应结束再回收；已返回的 killed
- *   项可回收；槽位不得提前复用后被旧响应覆盖。
- * - 已定：demand 未真正握手时，预留与取消规则不得泄漏或重复分配（rsv_* 与
- *   demand 握手同拍确认）。
- * - 异常响应同样完成队列项，不永久占住队头（第 14 节）。
- * - slow_done 与最终预测摘要在出队时按 ftq_id 从 FTQ 读取（ftq_brief_*），
- *   使慢覆盖修正的有效范围被 F0/F1 使用。
- *
- * 细节待定：
- * - 表项确切布局；killed 保守回收策略对有效深度的影响需测量。
- * - 代际身份回绕安全条件。
- * - 跨块补半字辅助请求如何占用本队列（第 3.3 节待定）。
- *
- * 当前实现状态：闭环简化（L1）
- * - 为 L1 实现：单槽预留，按 ftq_id/rq_idx 接收阻塞 ICache 响应，
- *   等 FTQ brief.slow_done 后按序交给 F0；第二笔 demand 被回压。
- * - 闭环简化：ICache 单未决；D15/D17 待 L4 ICache 非阻塞后补齐
- *   （8 项、killed 保留、代际回绕）。L7a 的 kill 按 FTQ 年龄选择性清槽，迟到响应靠身份比较丢弃。
- * - 仍未实现：多未决乱序回填和性能事件（显式 tie-off）。
- * - 测试：sim/cocotb/fetch_return_queue/
- *
- * 目标周期行为：
- * - 周期 N 组合：rsv_ready_o/rsv_idx_o 给出下一空槽；队头满足条件时 deq_valid_o=1。
- * - 周期 N 上升沿：rsv_fire_i 时分配槽并记录身份；resp_i.valid 时写入数据并置
- *   data_ready；kill_i 时把边界之后的项标记 killed；deq 握手时回收队头。
- * - 周期 N+1：可见新的占用、队头状态。
- *
- */
+/** L7c: eight-slot pool with program-order delivery. Killed pending requests
+ * remain zombies until their response; zombies never block the new path.
+ * Reserve -> response -> kill -> dequeue defines same-edge priority.
+ * Tests: sim/cocotb/fetch_return_queue/. */
 module fetch_return_queue
     import o3_types_pkg::*;
 #(
@@ -71,64 +35,96 @@ module fetch_return_queue
 
     output fe_perf_t        perf_o
 );
-    logic occupied_q, data_ready_q;
-    ftq_id_t ftq_id_q;
-    vaddr_t region_base_q;
-    logic [REGION_BYTES*8-1:0] data_q;
-    logic exc_valid_q;
-    exception_cause_t exc_cause_q;
-    logic deq_fire;
-
-    assign rsv_ready_o = !rst_i && !kill_i.valid && !occupied_q;
-    assign rsv_idx_o = '0;
-    assign ftq_brief_rd_valid_o = occupied_q && data_ready_q;
-    assign ftq_brief_rd_id_o = ftq_id_q;
-    assign deq_valid_o = !rst_i && !kill_i.valid && occupied_q && data_ready_q
-                       && ftq_brief_i.slow_done && ftq_brief_i.ftq_id == ftq_id_q;
-    assign deq_fire = deq_valid_o && deq_ready_i;
-    assign deq_o = '{
-        ftq_id: ftq_id_q,
-        region_base: region_base_q,
-        data: data_q,
-        exc_valid: exc_valid_q,
-        exc_cause: exc_cause_q
-    };
-    assign deq_brief_o = deq_valid_o ? ftq_brief_i : '0;
-    assign perf_o = '0;
-
-    // N: reserve only with the FTQ/ICache demand handshake. A response can
-    // fill that same slot at edge N or a later edge. N+1: the stored block is
-    // visible to F0 once FTQ reports its prediction complete. The slot is
-    // available again only on the edge after F0 accepts the block.
-    always_ff @(posedge clk_i) begin
-        if (rst_i || (occupied_q && fe_killed_by(kill_i, ftq_id_q, fetch_slot_t'(0), ftq_head_i))) begin
-            occupied_q <= 1'b0;
-            data_ready_q <= 1'b0;
-            ftq_id_q <= '0;
-            region_base_q <= '0;
-            data_q <= '0;
-            exc_valid_q <= 1'b0;
-            exc_cause_q <= '0;
+    localparam int DEPTH=CFG.fetch.return_queue_depth;
+    localparam int CW=$clog2(DEPTH+1);
+    typedef enum logic [1:0] {FREE,PEND,READY,ZOMBIE} state_t;
+    typedef struct packed {state_t state; rq_out_t item;} slot_t;
+    slot_t slots_q[DEPTH],slots_d[DEPTH];
+    rq_idx_t ord_q[DEPTH],ord_d[DEPTH];
+    logic [CW-1:0] count_q,count_d;
+    int free_idx;
+    rq_idx_t head_slot;
+    logic deq_fire, reservation_bad, response_bad, suffix_bad;
+    always_comb begin
+        free_idx=-1;
+        for(int n=0;n<DEPTH;n++) if(free_idx<0 && slots_q[n].state==FREE) free_idx=n;
+        rsv_ready_o=!rst_i && !kill_i.valid && free_idx>=0;
+        rsv_idx_o=free_idx<0 ? '0 : rq_idx_t'(free_idx);
+        head_slot=ord_q[0];
+        ftq_brief_rd_valid_o=count_q!=0;
+        ftq_brief_rd_id_o=count_q!=0 ? slots_q[head_slot].item.ftq_id : '0;
+        deq_valid_o=!rst_i && !kill_i.valid && count_q!=0 &&
+            slots_q[head_slot].state==READY && ftq_brief_i.slow_done &&
+            ftq_brief_i.ftq_id==slots_q[head_slot].item.ftq_id;
+        deq_o=count_q!=0 ? slots_q[head_slot].item : '0;
+        deq_brief_o=deq_valid_o ? ftq_brief_i : '0;
+        perf_o='0;
+        if(!rst_i) begin
+            perf_o[PE_RQ_HEAD_WAIT_DATA_CYCLE]=PERF_INC_W'(count_q!=0 && slots_q[head_slot].state==PEND);
+            perf_o[PE_RQ_HEAD_WAIT_SLOW_CYCLE]=PERF_INC_W'(count_q!=0 && slots_q[head_slot].state==READY && !ftq_brief_i.slow_done);
+            for(int n=0;n<DEPTH;n++) if(slots_q[n].state==ZOMBIE)
+                perf_o[PE_RQ_ZOMBIE]+=PERF_INC_W'(1);
+        end
+    end
+    assign deq_fire=deq_valid_o && deq_ready_i;
+    always_comb begin : next_state
+        int s, keep;
+        logic suffix;
+        for(int n=0;n<DEPTH;n++) begin slots_d[n]=slots_q[n];ord_d[n]=ord_q[n];end
+        count_d=count_q;s=0;keep=0;suffix=0;
+        reservation_bad=0;response_bad=0;suffix_bad=0;
+        if(!rst_i) begin
+            if(rsv_fire_i) begin
+                s=int'(rsv_req_i.rq_idx);
+                reservation_bad=!(rsv_ready_o && s<DEPTH && slots_d[s].state==FREE);
+                slots_d[s]='{state:PEND,item:'{ftq_id:rsv_req_i.ftq_id,region_base:rsv_req_i.region_base,default:'0}};
+                ord_d[rq_idx_t'(count_d)]=rq_idx_t'(s);count_d=count_d+1'b1;
+            end
+            if(resp_i.valid) begin
+                s=int'(resp_i.rq_idx);
+                response_bad=!(s<DEPTH && (slots_d[s].state==PEND || slots_d[s].state==ZOMBIE) && slots_d[s].item.ftq_id==resp_i.ftq_id);
+                if(slots_d[s].state==ZOMBIE) slots_d[s].state=FREE;
+                else begin
+                    slots_d[s].state=READY;slots_d[s].item.data=resp_i.data;
+                    slots_d[s].item.exc_valid=resp_i.exc_valid;slots_d[s].item.exc_cause=resp_i.exc_cause;
+                end
+            end
+            if(kill_i.valid) begin
+                for(int n=0;n<DEPTH;n++) if(n<int'(count_d)) begin
+                    s=int'(ord_d[n]);
+                    if(fe_killed_by(kill_i,slots_d[s].item.ftq_id,fetch_slot_t'(0),ftq_head_i)) begin
+                        suffix=1;
+                        slots_d[s].state=slots_d[s].state==PEND ? ZOMBIE : FREE;
+                    end else begin
+                        suffix_bad|=suffix;
+                        keep++;
+                    end
+                end
+                count_d=CW'(keep);
+            end
+            if(deq_fire) begin
+                slots_d[ord_d[0]].state=FREE;
+                for(int n=0;n<DEPTH-1;n++) ord_d[n]=ord_d[n+1];
+                ord_d[DEPTH-1]='0;count_d=count_d-1'b1;
+            end
+        end
+    end
+    always_ff @(posedge clk_i) begin : state_update
+        int pending,ordered;
+        if(rst_i) begin
+            count_q<=0;
+            for(int n=0;n<DEPTH;n++) begin slots_q[n]<='0;ord_q[n]<='0;end
         end else begin
-            if (deq_fire) begin
-                occupied_q <= 1'b0;
-                data_ready_q <= 1'b0;
+            assert(!reservation_bad) else $fatal(1,"RQ reservation is not FREE");
+            assert(!response_bad) else $fatal(1,"RQ response identity/state mismatch");
+            assert(!suffix_bad) else $fatal(1,"RQ kill must be a suffix");
+            count_q<=count_d;pending=0;ordered=0;
+            for(int n=0;n<DEPTH;n++) begin
+                slots_q[n]<=slots_d[n];ord_q[n]<=ord_d[n];
+                if(slots_d[n].state==PEND || slots_d[n].state==ZOMBIE) pending++;
+                if(slots_d[n].state==PEND || slots_d[n].state==READY) ordered++;
             end
-            if (rsv_fire_i && rsv_ready_o) begin
-                occupied_q <= 1'b1;
-                data_ready_q <= 1'b0;
-                ftq_id_q <= rsv_req_i.ftq_id;
-                region_base_q <= rsv_req_i.region_base;
-            end
-            if (resp_i.valid && resp_i.rq_idx == rq_idx_t'(0)
-                && ((occupied_q && resp_i.ftq_id == ftq_id_q)
-                 || (rsv_fire_i && rsv_ready_o
-                     && resp_i.ftq_id == rsv_req_i.ftq_id))) begin
-                data_q <= resp_i.data;
-                exc_valid_q <= resp_i.exc_valid;
-                exc_cause_q <= resp_i.exc_cause;
-                data_ready_q <= 1'b1;
-            end
+            assert(pending<=DEPTH && ordered==int'(count_d)) else $fatal(1,"RQ occupancy invariant");
         end
     end
 endmodule

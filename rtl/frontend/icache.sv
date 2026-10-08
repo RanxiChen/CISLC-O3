@@ -81,6 +81,18 @@ module ICache
     fe_perf_t tlb_perf,mshr_perf;
     logic xlate_saved_q; paddr_t saved_pa_q;logic saved_pf_q,saved_af_q;
     logic fire;icache_req_t selected_req;logic retry_valid_q;icache_req_t retry_q;
+    // A single retry slot deadlocks when S3 and S1/S2 all need a retry.
+    // External requests stop while retries exist; four slots cover the three
+    // pipeline stages plus the request accepted on the first retry edge.
+    localparam int RETRIES=4;
+    icache_req_t retry_fifo_q[RETRIES];
+    logic [1:0] retry_head_q,retry_tail_q;
+    logic [2:0] retry_count_q;
+    logic retry_push,retry_pop;
+    assign retry_valid_q=retry_count_q!=0;
+    assign retry_q=retry_fifo_q[retry_head_q];
+    assign retry_push=v3_q && stale && s3_ready;
+    assign retry_pop=retry_valid_q && fire;
     logic hit,stale,fault;int hit_way;coh_data_t hit_line;
     logic alloc_valid,alloc_ready,alloc_merged,probe_inflight,demand_miss_pending;
     paddr_t alloc_line;logic fill_valid,fill_ready,fill_error,fill_done,mshr_idle;
@@ -132,7 +144,7 @@ module ICache
             if(waiter_valid_q[n] && waiter_ready_q[n] &&
                 (ready_waiter<0 || waiter_age_q[n]<waiter_age_q[ready_waiter])) ready_waiter=n;
         end
-        s3_ready=!v3_q || (stale ? !retry_valid_q:
+        s3_ready=!v3_q || (stale ? int'(retry_count_q)<RETRIES:
             ((ready_waiter<0 && (hit || fault)) || (!hit && !fault && free_waiter>=0 && alloc_ready)));
         s2_ready=!v2_q || s3_ready;
         s1_ready=!v1_q || (s2_ready && (xlate_saved_q || (tlb_valid && !tlb_miss)));
@@ -195,7 +207,7 @@ module ICache
     always_ff @(posedge clk) begin
         if(rst) begin
             v1_q<=0;v2_q<=0;v3_q<=0;s1_q<='0;s2_q<='0;s3_q<='0;
-            xlate_saved_q<=0;saved_pa_q<=0;saved_pf_q<=0;saved_af_q<=0;retry_valid_q<=0;retry_q<='0;
+            xlate_saved_q<=0;saved_pa_q<=0;saved_pf_q<=0;saved_af_q<=0;retry_head_q<=0;retry_tail_q<=0;retry_count_q<=0;
             waiter_valid_q<='{default:0};waiter_ready_q<='{default:0};waiter_error_q<='{default:0};
             waiter_req_q<='{default:'0};waiter_line_q<='{default:'0};waiter_age_q<='{default:0};age_q<=0;
             inv_done_o<=0;pmp_update_done_o<=0;
@@ -225,8 +237,14 @@ module ICache
                     end
                 end
             end
-            if(retry_valid_q && fire) retry_valid_q<=0;
-            if(v3_q && stale && s3_ready) begin retry_valid_q<=1;retry_q<=s3_q.req;end
+            if(retry_pop) retry_head_q<=retry_head_q+1'b1;
+            if(retry_push) begin retry_fifo_q[retry_tail_q]<=s3_q.req;retry_tail_q<=retry_tail_q+1'b1;end
+            case({retry_push,retry_pop})
+                2'b10:retry_count_q<=retry_count_q+1'b1;
+                2'b01:retry_count_q<=retry_count_q-1'b1;
+                default: ;
+            endcase
+            assert(int'(retry_count_q)<=RETRIES);
             if(v3_q && !stale && !hit && !fault && s3_ready) begin
                 waiter_valid_q[free_waiter]<=1;waiter_ready_q[free_waiter]<=0;waiter_req_q[free_waiter]<=s3_q.req;
                 waiter_line_q[free_waiter]<={s3_q.pa[PADDR_W-1:6],6'b0};waiter_age_q[free_waiter]<=age_q;age_q<=age_q+1;
@@ -249,7 +267,7 @@ module ICache
             if(v3_q && !stale && hit && s3_ready) plru_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)]<=
                 touch(plru_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)],hit_way);
             if(inv_all_i) begin
-                assert(mshr_idle);v1_q<=0;v2_q<=0;v3_q<=0;retry_valid_q<=0;xlate_saved_q<=0;
+                assert(mshr_idle);v1_q<=0;v2_q<=0;v3_q<=0;retry_count_q<=0;retry_head_q<=0;retry_tail_q<=0;xlate_saved_q<=0;
                 for(int b=0;b<BANKS;b++) for(int s=0;s<SETS;s++) for(int w=0;w<WAYS;w++) tags_q[b][s][w].valid<=0;
             end
         end

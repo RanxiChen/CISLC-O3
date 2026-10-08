@@ -6,6 +6,7 @@ module l10_event_checks import o3_types_pkg::*; (
  input logic clk_i,rst_i,input fe_perf_t fe_sources_i[9],input be_perf_t be_sources_i[6],
  input fe_perf_t fe_frontend_i,fe_core_i,fe_backend_i,fe_csr_i,fe_hpm_i,
  input be_perf_t be_backend_i,be_hpm_i,
+ input logic deliver_ready_i,deliver_valid_i,input logic [DELIVER_W-1:0] deliver_mask_i,
  input logic req_valid_i,trap_i,input csr_req_t req_i,
  input logic [2:0] retired_i,input logic [63:0] cycle_i,instret_i,
  input logic [63:0] counters_i[8],selectors_i[8],input logic [1:0] priv_i,
@@ -19,6 +20,8 @@ module l10_event_checks import o3_types_pkg::*; (
    sum_fe[e]=0;
    for(int p=0;p<9;p++) sum_fe[e]+=64'(fe_sources_i[p][e]);
   end
+  sum_fe[PE_DELIVER_LT4_BACKEND_READY_CYCLE]=64'(deliver_ready_i && $countones(deliver_mask_i)<DELIVER_W);
+  sum_fe[PE_BACKEND_BACKPRESSURE_CYCLE]=64'(deliver_valid_i && !deliver_ready_i);
   for(int e=0;e<BE_PERF_NUM;e++) begin
    sum_be[e]=0;
    for(int p=0;p<6;p++) sum_be[e]+=64'(be_sources_i[p][e]);
@@ -26,7 +29,7 @@ module l10_event_checks import o3_types_pkg::*; (
  end
  function automatic logic [63:0] increment(input logic [15:0] s);
   int e;e=int'(s[7:0]);
-  if(s[15:8]==1 && ((e>=1&&e<=21)||(e>=32&&e<52))) return sum_fe[e];
+  if(s[15:8]==1 && ((e>=1&&e<=21)||(e>=32&&e<PE_NUM))) return sum_fe[e];
   if(s[15:8]==2 && e>=1 && e<BE_PERF_NUM) return sum_be[e];
   return 0;
  endfunction
