@@ -1,6 +1,6 @@
 # O3-T10 L8b 实施报告（进行中）
 
-当前停点：N3全部通过，下一步合并并行窗口并执行N4；Y11/B36已按用户批准修复，原VM_AD=1在mem_pipes1/2都通过。2026-10-08起按任务书加速修订执行，中间层使用结果表和失败修复记录；完整审计留到最终12.8。此前章节中的等待审批、全量下层与快照记录是历史状态。
+当前停点：N3全部通过，N4已完成，下一步执行N5；Y11/B36已按用户批准修复，原VM_AD=1在mem_pipes1/2都通过。2026-10-08起按任务书加速修订执行，中间层使用结果表和失败修复记录；完整审计留到最终12.8。此前章节中的等待审批、全量下层与快照记录是历史状态。
 
 ## 当前状态与证据边界
 
@@ -375,7 +375,7 @@ N3随机代理保留独立AXI内存、架构字节黄金模型、实际握手权
 | db83a505 | cloud_chen | make -j4 -C sim/cocotb/rob | 0 | 4 |
 | db83a505 | cloud_chen | python3 /tmp/o3-t10-tools/lower.py db83a505baba87c4dadefa3686040d8669db0500；N1/N2驱动 | 0 | M1–M4 237；N1 11正常+1负例；N2 40 |
 | db83a505 | cloud_chen | python3 /tmp/o3-t10-tools/m6.py db83a505baba87c4dadefa3686040d8669db0500 | 0 | M6全部目标及VM_AD=1，共16程序 |
-| db83a505 | cloud_chen | make lint | 0 | 0 errors，359 warnings |
+| db83a505 | cloud_chen | bash scripts/lint.sh | 0 | 0 errors，359 warnings |
 
 N3共12例，所有XML均无failure/error/skip。证据根为/home/cloud_chen/evidence/t10/{533ee73f,db83a505}；四个N3目录分别为n3-pressure-m1、n3-pressure-m4、n3-default-m1、n3-default-m4，ROB为n3-direct-rob。B36与退休前缀的失败→根因→RTL修复见前两节；直接涉及cache/LQ/ROB下层均已通过，修订生效前额外完成的全下层结果保留为历史证据。
 
@@ -384,3 +384,19 @@ N3共12例，所有XML均无failure/error/skip。证据根为/home/cloud_chen/ev
 - 新N3代理按DMA WriteAck线性化同物理行的I Read，排空已发出的同行I请求并暂缓新的同行请求；异行保持并发，黄金内存值、规模、种子和目录断言未变。修复握手采样同时检查实际I valid。
 - 默认几何/MSHR4发生两个驱动重复启动，属于本窗口调度错误；取消其中一个，保留另一实例完整3例exit0/XML结果。取消驱动的143与日志中的Terminated不计作DUT失败或通过。最终总门禁使用全新候选目录。
 - 加速修订之后不新增中间审计JSON、哈希清单、快照包或字节一致性证明；ROB直接套件使用文本SHA/主机/命令/exit记录。
+
+
+## N4 层通过
+
+合并t10/n4-n6-tests（453d580/fbd4508/75a94db，随后77d13a0/d49398f），仅测试侧变化，无RTL修复。完整N4包括原M4套件及新decoder/SQ/LQ/LSU/HEU/commit/CSR测试；种子1/7/29与原随机规模保持。第二批新增真实LSU DTLB高半页fault测试，以实际head接口、PTW响应检查13/15及tval=0x5000，check-only两半没有写入。表中重复运行不重复计算：完整覆盖165例。
+
+| SHA | 主机 | 命令 | exit | 用例数 |
+| --- | --- | --- | --- | --- |
+| 676eeca318f70e8c80959117aa5a6c87a25bd7e9 | cloud_chen | python3 /tmp/o3-t10-tools/light_n4.py 676eeca318f70e8c80959117aa5a6c87a25bd7e9 | 0 | 38次162例，XML无failure/error/skip |
+| b6256b775c3144ed78c33586bb661e9fb97da7dc | cloud_chen | python3 /tmp/o3-t10-tools/light_n4.py b6256b775c3144ed78c33586bb661e9fb97da7dc load_store_unit | 0 | LSU种子1/7/29各10；L5各2，共36例 |
+| 676eeca318f70e8c80959117aa5a6c87a25bd7e9 | cloud_chen | bash scripts/lint.sh | 0 | 0 errors/359 warnings |
+| 676eeca318f70e8c80959117aa5a6c87a25bd7e9 | cloud_chen | python3 /tmp/o3-t10-tools/light_core.py 676eeca318f70e8c80959117aa5a6c87a25bd7e9 2 n4-smoke | 0 | M6全部目标+VM_AD=1，16程序；原自查与严格前缀通过 |
+
+证据/home/cloud_chen/evidence/t10/{676eeca3,b6256b77}，每次执行读取实时主机配置、SSH预检成功。第二批其余wrapper仅去尾部空格，RTL及N4其他测试未变，按加速修订复用第一批结果；N6程序的改动不参与旧M6冒烟。VM17534周期/6434退休/tohost1；l8a_mem原规模通过。
+
+自行决定：新o3_tandem_top实例化MMIO模型后，sim/cocotb/backend/Makefile补入o3_mmio_model.sv源文件，避免后续既有backend套件漏编译依赖；属于仿真接线/编译清单修复。HEU测试flush撤销后先settle再采样ready，修复新测试采样时序。N6新拆分计数程序的选择器0x24改为已冻结backend域选择器0x224，期望计数53保持；MMIO两条交替分支路径都执行一条副作用load以覆盖误预测，期望64/96保持。未改黄金值、断言、种子、规模或冻结合同。
