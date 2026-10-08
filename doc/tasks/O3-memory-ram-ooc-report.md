@@ -22,3 +22,9 @@ cloud_chen 首选SSH/环境成功，Verilator5.050/cocotb2.1.0。独立WIP目录
 ## 最终验收
 
 待同一源码提交在cloud_chen执行受影响回归，在Alan执行L2、dcache、整核OOC并记录SHA/cwd/命令/exit/资源与路径。综合估计不等于布局布线/SoC/FPGA证据。
+
+## 首轮结果与后续修正
+
+源码候选 `baa4441be2197adcf4f0371b94653acc0e1e5187`：cloud_chen lint0/357 warnings；dcache MSHR4共49/49、MSHR1基础26/26、MSHR1 N2原子20/20；TAGE seed1/7/29各3/3；L2 12/12（含原随机规模）；pressure N3 MSHR1/4各3/3。其他门禁仍在运行，不能提前计入通过。
+
+Alan首轮L2 OOC完成（201.5秒）。directory已识别为LUTRAM，不再展开FF，但block属性被Vivado拒绝。进一步将RAM读结果先作为完整packed word寄存，再在RAM过程外转换为struct；初始化/运行写地址与数据在外部统一，RAM内部只留一条写表达式。该修正不改变读写拍数或优先级，WIP整核lint再次exit0/357 warnings；随后在新准确SHA复验。

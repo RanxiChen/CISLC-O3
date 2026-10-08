@@ -296,13 +296,18 @@ module l2_home import o3_types_pkg::*; #(
     // write port as directory updates; it does not reset the memory primitive.
     for(genvar w=0;w<WAYS;w++) begin : g_meta_way
         (* ram_style="block" *) logic [$bits(meta_t)-1:0] mem[0:SETS-1];
+        logic [$bits(meta_t)-1:0] read_word_q,write_word;
+        logic write_en;logic [SW-1:0] write_addr;
+        // Present exactly one packed read and one write expression to Vivado.
+        // Keep the struct cast outside the RAM's registered read process.
+        assign write_en=!rst && (!init_done_q || (meta_write && write_way==w));
+        assign write_addr=(meta_write && write_way==w) ? s2_q.set_idx:SW'(init_set_q);
+        assign write_word=(meta_write && write_way==w) ? meta_new:'0;
         always_ff @(posedge clk) begin
-            if(!rst) begin
-                if(s0_valid) meta_read_q[w]<=meta_t'(mem[s0.set_idx]);
-                if(meta_write && write_way==w) mem[s2_q.set_idx]<=meta_new;
-                else if(!init_done_q) mem[SW'(init_set_q)]<='0;
-            end
+            if(!rst && s0_valid) read_word_q<=mem[s0.set_idx];
+            if(write_en) mem[write_addr]<=write_word;
         end
+        assign meta_read_q[w]=meta_t'(read_word_q);
 `ifndef SYNTHESIS
         for(genvar s=0;s<SETS;s++) assign meta_q[s][w]=meta_t'(mem[s]);
 `endif
