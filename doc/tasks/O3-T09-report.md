@@ -599,3 +599,101 @@ Alan 的只读访问仅用来取回 T08/T09 已有 trace，不作为仿真主机
 没有提交运行产物，也未改 allowlist 外的忽略规则。`git diff --check` exit 0。
 以上提交是测试迁移与复现快照，不是 M5 pass 声明；退休差异、最终下层矩阵、M5/M6
 及 12.8 仍待执行。当前用户已授权最终报告完成后推 origin，覆盖早期不推送约束。
+
+#### 独立 PTE 三种子同 SHA 重跑：通过
+
+实际执行 SHA `20107a947d0e4f4df077f39d1bfcbe64c64912f4`，实际主机
+`cloud_chen@47.96.71.231:22`，cwd `/home/cloud_chen/work/20261008-t09-20107a94`。
+每项运行前重新读取共享配置并预检：首选 SSH/环境/Verilator 5.050/cocotb 2.1.0/
+工具/资源均 exit 0，无需 Alan。准确 SHA 经 SSH Git push 到专用 transfer bare repo，
+独立 clone；不推 origin、不用 bundle。每次执行检查远端 HEAD 等于候选且跟踪文件无修改。
+
+证据根 `/home/cloud_chen/evidence/t09/20107a94/`；每项含 `manifest.json`（SHA、host、cwd、
+原命令、完整预检、共享配置 SHA256）、`host-config.md`、`exit`、`run.log`、`results.xml`。
+本地核验副本 `/tmp/t09-resume-evidence/20107a94/`。
+
+| item | seed | exit | XML 用例数 | failure / skip |
+| --- | --- | --- | --- | --- |
+| pte-seed1 | 1 | 0 | 2/2 | 0 / 0 |
+| pte-seed7 | 7 | 0 | 2/2 | 0 / 0 |
+| pte-seed29 | 29 | 0 | 2/2 | 0 / 0 |
+
+命令模板（在上述 cwd；seed 替换为 1/7/29）：
+
+```bash
+make -j4 -C sim/cocotb/mmu -f Makefile.pte TEST_SEED=<seed> \
+  SIM_BUILD=/home/cloud_chen/evidence/t09/20107a94/pte-seed1/build \
+  COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/t09/20107a94/pte-seed<seed>/results.xml
+```
+
+seed 7/29 复用同 SHA 的 PTE 模型，重新执行全部刺激；XML 已逐项取回，核对两项、
+无 failure/skip，远端 exit 文件均为 0。本结果仅闭合独立 PTE，不替代最终 M1～M4 全矩阵。
+
+#### run-l10-priv 439→437 差异定位与停止条件
+
+比较脚本提交 `0fc1635`，文件 `sim/o3/tests/compare_retire_traces.py`。
+跳过 header，只接收 retire/trap；按事件类型、PC、instruction，以及 trap 的 cause/tval
+逐条对齐。关闭重复序列自动忽略，输出每对事件索引、首个分歧与所有删增/替换块。
+诊断脚本退出 0 仅表示比较完成，不表示接受差异；未修改退休总数、golden 或停止条件。
+临时 fixture 核验 header 不计数、重复尾部定位、同 PC 的 trap 不会与普通退休配对，exit 0。
+
+两份既有 trace 已经从 Alan 只读取回并核对来源 SHA；用于定位上次报告中的已知差异，
+不当作本轮新 M5 整核通过证据。上次未确认的任务仍不计入验收，本轮未重新运行 M5 整核。
+
+| 项目 | T08 | T09 已有诊断 trace |
+| --- | --- | --- |
+| 实际 SHA | `1d0d6f8369fa69476d07538157be234a88db08bf` | `36bc5662b8284234be35d8024dfca21b06a8d553` |
+| 正常退休 / trap / events（排除1个header） | 422 / 17 / 439 | 420 / 17 / 437 |
+| tohost / 总周期 | 1 / 3499 | 1 / 3987 |
+| trace SHA256 | `ae9d825137707782fd3d666513323b30719dc5abd4064e4450b3f6976f2f3532` | `bce4db92dffed2ab153501a572d480bc7fd92d4a2af9b1c2eaa1183ae78df445` |
+
+原 trace 路径：
+
+- T08：`/home/chen/FUN/CISLC-O3-runs/20261007-t08c-1d0d6f8/sim/o3/build/l10_priv.jsonl`。
+- T09：`/home/chen/FUN/cislc-o3-t09-evidence/t09/36bc5662/m5-exc-build/build/l10_priv.jsonl`。
+
+比较结果：events 0～436 共 437 条逐条相同（PC/指令/类型/trap cause/tval）；
+17 次 trap 均匹配，没有中途 PC/指令序列插入、删除或顺序差异。
+首个分歧在 **event 437（0-based；T08 order 437，文件第439行）**：
+T08 还有退休事件，T09 已经结束。唯一删除块为 T08 `[437,439)`。
+
+具体多出的两条：
+
+| T08 event/order | cycle | slot | instruction_id | ROB idx | PC / instruction | 解码 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 437 | 3498 | 2 | 1284 | 9 | `0x80000194 / 0x0000006f` | `jal x0,0`，末尾 `1: j 1b` |
+| 438 | 3498 | 3 | 1288 | 10 | `0x80000194 / 0x0000006f` | 同一条末尾自循环再次退休 |
+
+成功 store 为双方 event 435：PC `0x80000190`，instruction `0x0062b023`，
+向 `0x801ff000` 写入 8B 的 1；T08 cycle3498/slot0，T09 cycle3986/slot0。
+双方 event 436 都是同一 `jal x0,0`，分别在各自成功 store 同拍 slot1。
+因此成功 store 及之前的前缀均为 **419 正常退休 + 17 trap = 436 events**；
+T08 在该拍还记录三条末尾循环，T09 记录一条。不是 wait_ssi/wait_lcofi 循环次数差异。
+
+`l10_priv.S:108-109` 明确为成功 SD 后进入 `1: j 1b`。
+两份 ELF 的完整 `objdump -d` 内容去掉文件名行后完全相同；冻结程序源码没有差异。
+`main.cpp:426-447` 在外层循环条件检查 `!tohost_value`，内层仍遍历全部四个退休槽，
+slot0 检出 tohost 后没有在内层 break，所以同拍尾部循环会全部写入 trace。
+T08 与 T09 的这段驱动逻辑相同，没有通过改驱动统一或隐藏尾部计数。
+证据指向成功终止拍的退休宽度/时序差异，而非中途指令丢失；这一推断不等于门禁接受。
+
+复现比较（只读 Python 分析，不是仿真）：
+
+```bash
+python3 sim/o3/tests/compare_retire_traces.py \
+  /tmp/t09-resume-evidence/t08-l10-priv.jsonl \
+  /tmp/t09-resume-evidence/t09-36bc5662-l10-priv.jsonl \
+  > /tmp/t09-resume-evidence/priv-alignment-previous.json
+```
+
+exit 0。完整逐条索引对齐、原始 trace、反汇编、既有 T09 run.log 与比较脚本已保留到
+`/home/cloud_chen/evidence/t09/20107a94/priv-retire-comparison/`，本地副本为
+`/tmp/t09-resume-evidence/20107a94/priv-retire-comparison/`。其 manifest 明确区分
+输入 trace 的 T08/T09 SHA 与本轮分析工具 SHA，没有把 20107a94 冒充整核执行 SHA。
+
+**当前停止：等待用户决定 spec 12 的退休条数是否允许这一例外。**
+本轮完成环境确认、工作区主题提交、PTE 三 seed 和退休差异定位。未自行认定 437 满足
+“退休条数与自查结果必须一致”；未改 spec、design、RTL、程序、golden 或终止驱动来消除差异。
+需要用户确认是否仅允许成功 tohost 同拍后这些无副作用末尾自循环的条数变化。
+在确认前，不选最终验收候选、不执行步骤4～6，不声明 M5/M6/12.8通过，不更新 LOOP 的
+验收状态、不推 origin，不开始 L8b。
