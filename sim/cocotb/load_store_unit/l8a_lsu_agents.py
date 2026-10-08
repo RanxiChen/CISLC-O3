@@ -3,7 +3,7 @@ import cocotb
 from l3_contract import codec,field,val,array,clear
 from cocotb.triggers import Timer
 
-INPUTS=['clk','rst','mem_uop_i','issue_is_load_i','lq_replay_valid_i','lq_replay_i',
+INPUTS=['atomic_i','heu_valid_i','heu_req_i','clk','rst','mem_uop_i','issue_is_load_i','lq_replay_valid_i','lq_replay_i',
         'sq_replay_valid_i','sq_replay_i','sq_query_block_i','sq_query_forward_valid_i',
         'sq_query_forward_data_i','full_line_busy_i','internal_busy_i','dc_resp_i',
         'load_result_ready_i','exc_ready_i','flush_all_i','resolution_valid_i',
@@ -17,7 +17,7 @@ class Bench:
         self.d_marks=[];self.d_clears=[];self.ad_wakes=[]
 
     async def reset(self):
-        clear(self.d,INPUTS);self.d.rst.value=1
+        clear(self.d,[n for n in INPUTS if hasattr(self.d,n)]);self.d.rst.value=1
         # The L5 precise-exception fixture ties these optional MMU ports off.
         for name in ('ptw_req_ready_i','ptw_resp_i','d_done_i','d_exc_i'):
             if hasattr(self.d,name):getattr(self.d,name).value=0

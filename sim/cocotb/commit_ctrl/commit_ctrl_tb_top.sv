@@ -1,4 +1,5 @@
 module commit_ctrl_tb_top import o3_types_pkg::*; (
+ input logic heu_irreversible_i,order_flush_i,head_split_i,
  input logic head_needs_d_i,d_ready_i,d_done_i,output logic d_req_o,
  input logic ptw_idle_i,sf_ack_i,
  output logic sf_valid_o,
@@ -32,7 +33,7 @@ module commit_ctrl_tb_top import o3_types_pkg::*; (
  .commit_i(commits),.head_valid_i(head_valid_i),.head_i(head),.head_serial_done_o(serial_done_o),.commit_block_o(block_o),
  .ftq_commit_o(ftq),.sq_commit_valid_o(),.sq_commit_idx_o(),.fp_retire_o(),.committed_next_pc_o(committed_pc_o),
  .sys_redirect_o(redir),.fe_sync_valid_o(sync_o),.fe_sync_ready_i(sync_ready_i),.fe_sync_o(),.fe_sync_done_i(sync_done_i),
- .sq_committed_empty_i(sq_empty_i),
+ .sq_committed_empty_i(sq_empty_i),.heu_irreversible_i(heu_irreversible_i),.order_flush_i(order_flush_i),.head_split_i(head_split_i),
  .sfence_o(sf),.sfence_done_i(sf_ack_i),.ptw_idle_i(ptw_idle_i),.st_d_req_valid_o(d_req_o),.st_d_req_ready_i(d_ready_i),.st_d_done_i(d_done_i),
  .csr_req_valid_o(csr_req_o),.csr_req_o(),.csr_resp_i(resp),.csr_operand_i(64'd3),.block_younger_cycle_i(1'b0),
  .priv_i(priv_i),.status_i(status_i),.irq_cause_i(IRQ_MSI),.irq_take_i(irq_i),.trap_req_o(trap),.trap_redirect_valid_i(trap_redirect_i),.trap_redirect_pc_i(target_i),

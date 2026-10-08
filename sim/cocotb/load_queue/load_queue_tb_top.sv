@@ -3,6 +3,13 @@ module load_queue_tb_top import o3_pkg::*; #(
     parameter o3_cfg_pkg::backend_cfg_t CFG=o3_cfg_pkg::O3_CFG.be,
     localparam int W=BACKEND_MACHINE_WIDTH,D=CFG.lsu.lq_depth,P=CFG.lsu.agu_pipes,IW=$clog2(D)
 )(input logic clk,rst,flush_i,
+ input o3_types_pkg::rob_idx_t rob_head_i,heu_done_idx_i,
+ input logic dma_invalidate_i,pte_a_write_i,heu_done_i,
+ input o3_types_pkg::coh_addr_t dma_line_i,pte_a_line_i,
+ output logic order_flush_o,heu_valid_o,
+ output logic [CFG.rob.entries-1:0] rob_order_flush_o,
+ output lq_replay_t heu_entry_o,
+ output logic order_obs_o[D],
     input logic alloc_req_i[W-1:0],input logic alloc_fire_i,
     input logic [ROB_IDX_WIDTH-1:0] alloc_rob_idx_i[W-1:0],
     input branch_mask_t alloc_branch_mask_i[W-1:0],
@@ -25,13 +32,16 @@ module load_queue_tb_top import o3_pkg::*; #(
     fmt_capture_uop_mem_size,fmt_capture_va,fmt_capture_wait_reason,fmt_capture_mshr_id,fmt_capture_exc,
     fmt_capture_tag_idx,fmt_capture_tag_gen,
     output o3_types_pkg::dcache_resp_t fmt_update_valid,fmt_update_status,fmt_update_reason,
-    fmt_update_mshr_id,fmt_update_lq_tag_idx,fmt_update_lq_tag_gen,fmt_update_exc
-);
-    load_queue #(.CFG(CFG)) dut(.rob_head_i('0),.dma_invalidate_i(1'b0),.dma_line_i('0),.pte_a_write_i(1'b0),.pte_a_line_i('0),.order_flush_o(),.rob_order_flush_o(),.heu_valid_o(),.heu_entry_o(),.heu_done_i(1'b0),.heu_done_idx_i('0),.*);
+    fmt_update_mshr_id,fmt_update_lq_tag_idx,fmt_update_lq_tag_gen,fmt_update_exc, 
+    output lq_replay_t fmt_capture_uop_valid,
+    output lq_replay_t fmt_capture_uop_dst_write_en, 
+    output o3_types_pkg::dcache_resp_t fmt_update_paddr,
+    output o3_types_pkg::dcache_resp_t fmt_update_io);
+    load_queue #(.CFG(CFG)) dut(.*);
     assign cfg_width_o=W;assign cfg_depth_o=D;assign cfg_rob_o=CFG.rob.entries;
     assign cfg_tags_o=CFG.rename.checkpoints;assign cfg_pipes_o=P;
     for(genvar n=0;n<D;n++) begin
-        assign live_obs_o[n]=dut.valid_q[n];assign ready_obs_o[n]=dut.ready_q[n];
+        assign order_obs_o[n]=dut.order_q[n];assign live_obs_o[n]=dut.valid_q[n];assign ready_obs_o[n]=dut.ready_q[n];
         assign executed_obs_o[n]=dut.executed_q[n];assign gen_obs_o[n]=dut.gen_q[n];
         assign va_obs_o[n]=dut.entry_q[n].va;assign mask_obs_o[n]=dut.entry_q[n].uop.branch_mask;
     end
@@ -57,5 +67,15 @@ module load_queue_tb_top import o3_pkg::*; #(
         fmt_update_lq_tag_idx='0;fmt_update_lq_tag_idx.lq_tag.idx='1;
         fmt_update_lq_tag_gen='0;fmt_update_lq_tag_gen.lq_tag.gen='1;
         fmt_update_exc='0;fmt_update_exc.exc='1;
+    end
+
+    always_comb begin
+        fmt_capture_uop_valid='0;fmt_capture_uop_valid.uop.valid='1;
+        fmt_capture_uop_dst_write_en='0;fmt_capture_uop_dst_write_en.uop.dst_write_en='1;
+    end
+
+    always_comb begin
+        fmt_update_paddr='0;fmt_update_paddr.paddr='1;
+        fmt_update_io='0;fmt_update_io.io='1;
     end
 endmodule

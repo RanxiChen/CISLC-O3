@@ -1,6 +1,6 @@
 # X5 migration removes DTCM; all values and random scales retained.
 def zero_new_inputs(d):
-    for n in ['flush_all_i','execute1_valid','execute1_idx','execute1_addr','execute1_data','execute1_mask','query1_valid','query1_rob','query1_addr','query1_mask','dc_retry','dc_reason','dc_wake_i']:
+    for n in ['kind_i','heu_done_i','heu_done_idx_i','rob_head_i','flush_all_i','execute1_valid','execute1_idx','execute1_addr','execute1_data','execute1_mask','query1_valid','query1_rob','query1_addr','query1_mask','dc_retry','dc_reason','dc_wake_i']:
         getattr(d,n).value=0
 
 import cocotb

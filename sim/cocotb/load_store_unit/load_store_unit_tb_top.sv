@@ -2,6 +2,9 @@ module load_store_unit_tb_top import o3_pkg::*; #(
     parameter o3_cfg_pkg::backend_cfg_t CFG=o3_cfg_pkg::O3_CFG.be,
     localparam int P=CFG.lsu.agu_pipes
 )(input logic clk,rst,
+ input logic atomic_i[P],heu_valid_i,output logic heu_ready_o,
+ input o3_types_pkg::dcache_req_t heu_req_i,output o3_types_pkg::dcache_resp_t heu_resp_o,
+ output o3_types_pkg::sq_kind_e sq_kind_o[P],
     output logic ptw_req_valid_o,input logic ptw_req_ready_i,
     output o3_types_pkg::ptw_req_t ptw_req_o,input o3_types_pkg::ptw_resp_t ptw_resp_i,
     input logic d_done_i,input o3_types_pkg::exc_info_t d_exc_i,
@@ -39,14 +42,26 @@ module load_store_unit_tb_top import o3_pkg::*; #(
     output lq_replay_t fmt_replay_uop,fmt_replay_va,fmt_replay_tag_idx,fmt_replay_tag_gen,
     output o3_types_pkg::dcache_req_t fmt_request_blocked,fmt_request_forward_valid,fmt_request_forward_data,
     fmt_request_exc,fmt_request_translation_miss,fmt_request_lq_tag_idx,fmt_request_lq_tag_gen,
-    fmt_request_paddr,fmt_request_vaddr,fmt_request_is_sta
-);
+    fmt_request_paddr,fmt_request_vaddr,fmt_request_is_sta, 
+    output mem_execute_uop_t fmt_uop_mem_unsigned,
+    output mem_execute_uop_t fmt_uop_dst_write_en, 
+    output o3_types_pkg::dcache_req_t fmt_request_head,
+    output o3_types_pkg::dcache_req_t fmt_request_write,
+    output o3_types_pkg::dcache_req_t fmt_request_size,
+    output o3_types_pkg::dcache_req_t fmt_request_split,
+    output o3_types_pkg::dcache_req_t fmt_request_raw,
+    output o3_types_pkg::dcache_req_t fmt_request_check_only,
+    output o3_types_pkg::dcache_req_t fmt_request_bytes,
+    output o3_types_pkg::dcache_req_t fmt_request_rob_idx, 
+    output o3_types_pkg::dcache_resp_t fmt_response_head,
+    output o3_types_pkg::dcache_resp_t fmt_response_paddr,
+    output o3_types_pkg::dcache_resp_t fmt_response_io);
     o3_types_pkg::lq_tag_t lq_tag_i[P];logic dc_req_ready_i[P];
     for(genvar p=0;p<P;p++) begin
         assign lq_tag_i[p]='{idx:capture_o[p].uop.lq_idx,gen:8'd1};
         assign dc_req_ready_i[p]=1'b1;
     end
-    load_store_unit #(.CFG(CFG)) dut(.atomic_i('{default:0}),.heu_valid_i(1'b0),.heu_ready_o(),.heu_req_i('0),.heu_resp_o(),.sq_kind_o(),.lq_tag_i(lq_tag_i),.dc_req_ready_i(dc_req_ready_i),
+    load_store_unit #(.CFG(CFG)) dut(.lq_tag_i(lq_tag_i),.dc_req_ready_i(dc_req_ready_i),
         .sfence_i('0),.sfence_done_o(),.rob_head_i('0),.sq_ad_wake_o(),.perf_o(),.*);
     assign cfg_tags_o=CFG.rename.checkpoints;assign cfg_rob_o=CFG.rob.entries;assign cfg_lq_o=CFG.lsu.lq_depth;
     always_comb begin
@@ -89,5 +104,27 @@ module load_store_unit_tb_top import o3_pkg::*; #(
         fmt_response_lq_tag_gen='0;fmt_response_lq_tag_gen.lq_tag.gen='1;
         fmt_response_rdata='0;fmt_response_rdata.rdata='1;
         fmt_response_exc='0;fmt_response_exc.exc='1;
+    end
+
+    always_comb begin
+        fmt_uop_mem_unsigned='0;fmt_uop_mem_unsigned.mem_unsigned='1;
+        fmt_uop_dst_write_en='0;fmt_uop_dst_write_en.dst_write_en='1;
+    end
+
+    always_comb begin
+        fmt_request_head='0;fmt_request_head.head='1;
+        fmt_request_write='0;fmt_request_write.write='1;
+        fmt_request_size='0;fmt_request_size.size='1;
+        fmt_request_split='0;fmt_request_split.split='1;
+        fmt_request_raw='0;fmt_request_raw.raw='1;
+        fmt_request_check_only='0;fmt_request_check_only.check_only='1;
+        fmt_request_bytes='0;fmt_request_bytes.bytes='1;
+        fmt_request_rob_idx='0;fmt_request_rob_idx.rob_idx='1;
+    end
+
+    always_comb begin
+        fmt_response_head='0;fmt_response_head.head='1;
+        fmt_response_paddr='0;fmt_response_paddr.paddr='1;
+        fmt_response_io='0;fmt_response_io.io='1;
     end
 endmodule
