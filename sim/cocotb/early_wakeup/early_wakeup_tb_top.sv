@@ -16,6 +16,7 @@ module early_wakeup_tb_top import o3_pkg::*; (
         req='0;req.src1=7;req.src2=9;req.op=MDU_MUL;
         req.tag.dst_dom=RD_INT;req.tag.dst_preg=33;req.tag.dst_write_en=1;
         enq='0;enq[0].valid=enq_i;enq[0].rs1_read_en=1;enq[0].src1_preg=33;
+        enq[0].ext.rs1_dom=RD_INT;
         enq[0].is_int_uop=1;enq[0].rob_idx=1;
         for(int i=0;i<C.rename.int_phys_regs;i++) preg_ready[i]=(i!=33)||written_q;
         ready='1;
