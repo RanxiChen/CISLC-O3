@@ -25,7 +25,7 @@ module early_wakeup_tb_top import o3_pkg::*; (
         .req_i(req),.resp_valid_o(),.resp_ready_i(wb_ready_i),.resp_o(resp),.bypass_o(bp),.wake_o(wake),.resolution_i('0),.busy_o());
     backend_issue_queue #(.CFG(C),.KIND(IQ_INT),.WAKEUP_WIDTH(1)) iq(
         .clk(clk),.rst(rst),.enq_uop_i(enq),.enq_fire_i(enq_i),.free_count_o(),.preg_ready_i(preg_ready),
-        .mul_ready_i(1'b1),.mul_pair_ready_i(1'b1),.div_ready_i(1'b1),.allow_load_i(1'b1),
+        .mul_ready_i(1'b1),.mul_pair_ready_i(1'b1),.div_ready_i(1'b1),
         .wakeup_valid_i(wv),.wakeup_preg_i(wp),.issue_uop_o(issue),.issue_valid_o(valid),.issue_ready_i(ready),
         .resolution_valid_i(1'b0),.resolution_mispredict_i(1'b0),.resolution_tag_i('0));
     always_ff @(posedge clk) begin
