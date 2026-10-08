@@ -1,4 +1,4 @@
-# O3-T10：L8b 原子、MMIO、跨行拆分与一致性 DMA RTL spec（草案）
+# O3-T10：L8b 原子、MMIO、跨行拆分与一致性 DMA RTL spec（已冻结）
 
 日期：2026-10-08。分支：`feat/L1-closure`。审计快照：`ac4eedd`（L8a M6 通过 `6f0565f` 之后）。行号均指该快照。
 
@@ -11,7 +11,7 @@
 
 **原则**（沿用 L8a）：先完成后完美；机制复用不逐行翻译；流水线不停顿，慢事务交给状态机，等待记在 LQ/SQ；能由硬件做的不交给软件 trap（B49）。
 
-**状态：已冻结（2026-10-08，用户确认第 14 节 Y1～Y14 全部按推荐实施，Y13 含仿真专用一致性断言）。**
+**状态：已冻结（2026-10-08，用户确认第 14 节 Y1～Y14 全部按推荐实施，Y13 含仿真专用一致性断言；同日用户修订 Y1：参照 L8a，RTL 一次写完，测试按 N1～N6 逐层加入）。**
 
 ---
 
@@ -34,9 +34,9 @@
   rtl/system/{commit_ctrl,csr_file,trap_ctrl}.sv
   rtl/core/o3_core.sv；rtl/rtl.f
   对应 sim/cocotb/*；sim/o3/{o3_tandem_top.sv,main.cpp,Makefile,tests/*}；新增 sim/o3/o3_mmio_model.sv
-实施：按 Y1，第 12 节 T10a → T10e 连续执行
+实施：RTL 一次写完（第 12.1 节），测试按 N1～N6 六层逐层加入（第 12.2～12.7 节），下层通过后再加上层
 不做：第 13 节
-验收：第 12.6 节总门禁
+验收：第 12.8 节总门禁
 ```
 
 ## 1. 现状（`ac4eedd` 源码核实）
@@ -62,13 +62,17 @@
 | `o3_types_pkg.sv:1062-1074` | 顶层 `dma_req_t/dma_resp_t` 与 `coh_req_t` 形状不同 | 加转换模块 |
 | `dcache_probe.sv`、`load_queue.sv:7-20` | probe 不查 LQ，LQ 无已执行 load 的顺序检查 | 第 10 节 |
 | `o3_types_pkg.sv:1252-1269` | DMA 事件 `'h16-'h1c`、`'h23`、`'h24` 无人驱动；`'h22 FENCEI_RETIRED` 也未驱动 | 第 11 节 |
-| `sim/o3/tests/l10_vm.S:116-124` | 投机 load 置 A 后，读回叶 PTE 的 A 位仍为 0（`0x20040c07 & 0xc0 = 0`），PC `0x80000204` 跳 fail | Y11，T10a 修复 |
+| `sim/o3/tests/l10_vm.S:116-124` | 投机 load 置 A 后，读回叶 PTE 的 A 位仍为 0（`0x20040c07 & 0xc0 = 0`），PC `0x80000204` 跳 fail | Y11，在 N2/N3 复现，N5 起必须通过 |
 
 ## 2. 参数
 
 | 参数 | 值 | 说明 |
 | --- | --- | --- |
-| `be.lsu.heu_enable` | 1 | 只用于调试；为 0 时 HEU 类指令按旧行为报异常（AMO 非法、IO 区 access fault、跨行非对齐） |
+| `be.lsu.heu_enable` | 1 | 调试开关；0 时 HEU 类指令按旧行为报异常（AMO 非法、IO 区 access fault、跨行非对齐） |
+| `be.lsu.split_enable` | 1 | 调试开关；0 时只关闭跨行拆分（恢复跨行非对齐异常），AMO 与 MMIO 不受影响 |
+| `be.lsu.order_flush_enable` | 1 | 调试开关；0 时 LQ 不响应 `dma_write` 广播（只用于定位，N3 以上的 DMA 测试必须为 1） |
+
+调试开关与 L8a 第 2 节相同：默认值即目标配置，必须由参数控制，不得用 `ifdef` 删减逻辑；L8a 的 `mem_pipes`、`mshrs`、`rfo_enable` 继续有效。
 | `be.dcache.rsv_window` | 80 | LR 之后压住同行 probe 的最长拍数（Y4，同 Breeze `rsvWindow`） |
 | `be.dcache.atomic_hold_max` | 16 | HEU 原子请求的行安装后压住同行 probe 的上限（Y5），断言不超 |
 | `core.pma` IO 区 | `[0x0200_0000, 0x8000_0000)` | Y7；L11 按 SoC 地址图细化 |
@@ -263,47 +267,34 @@ HEU 是 LSU 旁边的一个单项状态机，处理四类“到 ROB 队头才执
 
 ## 12. 实施顺序与门禁
 
-主机按 `/home/chen/leisure/flow/docs/cross-project/simulation-host.md` 选择（首选 cloud_chen，备用 Alan）。每一步：RTL + 本步测试通过 → 本步之前的全部门禁同 SHA 重跑通过 → 提交 `feat(...)` 与 `test(...)`。失败修 RTL，不放宽断言、黄金值、规模、种子；需要改 spec 或 design 时停下。退休条数比较沿用 T09 用户批准的截止前缀解释。
+主机按 `/home/chen/leisure/flow/docs/cross-project/simulation-host.md` 选择（首选 cloud_chen，备用 Alan）。退休条数比较沿用 T09 用户批准的截止前缀解释。Y13 断言在全部仿真中开启。
 
-### 12.1 T10a：清理、权限检查寄存与 run-l10-vm
+### 12.1 RTL 一次写完
 
-- 6.3 节（Y13、Y14）。定向测试：`csrw pmpcfg0/pmpaddr*`、改 `mstatus.MPRV/MPP` 后紧接 load/store（允许与拒绝两个方向）；PTW 访问 PMP 拒绝区；全程开启 Y13 断言。
+- 第 2～11 节全部 RTL 一次写完：译码与 `misa`、HEU、AMO/LR/SC 与 reservation、6.3 节权限寄存、PMA IO 区与 MMIO 主口、跨行拆分、DMA 转换模块与 `dma_write` 位、load 顺序冲刷、FENCE.I 遗留端口与 `crossline_misalign` 删除、事件；`rtl/rtl.f` 同步（加入 `mem_head_unit`、`dcache_amo_unit`、`lrsc_reservation`、`dma_line_adapter`、`mmio_axil_master`）。
+- 门禁（RTL 提交的门槛）：整核与所有新模块能 elaborate；第 2 节新旧调试开关的每种取值都能 elaborate；`scripts/lint.sh` 0 errors。这时还不要求任何测试通过。
+- 提交：`feat(memsys): implement L8b atomic, MMIO, split and DMA RTL (untested)`。之后到 N5 之前，旧的整核回归处于失败状态是预期的。
 
-- 定位并修复 `l10_vm.S:116-124` 的 A 位不可见问题（Y11）。先在 M2/M3 层（`dcache` / `memsys` cocotb）用同样的 PTE A 位写入加普通 load 读回序列复现，再修 RTL。根因如果在 L10 的 PTW 或 `pte_ad_updater` 语义里，允许改这两个文件，但不改 B36 合同；需要改合同时停下。
-- 删除 `clean_all_*`、`crossline_misalign`；事件改名与恒 0 注释（第 9、11 节）。
-- 门禁：`run-l10-vm`（`VM_AD=1`）通过，trap 计数等程序内全部自查通过；L8a 12.8 总门禁同 SHA 通过；lint 0 errors。
+### 12.2～12.7 测试逐层加入（N1～N6；N 表示 L8b 测试层，与 L8a 的 M 层、LOOP 的 L 级无关）
 
-### 12.2 T10b：HEU + A 扩展
+每层的规则（同 L8a）：
+- 本层测试全部通过，再加下一层。
+- 本层失败就修 RTL，不放宽本层或下层的断言、黄金值和用例规模。修 RTL 后，已通过的下层要重跑；L8a 的 M1～M6 视为 N1 之下的既有层，受影响时同样重跑。
+- 每通过一层提交一次，提交信息写明 `L8b test layer Nk pass`。
+- Y11（`run-l10-vm`）：先在 N2/N3 用同样的 PTE A 位写入加普通 load 读回序列复现，再修 RTL。根因在 PTW 或 `pte_ad_updater` 时允许改这两个文件（第 0 节已列），但不改 B36 合同；需要改合同时停下。
 
-- 第 3、4、5 节；`misa.A=1`。
-- cocotb：`dcache` 新增定向用例（各 1 个）：9 种 AMO 的 `.W`（偏移 0/4）与 `.D`，并检查另一半字不变；AMO 冷 miss → GetM；S 态升级 → AckE；RMW 窗口内同行 probe 等待，应答带 AMO 后的数据；AMO 等 GetM 时共享者 Inv 先完成（不死锁）；LR 取 GetM 建 reservation；SC 成功一次、再 SC 失败且无流量；reservation 清除表每行 1 例（含 Inv 清、逐出清、Down 不清、timer 到 0 不清）；LR 窗口内 probe 被压住、SC 成功后应答带新数据；IO 区 / 非对齐 / 页错误的 cause；refill 错误不写入；不可撤销区之前取消 → 无写入、无 reservation。`memsys`：在 L8a M3 随机流量中加入 AMO/LR/SC，黄金内存逐个比对，2 种子 × 2000 笔。`store_queue` / `load_queue`：年轻 load 等 ATOMIC 项、完成后唤醒。
-- 整核：新程序 `l8b_amo.S`（`run-l8b-amo`）：9 种 AMO 的 `.W/.D` 与边界值（最小/最大有符号、无符号）；LR/SC 自增循环 1000 次结果正确；SC 地址不同、大小不同、中间夹 trap 时都失败；`rd=x0` 的 AMO；AMO 地址非对齐 trap；`misa` 读出 A 位。
-- 门禁：上述 + T10a 门禁同 SHA。
+| 层 | 测试 | 内容 |
+| --- | --- | --- |
+| N1 | 叶模块：`sim/cocotb/l2_home/`（扩充）、新增 `mmio_axil_master`、`dma_line_adapter` 套件 | `l2_home`（各 1 个）：DMA MaskWrite 命中 UNIQUE 脏行 → Inv 带数据 → 合并后写入；MaskWrite 未命中 → 读内存合并；MaskWrite 命中 SHARED → Inv；DMA Read 命中 UNIQUE → Down → 返回最新数据；MaskWrite 读错误 → `error=1` 且不安装；`dma_write` 位只在 DMA 引起的 Inv 上为 1；DMA 端口 op 断言。L8a M1 随机加入 DMA 代理（读写混合），2 种子 × 2000 笔。`mmio_axil_master`：读、写、AW/W 先后任意、字节选通、错误响应。`dma_line_adapter`：请求字段转换、在途 1 笔、越界地址直接回 `error=1` |
+| N2 | `sim/cocotb/dcache/`（扩充） | 6.3 节：CPU 与内部请求的权限位寄存后判定结果与改动前一致；PMP/特权改变后紧接访问（允许与拒绝两个方向）；PTW 访问 PMP 拒绝区；Y13 断言全程开启。AMO（各 1 个）：9 种 AMO 的 `.W`（偏移 0/4）与 `.D`，另一半字不变；冷 miss → GetM；S 态升级 → AckE；RMW 窗口内同行 probe 等待，应答带 AMO 后的数据；AMO 等 GetM 时共享者 Inv 先完成（不死锁）；安装后到重发判定之间压住同行 probe。LR/SC：LR 取 GetM 建 reservation；SC 成功一次、再 SC 失败且无流量；同行不同地址、不同大小的 SC 失败；reservation 清除表每行 1 例（含 Inv 清、逐出清、Down 不清、timer 到 0 不清）；LR 窗口内 probe 被压住、SC 成功后应答带新数据。IO 区：不分配 MSHR、交回 HEU；IO 区 AMO → 7；非对齐 → 4/6；页错误 cause；refill 错误不写入；不可撤销区之前取消 → 无写入、无 reservation。`dma_write` Inv 置 I 同拍发出行地址广播。`run-l10-vm` 的 PTE A 位写入加普通 load 读回序列（Y11 复现） |
+| N3 | `sim/cocotb/memsys/`（扩充） | L8a M3 的随机流量中加入 AMO/LR/SC（按 HEU 语义一次一条、在队头发出）与 DMA 代理（读写混合），黄金内存逐个比对，SWMR/目录监视，看门狗；`run-l10-vm` 序列若在 N2 未复现，在此复现。组合：默认几何 + 压力几何，MSHR 1 与 4，各 2 种子 × 2000 笔 |
+| N4 | LSU 侧与系统模块 | L8a M4 的现有套件更新到新接口后全部通过。新增：`decoder` AMO/LR/SC 全部编码与非法编码；`store_queue` ATOMIC/MMIO/SPLIT 三种项（年轻 load 等待与唤醒、退休时直接释放不 drain）；`load_queue` `HEAD` 等待原因、`order_flush` 标记（已执行同行 load 被标记、未执行的不标记、被取消的忽略）；`load_store_unit` 跨行判定与拆分 2/4/8 字节各种偏移与 FP 版本，跨页且 `hi` 半页错误 → `tval = hi` 首地址、两半都不写，S1 SQ 查询不受异常位门控（Y14）；`mem_head_unit` 四类请求的启动条件、不可撤销区、结果保持；`commit_ctrl` 不可撤销区内不接受中断、`order_flush` 到队头冲刷重取、FENCE.I 不再有 `clean_all`；`csr_file` `misa.A=1` |
+| N5 | 整核既有回归，默认配置 | L8a M6 的全部目标（含 `run-l8a-mem`）；`run-l10-vm`（`VM_AD=1`）**必须通过**，程序内全部自查（含 trap 计数）通过；另以 `mem_pipes=1` 跑 L8a M5 的目标。周期数允许变化，截止前缀必须一致 |
+| N6 | 整核新程序，默认配置 | 仿真顶层新增 `o3_mmio_model.sv`（AXI4-Lite 从设备）：4KB 可读写寄存器区、一个 SLVERR 窗口、一个“读一次加一”的副作用计数寄存器、DMA 测试引擎（CPU 用 MMIO 写目标行地址、字节掩码、数据样式并启动，引擎经顶层 DMA 口发一笔行读或行写，结果与状态放在寄存器里）。四个程序（自查 + tohost）：`l8b_amo.S`：9 种 AMO 的 `.W/.D` 与边界值；LR/SC 自增循环 1000 次结果正确；SC 地址不同、大小不同、中间夹 trap 时都失败；`rd=x0` 的 AMO；AMO 非对齐 trap；`misa` 读出 A 位。`l8b_mmio.S`：1/2/4/8 字节读写与选通；副作用计数器在含分支误预测、中断的程序里**每条 MMIO load 恰好计一次**；SLVERR → 5/7；IO 区非对齐 → 4/6；IO 区取指 → 1；IO 区 AMO → 7；`FENCE` 前后 MMIO 写与主存 store 的顺序。`l8b_misalign.S`：跨行 load/store 全部偏移，与逐字节读回比对；跨页 + 第二页无映射 → page fault 的 cause/tval；跨页 + 第二页 D=0 → D 位置位；`misaligned_crossline_split` 计数等于退休的跨行访存条数。`l8b_dma.S`：CPU 写脏一行 → DMA 读到最新数据；DMA 写 CPU 持有的行 → CPU 读到 DMA 字节；LR 后 DMA 写同行 → SC 失败；DMA 写与 CPU load 交替时，load 数据始终是某一次完整写入的值。报告记录各程序周期数与第 11 节新事件计数（只记录，不设阈值） |
 
-### 12.3 T10c：PMA IO 区与 MMIO
+### 12.8 L8b 总门禁
 
-- 第 6 节；仿真顶层新增 `o3_mmio_model.sv`（AXI4-Lite 从设备）：4KB 可读写寄存器区；一个 SLVERR 窗口；一个“读一次加一”的副作用计数寄存器；第 12.5 节 DMA 测试引擎的寄存器。
-- cocotb：`mmio_axil_master` 定向（读、写、AW/W 先后任意、错误响应）。
-- 整核：`l8b_mmio.S`：1/2/4/8 字节读写与字节选通；副作用计数器在含分支误预测、中断的程序里**每条 MMIO load 恰好计一次**；SLVERR → access fault 5/7 trap；IO 区非对齐 → 4/6；IO 区取指 → 1；IO 区 AMO → 7；`FENCE` 前后 MMIO 写与主存 store 的顺序（由测试引擎记录到达顺序）。
-- 门禁：上述 + 之前全部门禁同 SHA。
-
-### 12.4 T10d：跨行拆分
-
-- 第 7 节。
-- cocotb：`load_store_unit` 定向：跨行 load/store 的 2/4/8 字节各种偏移、FP 版本；跨页且 `hi` 半页错误 → `tval = hi` 首地址、两半都不写；年轻 load 等待 SPLIT store。
-- 整核：`l8b_misalign.S`：跨行 load/store 全部偏移，与逐字节读回比对；跨页 + 第二页无映射 → page fault 的 cause/tval；跨页 + 第二页 D=0 → D 位置位；`misaligned_crossline_split` 计数等于程序中退休的跨行访存条数。
-- 门禁：上述 + 之前全部门禁同 SHA。
-
-### 12.5 T10e：DMA 与 load 顺序冲刷
-
-- 第 8、10 节；`o3_mmio_model` 的 DMA 测试引擎：CPU 用 MMIO 写入目标行地址、字节掩码、数据样式并启动，引擎经顶层 DMA 口发一笔行读或行写，完成后把读回的数据与状态放在寄存器里供 CPU 读取。
-- cocotb：`l2_home`：DMA MaskWrite 命中 UNIQUE 脏行 → Inv 带数据 → 合并后写入；MaskWrite 未命中 → 读内存合并；DMA Read 命中 UNIQUE → Down → 返回最新数据；MaskWrite 读错误 → `error=1`；`dma_write` 位只在 DMA 引起的 Inv 上为 1。`memsys`：随机流量中加入 DMA 代理（读写混合），黄金内存比对。`load_queue`：DMA Inv 标记已执行同行 load、到队头冲刷重做。
-- 整核：`l8b_dma.S`：CPU 写脏一行 → DMA 读回到最新数据；DMA 写一行 CPU 持有的行 → CPU 读到 DMA 字节；LR 后 DMA 写同行 → SC 失败；DMA 写与 CPU load 交替时 load 数据始终为某一次完整写入的值。
-- 门禁：上述 + 之前全部门禁同 SHA。
-
-### 12.6 L8b 总门禁
-
-最终 SHA 上：L8a 12.8 总门禁（M1～M6 + 既有非访存 cocotb）、T10a～e 全部测试同 SHA 通过；`run-l10-vm` 通过；lint 0 errors；`doc/LOOP.md` 的 L8 行与相关模块行更新；报告写清自行决定的事项、已知问题与证据边界。
+最终 SHA 上：L8a 12.8 总门禁（M1～M6 + 既有非访存 cocotb）与 N1～N6 全部测试同 SHA 重跑通过；lint 0 errors；`doc/LOOP.md` 的 L8 行与相关模块行更新；报告写清自行决定的事项、已知问题与证据边界。
 
 ## 13. 不做
 
@@ -317,7 +308,7 @@ HEU 是 LSU 旁边的一个单项状态机，处理四类“到 ROB 队头才执
 
 | # | 问题 | 推荐 | 其他选项 |
 | --- | --- | --- | --- |
-| Y1 | 实施方式 | 按功能分 T10a～e 五步连续执行，每步 RTL + 测试 + 回归后提交 | 像 L8a 一样 RTL 一次写完再逐层测：L8b 各功能耦合弱，一次写完后排错范围大 |
+| Y1 | 实施方式 | **已定（用户修订）**：参照 L8a，RTL 一次写完，测试按 N1～N6 逐层加入（第 12 节），配合第 2 节调试开关 | 原推荐的按功能分 T10a～e 五步，未采用 |
 | Y2 | AMO/LR/SC、MMIO、跨行拆分放在哪里执行 | 统一用一个 HEU，在 ROB 队头执行（第 4 节） | AMO 走 `commit_ctrl` 串行通路（像 CSR）：但 `commit_ctrl` 没有 TLB 口，要另接翻译；跨行拆分做成全流水：快，但 LQ/SQ 要存两份 PA、转发要查两行，复杂度高 |
 | Y3 | reservation 清除表（改 B35） | 任何 Inv 与逐出都清除，Down 不清除（5.3 节）。理由：新的精确目录下，行被逐出后 DMA 写不会再 probe L1D，按原 B35“替换不清”会让 SC 错误成功 | 保持原 B35：需要另加机制让 L2 在 DMA 写时检查 reservation |
 | Y4 | LR 之后压住同行 probe 的窗口 | 80 拍（同 Breeze），保证 LR/SC 循环前进 | 不设窗口：DMA 频繁写同行时 LR/SC 可能一直失败 |
@@ -327,7 +318,7 @@ HEU 是 LSU 旁边的一个单项状态机，处理四类“到 ROB 队头才执
 | Y8 | DMA 顶层口 | 保持行粒度（一次一行 + 字节掩码），AXI 从口转换在 L11 | 现在做 AXI 从口：要先定 DMA 主设备 |
 | Y9 | 哪些 probe 触发 load 顺序冲刷 | `coh_snp_t` 加 1 位 `dma_write`，只有 DMA 写引起的 Inv 才触发 | 所有 Inv 都触发：不改协议，但 L2 替换引起的 Inv 会造成无用冲刷 |
 | Y10 | 冲刷时机 | 标记 `order_flush`，到 ROB 队头再冲刷重做 | 立即冲刷：恢复更快，但要从 LQ 找最老项并发起非队头冲刷，逻辑多 |
-| Y11 | `run-l10-vm` 的 A 位问题 | 纳入 L8b，作为 T10a 第一项修复，L8b 起要求通过 | 继续作为已知问题留到 FPGA：Linux 启动一定会碰到 |
+| Y11 | `run-l10-vm` 的 A 位问题 | 纳入 L8b：在 N2/N3 复现定位，N5 起必须通过 | 继续作为已知问题留到 FPGA：Linux 启动一定会碰到 |
 | Y12 | 被取消的事件编码 | `'h23`、`'h17～'h1c` 保留编码恒 0；`'h24` 改名为拆分计数 | 删除并重排：违反枚举“只追加”的约定，软件侧编号会变 |
 | Y13 | 权限检查的位置（6.3 节） | S1 算完寄存，S2 只读寄存位；加一个仿真专用的一致性断言 | 保持 S2 组合检查：L11 综合时可能成为最差路径之一（Breeze 已经遇到）；不加断言：只靠串行规则的论证和定向测试 |
 | Y14 | SQ 转发查询 | S1 不用异常位门控，S2 再丢弃 | 保持门控：TLB、PMP 与 SQ 比较串在同一拍 |
