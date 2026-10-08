@@ -142,7 +142,7 @@ class CacheBench:
         d.pte_ad_req_valid_i.value = int(self.ad is not None)
         if self.ad:
             d.pte_ad_req_i.value = pack(*zip((56, 64, 1, 1, 8), self.ad))
-        d.l2_req_ready_i.value = 1
+        d.l2_req_ready_i.value = int(getattr(self, 'request_ready', True))
         d.rsp_up_ready_i.value = 1
         if self.rsp is None:
             for t in list(self.pending):
@@ -162,7 +162,7 @@ class CacheBench:
         await Timer(5, unit='ns')
         v = {name: int(getattr(d, name).value) for name in (
             'cpu_ready','resp0','resp1','st_req_ready_o','st_resp_o','ptw_req_ready_o','ptw_resp_o',
-            'pte_ad_req_ready_o','pte_ad_resp_o','wake_o','l2_req_valid_o','l2_req_o',
+            'pte_ad_req_ready_o','pte_ad_resp_o','wake_o','l2_req_valid_o','l2_req_o','l2_req_ready_i',
             'l2_resp_ready_o','rsp_up_valid_o','rsp_up_o','snp_ready_o','full_line_busy_o',
             'internal_busy_o','idle_o','fatal_o','mon_ms_valid','mon_plru')}
         assert v['fatal_o'] == 0
@@ -183,8 +183,8 @@ class CacheBench:
         if w:
             self.wakes.append((self.cycle, unpack(w, [('valid',1),('mshr',2),('err',1),('free',1),('wb_free',1)])))
         for channel, valid, raw in (('req', v['l2_req_valid_o'], v['l2_req_o']), ('up', v['rsp_up_valid_o'], v['rsp_up_o'])):
-            # REQ/RSP up always ready in this layer, still enforce legal packets.
-            if not valid:
+            # Consume only handshakes; the PTE suite also stalls REQ.
+            if not valid or (channel == 'req' and not v['l2_req_ready_i']):
                 continue
             if channel == 'req':
                 q = unpack(raw, [('op',2),('line',26),('tid',2),('mask',64),('data',512)])

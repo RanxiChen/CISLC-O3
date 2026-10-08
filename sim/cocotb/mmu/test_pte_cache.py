@@ -1,41 +1,76 @@
 import random,os
 import cocotb
 from cocotb.triggers import Timer
+from l8a_agents import CacheBench, Cpu, OK
 async def settle(): await Timer(1,unit='ns')
+
 class Cache:
-    def __init__(self,d):self.d=d;self.mem={};self.q=[];self.fault=set();self.rng=random.Random(int(os.getenv('TEST_SEED','1')));self.cy=0
-    def put(self,n,v):getattr(self.d,n).value=v
-    def get(self,n):return int(getattr(self.d,n).value)
+    """Original PTE test API over the L8a physical request/protocol ports."""
+    def __init__(self,d):
+        self.d=d;self.e=CacheBench(d);self.mem={};self.fault=set()
+        self.rng=random.Random(int(os.getenv('TEST_SEED','1')));self.cy=0
+        self.s={};self.seeded=set()
+    def sync(self):
+        for addr,data in self.mem.items():
+            if addr in self.seeded:continue
+            line=addr>>6;shift=(addr&63)*8;mask=((1<<64)-1)<<shift
+            old=self.e.mem.get(line,0)
+            self.e.mem[line]=(old&~mask)|(data<<shift)
+            self.e.gold[line]=self.e.mem[line];self.seeded.add(addr)
+        self.e.errors={addr>>6 for addr in self.fault}
+    def put(self,n,v):
+        self.s[n]=v
+        if n=='epoch_i':self.d.cur_epoch_i.value=v
+        if n in ('read_i','store_i'):
+            q=Cpu(self.s['addr_i'],src=3 if n=='read_i' else 1,
+                  write=n=='store_i',data=self.s.get('data_i',0))
+            if n=='read_i':
+                self.e.ptw=q if v else None
+                self.d.ptw_req_valid_i.value=v;self.d.ptw_req_i.value=self.e.req_bits(q)
+            else:
+                self.e.st=q if v else None
+                self.d.st_req_valid_i.value=v;self.d.st_req_i.value=self.e.req_bits(q)
+    def get(self,n):
+        return int(getattr(self.d,{'read_ready_o':'ptw_req_ready_o',
+                                 'store_ready_o':'st_req_ready_o'}[n]).value)
     async def tick(self):
-        self.put('clk',0);self.put('l2_valid_i',0);self.put('l2_ready_i',int(self.rng.randrange(4)!=0));self.put('wb_ready_i',1)
-        if self.q and self.q[0][0]<=self.cy:
-            _,line,beat=self.q[0];self.put('l2_valid_i',1);self.put('l2_last_i',int(beat==3));self.put('l2_fault_i',int(line in self.fault))
-            self.put('l2_data_i',self.mem.get(line+beat*16,0)|(self.mem.get(line+beat*16+8,0)<<64))
-        await settle()
-        if self.get('l2_valid_i') and self.get('l2_resp_ready_o'):self.q.pop(0)
-        if self.get('wb_o') and self.get('wb_ready_i'):
-            addr=self.get('wb_addr_o');data=self.get('wb_data_o')
-            for i in range(8):self.mem[addr+i*8]=(data>>(i*64))&((1<<64)-1)
-        if self.get('l2_req_o') and self.get('l2_ready_i'):
-            addr=self.get('l2_addr_o')
-            self.q.extend((self.cy+2+i,addr,i) for i in range(4))
-        self.put('clk',1);await settle();self.put('clk',0);await settle();self.cy+=1
+        self.sync();self.e.request_ready=self.rng.randrange(4)!=0
+        await self.e.tick();self.cy+=1
     async def reset(self):
-        for n in ('clk','read_i','store_i','ad_i','addr_i','data_i','expected_i','set_a_i','set_d_i','req_epoch_i','epoch_i','l2_valid_i','l2_last_i','l2_fault_i','l2_data_i','l2_ready_i','wb_ready_i'):self.put(n,0)
-        self.put('rst',1);await self.tick();self.put('rst',0)
+        self.s=dict(addr_i=0,data_i=0,expected_i=0,set_a_i=0,set_d_i=0,req_epoch_i=0,epoch_i=0)
+        await self.e.reset()
     async def request(self,kind,addr,data=0,expected=0,a=0,d=0):
-        self.put('addr_i',addr);self.put('data_i',data);self.put('expected_i',expected);self.put('set_a_i',a);self.put('set_d_i',d)
-        self.put(kind+'_i',1)
+        self.sync()
+        self.s.update(addr_i=addr,data_i=data,expected_i=expected,set_a_i=a,set_d_i=d)
+        if kind=='read':
+            out=self.e.ptw_responses;start=len(out);self.put('read_i',1)
+        elif kind=='store':
+            out=self.e.st_responses;start=len(out);self.put('store_i',1)
+        else:
+            out=self.e.ad_responses;start=len(out)
+            self.e.ad=(addr,expected,a,d,self.s['req_epoch_i'])
+        # Original handshake and response watchdog bounds remain 100 each.
         for _ in range(100):
-            await settle()
-            ready=self.get(kind+'_ready_o');await self.tick()
-            if ready:break
+            await self.tick()
+            if (kind=='read' and self.e.ptw is None) or (kind=='store' and self.e.st is None) or (kind=='ad' and self.e.ad is None):break
         else:assert False,('request timeout',kind,addr)
-        self.put(kind+'_i',0)
         for _ in range(100):
-            if self.get(kind+'_valid_o'):
-                result=(self.get('read_data_o'),self.get('updated_o'),self.get('mismatch_o'),self.get('af_o'))
-                await self.tick();return result
+            if len(out)>start:
+                result=out[-1][1]
+                if kind=='read':
+                    assert result['status']==OK
+                    value=result['data'];flags=(0,0,0)
+                elif kind=='store':
+                    assert result['status']==OK
+                    value=0;flags=(0,0,0)
+                    line=addr>>6;shift=(addr&63)*8;mask=((1<<64)-1)<<shift
+                    self.e.gold[line]=(self.e.gold.get(line,0)&~mask)|(data<<shift)
+                else:
+                    value=0;flags=(int(bool(result&4)),int(bool(result&2)),int(bool(result&1)))
+                    if flags[0]:
+                        line=addr>>6;shift=(addr&63)*8
+                        self.e.gold[line]=self.e.gold.get(line,0)|(((64 if a else 0)|(128 if d else 0))<<shift)
+                await self.tick();return (value,*flags)
             await self.tick()
         assert False,('response timeout',kind,addr)
 
