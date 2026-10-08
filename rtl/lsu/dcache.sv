@@ -28,8 +28,10 @@ module dcache import o3_types_pkg::*; #(
     input logic snp_valid_i,output logic snp_ready_o,input coh_snp_t snp_i,
     output logic idle_o,output fatal_evt_t fatal_o,output be_perf_t perf_o);
     typedef struct packed {coh_state_e state;logic [TW-1:0] tag;} tag_t;
-    (* ram_style="distributed" *) tag_t tags_q[P][SETS][WAYS];
-    (* ram_style="block" *) logic [63:0] data_q[BANKS][WAYS][SETS];
+`ifndef SYNTHESIS
+    // Read-only verification view of the physical per-lane/per-way RAMs.
+    tag_t tags_q[P][SETS][WAYS];
+`endif
     logic [WAYS-2:0] plru_q[SETS];logic locked_q[SETS][WAYS],rfo_q[SETS][WAYS];
     int init_q;logic init_done_q;
     typedef struct packed {logic valid,conflict,bank,snap;dcache_req_t req;pte_ad_req_t ad;logic internal;} lane_t;
@@ -38,7 +40,6 @@ module dcache import o3_types_pkg::*; #(
     typedef enum logic [1:0] {LINE_NONE,LINE_PROBE,LINE_INSTALL,LINE_WB} line_kind_t;
     typedef struct packed {line_kind_t kind;coh_addr_t addr;coh_id_t id;logic [DC_WAY_W-1:0] way;dc_line_txn_t txn;} line_op_t;
     line_op_t line_choose,line_launch_q[2],line_read_q,line_result_q;
-    logic [63:0] line_words_q[BANKS][WAYS];tag_t line_tags_q[WAYS];
     coh_data_t line_data_q;coh_state_e line_state_q;int line_way_q;
     logic ps_valid_q;dcache_req_t ps_req_q;pte_ad_req_t ps_ad_q;logic ps_internal_q;
     int ps_way_q;logic ps_is_ad_q,ps_write; dcache_resp_t ps_resp_q;
@@ -418,6 +419,80 @@ module dcache import o3_types_pkg::*; #(
                 tag:TW'(line_launch_q[1].addr>>SW)};
         end
     end
+    // CPU and PROBE/WB reads share the already-reserved S0 memory port.
+    // Both consume its registered result one edge later; no extra latency.
+    logic line_ram_read;
+    logic tag_read_en[P];logic [SW-1:0] tag_read_addr[P];
+    logic bank_read_en[BANKS];logic [SW-1:0] bank_read_addr[BANKS];
+    logic [7:0] bank_write_mask[BANKS];logic [63:0] bank_write_data[BANKS];
+    logic [SW-1:0] bank_write_addr;int bank_write_way;
+    always_comb begin
+        line_ram_read=line_launch_q[1].kind==LINE_PROBE || line_launch_q[1].kind==LINE_WB;
+        for(int p=0;p<P;p++) begin
+            tag_read_en[p]=s0[p].valid;
+            tag_read_addr[p]=SW'(s0[p].req.vaddr>>6);
+            if(p==0 && line_ram_read) begin
+                tag_read_en[p]=1;tag_read_addr[p]=SW'(line_launch_q[1].addr);
+            end
+        end
+        for(int b=0;b<BANKS;b++) begin
+            bank_read_en[b]=0;bank_read_addr[b]='0;
+            for(int p=0;p<P;p++) if(s0[p].valid && !s0[p].conflict && !s0[p].bank &&
+                (int'(s0[p].req.vaddr[5:3])==b ||
+                 ((int'(s0[p].req.vaddr[2:0])+(1<<int'(s0[p].req.size))>8) &&
+                  (int'(s0[p].req.vaddr[5:3])+1)%BANKS==b))) begin
+                bank_read_en[b]=1;bank_read_addr[b]=SW'(s0[p].req.vaddr>>6);
+            end
+            if(line_ram_read) begin bank_read_en[b]=1;bank_read_addr[b]=SW'(line_launch_q[1].addr);end
+            bank_write_mask[b]='0;bank_write_data[b]=line_launch_q[1].txn.refill[b*64+:64];
+            if(ms_install_done && !line_launch_q[1].txn.err && !line_launch_q[1].txn.ack_e)
+                bank_write_mask[b]='1;
+        end
+        bank_write_addr=SW'(line_launch_q[1].addr);bank_write_way=int'(line_launch_q[1].way);
+        if(ps_write) begin
+            bank_write_addr=SW'(ps_req_q.paddr>>6);bank_write_way=ps_way_q;
+            for(int b=0;b<BANKS;b++) begin
+                bank_write_mask[b]='0;bank_write_data[b]='0;
+                for(int byte_idx=0;byte_idx<8;byte_idx++)
+                    for(int i=0;i<8;i++) if(ps_req_q.wmask[i] &&
+                        ((int'(ps_req_q.paddr[5:0])+i)/8)%BANKS==b &&
+                        (int'(ps_req_q.paddr[5:0])+i)%8==byte_idx) begin
+                        bank_write_mask[b][byte_idx]=1;
+                        bank_write_data[b][byte_idx*8+:8]=ps_req_q.wdata[i*8+:8];
+                    end
+            end
+        end
+    end
+    for(genvar p=0;p<P;p++) begin : g_tag_lane
+        for(genvar w=0;w<WAYS;w++) begin : g_tag_way
+            (* ram_style="distributed" *) logic [$bits(tag_t)-1:0] mem[0:SETS-1];
+            always_ff @(posedge clk) if(!rst) begin
+                if(tag_read_en[p]) tag_read_q[p][w]<=tag_t'(mem[tag_read_addr[p]]);
+                if(tag_change && tag_way==w) mem[tag_set]<=tag_new;
+                else if(!init_done_q) mem[SW'(init_q)]<='0;
+            end
+`ifndef SYNTHESIS
+            for(genvar s=0;s<SETS;s++) assign tags_q[p][s][w]=tag_t'(mem[s]);
+`endif
+        end
+    end
+    for(genvar b=0;b<BANKS;b++) begin : g_data_bank
+        for(genvar w=0;w<WAYS;w++) begin : g_data_way
+            (* ram_style="block" *) logic [63:0] mem[0:SETS-1];
+            always_ff @(posedge clk) if(!rst) begin
+                if(bank_read_en[b]) bank_read_q[b][w]<=mem[bank_read_addr[b]];
+                for(int byte_idx=0;byte_idx<8;byte_idx++)
+                    if(bank_write_way==w && bank_write_mask[b][byte_idx])
+                        mem[bank_write_addr][byte_idx*8+:8]<=bank_write_data[b][byte_idx*8+:8];
+            end
+        end
+    end
+`ifndef SYNTHESIS
+    always_ff @(posedge clk) if(!rst && line_ram_read) begin
+        for(int p=0;p<P;p++) assert(!s0[p].valid)
+            else $fatal(1,"CPU/internal S0 read collided with reserved line RAM port");
+    end
+`endif
     always_ff @(posedge clk) begin
         if(rst) begin
             atomic_hold_q<=0;atomic_timer_q<=0;atomic_line_q<=0;atomic_live_q<='0;ps_resp_q<='0;
@@ -451,7 +526,6 @@ module dcache import o3_types_pkg::*; #(
                 atomic_hold_q<=1;atomic_timer_q<=0;atomic_line_q<=line_launch_q[1].addr;
             end
             if(!init_done_q) begin
-                for(int p=0;p<P;p++) for(int w=0;w<WAYS;w++) tags_q[p][init_q][w]<='0;
                 for(int w=0;w<WAYS;w++) begin locked_q[init_q][w]<=0;rfo_q[init_q][w]<=0;end
                 plru_q[init_q]<=0;
                 if(init_q==SETS-1) init_done_q<=1;else init_q<=init_q+1;
@@ -470,9 +544,6 @@ module dcache import o3_types_pkg::*; #(
                 s1_q[p].req.br_mask<=s0[p].req.br_mask & ~(resolution_valid_i ? (CKPT_N'(1)<<resolution_tag_i):'0);
                 s2_q[p].req.br_mask<=s1_q[p].req.br_mask & ~(resolution_valid_i ? (CKPT_N'(1)<<resolution_tag_i):'0);
                 s2_q[p].valid<=s1_q[p].valid && !killed(s1_q[p].req);
-                if(s0[p].valid) begin
-                    for(int w=0;w<WAYS;w++) tag_read_q[p][w]<=tags_q[p][SW'(s0[p].req.vaddr>>6)][w];
-                end
                 for(int w=0;w<WAYS;w++) begin
                     s2_tags_q[p][w]<=tag_read_q[p][w];
                     s2_words_q[p][0][w]<=bank_read_q[int'(s1_q[p].req.vaddr[5:3])][w];
@@ -495,42 +566,24 @@ module dcache import o3_types_pkg::*; #(
                     if(decision[p].status==DC_ERROR || s2_q[p].req.src==DC_SRC_STORE_DRAIN) begin internal_valid_q<=0;internal_wait_q<=0;end
                 end
             end
-            // Shared bank read: same-set requests may consume the same output.
-            for(int b=0;b<BANKS;b++) begin
-                int selected;selected=-1;
-                for(int p=0;p<P;p++) if(s0[p].valid && !s0[p].conflict && !s0[p].bank &&
-                    (int'(s0[p].req.vaddr[5:3])==b || ((int'(s0[p].req.vaddr[2:0])+(1<<int'(s0[p].req.size))>8) && (int'(s0[p].req.vaddr[5:3])+1)%BANKS==b))) selected=p;
-                if(selected>=0) for(int w=0;w<WAYS;w++) bank_read_q[b][w]<=data_q[b][w][SW'(s0[selected].req.vaddr>>6)];
-            end
             line_read_q<=line_launch_q[1];line_result_q<=line_read_q;
-            if(line_launch_q[1].kind==LINE_PROBE || line_launch_q[1].kind==LINE_WB) begin
-                for(int b=0;b<BANKS;b++) for(int w=0;w<WAYS;w++) line_words_q[b][w]<=data_q[b][w][SW'(line_launch_q[1].addr)];
-                for(int w=0;w<WAYS;w++) line_tags_q[w]<=tags_q[0][SW'(line_launch_q[1].addr)][w];
-            end
             if(line_read_q.kind==LINE_PROBE || line_read_q.kind==LINE_WB) begin
                 int w;w=int'(line_read_q.way);line_state_q<=COH_I;
                 if(line_read_q.kind==LINE_PROBE) begin w=0;
-                    for(int n=0;n<WAYS;n++) if(line_tags_q[n].state!=COH_I && line_tags_q[n].tag==TW'(line_read_q.addr>>SW)) begin
-                        w=n;line_state_q<=line_tags_q[n].state;
+                    for(int n=0;n<WAYS;n++) if(tag_read_q[0][n].state!=COH_I && tag_read_q[0][n].tag==TW'(line_read_q.addr>>SW)) begin
+                        w=n;line_state_q<=tag_read_q[0][n].state;
                     end
                 end
                 line_way_q<=w;
-                for(int b=0;b<BANKS;b++) line_data_q[b*64+:64]<=line_words_q[b][w];
+                for(int b=0;b<BANKS;b++) line_data_q[b*64+:64]<=bank_read_q[b][w];
             end
-            if(tag_change) for(int p=0;p<P;p++) tags_q[p][tag_set][tag_way]<=tag_new;
             if(ms_install_done) begin
                 locked_q[SW'(line_launch_q[1].addr)][line_launch_q[1].way]<=0;
                 if(!line_launch_q[1].txn.err) begin
                     plru_q[SW'(line_launch_q[1].addr)]<=touch(plru_q[SW'(line_launch_q[1].addr)],int'(line_launch_q[1].way));
-                    if(!line_launch_q[1].txn.ack_e) for(int b=0;b<BANKS;b++)
-                        data_q[b][line_launch_q[1].way][SW'(line_launch_q[1].addr)]<=line_launch_q[1].txn.refill[b*64+:64];
                 end
             end
             if(ps_write) begin
-                for(int i=0;i<8;i++) if(ps_req_q.wmask[i]) begin
-                    int off,b,byte_idx;off=int'(ps_req_q.paddr[5:0])+i;b=(off/8)%BANKS;byte_idx=off%8;
-                    data_q[b][ps_way_q][SW'(ps_req_q.paddr>>6)][byte_idx*8+:8]<=ps_req_q.wdata[i*8+:8];
-                end
                 ps_valid_q<=0;
                 if(ps_internal_q) begin internal_valid_q<=0;internal_inpipe_q<=0;end
                 rfo_q[SW'(ps_req_q.paddr>>6)][ps_way_q]<=0;

@@ -50,7 +50,11 @@ module l2_home import o3_types_pkg::*; #(
     typedef struct packed {logic valid,dirty;logic [TW-1:0] tag;coh_dir_e state;logic sharer;} meta_t;
     typedef enum logic [1:0] {NEW_REQ,PUT_TASK,SLOT_TASK} kind_t;
     typedef struct packed {kind_t kind;l2_work_t work;logic [SW-1:0] set_idx;coh_rsp_up_t put;} pipe_t;
-    meta_t meta_q[SETS][WAYS],meta_read_q[WAYS],s2_meta_q[WAYS];
+    meta_t meta_read_q[WAYS],s2_meta_q[WAYS];
+`ifndef SYNTHESIS
+    // Read-only verification view; storage lives in the per-way RAMs below.
+    meta_t meta_q[SETS][WAYS];
+`endif
     logic [WAYS-2:0] plru_q[SETS],plru_read_q,s2_plru_q;
     (* ram_style="block" *) coh_data_t data_q[SETS*WAYS];coh_data_t data_read_q;
     logic init_done_q;int init_set_q;
@@ -288,22 +292,35 @@ module l2_home import o3_types_pkg::*; #(
         perf_o[BE_L2_PROBE]=BE_PERF_INC_W'(snp_valid_o && snp_ready_i);
         perf_o[BE_L2_WRITEBACK]=BE_PERF_INC_W'(wb_push);
     end
+    // One packed, one-dimensional RAM per way. Initialization uses the same
+    // write port as directory updates; it does not reset the memory primitive.
+    for(genvar w=0;w<WAYS;w++) begin : g_meta_way
+        (* ram_style="block" *) logic [$bits(meta_t)-1:0] mem[0:SETS-1];
+        always_ff @(posedge clk) begin
+            if(!rst) begin
+                if(s0_valid) meta_read_q[w]<=meta_t'(mem[s0.set_idx]);
+                if(meta_write && write_way==w) mem[s2_q.set_idx]<=meta_new;
+                else if(!init_done_q) mem[SW'(init_set_q)]<='0;
+            end
+        end
+`ifndef SYNTHESIS
+        for(genvar s=0;s<SETS;s++) assign meta_q[s][w]=meta_t'(mem[s]);
+`endif
+    end
     always_ff @(posedge clk) begin
         if(rst) begin
             init_done_q<=0;init_set_q<=0;s1_valid_q<=0;s2_valid_q<=0;s1_q<='0;s2_q<='0;
-            meta_read_q<='{default:'0};s2_meta_q<='{default:'0};plru_read_q<=0;s2_plru_q<=0;data_read_q<=0;
+            s2_meta_q<='{default:'0};plru_read_q<=0;s2_plru_q<=0;data_read_q<=0;
             s2_hit_q<=0;s2_way_q<=0;in_pipe_q<='{default:0};slot_wait_q<='{default:0};
             req_rr_q<=0;put_rr_q<=0;task_rr_q<=0;put_valid_q<='{default:0};put_pipe_q<='{default:0};put_q<='{default:'0};
             answer_valid_q<=0;answer_q<='0;out_head_q<='{default:0};out_tail_q<='{default:0};out_count_q<='{default:0};
         end else begin
             if(!init_done_q) begin
-                for(int w=0;w<WAYS;w++) meta_q[init_set_q][w]<='0;
                 plru_q[init_set_q]<=0;
                 if(init_set_q==SETS-1) init_done_q<=1;else init_set_q<=init_set_q+1;
             end
             s1_valid_q<=s0_valid;s1_q<=s0;
             if(s0_valid) begin
-                for(int w=0;w<WAYS;w++) meta_read_q[w]<=meta_q[s0.set_idx][w];
                 plru_read_q<=plru_q[s0.set_idx];
                 case(s0.kind)
                     NEW_REQ:begin in_pipe_q[s0.work.client]<=1;req_rr_q<=(int'(s0.work.client)+1)%3;end
@@ -316,7 +333,6 @@ module l2_home import o3_types_pkg::*; #(
             s2_meta_q<=meta_read_q;s2_plru_q<=plru_read_q;
             if(s1_valid_q && (s1_hit || s1_q.kind==SLOT_TASK)) data_read_q<=data_q[int'(s1_q.set_idx)*WAYS+s1_way];
             if(meta_write) begin
-                meta_q[s2_q.set_idx][write_way]<=meta_new;
                 assert((meta_new.state==DIR_NONE)==!meta_new.sharer);
             end
             if(data_write) data_q[int'(s2_q.set_idx)*WAYS+write_way]<=data_new;

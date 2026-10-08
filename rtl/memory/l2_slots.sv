@@ -43,7 +43,8 @@ module l2_slots import o3_types_pkg::*; #(
         end else begin
             if(alloc_i) begin
                 assert(free_o) else $fatal(1,"L2 slots full on allocation");
-                work_q[free_idx]<=alloc_work_i;served_q[free_idx]<=0;
+                for(int n=0;n<N;n++) if(free_idx==n) work_q[n]<=alloc_work_i;
+                served_q[free_idx]<=0;
                 state_q[free_idx]<=alloc_work_i.is_probe ? PROBE_WAIT : alloc_work_i.victim_valid ? EVICT:MEM_READ;
             end
             for(int n=0;n<N;n++) if(task_grant_i[n]) begin
@@ -52,13 +53,17 @@ module l2_slots import o3_types_pkg::*; #(
             if(done_i) begin
                 case(done_result_i)
                     L2_NEED_PROBE:begin state_q[done_slot_i]<=PROBE_WAIT;served_q[done_slot_i]<=0;
-                        work_q[done_slot_i].probe_op<=COH_INV;work_q[done_slot_i].probe_owner<=done_owner_i;end
+                        for(int n=0;n<N;n++) if(int'(done_slot_i)==n) begin
+                            work_q[n].probe_op<=COH_INV;work_q[n].probe_owner<=done_owner_i;
+                        end
+                    end
                     L2_EVICT_DONE:state_q[done_slot_i]<=MEM_READ;
                     L2_RETRY:state_q[done_slot_i]<=EVICT;
                     L2_FINISHED:state_q[done_slot_i]<=IDLE;
                     default:;
                 endcase
-                if(done_result_i!=L2_RETRY) work_q[done_slot_i].collected<=0;
+                if(done_result_i!=L2_RETRY) for(int n=0;n<N;n++)
+                    if(int'(done_slot_i)==n) work_q[n].collected<=0;
             end
             if(!probe_hold_q && probe_idx>=0) begin probe_hold_q<=1;probe_sel_q<=probe_idx;end
             if(probe_valid_o && probe_ready_i) begin
@@ -66,7 +71,7 @@ module l2_slots import o3_types_pkg::*; #(
             end
             if(collected_i) begin
                 state_q[collected_slot_i]<=work_q[collected_slot_i].is_probe ? REPLAY:EVICT;
-                work_q[collected_slot_i].collected<=1;
+                for(int n=0;n<N;n++) if(int'(collected_slot_i)==n) work_q[n].collected<=1;
             end
             if(!read_hold_q && read_idx>=0) begin read_hold_q<=1;read_sel_q<=read_idx;end
             if(read_valid_o && read_ready_i) begin
@@ -74,7 +79,9 @@ module l2_slots import o3_types_pkg::*; #(
             end
             if(read_done_i) begin
                 assert(state_q[read_done_slot_i]==READ_WAIT);
-                work_q[read_done_slot_i].refill<=read_data_i;work_q[read_done_slot_i].error<=read_error_i;
+                for(int n=0;n<N;n++) if(int'(read_done_slot_i)==n) begin
+                    work_q[n].refill<=read_data_i;work_q[n].error<=read_error_i;
+                end
                 state_q[read_done_slot_i]<=INSTALL;
             end
         end

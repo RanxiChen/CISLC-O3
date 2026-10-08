@@ -248,3 +248,22 @@ async def seeded_transactions(dut):
         if after.valid and m.s2 is not None:
             contexts.append((m.s2.query.pc, m.s2.query.folds, after.response.meta))
             contexts = contexts[-32:]
+
+
+@cocotb.test()
+async def allocation_starts_strictly_after_each_provider(dut):
+    """Exercise every variable lower bound, including the empty candidate set."""
+    tables = value(dut.cfg_tables_o)
+    for provider in (*range(tables), 7):
+        b = await new_bench(dut, provider)
+        pc = 0x8000 + provider * 0x100
+        await b.step(Inputs(train=Train(valid=True, pc=pc, meta=provider,
+                                       commit_mask=1, taken_mask=1)))
+        prediction = await query(b, pc)
+        first = provider + 1 if provider < tables else 0
+        if first < tables:
+            assert (prediction.meta & 7) == first
+            assert prediction.provider_hit_mask == (1 << b.model.slots) - 1
+        else:
+            assert (prediction.meta & 7) == 7
+            assert prediction.provider_hit_mask == 0

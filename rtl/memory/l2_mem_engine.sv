@@ -41,13 +41,18 @@ module l2_mem_engine import o3_types_pkg::*; #(
         m_axi_arlen=8'(BEATS-1);m_axi_arsize=3'($clog2(DATA_W/8));m_axi_arburst=2'b01;
         m_axi_rready=1;read_done_o=m_axi_rvalid && m_axi_rlast;
         read_done_slot_o=L2_SLOT_W'(m_axi_rid);read_data_o=rd_data_q[m_axi_rid];
-        read_data_o[rd_beat_q[m_axi_rid]*DATA_W+:DATA_W]=m_axi_rdata;
+        // Decode beat enables with constant slices instead of building a
+        // variable bit-insertion barrel shifter across the entire cache line.
+        for(int b=0;b<BEATS;b++) if(rd_beat_q[m_axi_rid]==b)
+            read_data_o[b*DATA_W+:DATA_W]=m_axi_rdata;
         read_error_o=rd_err_q[m_axi_rid] || m_axi_rresp!=0;
         m_axi_awvalid=send_valid_q && !aw_done_q;
         m_axi_awid=ID_W'(send_q);m_axi_awaddr=PADDR_W'({wb_addr_q[send_q],6'b0});
         m_axi_awlen=8'(BEATS-1);m_axi_awsize=3'($clog2(DATA_W/8));m_axi_awburst=2'b01;
         m_axi_wvalid=send_valid_q && wbeat_q<BEATS;
-        m_axi_wdata=wb_data_q[send_q][(wbeat_q%BEATS)*DATA_W+:DATA_W];
+        m_axi_wdata='0;
+        for(int b=0;b<BEATS;b++) if(wbeat_q%BEATS==b)
+            m_axi_wdata=wb_data_q[send_q][b*DATA_W+:DATA_W];
         m_axi_wstrb='1;m_axi_wlast=wbeat_q==BEATS-1;m_axi_bready=1;
     end
     always_ff @(posedge clk) begin
@@ -60,7 +65,9 @@ module l2_mem_engine import o3_types_pkg::*; #(
             if(m_axi_rvalid) begin
                 assert(int'(m_axi_rid)<N && rd_busy_q[m_axi_rid]);
                 assert(m_axi_rlast==(rd_beat_q[m_axi_rid]==BEATS-1));
-                rd_data_q[m_axi_rid][rd_beat_q[m_axi_rid]*DATA_W+:DATA_W]<=m_axi_rdata;
+                for(int n=0;n<N;n++) for(int b=0;b<BEATS;b++)
+                    if(int'(m_axi_rid)==n && rd_beat_q[n]==b)
+                        rd_data_q[n][b*DATA_W+:DATA_W]<=m_axi_rdata;
                 rd_err_q[m_axi_rid]<=rd_err_q[m_axi_rid] || m_axi_rresp!=0;
                 rd_beat_q[m_axi_rid]<=rd_beat_q[m_axi_rid]+1;
                 if(m_axi_rlast) rd_busy_q[m_axi_rid]<=0;

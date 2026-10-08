@@ -324,9 +324,9 @@ module tage
                         if (meta_final_pred != actual_taken) begin
                             first_longer = (provider_idx < TABLES) ? provider_idx + 1 : 0;
                             allocated = 1'b0;
-                            for (int table_idx = first_longer; table_idx < TABLES;
+                            for (int table_idx = 0; table_idx < TABLES;
                                  table_idx++) begin
-                                if (!allocated && (!updated[table_idx].valid ||
+                                if (table_idx >= first_longer && !allocated && (!updated[table_idx].valid ||
                                     updated[table_idx].tag == train_tag[table_idx] ||
                                     updated[table_idx].useful == '0)) begin
                                     if (!updated[table_idx].valid ||

@@ -72,3 +72,29 @@ async def dirty_capacity_victim_is_written_back_before_refill(dut):
     assert q['dirty']==1 and q['data']==int.from_bytes(expected,'little')
     assert (await e.load(base+8))['data']==0x1122334455667788
     await e.idle()
+
+
+@cocotb.test()
+async def byte_enable_all_bank_boundaries_and_line_read_port(dut):
+    """Masked PS writes preserve other bytes; probe and CPU share S0 reads."""
+    e = await env(dut)
+    base = BASE + 0x200
+    expected = bytearray(range(64))
+    e.mem[base >> 6] = e.gold[base >> 6] = int.from_bytes(expected, 'little')
+    await e.load(base)
+    for offset in range(57):
+        mask = (0x55, 0xaa, 0x81, 0xff)[offset % 4]
+        data = bytes((offset * 13 + i * 29) & 255 for i in range(8))
+        assert (await e.store(base + offset, int.from_bytes(data, 'little'), mask))['status'] == OK
+        for i in range(8):
+            if mask >> i & 1:
+                expected[offset + i] = data[i]
+        # The separate byte oracle also checks untouched bank/way bytes.
+        for bank in range(8):
+            got = await e.load(base + bank * 8)
+            assert got['data'] == int.from_bytes(expected[bank * 8:bank * 8 + 8], 'little')
+        if offset % 8 == 7:
+            reply = await e.probe(base, down=True)
+            assert reply['data'] == int.from_bytes(expected, 'little')
+            assert (await e.load(base + 56))['data'] == int.from_bytes(expected[56:64], 'little')
+    await e.idle()
