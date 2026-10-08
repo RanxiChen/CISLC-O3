@@ -11,9 +11,9 @@ from dataclasses import dataclass
 
 from cocotb.triggers import Timer
 
-GETS, GETM, READ = 0, 1, 2
+GETS, GETM, READ, MASKWRITE = 0, 1, 2, 3
 PUT, INVACK, DOWNACK = 0, 1, 2
-DATAS, DATAE, ACKE, PUTACK, READDATA = range(5)
+DATAS, DATAE, ACKE, PUTACK, READDATA, WRITEACK = range(6)
 MASK512 = (1 << 512) - 1
 
 
@@ -25,8 +25,8 @@ def pack(*fields):
     return value
 
 
-def req(op, line, tid):
-    return pack((2, op), (26, line), (2, tid), (64, 0), (512, 0))
+def req(op, line, tid, mask=0, data=0):
+    return pack((2, op), (26, line), (2, tid), (64, mask), (512, data))
 
 
 def up(op, dirty, line, tid, data):
@@ -46,6 +46,8 @@ class Txn:
     error: bool = False
     accepted: bool = False
     result: tuple = None
+    mask: int = 0
+    data: int = 0
 
 
 class Bench:
@@ -59,8 +61,11 @@ class Bench:
         self.slots = int(os.environ.get('SLOTS', 2))
         self.arch, self.ram, self.history = {}, {}, {}
         self.copies, self.held = {}, {}
-        self.present = [None, None]
-        self.out = [{}, {}]
+        self.present = [None, None, None]
+        self.out = [{}, {}, {}]
+        self.dma_script = deque()
+        self.dma_done = 0
+        self.dma_enabled = False
         self.puts = {}
         self.upq = deque()
         self.probe = None
@@ -107,13 +112,15 @@ class Bench:
         self.history.setdefault(line, []).append((self.cycle, data))
         self.note('store', line)
 
-    def submit(self, client, op, line, tid=None, error=False):
+    def submit(self, client, op, line, tid=None, error=False, mask=0, data=0):
         self.check(self.present[client] is None, 'REQ already presented')
         if tid is None:
             tid = next(i for i in range(4) if i not in self.out[client])
         self.check(tid not in self.out[client], 'transaction ID reused')
         self.check(len(self.out[client]) < 4, 'Get/Read credit exceeded')
-        t = Txn(op, line, tid, self.cycle, error)
+        if client == 2:
+            self.check(not self.out[2] and tid == 0, "DMA credit/ID violation")
+        t = Txn(op, line, tid, self.cycle, error, mask=mask, data=data)
         self.present[client] = t
         return t
 
@@ -132,6 +139,12 @@ class Bench:
         await self.until(lambda: t.result is not None)
         return t
 
+    async def dma(self, line, write=False, mask=0, data=0, error=False):
+        await self.until(lambda: self.present[2] is None and not self.out[2] and not self.line_busy(line))
+        t = self.submit(2, MASKWRITE if write else READ, line, tid=0, mask=mask, data=data, error=error)
+        await self.until(lambda: t.result is not None)
+        return t
+
     def evict(self, line, tid=0):
         state, data = self.copies[line]
         self.check(tid not in self.puts, 'Put credit reused')
@@ -140,7 +153,8 @@ class Bench:
 
     def line_busy(self, line):
         return (self.probe is not None and self.probe[2] == line) or any(
-            t.line == line for t in self.out[0].values()) or any(p[0] == line for p in self.puts.values())
+            t.line == line for t in self.out[0].values()) or any(p[0] == line for p in self.puts.values()) or any(
+            t is not None and t.line == line for t in [self.present[2], *self.out[2].values()])
 
     async def until(self, predicate, limit=5000):
         for _ in range(limit):
@@ -175,12 +189,26 @@ class Bench:
         d.clk.value = 0
         # The I client runs independently, with at most four transactions.
         if self.i_script and self.present[1] is None and len(self.out[1]) < 4:
-            self.submit(1, READ, self.i_script.popleft())
-        for c, name in enumerate(('l1d', 'l1i')):
+            # Serialize same-line I reads against a DMA write's ACK. Different
+            # lines still overlap; this keeps the independent oracle's write
+            # linearization at ACK without inferring it from DUT data writes.
+            line = self.i_script[0]
+            if not any(t is not None and t.op == MASKWRITE and t.line == line
+                       for t in [self.present[2], *self.out[2].values()]):
+                self.submit(1, READ, self.i_script.popleft())
+        if self.dma_script and self.present[2] is None and not self.out[2]:
+            op, line, mask, data = self.dma_script[0]
+            i_busy = any(t is not None and t.line == line
+                         for t in [self.present[1], *self.out[1].values()])
+            if not self.line_busy(line) and not (op == MASKWRITE and i_busy):
+                self.dma_script.popleft()
+                self.submit(2, op, line, tid=0, mask=mask, data=data)
+        d.dma_resp_ready_i.value = int(self.chance()) if self.dma_enabled else 1
+        for c, name in enumerate(('l1d', 'l1i', 'dma')):
             t = self.present[c]
             getattr(d, name + '_req_valid_i').value = int(t is not None)
             if t:
-                getattr(d, name + '_req_i').value = req(t.op, t.line, t.tid)
+                getattr(d, name + '_req_i').value = req(t.op, t.line, t.tid, t.mask, t.data)
         if self.probe and self.cycle >= self.probe[3] and not self.upq:
             op, owner, line, due = self.probe
             # A probe may wait for the line's grant or PutAck, never for REQ ready.
@@ -215,7 +243,8 @@ class Bench:
         d.m_axi_bid.value = self.bhold or 0
         d.m_axi_bresp.value = 0
         await Timer(5, unit='ns')
-        names = ('l1d_resp_valid_o', 'l1d_resp_o', 'l1i_resp_valid_o', 'l1i_resp_o',
+        names = ('dma_resp_valid_o', 'dma_resp_o', 'dma_resp_ready_i', 'dma_req_ready_o',
+                 'l1d_resp_valid_o', 'l1d_resp_o', 'l1i_resp_valid_o', 'l1i_resp_o',
                  'l1d_req_ready_o', 'l1i_req_ready_o', 'rsp_up_ready_o', 'snp_valid_o',
                  'snp_ready_i', 'snp_o', 'm_axi_arvalid', 'm_axi_arready', 'm_axi_araddr',
                  'm_axi_arid', 'm_axi_arlen', 'm_axi_arsize', 'm_axi_arburst',
@@ -227,11 +256,12 @@ class Bench:
         self.check(v['fatal_o'] == 0, 'unexpected fatal event')
         self.slot_full += v['mon_slot_full']
         for prefix, ready, fields in (
+            ('dma_resp', 'dma_resp_ready_i', ('dma_resp_o',)),
             ('snp', 'snp_ready_i', ('snp_o',)),
             ('m_axi_ar', 'm_axi_arready', ('m_axi_arid', 'm_axi_araddr', 'm_axi_arlen', 'm_axi_arsize', 'm_axi_arburst')),
             ('m_axi_aw', 'm_axi_awready', ('m_axi_awid', 'm_axi_awaddr', 'm_axi_awlen', 'm_axi_awsize', 'm_axi_awburst')),
             ('m_axi_w', 'm_axi_wready', ('m_axi_wdata', 'm_axi_wstrb', 'm_axi_wlast'))):
-            valid = v[prefix + ('_valid_o' if prefix == 'snp' else 'valid')]
+            valid = v[prefix + ('_valid_o' if prefix in ('snp', 'dma_resp') else 'valid')]
             bits = tuple(v[f] for f in fields)
             if prefix in self.stalled:
                 self.check(valid and bits == self.stalled[prefix], f'{prefix} changed while stalled')
@@ -240,8 +270,8 @@ class Bench:
             else:
                 self.stalled.pop(prefix, None)
         # Process old response permissions before same-edge answers and new requests.
-        for c, name in enumerate(('l1d', 'l1i')):
-            if v[name + '_resp_valid_o']:
+        for c, name in enumerate(('l1d', 'l1i', 'dma')):
+            if v[name + '_resp_valid_o'] and (c != 2 or v['dma_resp_ready_i']):
                 op, tid, err, data = response(v[name + '_resp_o'])
                 self.note('response', c, op, tid)
                 if c == 0 and op == PUTACK:
@@ -264,6 +294,18 @@ class Bench:
                         self.check(data == self.golden(t.line), f'Get data mismatch {t.line:x}: {data:x} != {self.golden(t.line):x}')
                         self.held[t.line] = 'S' if op == DATAS else 'X'
                         self.copies[t.line] = ('S' if op == DATAS else 'E', data)
+                elif c == 2 and t.op == MASKWRITE:
+                    self.check(op == WRITEACK, 'DMA write received wrong response')
+                    if not err:
+                        self.check(self.held.get(t.line, 'I') == 'I', 'DMA write ACK before InvAck')
+                        merged = bytearray(self.golden(t.line).to_bytes(64, 'little'))
+                        replacement = t.data.to_bytes(64, 'little')
+                        for i in range(64):
+                            if t.mask >> i & 1:
+                                merged[i] = replacement[i]
+                        self.arch[t.line] = int.from_bytes(merged, 'little')
+                        self.history.setdefault(t.line, []).append((self.cycle, self.arch[t.line]))
+                    self.dma_done += 1
                 else:
                     self.check(op == READDATA, 'I received a permission grant')
                     if not err:
@@ -272,7 +314,10 @@ class Bench:
                         legal = [prior[-1] if prior else self.initial(t.line)] + [x for cycle, x in hist if t.start < cycle <= self.cycle]
                         self.check(data in legal, f'Read data mismatch {t.line:x}: {data:x}')
                         self.check(self.held.get(t.line) != 'X', 'ReadData before owner DownAck')
-                    self.i_done += 1
+                    if c == 1:
+                        self.i_done += 1
+                    else:
+                        self.dma_done += 1
                 t.result = (op, err, data)
         if u and v['rsp_up_ready_o']:
             self.upq.popleft()
@@ -298,11 +343,15 @@ class Bench:
         if v['snp_valid_o'] and v['snp_ready_i']:
             raw = v['snp_o']
             line, owner, op = raw & ((1 << 26) - 1), (raw >> 27) & 1, raw >> 28
+            dma_write = (raw >> 26) & 1
+            expected_dma = op == 0 and any(t.op == MASKWRITE and t.line == line for t in self.out[2].values())
+            self.check(dma_write == expected_dma, 'dma_write tagging mismatch')
+            self.note('dma-flag', op, owner, line, dma_write)
             self.check(self.probe is None, 'more than one probe in flight')
             self.check(op == 0 or owner, 'Down without owner')
             self.probe = (op, owner, line, self.cycle + 1 + self.probe_delay)
             self.note('probe', op, owner, line)
-        for c, name in enumerate(('l1d', 'l1i')):
+        for c, name in enumerate(('l1d', 'l1i', 'dma')):
             t = self.present[c]
             if t and v[name + '_req_ready_o']:
                 self.check(t.tid not in self.out[c], 'duplicate accepted ID')
@@ -364,7 +413,7 @@ class Bench:
     def idle(self):
         return (not any(self.present) and not any(self.out) and not self.puts and not self.probe
                 and not self.upq and not self.readq and not self.rhold and not self.awq and not self.wq
-                and not self.bq and self.bhold is None and not self.i_script
+                and not self.bq and self.bhold is None and not self.i_script and not self.dma_script
                 and not int(self.d.mon_slot_busy.value))
 
     async def finish(self):

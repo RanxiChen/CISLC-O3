@@ -197,3 +197,9 @@ dcache.sv 的 Y13 一致性断言和 dc_permissions shadow 调用一起包在 if
 原文件 SHA256=7cae0bba9fb513868090ecee6cbc88b78a0ee64b537105fcd27d4e467b6aa365；T10 副本 SHA256=9c88fb8b707acc3d24e5933d123d5ad3d87262547c935b43c0b6584ae17800c0；两者均 616 行。字段清单见上表及副本旁的 migration.json。远端每个准确 SHA 的 T10 证据目录使用同一生成器建立副本，比较脚本不改。
 
 N1 开始；尚未声明任何功能层通过。
+
+## N1 测试实施（候选，尚未通过）
+
+新增 DMA 适配器 2 例、AXI-Lite 主控 3 例、L2 DMA 定向 4 例与随机 2 例；另单独运行非法 DMA GetS 的 RTL 断言负例，要求进程失败且日志明确命中 l2_home 的端口 op 断言，不能把任意失败算作通过。两随机种子 51/52，各 2000 DMA（1000 Read/1000 MaskWrite）、至少 2000 CPU Get/Put、500 I Read，压力几何 sets=2/ways=2/slots=2。保留原 L8a 全部测试与规模。
+
+代理黄金内存独立于 DUT；CPU store 按代理写入更新，DMA MaskWrite 按 WriteAck 更新，逐字节合并。为明确写入线性化点，同一行 I Read 与 DMA WriteAck 串行，异行 I/D/DMA 并发；同一行 D 副本仍经历真实 Inv/Down 和独立权限监视。DMA response 背压时逐拍校验保持，随机代理不改变原无 DMA 的 RNG 取样规则。
