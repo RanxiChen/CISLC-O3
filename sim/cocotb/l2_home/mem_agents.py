@@ -297,7 +297,7 @@ class Bench:
                 self.probe = None
         if v['snp_valid_o'] and v['snp_ready_i']:
             raw = v['snp_o']
-            line, owner, op = raw & ((1 << 26) - 1), (raw >> 26) & 1, raw >> 27
+            line, owner, op = raw & ((1 << 26) - 1), (raw >> 27) & 1, raw >> 28
             self.check(self.probe is None, 'more than one probe in flight')
             self.check(op == 0 or owner, 'Down without owner')
             self.probe = (op, owner, line, self.cycle + 1 + self.probe_delay)

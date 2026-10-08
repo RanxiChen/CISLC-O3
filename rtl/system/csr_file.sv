@@ -77,7 +77,7 @@ module csr_file
     localparam logic [63:0] SSTATUS_MASK=64'h80000003000c6122;
     localparam logic [63:0] DELEG_MASK=64'hb1ff;
     localparam logic [63:0] IRQ_MASK=64'h2aaa;
-    localparam logic [63:0] MISA=64'h800000000014112c;
+    localparam logic [63:0] MISA=64'h800000000014112d;
     logic [1:0] priv_q;
     logic [63:0] status_q,mie_q,mip_sw_q,medeleg_q,mideleg_q;
     logic [63:0] mtvec_q,stvec_q,mepc_q,sepc_q,mcause_q,scause_q,mtval_q,stval_q,mscratch_q,sscratch_q;
@@ -92,7 +92,7 @@ module csr_file
     logic [63:0] hpm_write;
     logic [31:0] scountovf;
     csr_resp_t hpm_resp;
-    logic csr_write,pmp_change,satp_write,adue_change,delegated;
+    logic csr_write,pmp_change,satp_write,adue_change,context_change,delegated;
     logic [63:0] trap_vector;
     int counter_index,pmp_index;
     function automatic logic cause_legal(input logic [63:0] value);
@@ -220,8 +220,10 @@ module csr_file
         adue_change=csr_write && req_i.addr==12'h30a && write_value_o[61]!=menvcfg_q[61];
         resp_o='0;resp_o.valid=req_valid_i;resp_o.rdata=old_value;
         resp_o.illegal=!implemented || access_illegal;
-        resp_o.needs_refetch=pmp_change || satp_write || adue_change;
-        resp_o.refetch_kind=pmp_change ? SYS_PMP : SYS_SATP;
+        context_change=csr_write && (req_i.addr==12'h300 || req_i.addr==12'h100) &&
+            ((write_value_o^status_value) & (req_i.addr==12'h100 ? 64'hc0000:64'he1800))!=0;
+        resp_o.needs_refetch=pmp_change || satp_write || adue_change || context_change;
+        resp_o.refetch_kind=(pmp_change || context_change) ? SYS_PMP : SYS_SATP;
         fe_csr_o='{priv:priv_q,adue:menvcfg_q[61],satp_mode:satp_q[63:60],satp_asid:satp_q[59:44],satp_ppn:satp_q[43:0],epoch:epoch_q};
         dmmu_csr_o='{priv_eff:(priv_q==PRIV_M && status_q[17] ? status_q[12:11] : priv_q),priv:priv_q,
             mprv:status_q[17],mpp:status_q[12:11],sum:status_q[18],mxr:status_q[19],adue:menvcfg_q[61],

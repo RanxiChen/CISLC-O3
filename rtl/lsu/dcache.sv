@@ -11,6 +11,8 @@ module dcache import o3_types_pkg::*; #(
     input logic ld_req_valid_i[P],output logic ld_req_ready_o[P],input dcache_req_t ld_req_i[P],
     input dcache_req_t ld_s1_i[P],output dcache_resp_t ld_resp_o[P],
     input rob_idx_t rob_head_i,
+    input logic rsv_clear_i=1'b0,input logic [1:0] priv_i=2'd3,
+    output logic dma_invalidate_o,output coh_addr_t dma_line_o,output logic irreversible_o,
     input logic flush_i,resolution_valid_i,resolution_mispredict_i,input br_tag_t resolution_tag_i,
     // Reservations for LSU's IS stage; the CPU S0 request arrives two cycles later.
     output logic full_line_busy_o,output logic internal_busy_o,
@@ -18,7 +20,6 @@ module dcache import o3_types_pkg::*; #(
     input logic ptw_req_valid_i,output logic ptw_req_ready_o,input dcache_req_t ptw_req_i,output dcache_resp_t ptw_resp_o,
     input logic pte_ad_req_valid_i,output logic pte_ad_req_ready_o,input pte_ad_req_t pte_ad_req_i,
     output pte_ad_resp_t pte_ad_resp_o,input xlate_epoch_t cur_epoch_i,input pmp_state_t pmp_i,
-    input logic clean_all_req_i,output logic clean_all_done_o,clean_all_busy_o,
     output dc_wake_t wake_o,
     output logic l2_req_valid_o,input logic l2_req_ready_i,output coh_req_t l2_req_o,
     input logic l2_resp_valid_i,input coh_rsp_down_t l2_resp_i,output logic l2_resp_ready_o,
@@ -39,7 +40,12 @@ module dcache import o3_types_pkg::*; #(
     logic [63:0] line_words_q[BANKS][WAYS];tag_t line_tags_q[WAYS];
     coh_data_t line_data_q;coh_state_e line_state_q;int line_way_q;
     logic ps_valid_q;dcache_req_t ps_req_q;pte_ad_req_t ps_ad_q;logic ps_internal_q;
-    int ps_way_q;logic ps_is_ad_q,ps_write;
+    int ps_way_q;logic ps_is_ad_q,ps_write; dcache_resp_t ps_resp_q;
+    logic rsv_set,rsv_clear,rsv_conflict,rsv_valid,rsv_window,rsv_ok[P];
+    paddr_t rsv_addr;logic [1:0] rsv_size;
+    coh_addr_t rsv_line,rsv_conflict_line; paddr_t rsv_set_pa;logic [1:0] rsv_set_size;
+    logic atomic_hold_q;coh_addr_t atomic_line_q;int unsigned atomic_timer_q;
+    logic [63:0] amo_new[P];
     dc_mshr_state_e ms_state[N];dc_line_txn_t ms_txn[N];
     logic ms_free,ms_alloc,ms_install,ms_install_issue,ms_install_done,ms_free_pulse;
     coh_id_t ms_free_id,ms_install_id;dc_line_txn_t alloc_txn,install_txn;
@@ -60,7 +66,7 @@ module dcache import o3_types_pkg::*; #(
     logic [SW-1:0] mutation_set;logic tag_change;int tag_way;tag_t tag_new;
     logic [SW-1:0] tag_set;
     function automatic logic killed(input dcache_req_t r);
-        return (r.src==DC_SRC_LOAD || r.is_sta) && (flush_i ||
+        return (r.src==DC_SRC_LOAD || r.is_sta || r.head) && (flush_i ||
             (resolution_valid_i && resolution_mispredict_i && r.br_mask[resolution_tag_i]));
     endfunction
     function automatic logic [WAYS-2:0] touch(input logic [WAYS-2:0] tree,input int way_idx);
@@ -78,6 +84,7 @@ module dcache import o3_types_pkg::*; #(
     endfunction
     function automatic logic [63:0] format(input logic [127:0] words,input dcache_req_t r);
         logic [63:0] raw;raw=64'(words>>(8*int'(r.paddr[2:0])));
+        if(r.raw) return raw & (64'hffffffffffffffff >> (64-8*dc_bytes(r)));
         case(r.size)
             0:raw=r.is_signed ? 64'($signed(raw[7:0])):64'(raw[7:0]);
             1:raw=r.is_signed ? 64'($signed(raw[15:0])):64'(raw[15:0]);
@@ -87,6 +94,30 @@ module dcache import o3_types_pkg::*; #(
         endcase
         return raw;
     endfunction
+    lrsc_reservation #(.CFG(CFG)) u_reservation(.clk(clk),.rst(rst),.set_i(rsv_set),
+        .set_paddr_i(rsv_set_pa),.set_size_i(rsv_set_size),.check_paddr_i('0),.check_size_i('0),.check_ok_o(),
+        .clear_i(rsv_clear),.conflict_i(rsv_conflict),.conflict_line_i(rsv_conflict_line),
+        .valid_o(rsv_valid),.window_o(rsv_window),.line_o(rsv_line),.addr_o(rsv_addr),.size_o(rsv_size));
+    for(genvar p=0;p<P;p++) begin : gen_atomic
+        dcache_amo_unit #(.CFG(CFG)) u_alu(.op_i(s2_q[p].req.amo_op),.size_i(s2_q[p].req.size),
+            .old_i(64'( {s2_words_q[p][1][hit_way[p]],s2_words_q[p][0][hit_way[p]]} >> (8*int'(s2_q[p].req.paddr[2:0])))),
+            .data_i(s2_q[p].req.wdata),.new_o(amo_new[p]));
+        assign rsv_ok[p]=rsv_valid && rsv_addr==s2_q[p].req.paddr && rsv_size==s2_q[p].req.size;
+    end
+    always_comb begin
+        rsv_set=0;rsv_set_pa=0;rsv_set_size=0;rsv_clear=rsv_clear_i;rsv_conflict=0;rsv_conflict_line=0;
+        for(int p=0;p<P;p++) if(decision[p].valid && decision[p].status==DC_OK && s2_q[p].req.src==DC_SRC_AMO && !s2_q[p].req.check_only) begin
+            if(s2_q[p].req.amo_op==AMO_LR) begin rsv_set=1;rsv_set_pa=s2_q[p].req.paddr;rsv_set_size=s2_q[p].req.size;end
+            if(s2_q[p].req.amo_op==AMO_SC) rsv_clear=1;
+        end
+        if(ps_write && coh_addr_t'(ps_req_q.paddr>>6)==rsv_line) rsv_conflict=1;
+        if(ms_alloc && alloc_victim && alloc_wb.line_addr==rsv_line) rsv_conflict=1;
+        if(probe_done && probe_snp.op==COH_INV && line_result_q.addr==rsv_line) rsv_conflict=1;
+        rsv_conflict_line=rsv_line;
+    end
+    assign dma_invalidate_o=probe_done && probe_snp.op==COH_INV && probe_snp.dma_write;
+    assign dma_line_o=line_result_q.addr;
+    assign irreversible_o=ps_write && ps_req_q.head;
     dcache_mshr #(.CFG(CFG)) u_mshr(.clk(clk),.rst(rst),.alloc_i(ms_alloc),.alloc_txn_i(alloc_txn),
         .free_o(ms_free),.free_id_o(ms_free_id),.free_count_o(ms_free_count),.state_o(ms_state),.txn_o(ms_txn),
         .wb_read_done_i(wb_done),.wb_read_id_i(line_result_q.id),
@@ -115,9 +146,10 @@ module dcache import o3_types_pkg::*; #(
     assign wb_put_ready=rsp_up_ready_i && !choose_probe;
     // Only protocol completions and bounded PS execution can block a SNP.
     always_comb begin
-        probe_hold=ps_valid_q && coh_addr_t'(ps_req_q.paddr>>6)==probe_snp.addr;
+        probe_hold=(rsv_window && rsv_line==probe_snp.addr) || (atomic_hold_q && atomic_line_q==probe_snp.addr);
+        probe_hold|=ps_valid_q && coh_addr_t'(ps_req_q.paddr>>6)==probe_snp.addr;
         for(int n=0;n<N;n++) if(ms_txn[n].line_addr==probe_snp.addr &&
-            (ms_state[n]==DM_WAIT || ms_state[n]==DM_INSTALL))
+            (ms_state[n]==DM_INSTALL || (ms_state[n]==DM_WAIT && !ms_txn[n].atomic)))
             probe_hold|=!(ms_txn[n].upgrade && ms_state[n]==DM_WAIT && !probe_snp.owner);
         for(int n=0;n<WN;n++) probe_hold|=wb_valid[n] && wb_meta[n].line_addr==probe_snp.addr;
         for(int p=0;p<P;p++) begin
@@ -159,6 +191,11 @@ module dcache import o3_types_pkg::*; #(
             end
         end
         internal_choose.vaddr=64'(internal_choose.paddr);
+        internal_choose.priv=1;
+        internal_choose.permission=dc_permissions(internal_choose,pmp_i,2'd1);
+        if(internal_choose.src==DC_SRC_STORE_DRAIN) begin
+            internal_choose.permission.pmp_ok=1; // reuse STA authorization
+        end
         internal_busy_o=!init_done_q || internal_select;
         ptw_req_ready_o=internal_select && !internal_valid_q && ptw_req_valid_i;
         pte_ad_req_ready_o=internal_select && !internal_valid_q && !ptw_req_valid_i && pte_ad_req_valid_i;
@@ -234,9 +271,10 @@ module dcache import o3_types_pkg::*; #(
             decision[p]='0;decision[p].valid=s2_q[p].valid && !killed(s2_q[p].req);
             decision[p].src=s2_q[p].req.src;decision[p].lq_tag=s2_q[p].req.lq_tag;decision[p].sq_idx=s2_q[p].req.sq_idx;
             decision[p].rdata=raw;decision[p].status=DC_OK;
-            decision[p].exc=s2_q[p].req.exc;
+            decision[p].exc=s2_q[p].req.exc;decision[p].head=s2_q[p].req.head;
+            decision[p].paddr=s2_q[p].req.paddr;decision[p].need_d=s2_q[p].req.need_d;decision[p].io=s2_q[p].req.permission.io;
             privileged=s2_q[p].internal || s2_q[p].req.is_rob_head;
-            want_m=s2_q[p].req.write || s2_q[p].req.is_sta;
+            want_m=s2_q[p].req.write || s2_q[p].req.is_sta || s2_q[p].req.src==DC_SRC_AMO;
             v=victim(plru_q[set_idx]);
             // Walk PLRU candidate then wrap past locked ways; invalid first.
             begin int start;start=v;v=-1;
@@ -252,16 +290,27 @@ module dcache import o3_types_pkg::*; #(
             if(decision[p].valid) begin
                 if(s2_q[p].req.exc.valid) decision[p].status=DC_ERROR;
                 else if(s2_q[p].req.translation_miss) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_TLB_MISS;end
-                // STA checks the store privilege/PMP before ROB completion.
-                // A committed drain preserves that authorization; page-table
-                // clients still perform their physical S-mode PMP check here.
-                else if((64'(s2_q[p].req.paddr)>>MEM_PADDR_W)!=0 || (s2_q[p].internal && s2_q[p].req.src!=DC_SRC_STORE_DRAIN &&
-                    !pmp_allow(pmp_i,s2_q[p].req.paddr,1<<int'(s2_q[p].req.size),2'd1,!want_m,want_m,1'b0)) || !pma_main(64'(s2_q[p].req.paddr),1<<int'(s2_q[p].req.size))) begin
+                else if(s2_q[p].req.permission.high_addr || !s2_q[p].req.permission.pmp_ok || !s2_q[p].req.permission.exists ||
+                    (s2_q[p].req.permission.io && s2_q[p].internal) ||
+                    (s2_q[p].req.src==DC_SRC_AMO && !(s2_q[p].req.amo_op inside {AMO_LR,AMO_SC} ?
+                        s2_q[p].req.permission.rsrv_ok:s2_q[p].req.permission.amo_ok)) ||
+                    (s2_q[p].req.permission.io && !CFG.lsu.heu_enable)) begin
                     decision[p].status=DC_ERROR;
-                    decision[p].exc='{valid:1'b1,cause:(want_m ? o3_isa_pkg::EXCEPTION_CAUSE_STORE_ACCESS_FAULT:o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ACCESS_FAULT),tval:s2_q[p].req.vaddr};
-                end else if(int'(s2_q[p].req.paddr[5:0])+(1<<int'(s2_q[p].req.size))>64) begin
-                    decision[p].status=DC_ERROR;decision[p].exc='{valid:1'b1,cause:(want_m ?
-                        o3_isa_pkg::EXCEPTION_CAUSE_STORE_ADDR_MISALIGNED:o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ADDR_MISALIGNED),tval:s2_q[p].req.vaddr};
+                    decision[p].exc='{valid:1'b1,cause:((s2_q[p].req.write || s2_q[p].req.is_sta) ?
+                        EXCEPTION_CAUSE_STORE_ACCESS_FAULT:EXCEPTION_CAUSE_LOAD_ACCESS_FAULT),tval:s2_q[p].req.vaddr};
+                end else if((s2_q[p].req.src==DC_SRC_AMO || s2_q[p].req.permission.io) &&
+                    (int'(s2_q[p].req.paddr) & ((1<<int'(s2_q[p].req.size))-1))!=0 ||
+                    int'(s2_q[p].req.paddr[5:0])+dc_bytes(s2_q[p].req)>64) begin
+                    decision[p].status=DC_ERROR;decision[p].exc='{valid:1'b1,cause:((s2_q[p].req.write || s2_q[p].req.is_sta) ?
+                        EXCEPTION_CAUSE_STORE_ADDR_MISALIGNED:EXCEPTION_CAUSE_LOAD_ADDR_MISALIGNED),tval:s2_q[p].req.vaddr};
+                end else if(s2_q[p].req.check_only) begin
+                    if(s2_q[p].req.split && s2_q[p].req.permission.io) begin
+                        decision[p].status=DC_ERROR;decision[p].exc='{valid:1'b1,cause:(s2_q[p].req.write ?
+                            EXCEPTION_CAUSE_STORE_ADDR_MISALIGNED:EXCEPTION_CAUSE_LOAD_ADDR_MISALIGNED),tval:s2_q[p].req.vaddr};
+                    end
+                end else if(s2_q[p].req.permission.io) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_HEAD;
+                end else if(s2_q[p].req.src==DC_SRC_AMO && s2_q[p].req.amo_op==AMO_SC && !rsv_ok[p]) begin
+                    decision[p].rdata=1;decision[p].sc_fail=1;
                 end else if(s2_q[p].snap || (external_mutation && mutation_set==set_idx)) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_SNAP;end
                 else if(s2_q[p].conflict) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_CONFLICT;end
                 else if(s2_q[p].bank) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_BANK;end
@@ -272,8 +321,8 @@ module dcache import o3_types_pkg::*; #(
                     // STA completes without waiting for ownership; RFO is optional.
                     if((!hit[p] || hit_state[p]==COH_S) && same_ms<0 && !same_wb && can_alloc) alloc_lane=p;
                 end else if(hit[p] && (!want_m || hit_state[p]==COH_E || hit_state[p]==COH_M)) begin
-                    if(want_m) begin
-                        if(ps_valid_q || ps_lane>=0 || external_mutation) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_CONFLICT;end
+                    if(want_m && !(s2_q[p].req.src==DC_SRC_AMO && s2_q[p].req.amo_op==AMO_LR)) begin
+                        if(ps_valid_q || ps_lane>=0 || external_mutation || line_launch_q[0].kind!=LINE_NONE) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_CONFLICT;end
                         else if(s2_q[p].req.src==DC_SRC_PTE_AD &&
                             (s2_q[p].ad.epoch!=cur_epoch_i || s2_words_q[p][0][hit_way[p]]!=s2_q[p].ad.expected_pte)) decision[p].sc_fail=1;
                         else ps_lane=p;
@@ -293,6 +342,7 @@ module dcache import o3_types_pkg::*; #(
                     alloc_victim=!upgrade && s2_tags_q[p][v].state!=COH_I;
                     ms_alloc=1;wb_alloc=alloc_victim;
                     alloc_txn.line_addr=coh_addr_t'(s2_q[p].req.paddr>>6);alloc_txn.is_getm=want_m;
+                    alloc_txn.atomic=s2_q[p].req.src==DC_SRC_AMO;
                     alloc_txn.way=DC_WAY_W'(v);alloc_txn.upgrade=upgrade;
                     alloc_txn.wb_wait=alloc_victim;alloc_txn.wb_id=wb_free_id;
                     alloc_wb.line_addr=coh_addr_t'({s2_tags_q[p][v].tag,set_idx});
@@ -303,7 +353,7 @@ module dcache import o3_types_pkg::*; #(
         // STA Replay is handled by LSU as an address-only recheck; no ownership wait.
         internal_finish=0;
         for(int p=0;p<P;p++) begin
-            ld_resp_o[p]=s2_q[p].internal ? '0:decision[p];
+            ld_resp_o[p]=s2_q[p].internal || (ps_lane==p && s2_q[p].req.head) ? '0:decision[p];
             if(s2_q[p].internal && decision[p].valid &&
                 (decision[p].status==DC_ERROR ||
                  (s2_q[p].req.src==DC_SRC_STORE_DRAIN && decision[p].status!=DC_OK) ||
@@ -318,11 +368,19 @@ module dcache import o3_types_pkg::*; #(
         end
         if(ps_write) begin
             if(ps_is_ad_q) pte_ad_resp_o='{valid:1'b1,updated:1'b1,mismatch:1'b0,access_fault:1'b0};
+            else if(ps_req_q.head) ld_resp_o[IP]=ps_resp_q;
             else begin st_resp_o='0;st_resp_o.valid=1;st_resp_o.src=DC_SRC_STORE_DRAIN;st_resp_o.sq_idx=ps_req_q.sq_idx;end
         end
         wake_o='{valid:ms_install_done,mshr_id:line_launch_q[1].id,err:line_launch_q[1].txn.err,
             mshr_free:ms_free_pulse,wb_free:wb_free_pulse};
-        perf_o='0;perf_o[BE_DC_MSHR_ALLOC]=BE_PERF_INC_W'(ms_alloc);
+        perf_o='0;
+        perf_o[BE_RSV_PROBE_HOLD_CYCLE]=BE_PERF_INC_W'(probe_pending && rsv_window && rsv_line==probe_snp.addr);
+        for(int p=0;p<P;p++) if(decision[p].valid && decision[p].status==DC_OK && s2_q[p].req.src==DC_SRC_AMO && !s2_q[p].req.check_only) begin
+            perf_o[BE_LR_EXEC]+=BE_PERF_INC_W'(s2_q[p].req.amo_op==AMO_LR);
+            perf_o[BE_SC_FAIL]+=BE_PERF_INC_W'(decision[p].sc_fail);
+            perf_o[BE_AMO_EXEC]+=BE_PERF_INC_W'(!(s2_q[p].req.amo_op inside {AMO_LR,AMO_SC}));
+        end
+        perf_o[BE_DC_MSHR_ALLOC]=BE_PERF_INC_W'(ms_alloc);
         perf_o[BE_DC_MSHR_OCCUPANCY]=BE_PERF_INC_W'(N-int'(ms_free_count));
         perf_o[BE_DC_WB_PUT]=BE_PERF_INC_W'(wb_put && wb_put_ready);
         perf_o[BE_DC_PROBE]=BE_PERF_INC_W'(probe_issue);
@@ -357,6 +415,7 @@ module dcache import o3_types_pkg::*; #(
     end
     always_ff @(posedge clk) begin
         if(rst) begin
+            atomic_hold_q<=0;atomic_timer_q<=0;atomic_line_q<=0;ps_resp_q<='0;
             init_q<=0;init_done_q<=0;s1_q<='{default:'0};s2_q<='{default:'0};
             line_launch_q<='{default:'0};line_read_q<='0;line_result_q<='0;
             line_data_q<=0;line_state_q<=COH_I;line_way_q<=0;ps_valid_q<=0;ps_req_q<='0;ps_ad_q<='0;
@@ -364,9 +423,18 @@ module dcache import o3_types_pkg::*; #(
             internal_valid_q<=0;internal_inpipe_q<=0;internal_wait_q<=0;internal_reason_q<=LDW_NONE;
             internal_mshr_q<=0;internal_req_q<='0;internal_ad_q<='0;
             internal_launch_valid_q<='{default:0};internal_launch_q<='{default:'0};internal_ad_launch_q<='{default:'0};
-            fatal_o<='0;clean_all_done_o<=0;
+            fatal_o<='0;
         end else begin
-            clean_all_done_o<=clean_all_req_i;
+            if(atomic_hold_q) begin
+                atomic_timer_q<=atomic_timer_q+1;
+                assert(atomic_timer_q<CFG.dcache.atomic_hold_max) else $fatal(1,"atomic install retry exceeded bound");
+                for(int p=0;p<P;p++) if(decision[p].valid && s2_q[p].req.src==DC_SRC_AMO &&
+                    !s2_q[p].req.check_only && coh_addr_t'(s2_q[p].req.paddr>>6)==atomic_line_q) atomic_hold_q<=0;
+                if(flush_i) atomic_hold_q<=0;
+            end
+            if(ms_install_done && line_launch_q[1].txn.atomic && !line_launch_q[1].txn.err) begin
+                atomic_hold_q<=1;atomic_timer_q<=0;atomic_line_q<=line_launch_q[1].addr;
+            end
             if(!init_done_q) begin
                 for(int p=0;p<P;p++) for(int w=0;w<WAYS;w++) tags_q[p][init_q][w]<='0;
                 for(int w=0;w<WAYS;w++) begin locked_q[init_q][w]<=0;rfo_q[init_q][w]<=0;end
@@ -395,6 +463,8 @@ module dcache import o3_types_pkg::*; #(
                     s2_words_q[p][0][w]<=bank_read_q[int'(s1_q[p].req.vaddr[5:3])][w];
                     s2_words_q[p][1][w]<=bank_read_q[(int'(s1_q[p].req.vaddr[5:3])+1)%BANKS][w];
                 end
+                if(dma_invalidate_o && SW'(s0[p].req.vaddr>>6)==SW'(dma_line_o)) s1_q[p].snap<=1;
+                if(dma_invalidate_o && SW'(s1_q[p].req.vaddr>>6)==SW'(dma_line_o)) s2_q[p].snap<=1;
                 if(tag_change && SW'(s0[p].req.vaddr>>6)==tag_set) s1_q[p].snap<=1;
                 if(tag_change && SW'(s1_q[p].req.vaddr>>6)==tag_set) s2_q[p].snap<=1;
                 if(s2_q[p].internal && decision[p].valid && decision[p].status!=DC_OK) begin
@@ -446,11 +516,18 @@ module dcache import o3_types_pkg::*; #(
                     int off,b,byte_idx;off=int'(ps_req_q.paddr[5:0])+i;b=(off/8)%BANKS;byte_idx=off%8;
                     data_q[b][ps_way_q][SW'(ps_req_q.paddr>>6)][byte_idx*8+:8]<=ps_req_q.wdata[i*8+:8];
                 end
-                ps_valid_q<=0;internal_valid_q<=0;internal_inpipe_q<=0;
+                ps_valid_q<=0;
+                if(ps_internal_q) begin internal_valid_q<=0;internal_inpipe_q<=0;end
                 rfo_q[SW'(ps_req_q.paddr>>6)][ps_way_q]<=0;
             end
             if(ps_lane>=0) begin
                 ps_valid_q<=1;ps_req_q<=s2_q[ps_lane].req;ps_way_q<=hit_way[ps_lane];
+                ps_internal_q<=s2_q[ps_lane].internal;ps_resp_q<=decision[ps_lane];
+                if(s2_q[ps_lane].req.src==DC_SRC_AMO) begin
+                    ps_req_q.wdata<=s2_q[ps_lane].req.amo_op==AMO_SC ? s2_q[ps_lane].req.wdata:amo_new[ps_lane];
+                    ps_req_q.wmask<=byte_mask(s2_q[ps_lane].req.size);
+                    if(s2_q[ps_lane].req.amo_op==AMO_SC) ps_resp_q.rdata<=0;
+                end
                 ps_is_ad_q<=s2_q[ps_lane].req.src==DC_SRC_PTE_AD;ps_ad_q<=s2_q[ps_lane].ad;
                 if(s2_q[ps_lane].req.src==DC_SRC_PTE_AD) ps_req_q.wdata<=s2_q[ps_lane].ad.expected_pte |
                     (s2_q[ps_lane].ad.set_a ? 64'h40:0) | (s2_q[ps_lane].ad.set_d ? 64'h80:0);
@@ -459,7 +536,7 @@ module dcache import o3_types_pkg::*; #(
                 locked_q[SW'(alloc_txn.line_addr)][alloc_way]<=1;
                 rfo_q[SW'(alloc_txn.line_addr)][alloc_way]<=s2_q[alloc_lane].req.is_sta;
             end
-            for(int p=0;p<P;p++) if(decision[p].valid && decision[p].status==DC_OK && hit[p] && !external_mutation)
+            for(int p=0;p<P;p++) if(decision[p].valid && decision[p].status==DC_OK && hit[p] && !external_mutation && !s2_q[p].req.permission.io && !s2_q[p].req.check_only)
                 plru_q[SW'(s2_q[p].req.paddr>>6)]<=touch(plru_q[SW'(s2_q[p].req.paddr>>6)],hit_way[p]);
             if(internal_finish) begin internal_valid_q<=0;internal_inpipe_q<=0;internal_wait_q<=0;end
             if(internal_wait_q) begin
@@ -481,10 +558,22 @@ module dcache import o3_types_pkg::*; #(
             for(int p=0;p<P;p++) if(ld_req_valid_i[p] && !killed(ld_req_i[p])) assert(ld_req_ready_o[p]) else $fatal(1,"CPU S0 missing IS reservation");
         end
     end
-    assign clean_all_busy_o=0;
+`ifndef SYNTHESIS
+    // Y13: shadow recomputation has no fanout into the functional S2 logic.
+    always_ff @(posedge clk) if(!rst) for(int p=0;p<P;p++)
+        if(s2_q[p].valid && !killed(s2_q[p].req) && !s2_q[p].req.translation_miss && !s2_q[p].req.exc.valid &&
+            s2_q[p].req.src!=DC_SRC_STORE_DRAIN)
+            assert(s2_q[p].req.permission==dc_permissions(s2_q[p].req,pmp_i,s2_q[p].internal ? 2'd1:priv_i))
+                else $fatal(1,"Y13 permission mismatch src=%0d PA=%h",s2_q[p].req.src,s2_q[p].req.paddr);
+`endif
     assign idle_o=init_done_q && int'(ms_free_count)==N && !ps_valid_q && !internal_valid_q &&
         !s1_q[0].valid && !s2_q[0].valid && !s1_q[P-1].valid && !s2_q[P-1].valid &&
         !(|{wb_valid[0],wb_valid[WN-1]}) && !probe_pending && !probe_ack;
+    // An accepted RMW reserves exactly its decision edge and the next PS edge.
+`ifndef SYNTHESIS
+    always_ff @(posedge clk) if(!rst && ps_valid_q && ps_req_q.src==DC_SRC_AMO)
+        assert(ps_write) else $fatal(1,"AMO RMW exceeded two-edge window");
+`endif
     initial begin
         assert(BANKS==8 && CFG.dcache.line_bytes==64 && SETS*CFG.dcache.line_bytes<=4096);
         assert(WAYS>=2 && (WAYS&(WAYS-1))==0 && SETS>=2 && (SETS&(SETS-1))==0);

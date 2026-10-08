@@ -41,6 +41,7 @@ package o3_cfg_pkg;
     // core 公共宽度
     // ------------------------------------------------------------
     // L10 X12 physical map; the exclusive ends permit full-range checking.
+    parameter logic [63:0] PMA_IO_BASE=64'h02000000;
     parameter logic [63:0] PMA_MAIN_BASE=64'h80000000;
     parameter logic [63:0] PMA_MAIN_END=64'h100000000;
     typedef struct packed {
@@ -211,6 +212,7 @@ package o3_cfg_pkg;
         int unsigned mem_pipes;
         int unsigned ld_result_fifo;
         int unsigned agu_pipes;           // 待定：“1 条 load + 1 条 load/store”只是建议（B03）
+        bit heu_enable, split_enable, order_flush_enable;
         int unsigned lq_gen_bits;         // 待定：LQ 事务身份代际宽度；现有 1 位不足（B04）
     } lsu_cfg_t;
 
@@ -223,6 +225,7 @@ package o3_cfg_pkg;
         int unsigned wb_buffers;          // 待定：脏行写回缓冲数
         int unsigned mshr_reserve;
         bit rfo_enable;
+        int unsigned rsv_window, atomic_hold_max;
     } dcache_cfg_t;
 
     typedef struct packed {
@@ -390,11 +393,11 @@ package o3_cfg_pkg;
                 agu_pipes:   2,
                 mem_pipes:   2,
                 ld_result_fifo: 2,
-                lq_gen_bits: 8
+                lq_gen_bits: 8, heu_enable:1, split_enable:1, order_flush_enable:1
             },
             dcache: '{
                 line_bytes:64, sets:64, ways:8, banks:8, mshrs:4,
-                wb_buffers:2, mshr_reserve:1, rfo_enable:1
+                wb_buffers:2, mshr_reserve:1, rfo_enable:1, rsv_window:80, atomic_hold_max:16
             },
             mmu: '{
                 dtlb_entries:       32,

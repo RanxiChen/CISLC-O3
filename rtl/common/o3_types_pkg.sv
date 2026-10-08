@@ -582,10 +582,13 @@ package o3_types_pkg;
         last_addr={1'b0,addr}+65'(bytes);
         return bytes>0 && addr>=o3_cfg_pkg::PMA_MAIN_BASE && last_addr<=65'(o3_cfg_pkg::PMA_MAIN_END) && last_addr<=65'h100000000;
     endfunction
+    function automatic logic pma_io(input logic [63:0] addr,input int unsigned bytes);
+        return bytes>0 && addr>=o3_cfg_pkg::PMA_IO_BASE &&
+            {1'b0,addr}+65'(bytes)<=65'(o3_cfg_pkg::PMA_MAIN_BASE);
+    endfunction
     // 前端系统同步请求（D25～D28）。由 commit_ctrl 统一编排（2026-10-02 确认）：
     // 前端 frontend_sync_ctrl 只负责前端部分（停取指/预取、隔离旧请求、ICache/ITLB/PMP 派生
-    // 状态同步），不再自行发起 DCache clean。FENCE.I 的 SQ drain 与 L1D 脏行扫描在发出本请求前
-    // 已由 commit_ctrl 完成（B23/D25 顺序）。
+    // 状态同步）。FENCE.I 在 committed SQ 排空后发出本请求，不进行 L1D 全缓存维护。
     typedef struct packed {
         sys_redirect_kind_e kind;
         sfence_req_t        sfence;
@@ -616,7 +619,7 @@ package o3_types_pkg;
     typedef struct packed {
         coh_up_op_e op; logic has_data; coh_addr_t addr; coh_id_t id; coh_data_t data;
     } coh_rsp_up_t;
-    typedef struct packed {coh_snp_op_e op; logic owner; coh_addr_t addr;} coh_snp_t;
+    typedef struct packed {coh_snp_op_e op; logic owner, dma_write; coh_addr_t addr;} coh_snp_t;
     typedef struct packed {coh_down_op_e op; coh_id_t id; logic error; coh_data_t data;} coh_rsp_down_t;
     // The task_kind payload is captured at S0, never reread from a mutable slot.
     localparam int L2_SLOT_W = $clog2(O3_CFG.be.l2.slots);
@@ -1003,12 +1006,18 @@ package o3_types_pkg;
     // 首版不加入未知旧 store 地址下的推测越过与违例恢复。每种原因由对应事件唤醒，避免每拍盲目重试。
     typedef enum logic [3:0] {
         LDW_NONE,LDW_OLDER_STORE_ADDR,LDW_OLDER_STORE_DATA,LDW_TLB_MISS,
-        LDW_MSHR,LDW_MSHR_FULL,LDW_WB_LINE,LDW_CONFLICT,LDW_SNAP,LDW_BANK,LDW_AD_ORDER
+        LDW_MSHR,LDW_MSHR_FULL,LDW_WB_LINE,LDW_CONFLICT,LDW_SNAP,LDW_BANK,LDW_AD_ORDER,LDW_HEAD
     } ld_wait_e;
     typedef enum logic [2:0] {DC_OK,DC_MISS_WAIT,DC_REPLAY,DC_ERROR} dc_status_e;
+    typedef enum logic [1:0] {SQ_NORMAL,SQ_ATOMIC,SQ_MMIO,SQ_SPLIT} sq_kind_e;
+    typedef struct packed {
+        logic pmp_ok,exists,io,amo_ok,rsrv_ok,high_addr;
+    } dc_permission_t;
     typedef struct packed {
         dc_src_e src; paddr_t paddr; vaddr_t vaddr; logic [1:0] size;
         logic write, is_sta, is_signed, is_flw, is_rob_head;
+        logic head, check_only, split, raw, need_d; logic [3:0] bytes;
+        logic [1:0] priv; dc_permission_t permission; logic access_valid,access_read,access_write;
         logic forward_valid, blocked, translation_miss;
         logic [XLEN-1:0] forward_data; exc_info_t exc;
         logic [XLEN-1:0] wdata; logic [7:0] wmask; amo_op_e amo_op;
@@ -1017,14 +1026,39 @@ package o3_types_pkg;
     typedef struct packed {
         logic valid; dc_src_e src; dc_status_e status; ld_wait_e reason;
         coh_id_t mshr_id; lq_tag_t lq_tag; sq_idx_t sq_idx;
-        logic [XLEN-1:0] rdata; logic sc_fail; exc_info_t exc;
+        logic [XLEN-1:0] rdata; logic sc_fail,need_d,io,head; paddr_t paddr; exc_info_t exc;
     } dcache_resp_t;
+    function automatic int dc_bytes(input dcache_req_t r);
+        return r.bytes!=0 ? int'(r.bytes):(1<<int'(r.size));
+    endfunction
+    function automatic dc_permission_t dc_permissions(input dcache_req_t r,input pmp_state_t pmp,input logic [1:0] priv);
+        dc_permission_t a; logic main,io,rd,wr;
+        main=pma_main(64'(r.paddr),dc_bytes(r));io=pma_io(64'(r.paddr),dc_bytes(r));
+        wr=r.write || r.is_sta;rd=!wr || (r.src==DC_SRC_AMO && !(r.amo_op inside {AMO_SC,AMO_LR}));
+        if(r.access_valid) begin rd=r.access_read;wr=r.access_write;end
+        a='{pmp_ok:pmp_allow(pmp,r.paddr,dc_bytes(r),priv,rd,wr,1'b0),exists:main || io,
+            io:io,amo_ok:main,rsrv_ok:main,high_addr:((64'(r.paddr)>>MEM_PADDR_W)!=0)};
+        return a;
+    endfunction
+    typedef struct packed {
+        fu_tag_t tag; sq_kind_e kind; vaddr_t va; logic [63:0] data;
+        logic [1:0] size; logic write,is_signed,is_flw; amo_op_e amo_op;
+        sq_idx_t sq_idx; lq_tag_t lq_tag;
+    } heu_req_t;
+    function automatic logic [63:0] mem_format(input logic [63:0] raw,input logic [1:0] size,input logic sign_ext,input logic flw);
+        case(size)
+            0:return sign_ext ? 64'($signed(raw[7:0])):64'(raw[7:0]);
+            1:return sign_ext ? 64'($signed(raw[15:0])):64'(raw[15:0]);
+            2:return flw ? {32'hffffffff,raw[31:0]}:sign_ext ? 64'($signed(raw[31:0])):64'(raw[31:0]);
+            default:return raw;
+        endcase
+    endfunction
     typedef struct packed {
         logic valid; coh_id_t mshr_id; logic err, mshr_free, wb_free;
     } dc_wake_t;
     localparam int DC_WAY_W=$clog2(O3_CFG.be.dcache.ways);
     typedef struct packed {
-        coh_addr_t line_addr; logic is_getm, upgrade;
+        coh_addr_t line_addr; logic is_getm, upgrade, atomic;
         logic [DC_WAY_W-1:0] way; logic wb_wait; coh_id_t wb_id;
         coh_data_t refill; logic err,grant_e,ack_e;
     } dc_line_txn_t;
@@ -1077,10 +1111,10 @@ package o3_types_pkg;
     // LR/SC reservation（B35）
     // ------------------------------------------------------------
     // 一条独立 reservation：物理 cache line 粒度用于冲突检测，另保留 LR 的物理地址与大小用于配对；
-    // 首版只允许同物理地址、同大小的 SC 成功。无固定超时，不从 LR 到 SC 锁住 cache line。
-    // 清除原因（逐项来自 B35 清除表）；未列出的事件不得清除，尤其：普通分支恢复、cache 替换、
-    // clean、writeback、DMA 读、L2 容量回收。
+    // 只允许同物理地址、同大小的 SC 成功；timer 只限制 probe 延迟，不限制 reservation 寿命。
+    // L8b Y3：同行 Inv 与逐出也清除；Down、普通 load、其他行写、timer 到期和分支恢复不清除。
     typedef enum logic [3:0] {
+        RSV_CLR_INV, RSV_CLR_EVICT,
         RSV_CLR_SC,              // SC 执行（成功或失败）
         RSV_CLR_STORE_HIT,       // 本核 store drain / AMO 写到保留行
         RSV_CLR_DMA_WRITE,       // DMA 写取得行保护权且与保留行冲突（不是看到排队 valid）
@@ -1160,7 +1194,6 @@ package o3_types_pkg;
     // - 同步异常：epc = 故障指令 PC；故障指令本身不退休，trap 拍无正常退休。
     // - 中断：epc = committed_next_pc（B37），ROB 为空时同样成立；不得用推测取指 PC 代替。
     // - xRET：合法队首 MRET/SRET 由自身正常退休触发，可与退休同拍。
-    // - crossline_misalign：既有跨 line 异常计数用（B49 拆分待 L8），原因随异常身份由 LSU 带到提交端，只在 trap 接受握手计一次。
     typedef struct packed {
         logic             valid;
         logic             is_xret;
@@ -1169,7 +1202,6 @@ package o3_types_pkg;
         exception_cause_t cause;
         logic [XLEN-1:0]  tval;
         vaddr_t           epc;
-        logic             crossline_misalign;
     } trap_req_t;
 
     // 中断 pending/enable 的单项视图（B38 WFI 唤醒，B26 正式中断）：由 csr_file 输出。
@@ -1221,7 +1253,6 @@ package o3_types_pkg;
         // PC（由 BRU 解析写回 ROB）。同拍多条退休取最后一条实际退休指令的 succ_pc。
         vaddr_t              succ_pc;
         logic                needs_d; // L10: complete store waits for queue-head non-speculative D update
-        logic                crossline_misalign; // 旧跨 line 异常身份；B49 拆分待 L8
         fuse_role_e          fuse_role;          // B34：融合成员仍各自退休
     } rob_commit_t;
 
@@ -1262,11 +1293,11 @@ package o3_types_pkg;
         BE_CSR_RETIRED = 'h1f,
         BE_CSR_WAIT_EMPTY_CYCLE = 'h20,
         BE_CSR_BLOCK_YOUNGER_CYCLE = 'h21,
-        // B23：FENCE.I 次数与 L1D 数据维护周期
+        // B23/B51：FENCE.I 退休次数；旧数据维护周期槽取消
         BE_FENCEI_RETIRED = 'h22,
-        BE_FENCEI_DCACHE_EVICT_CYCLE = 'h23,
-        // 旧跨 line 非对齐正式陷入次数（B49 拆分待 L8）（trap 接受握手计一次）
-        BE_MISALIGNED_CROSSLINE_TRAP = 'h24,
+        BE_FENCEI_DCACHE_EVICT_CYCLE = 'h23, // 已取消（B51 40.7），恒 0
+        // 成功退休的跨行拆分（B49）
+        BE_MISALIGNED_CROSSLINE_SPLIT = 'h24,
         // B34：MULH+MUL 融合对数（观测，口径待定）
         BE_MUL_FUSED_PAIR = 'h25,
         BE_DTLB_MISS = 'h26,
@@ -1278,7 +1309,10 @@ package o3_types_pkg;
         BE_RFO_ISSUED = 'h2f, BE_RFO_DROPPED = 'h30, BE_DC_MSHR_OCCUPANCY = 'h31,
         BE_L2_HIT = 'h32, BE_L2_MISS = 'h33, BE_L2_SLOT_FULL = 'h34,
         BE_L2_PROBE = 'h35, BE_L2_WRITEBACK = 'h36, BE_RFO_USEFUL = 'h37,
-        BE_PERF_NUM = 'h38
+        BE_AMO_EXEC='h39, BE_LR_EXEC='h3a, BE_SC_FAIL='h3b,
+        BE_RSV_PROBE_HOLD_CYCLE='h3c, BE_MMIO_READ='h3d, BE_MMIO_WRITE='h3e,
+        BE_LD_ORDER_FLUSH='h3f, BE_DMA_READ='h40, BE_DMA_WRITE='h41,
+        BE_PERF_NUM = 'h42
     } be_perf_evt_e;
 
     localparam int BE_PERF_INC_W = $clog2(O3_CFG.be.l2.slots + 1);

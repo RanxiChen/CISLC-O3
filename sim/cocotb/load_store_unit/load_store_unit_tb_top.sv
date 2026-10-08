@@ -46,7 +46,7 @@ module load_store_unit_tb_top import o3_pkg::*; #(
         assign lq_tag_i[p]='{idx:capture_o[p].uop.lq_idx,gen:8'd1};
         assign dc_req_ready_i[p]=1'b1;
     end
-    load_store_unit #(.CFG(CFG)) dut(.lq_tag_i(lq_tag_i),.dc_req_ready_i(dc_req_ready_i),
+    load_store_unit #(.CFG(CFG)) dut(.atomic_i('{default:0}),.heu_valid_i(1'b0),.heu_ready_o(),.heu_req_i('0),.heu_resp_o(),.sq_kind_o(),.lq_tag_i(lq_tag_i),.dc_req_ready_i(dc_req_ready_i),
         .sfence_i('0),.sfence_done_o(),.rob_head_i('0),.sq_ad_wake_o(),.perf_o(),.*);
     assign cfg_tags_o=CFG.rename.checkpoints;assign cfg_rob_o=CFG.rob.entries;assign cfg_lq_o=CFG.lsu.lq_depth;
     always_comb begin

@@ -41,7 +41,7 @@ async def fp_csr_reset_alias_and_retirement(d):
 async def zicsr_warl_traps_counters(d):
     for n in ['mtime_i','irq_i','sret_i','interrupt_i','fp_valid_i','fp_dirty_i','fp_flags_i','clk','req_valid_i','write_i','op_i','addr_i','data_i','retired_i','fe_perf_i','be_perf_i','trap_i','xret_i','cause_i','epc_i','tval_i']:getattr(d,n).value=0
     d.rst.value=1;await edge(d);d.rst.value=0
-    state={0x300:0xa00001800,0x301:0x800000000014112c,0x304:0,0x305:0x200,0x340:0,0x341:0,0x342:0,0x343:0,0x344:0,0xf11:0,0xf12:0,0xf13:0,0xf14:0}
+    state={0x300:0xa00001800,0x301:0x800000000014112d,0x304:0,0x305:0x200,0x340:0,0x341:0,0x342:0,0x343:0,0x344:0,0xf11:0,0xf12:0,0xf13:0,0xf14:0}
     async def access(addr,op=2,data=0,write=False):
         d.req_valid_i.value=1;d.addr_i.value=addr;d.op_i.value=op;d.data_i.value=data;d.write_i.value=write;await settle()
         old=state.get(addr,0);illegal=addr not in state or (write and addr>>10==3)
@@ -53,7 +53,7 @@ async def zicsr_warl_traps_counters(d):
                 new=0xa00000000|(new&sum(1<<n for n in (1,3,5,7,8,11,12,13,14,17,18,19,20,21,22)))
                 if (new>>11)&3==2:new&=~(3<<11)
                 if (new>>13)&3==3:new|=1<<63
-            if addr==0x301:new=0x800000000014112c
+            if addr==0x301:new=0x800000000014112d
             if addr==0x304:new&=0x2aaa
             if addr==0x305:new=(new&~3)|(1 if new&3==1 else 0)
             if addr==0x341:new&=~1

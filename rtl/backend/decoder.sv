@@ -13,6 +13,7 @@
 module decoder
     import o3_pkg::*;
 #(
+    parameter bit HEU_ENABLE=o3_cfg_pkg::O3_CFG.be.lsu.heu_enable,
     parameter type decode_in_t  = o3_pkg::decode_in_t,
     parameter type decode_out_t = o3_pkg::decode_out_t
 )(
@@ -468,6 +469,27 @@ module decoder
                     decode_o.illegal_instruction=1;
             end
 
+            7'h2f:if(HEU_ENABLE && funct3 inside {3'd2,3'd3}) begin
+                decode_o.ext.fu_class=o3_types_pkg::FU_AMO;
+                decode_o.ext.aq=decode_i.instruction[26];decode_o.ext.rl=decode_i.instruction[25];
+                decode_o.is_store=1;decode_o.rs1_read_en=1;decode_o.rs2_read_en=1;decode_o.rd_write_en=1;
+                decode_o.mem_size=funct3==2 ? MEM_SIZE_4B:MEM_SIZE_8B;
+                decode_o.illegal_instruction=0;
+                case(decode_i.instruction[31:27])
+                    5'b00010:begin decode_o.ext.amo_op=o3_types_pkg::AMO_LR;decode_o.rs2_read_en=0;end
+                    5'b00011:decode_o.ext.amo_op=o3_types_pkg::AMO_SC;
+                    5'b00001:decode_o.ext.amo_op=o3_types_pkg::AMO_SWAP;
+                    5'b00000:decode_o.ext.amo_op=o3_types_pkg::AMO_ADD;
+                    5'b00100:decode_o.ext.amo_op=o3_types_pkg::AMO_XOR;
+                    5'b01100:decode_o.ext.amo_op=o3_types_pkg::AMO_AND;
+                    5'b01000:decode_o.ext.amo_op=o3_types_pkg::AMO_OR;
+                    5'b10000:decode_o.ext.amo_op=o3_types_pkg::AMO_MIN;
+                    5'b10100:decode_o.ext.amo_op=o3_types_pkg::AMO_MAX;
+                    5'b11000:decode_o.ext.amo_op=o3_types_pkg::AMO_MINU;
+                    5'b11100:decode_o.ext.amo_op=o3_types_pkg::AMO_MAXU;
+                    default:decode_o.illegal_instruction=1;
+                endcase
+            end
             OPCODE_MISC_MEM: begin
                 if (funct3==0 || funct3==1) begin
                     decode_o.ext.sys_op = funct3==0 ? o3_types_pkg::SYSOP_FENCE : o3_types_pkg::SYSOP_FENCE_I;

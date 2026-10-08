@@ -18,6 +18,9 @@ module store_queue
     input logic rst,
     input logic alloc_req_i [RENAME_WIDTH-1:0],
     input logic alloc_fire_i,
+    input o3_types_pkg::sq_kind_e alloc_kind_i[RENAME_WIDTH],execute_kind_i[P],
+    input logic heu_done_i,input o3_types_pkg::rob_idx_t heu_done_idx_i,
+    output logic heu_valid_o,output lq_replay_t heu_entry_o,output o3_types_pkg::sq_kind_e heu_kind_o,
     input logic [$clog2(NUM_ROB_ENTRIES)-1:0] alloc_rob_idx_i [RENAME_WIDTH-1:0],
     input branch_mask_t alloc_branch_mask_i [RENAME_WIDTH-1:0],
     output logic [$clog2(DEPTH)-1:0] alloc_idx_o [RENAME_WIDTH-1:0],
@@ -83,6 +86,26 @@ module store_queue
     logic [7:0] mask_q [DEPTH-1:0];
     logic [ROB_IDX_WIDTH_LOCAL-1:0] rob_idx_q [DEPTH-1:0];
     branch_mask_t branch_mask_q [DEPTH-1:0];
+    o3_types_pkg::sq_kind_e kind_q[DEPTH];logic heu_complete_q[DEPTH];
+    logic heu_release;
+    always_comb begin
+        heu_valid_o=0;heu_entry_o='0;heu_kind_o=o3_types_pkg::SQ_NORMAL;heu_release=0;
+        for(int n=0;n<DEPTH;n++) if(valid_q[n] && rob_idx_q[n]==rob_head_i &&
+            kind_q[n]!=o3_types_pkg::SQ_NORMAL && sta_q[n].uop.valid && !heu_complete_q[n]) begin
+            heu_valid_o=1;heu_entry_o=sta_q[n];heu_kind_o=kind_q[n];
+        end
+        for(int p=0;p<COMMIT_WIDTH;p++) heu_release|=commit_valid_i[p] && commit_idx_i[p]==head_q && kind_q[head_q]!=o3_types_pkg::SQ_NORMAL;
+    end
+    always_ff @(posedge clk) begin
+        if(rst) begin kind_q<='{default:o3_types_pkg::SQ_NORMAL};heu_complete_q<='{default:0};end
+        else begin
+            if(alloc_fire_i) for(int l=0;l<RENAME_WIDTH;l++) if(alloc_req_i[l]) begin
+                kind_q[alloc_idx_o[l]]<=alloc_kind_i[l];heu_complete_q[alloc_idx_o[l]]<=0;
+            end
+            for(int p=0;p<P;p++) if(execute_valid_i[p]) kind_q[execute_idx_i[p]]<=execute_kind_i[p];
+            if(heu_done_i) for(int n=0;n<DEPTH;n++) if(valid_q[n] && rob_idx_q[n]==heu_done_idx_i) heu_complete_q[n]<=1;
+        end
+    end
     logic dc_inflight_q;
     logic dc_wait_q;
     o3_types_pkg::ld_wait_e dc_reason_q;
@@ -130,7 +153,7 @@ module store_queue
                 if(flush_all_i || (resolution_valid_i && resolution_mispredict_i && branch_mask_q[n][resolution_tag_i])) begin
                     sta_ready_q[n]<=0;sta_wait_q[n]<=0;
                 end else begin
-                    if(sta_wait_q[n]) case(sta_q[n].wait_reason)
+                    if(sta_wait_q[n] && kind_q[n]==o3_types_pkg::SQ_NORMAL) case(sta_q[n].wait_reason)
                         o3_types_pkg::LDW_TLB_MISS:if(tlb_wake_i) sta_ready_q[n]<=1;
                         o3_types_pkg::LDW_AD_ORDER:if(ad_wake_i) sta_ready_q[n]<=1;
                         default:sta_ready_q[n]<=1;
@@ -140,8 +163,8 @@ module store_queue
                         if(capture_valid_i[p] && capture_i[p].uop.sq_idx==n) sta_q[n]<=capture_i[p];
                         if(update_valid_i[p] && update_i[p].sq_idx==n) begin
                             sta_q[n].wait_reason<=update_i[p].reason;
-                            sta_wait_q[n]<=update_i[p].status==o3_types_pkg::DC_REPLAY;
-                            sta_ready_q[n]<=update_i[p].status==o3_types_pkg::DC_REPLAY &&
+                            sta_wait_q[n]<=update_i[p].status==o3_types_pkg::DC_REPLAY && update_i[p].reason!=o3_types_pkg::LDW_HEAD;
+                            sta_ready_q[n]<=update_i[p].status==o3_types_pkg::DC_REPLAY && update_i[p].reason!=o3_types_pkg::LDW_HEAD &&
                                 !(update_i[p].reason inside {o3_types_pkg::LDW_TLB_MISS,o3_types_pkg::LDW_AD_ORDER});
                             if(update_i[p].reason==o3_types_pkg::LDW_TLB_MISS && tlb_wake_i) sta_ready_q[n]<=1;
                             if(update_i[p].reason==o3_types_pkg::LDW_AD_ORDER && ad_wake_i) sta_ready_q[n]<=1;
@@ -156,7 +179,7 @@ module store_queue
                 if(t_dc_resp_i.reason==o3_types_pkg::LDW_WB_LINE && dc_wake_i.wb_free) dc_wait_q<=0;
             end
             if(alloc_fire_i) for(int l=0;l<RENAME_WIDTH;l++) if(alloc_req_i[l]) begin
-                sta_ready_q[alloc_idx_o[l]]<=0;sta_wait_q[alloc_idx_o[l]]<=0;
+                sta_q[alloc_idx_o[l]]<='0;sta_ready_q[alloc_idx_o[l]]<=0;sta_wait_q[alloc_idx_o[l]]<=0;
             end
         end
     end
@@ -258,8 +281,8 @@ module store_queue
             overlap = |(covered_bytes & query_mask_i[p]);
             full_cover = ((covered_bytes & query_mask_i[p]) == query_mask_i[p]);
 
-            if (query_valid_i[p] && valid_q[idx] && older) begin
-                if (!addr_valid_q[idx]) begin
+            if (query_valid_i[p] && valid_q[idx] && older && kind_q[idx]!=o3_types_pkg::SQ_MMIO && !heu_complete_q[idx]) begin
+                if (!addr_valid_q[idx] || kind_q[idx] inside {o3_types_pkg::SQ_ATOMIC,o3_types_pkg::SQ_SPLIT}) begin
                     unknown_addr_block = 1'b1;
                 end else if (overlap) begin
                     // A later full-cover store supplies every byte and makes
@@ -301,7 +324,7 @@ module store_queue
         end else if (flush_all_i) begin
             int unsigned kept;
             logic drain_fire;
-            kept=0; drain_fire=dc_drain_fire || (drain_valid_o && drain_ready_i);
+            kept=0; drain_fire=dc_drain_fire || (drain_valid_o && drain_ready_i) || heu_release;
             if (DCACHE_DRAIN && t_dc_req_valid_o && t_dc_req_ready_i) dc_inflight_q<=1;
             if (dc_resp_match) dc_inflight_q<=0;
             for (int entry=0;entry<DEPTH;entry++) begin
@@ -319,7 +342,7 @@ module store_queue
             int unsigned kept;
             logic drain_fire;
             kept = 0;
-            drain_fire = dc_drain_fire || (drain_valid_o && drain_ready_i);
+            drain_fire = dc_drain_fire || (drain_valid_o && drain_ready_i) || heu_release;
             if (DCACHE_DRAIN && t_dc_req_valid_o && t_dc_req_ready_i)
                 dc_inflight_q <= 1'b1;
             if (dc_resp_match) dc_inflight_q <= 1'b0;
@@ -351,7 +374,7 @@ module store_queue
             for (int port = 0; port < COMMIT_WIDTH; port++) begin
                 if (commit_valid_i[port] && valid_q[commit_idx_i[port]]
                  && !branch_mask_q[commit_idx_i[port]][resolution_tag_i]) begin
-                    committed_q[commit_idx_i[port]] <= 1'b1;
+                    if(kind_q[commit_idx_i[port]]==o3_types_pkg::SQ_NORMAL) committed_q[commit_idx_i[port]] <= 1'b1;
                 end
             end
             if (drain_fire) begin
@@ -367,7 +390,7 @@ module store_queue
             int unsigned alloc_count;
             logic drain_fire;
             alloc_count = 0;
-            drain_fire = dc_drain_fire || (drain_valid_o && drain_ready_i);
+            drain_fire = dc_drain_fire || (drain_valid_o && drain_ready_i) || heu_release;
             if (DCACHE_DRAIN && t_dc_req_valid_o && t_dc_req_ready_i)
                 dc_inflight_q <= 1'b1;
             if (dc_resp_match) dc_inflight_q <= 1'b0;
@@ -413,7 +436,7 @@ module store_queue
             end
             for (int port = 0; port < COMMIT_WIDTH; port++) begin
                 if (commit_valid_i[port] && valid_q[commit_idx_i[port]]) begin
-                    committed_q[commit_idx_i[port]] <= 1'b1;
+                    if(kind_q[commit_idx_i[port]]==o3_types_pkg::SQ_NORMAL) committed_q[commit_idx_i[port]] <= 1'b1;
                 end
             end
 

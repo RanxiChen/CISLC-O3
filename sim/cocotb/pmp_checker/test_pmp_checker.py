@@ -40,15 +40,21 @@ async def modes_priority_boundaries_lock_and_random(d):
 @cocotb.test()
 async def pma_full_range_no_bare_high_bit_alias(d):
  rng=random.Random(int(os.getenv('TEST_SEED','1')))
- # Keep all original main/DTCM boundaries and random probes. X5 removes
- # the DTCM mapping, so its original addresses must now deny every access.
+ # User approved L8b migration: preserve every original probe and RNG draw.
  ranges=[(0x80000000,0x100000000,True),(0x11000000,0x11040000,False)]
- mapped_ranges=[(0x80000000,0x100000000,True)]
+ mapped_ranges=[(0x02000000,0x80000000,False,False),(0x80000000,0x100000000,True,True)]
  probes=[(a+s,b) for lo,hi,_ in ranges for a in (lo,hi) for s in (-1,0,1) for b in (1,4,8,16)]
  probes += [(0x180000000,8),(0xfffffffffffffff8,16)]
  probes += [(rng.choice([0x11000000,0x80000000,0x100000000])+rng.randrange(-128,128),1<<rng.randrange(5)) for _ in range(200)]
+ # Add checks after original generation to retain the original random sequence.
+ probes += [(0x02000000+s,b) for s in (-1,0,1) for b in (1,4,8,16)]
+ probes += [(0x7fffffff+s,b) for s in (-7,-3,-1,0,1) for b in (1,2,4,8,16)]
+ probes += [(rng.choice([0x02000000,0x7fffffff,0x80000000,0x100000000])+rng.randrange(-128,128),1<<rng.randrange(5)) for _ in range(200)]
  for addr,size in probes:
   d.pma_addr_i.value=addr;d.bytes_i.value=size;await Timer(1,unit='ns')
   permitted=[x for x in mapped_ranges if x[0]<=addr and addr+size<=x[1]]
-  exists=bool(permitted);cached=exists and permitted[0][2]
-  assert (bool(int(d.pma_exists_o.value)),bool(int(d.pma_cache_o.value)),bool(int(d.pma_exec_o.value)),bool(int(d.pma_read_o.value)),bool(int(d.pma_write_o.value)))==(exists,cached,cached,exists,exists),(hex(addr),size)
+  exists=bool(permitted);cached=exists and permitted[0][2];executable=exists and permitted[0][3]
+  io=exists and not cached
+  assert (bool(int(d.pma_exists_o.value)),bool(int(d.pma_cache_o.value)),bool(int(d.pma_exec_o.value)),bool(int(d.pma_read_o.value)),bool(int(d.pma_write_o.value)))==(exists,cached,executable,exists,exists),(hex(addr),size)
+
+  assert (bool(int(d.pma_io_o.value)),bool(int(d.pma_amo_o.value)),bool(int(d.pma_rsrv_o.value)))==(io,cached,cached),(hex(addr),size)

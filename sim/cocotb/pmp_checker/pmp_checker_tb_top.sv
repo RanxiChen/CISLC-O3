@@ -4,6 +4,7 @@ module pmp_checker_tb_top import o3_types_pkg::*;(
  input logic rd_i,wr_i,ex_i,input logic [1:0] priv_i,
  input logic [127:0] cfg_i,input logic [863:0] pmpaddr_i,
  input logic [63:0] pma_addr_i,
+ output logic pma_io_o,pma_amo_o,pma_rsrv_o,
  output logic pma_exec_o,pma_cache_o,pma_exists_o,pma_read_o,pma_write_o,
  output logic valid_o,allow_o,fault_o,
  output logic [7:0] entries_o);
@@ -18,5 +19,5 @@ module pmp_checker_tb_top import o3_types_pkg::*;(
  .s3_valid_o(valid_o),.s3_allow_o(allow_o),.s3_fault_o(fault_o),.cfg_i(cfg),.priv_i(priv_i),.cfg_update_done_o());
  pma_checker #(.CFG(o3_cfg_pkg::O3_CFG.fe)) pma(.paddr_i(pma_addr_i),.bytes_i(bytes_i),
   .exec_ok_o(pma_exec_o),.cacheable_o(pma_cache_o),.exists_o(pma_exists_o),
-  .read_ok_o(pma_read_o),.write_ok_o(pma_write_o));
+  .read_ok_o(pma_read_o),.write_ok_o(pma_write_o),.io_o(pma_io_o),.amo_ok_o(pma_amo_o),.rsrv_ok_o(pma_rsrv_o));
 endmodule

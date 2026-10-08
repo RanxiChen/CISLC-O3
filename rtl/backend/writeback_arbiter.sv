@@ -5,7 +5,7 @@
  * complete without a PRF port and still report flags. Unselected live results stay held.
  * Global flush and misprediction filter all writes and completion in the same cycle;
  * canceled results are consumed for discard without completing a reused ROB entry.
- * AMO remains outside L9; CSR keeps the serialized head path in backend.
+ * L8b HEU uses extra source 5; CSR keeps the serialized head path in backend.
  * 当前实现状态：闭环简化（L9）；lint/测试未运行。
  * Pure combinational N grants; N edge updates PRF/ready/ROB with the same event;
  * N+1 ungranted producer heads still hold their numerical result and identity.
@@ -18,7 +18,7 @@ module writeback_arbiter
     localparam int NUM_ALUS = CFG.exec.num_alu,
     localparam int PRF_WRITE_PORTS = CFG.exec.int_prf_write_ports,
     localparam int NUM_ROB_ENTRIES = CFG.rob.entries,
-    // 目标新增整数写回源（框架，未接入选择逻辑）：
+    // 整数写回源（HEU 结果保持到实际仲裁授权）：
     //   0 MUL、1 DIV、2 FP-MISC→INT（比较/分类）、3 FP-CONV→INT（F2I/FMV.X）、4 CSR、5 AMO/LR/SC
     localparam int NUM_EXTRA_SRC = 6
 ) (

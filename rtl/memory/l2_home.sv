@@ -279,6 +279,9 @@ module l2_home import o3_types_pkg::*; #(
             rsp_valid[c]=out_count_q[c]!=0;rsp[c]=out_q[c][out_head_q[c]];
         end
         perf_o='0;
+        perf_o[BE_DMA_LINE_TXN]=BE_PERF_INC_W'(req_ready[2]);
+        perf_o[BE_DMA_READ]=BE_PERF_INC_W'(req_ready[2] && dma_req_i.op==COH_READ);
+        perf_o[BE_DMA_WRITE]=BE_PERF_INC_W'(req_ready[2] && dma_req_i.op==COH_MASKWRITE);
         perf_o[BE_L2_HIT]=BE_PERF_INC_W'(s2_valid_q && s2_q.kind==NEW_REQ && accept_req && s2_hit_q);
         perf_o[BE_L2_MISS]=BE_PERF_INC_W'(s2_valid_q && s2_q.kind==NEW_REQ && accept_req && !s2_hit_q);
         perf_o[BE_L2_SLOT_FULL]=BE_PERF_INC_W'(reject_req);
@@ -342,6 +345,7 @@ module l2_home import o3_types_pkg::*; #(
                 if(req_valid[c]) begin
                     if(c==0) assert(req[c].op==COH_GETS || req[c].op==COH_GETM);
                     if(c==1) assert(req[c].op==COH_READ);
+                    if(c==2) assert(req[c].op inside {COH_READ,COH_MASKWRITE});
                 end
             end
             if(s0_valid && meta_write) assert(s0.set_idx!=s2_q.set_idx);

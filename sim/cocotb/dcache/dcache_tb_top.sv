@@ -13,7 +13,6 @@ module dcache_tb_top import o3_types_pkg::*; #(
     input logic ptw_req_valid_i,output logic ptw_req_ready_o,input dcache_req_t ptw_req_i,output dcache_resp_t ptw_resp_o,
     input logic pte_ad_req_valid_i,output logic pte_ad_req_ready_o,input pte_ad_req_t pte_ad_req_i,
     output pte_ad_resp_t pte_ad_resp_o,input xlate_epoch_t cur_epoch_i,input pmp_state_t pmp_i,
-    input logic clean_all_req_i,output logic clean_all_done_o,clean_all_busy_o,
     output dc_wake_t wake_o,
     output logic l2_req_valid_o,input logic l2_req_ready_i,output coh_req_t l2_req_o,
     input logic l2_resp_valid_i,input coh_rsp_down_t l2_resp_i,output logic l2_resp_ready_o,
@@ -38,10 +37,17 @@ module dcache_tb_top import o3_types_pkg::*; #(
     logic ld_req_valid_i[2],ld_req_ready_o[2];
     dcache_req_t ld_req_i[2],ld_s1_i[2];dcache_resp_t ld_resp_o[2];
     assign ld_req_valid_i='{cpu_valid[0],cpu_valid[1]};
-    assign ld_req_i='{cpu0,cpu1};assign ld_s1_i='{s1_cpu0,s1_cpu1};
+    assign ld_req_i='{cpu0,cpu1};
+    always_comb begin
+        ld_s1_i='{s1_cpu0,s1_cpu1};
+        for(int p=0;p<2;p++) begin
+            ld_s1_i[p].priv=3;
+            ld_s1_i[p].permission=dc_permissions(ld_s1_i[p],pmp_i,2'd3);
+        end
+    end
     assign cpu_ready={ld_req_ready_o[1],ld_req_ready_o[0]};
     assign resp0=ld_resp_o[0];assign resp1=ld_resp_o[1];
-    dcache #(.CFG(CFG)) dut(.*);
+    dcache #(.CFG(CFG)) dut(.rsv_clear_i(1'b0),.priv_i(2'd3),.dma_invalidate_o(),.dma_line_o(),.irreversible_o(),.*);
     assign init_done=dut.init_done_q;
     assign mon_ps_valid=dut.ps_valid_q;assign mon_ps_write=dut.ps_write;
     assign mon_ps_alloc=dut.ps_lane>=0;

@@ -1,5 +1,5 @@
 /** L8a core assembly: non-directory I Read, coherent D and AXI L2 Home.
- * DMA/AMO/MMIO remain L8b. No private DTCM initialization interface. */
+ * Head-only atomic/MMIO/split execution and coherent DMA. No private DTCM initialization interface. */
 module o3_core
     import o3_types_pkg::*;
 #(
@@ -42,11 +42,18 @@ module o3_core
     input  logic [1:0]            m_axi_rresp,
     input  logic                  m_axi_rlast,
 
+    // AXI4-Lite, one MMIO transaction in flight (64-bit data).
+    output logic m_axil_awvalid,input logic m_axil_awready,output logic [31:0] m_axil_awaddr,output logic [2:0] m_axil_awprot,
+    output logic m_axil_wvalid,input logic m_axil_wready,output logic [63:0] m_axil_wdata,output logic [7:0] m_axil_wstrb,
+    input logic m_axil_bvalid,output logic m_axil_bready,input logic [1:0] m_axil_bresp,
+    output logic m_axil_arvalid,input logic m_axil_arready,output logic [31:0] m_axil_araddr,output logic [2:0] m_axil_arprot,
+    input logic m_axil_rvalid,output logic m_axil_rready,input logic [63:0] m_axil_rdata,input logic [1:0] m_axil_rresp,
     // ---------------- SD DMA 行事务（B08） ----------------
     input  logic            dma_req_valid_i,
     output logic            dma_req_ready_o,
     input  dma_req_t        dma_req_i,
     output dma_resp_t       dma_resp_o,
+    output logic dma_resp_valid_o,input logic dma_resp_ready_i=1'b1,
 
     // ---------------- 中断（进入后端 csr_file 的 mip，B26/B29/B38） ----------------
     input logic [63:0] mtime_i,
@@ -94,8 +101,22 @@ module o3_core
     coh_req_t l1i_req,l1d_req;coh_rsp_down_t l1i_resp,l1d_resp;
     logic rsp_up_valid,rsp_up_ready,snp_valid,snp_ready;
     coh_rsp_up_t rsp_up;coh_snp_t snp;fatal_evt_t l2_fatal;be_perf_t l2_perf;
-    // The protocol DMA client is deliberately inactive until L8b.
-    assign dma_req_ready_o=0;assign dma_resp_o='0;assign inclusion_err_o=0;
+    logic dma_coh_req_valid,dma_coh_req_ready,dma_coh_resp_valid,dma_coh_resp_ready;
+    coh_req_t dma_coh_req;coh_rsp_down_t dma_coh_resp;
+    logic mmio_valid,mmio_ready,mmio_resp_valid,mmio_irreversible;
+    dcache_req_t mmio_req;dcache_resp_t mmio_resp;
+    assign inclusion_err_o=0;
+    dma_line_adapter #(.CFG(CFG.be)) u_dma(.clk(clk_i),.rst(rst_i),.req_valid_i(dma_req_valid_i),.req_ready_o(dma_req_ready_o),.req_i(dma_req_i),
+        .resp_valid_o(dma_resp_valid_o),.resp_ready_i(dma_resp_ready_i),.resp_o(dma_resp_o),
+        .coh_req_valid_o(dma_coh_req_valid),.coh_req_ready_i(dma_coh_req_ready),.coh_req_o(dma_coh_req),
+        .coh_resp_valid_i(dma_coh_resp_valid),.coh_resp_ready_o(dma_coh_resp_ready),.coh_resp_i(dma_coh_resp));
+    mmio_axil_master #(.CFG(CFG.be)) u_mmio(.clk(clk_i),.rst(rst_i),.req_valid_i(mmio_valid),.req_ready_o(mmio_ready),.req_i(mmio_req),
+        .resp_valid_o(mmio_resp_valid),.resp_ready_i(1'b1),.resp_o(mmio_resp),.irreversible_o(mmio_irreversible),
+        .m_axil_awvalid(m_axil_awvalid),.m_axil_awready(m_axil_awready),.m_axil_awaddr(m_axil_awaddr),.m_axil_awprot(m_axil_awprot),
+        .m_axil_wvalid(m_axil_wvalid),.m_axil_wready(m_axil_wready),.m_axil_wdata(m_axil_wdata),.m_axil_wstrb(m_axil_wstrb),
+        .m_axil_bvalid(m_axil_bvalid),.m_axil_bready(m_axil_bready),.m_axil_bresp(m_axil_bresp),
+        .m_axil_arvalid(m_axil_arvalid),.m_axil_arready(m_axil_arready),.m_axil_araddr(m_axil_araddr),.m_axil_arprot(m_axil_arprot),
+        .m_axil_rvalid(m_axil_rvalid),.m_axil_rready(m_axil_rready),.m_axil_rdata(m_axil_rdata),.m_axil_rresp(m_axil_rresp));
 
     // 前端 deliver 是 unpacked array，后端 fetch 输入是 packed array：逐 lane 搬运，不改顺序。
     always_comb begin
@@ -141,6 +162,7 @@ module o3_core
         .snp_valid_i(snp_valid),.snp_ready_o(snp_ready),.snp_i(snp),.l2_perf_i(l2_perf),
         .mtime_i(mtime_i),.irq_m_ext_i(irq_m_ext_i), .irq_m_timer_i(irq_m_timer_i),
         .irq_m_soft_i(irq_m_soft_i), .irq_s_ext_i(irq_s_ext_i),
+        .mmio_valid_o(mmio_valid),.mmio_ready_i(mmio_ready),.mmio_req_o(mmio_req),.mmio_resp_i(mmio_resp),.mmio_irreversible_i(mmio_irreversible),
         .l2_fatal_i(l2_fatal), .fatal_o(fatal_o),
         .perf_rd_valid_i(1'b0), .perf_rd_idx_i('0), .perf_rd_data_o(),
         .perf_clear_i(1'b0), .perf_snapshot_i(1'b0),
@@ -161,7 +183,8 @@ module o3_core
         .l1d_resp_valid_o(l1d_resp_valid),.l1d_resp_o(l1d_resp),.l1d_resp_ready_i(l1d_resp_ready),
         .rsp_up_valid_i(rsp_up_valid),.rsp_up_ready_o(rsp_up_ready),.rsp_up_i(rsp_up),
         .snp_valid_o(snp_valid),.snp_ready_i(snp_ready),.snp_o(snp),
-        .dma_req_valid_i(1'b0),.dma_req_ready_o(),.dma_req_i('0),.dma_resp_valid_o(),.dma_resp_ready_i(1'b1),.dma_resp_o(),
+        .dma_req_valid_i(dma_coh_req_valid),.dma_req_ready_o(dma_coh_req_ready),.dma_req_i(dma_coh_req),
+        .dma_resp_valid_o(dma_coh_resp_valid),.dma_resp_ready_i(dma_coh_resp_ready),.dma_resp_o(dma_coh_resp),
         .m_axi_awvalid(m_axi_awvalid), .m_axi_awready(m_axi_awready), .m_axi_awid(m_axi_awid),
         .m_axi_awaddr(m_axi_awaddr), .m_axi_awlen(m_axi_awlen), .m_axi_awsize(m_axi_awsize),
         .m_axi_awburst(m_axi_awburst),

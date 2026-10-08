@@ -21,10 +21,9 @@
  * - FENCE（B23）：pred.W 且需排序时等 SQ 正常 drain 至空（DCache 写完成确认）；否则队头即完成。
  * - FENCE.I（B23/D25，本模块统一编排，2026-10-02 确认）：
  *     1) 等 SQ 中老 store 全部写入 DCache 并确认；
- *     2) dcache_clean_all：遍历 L1D tag/meta，脏行写回 L2 并逐出（干净行保留），等全部确认；
- *     3) 发 fe_sync（SYS_FENCE_I）：前端停取指/预取、隔离旧请求、ICache 全失效、清 F0/返回队列/
+ *     2) 发 fe_sync（SYS_FENCE_I）：前端停取指/预取、隔离旧请求、ICache 全失效、清 F0/返回队列/
  *        指令 buffer；
- *     4) fe_sync_done 后该 ROB 项完成并退休，sys_redirect 从下一条重取。
+ *     3) fe_sync_done 后该 ROB 项完成并退休，sys_redirect 从下一条重取。
  *   前端 frontend_sync_ctrl 不再自行发起 DCache clean。
  * - SFENCE.VMA（B24/D26）：先全量 SQ drain；再 sfence 送 DTLB/PTW/walk cache 并 fe_sync 送 ITLB/
  *   预取翻译记录；隔离旧 PTW；两侧完成后退休。不做 L1D 脏行扫描。首版同时清 LR/SC reservation。
@@ -69,6 +68,7 @@ module commit_ctrl
     input  vaddr_t          boot_pc_i,           // committed_next_pc 复位值
 
     input  rob_commit_t     commit_i [COMMIT_WIDTH-1:0],
+    input logic heu_irreversible_i=1'b0,order_flush_i=1'b0,head_split_i=1'b0,
     input  logic            head_valid_i,
     input  rob_commit_t     head_i,
     output logic            head_serial_done_o,
@@ -90,9 +90,6 @@ module commit_ctrl
 
     // 数据侧同步
     input  logic            sq_committed_empty_i,
-    output logic            dcache_clean_all_o,  // FENCE.I：L1D 脏行扫描写回逐出
-    input  logic            dcache_clean_all_done_i,
-    input  logic            dcache_clean_all_busy_i, // fencei_dcache_evict_cycles 口径
     output sfence_req_t     sfence_o,
     input  logic            sfence_done_i,       // DTLB + PTW/walk cache
 
@@ -148,12 +145,12 @@ module commit_ctrl
             (head_i.exc.valid || system_illegal || head_i.sys_op==SYSOP_ECALL);
         // No retirement participates in this decision, so there is no ROB
         // retire -> block -> retire loop. A begun CSR/sync must first retire.
-        irq_accept=irq_take_i && !sync_trap && !csr_executed_q && !serial_done_q && !sync_sent_q
+        irq_accept=irq_take_i && !heu_irreversible_i && !order_flush_i && !sync_trap && !csr_executed_q && !serial_done_q && !sync_sent_q
             && !sf_sent_q && !d_sent_q && !(head_valid_i && head_i.needs_d) && !trap_redirect_valid_i && !isolate_i && !wfi_stall_i;
         csr_req_o='0;csr_req_o.op=head_i.ext.csr_op;csr_req_o.addr=head_i.ext.csr_addr;
         csr_req_o.wdata=head_i.ext.csr_use_imm ? 64'(head_i.rs1) : csr_operand_i;
         csr_req_o.write_en=head_i.ext.csr_op==CSROP_RW || head_i.rs1!=0;csr_req_o.rob_idx=head_i.rob_idx;
-        csr_req_valid_o=head_valid_i && head_i.ext.csr_op!=CSROP_NONE && !head_i.exc.valid
+        csr_req_valid_o=ptw_idle_i && head_valid_i && head_i.ext.csr_op!=CSROP_NONE && !head_i.exc.valid
             && !csr_executed_q && !serial_done_q && !isolate_i && !irq_accept && !trap_redirect_valid_i;
         head_serial_done_o=serial_done_q;
         if(head_i.ext.csr_op==CSROP_NONE) case(head_i.sys_op)
@@ -163,8 +160,8 @@ module commit_ctrl
             default: head_serial_done_o=!system_illegal && head_i.sys_op!=SYSOP_ECALL;
         endcase
         fe_sync_valid_o=head_valid_i && !sync_sent_q && !serial_done_q && !irq_accept && !isolate_i &&
-            ((head_i.sys_op==SYSOP_FENCE_I && sq_committed_empty_i) || (head_i.sys_op==SYSOP_SFENCE_VMA && sf_done_q) || refetch_q);
-        fe_sync_o='{kind:(refetch_q ? refetch_kind_q : head_i.sys_op==SYSOP_SFENCE_VMA ? SYS_SFENCE : SYS_FENCE_I),default:'0};
+            ((head_i.sys_op==SYSOP_FENCE_I && sq_committed_empty_i) || (head_i.sys_op==SYSOP_SFENCE_VMA && sf_done_q) || refetch_q || order_flush_i);
+        fe_sync_o='{kind:(order_flush_i ? SYS_PMP:refetch_q ? refetch_kind_q : head_i.sys_op==SYSOP_SFENCE_VMA ? SYS_SFENCE : SYS_FENCE_I),default:'0};
         fe_sync_o.sfence='{valid:1'b1,rs1_is_x0:head_i.ext.sfence_rs1_x0,rs2_is_x0:head_i.ext.sfence_rs2_x0,
             vaddr:csr_operand_i,asid:asid_t'(sfence_asid_operand_i)};
         trap_req_o='0;
@@ -207,18 +204,23 @@ module commit_ctrl
                         ftq_id:commit_i[lane].ftq_id,slot:commit_i[lane].slot,target_pc:commit_i[lane].succ_pc};
             end
         end
-        commit_block_o=(head_valid_i && head_i.needs_d) || isolate_i || sync_trap || irq_accept || trap_redirect_valid_i || wfi_stall_i;
+        if(order_flush_i && serial_done_q) sys_redirect_o='{valid:1'b1,kind:SYS_PMP,ftq_id:head_i.ftq_id,slot:head_i.slot,target_pc:head_i.pc};
+        commit_block_o=order_flush_i || (head_valid_i && head_i.needs_d) || isolate_i || sync_trap || irq_accept || trap_redirect_valid_i || wfi_stall_i;
         flush_all_o=trap_req_o.valid || (sys_redirect_o.valid && sys_redirect_o.kind inside {SYS_FENCE_I,SYS_SATP,SYS_PMP,SYS_SFENCE});
         committed_next_pc_o=committed_next_pc_q;
         sfence_o=fe_sync_o.sfence;
         sfence_o.valid=head_valid_i && head_i.sys_op==SYSOP_SFENCE_VMA && !system_illegal &&
             sq_committed_empty_i && ptw_idle_i && !sf_sent_q && !irq_accept && !trap_redirect_valid_i;
-        dcache_clean_all_o=head_valid_i && head_i.sys_op==SYSOP_FENCE_I && sq_committed_empty_i && !sync_sent_q && !serial_done_q; // L8a: next-cycle acknowledgment; no tag scan.
         st_d_req_valid_o=head_valid_i && head_i.is_store && head_i.complete && head_i.needs_d &&
             !head_i.exc.valid && !d_sent_q && !isolate_i && !trap_redirect_valid_i;
         rsv_clear_valid_o=sfence_o.valid || trap_req_o.valid || (sys_redirect_o.valid && sys_redirect_o.kind==SYS_SATP);
         rsv_clear_reason_o=sfence_o.valid ? RSV_CLR_SFENCE_SATP : trap_req_o.is_xret ? RSV_CLR_XRET : RSV_CLR_TRAP;
         perf_o='0;perf_o[BE_SFENCE]=BE_PERF_INC_W'(sfence_o.valid);
+        perf_o[BE_LD_ORDER_FLUSH]=BE_PERF_INC_W'(order_flush_i && sys_redirect_o.valid);
+        for(int lane=0;lane<COMMIT_WIDTH;lane++) if(commit_i[lane].valid) begin
+            perf_o[BE_FENCEI_RETIRED]+=BE_PERF_INC_W'(commit_i[lane].sys_op==SYSOP_FENCE_I);
+            perf_o[BE_MISALIGNED_CROSSLINE_SPLIT]+=BE_PERF_INC_W'(head_split_i && commit_i[lane].rob_idx==head_i.rob_idx);
+        end
     end
     // N: accept one head CSR, or an interrupt with no normal retire. Edge N:
     // mark CSR irreversible / latch redirect kind. N+1: sync or retirement.

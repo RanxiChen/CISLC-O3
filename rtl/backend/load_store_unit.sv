@@ -6,6 +6,10 @@ module load_store_unit import o3_pkg::*; #(
     parameter o3_cfg_pkg::backend_cfg_t CFG,localparam int P=CFG.lsu.agu_pipes,
     localparam int DEPTH=CFG.lsu.ld_result_fifo
 )(input logic clk,rst,input mem_execute_uop_t mem_uop_i[P],
+    input logic atomic_i[P],
+    input logic heu_valid_i,output logic heu_ready_o,input o3_types_pkg::dcache_req_t heu_req_i,
+    output o3_types_pkg::dcache_resp_t heu_resp_o,
+    output o3_types_pkg::sq_kind_e sq_kind_o[P],
     input logic issue_is_load_i[P],output logic issue_ready_o[P],
     input logic lq_replay_valid_i[P],input lq_replay_t lq_replay_i[P],output logic lq_replay_ready_o[P],
     input logic sq_replay_valid_i[P],input lq_replay_t sq_replay_i[P],output logic sq_replay_ready_o[P],
@@ -35,7 +39,10 @@ module load_store_unit import o3_pkg::*; #(
     output logic d_mark_o,d_clear_o,output o3_types_pkg::rob_idx_t d_idx_o,
     output o3_types_pkg::vaddr_t d_va_o,output o3_types_pkg::sq_idx_t d_sq_o,
     output logic ad_wake_o,sq_ad_wake_o,output o3_types_pkg::be_perf_t perf_o);
-    typedef struct packed {logic valid,replay;lq_replay_t r;} pipe_t;
+    typedef struct packed {logic valid,replay,atomic,head;lq_replay_t r;o3_types_pkg::dcache_req_t h;} pipe_t;
+    logic deferred[P];o3_types_pkg::sq_kind_e deferred_kind[P];
+    o3_types_pkg::sq_kind_e kind_s1_q[P],kind_s2_q[P];
+    pipe_t heu_rr_q;
     pipe_t replay_rr_q[P],ag_q[P],s1_q[P],s2_q[P];
     logic tlb_valid[P],tlb_store[P],tlb_rsp_valid[P];o3_types_pkg::vaddr_t tlb_va[P];o3_types_pkg::tlb_resp_t tlb_rsp[P];
     o3_types_pkg::be_perf_t dtlb_perf;
@@ -70,17 +77,22 @@ module load_store_unit import o3_pkg::*; #(
             inflight=count_q[p]+int'(mem_uop_i[p].valid)+int'(replay_rr_q[p].valid)+
                 int'(ag_q[p].valid)+int'(s1_q[p].valid)+int'(s2_q[p].valid);
             available=p<CFG.lsu.mem_pipes && inflight<DEPTH && !full_line_busy_i &&
-                !(p==CFG.lsu.mem_pipes-1 && internal_busy_i) && !flush_all_i && !(resolution_valid_i && resolution_mispredict_i);
+                !(p==CFG.lsu.mem_pipes-1 && (internal_busy_i || heu_valid_i || heu_rr_q.valid)) && !flush_all_i && !(resolution_valid_i && resolution_mispredict_i);
             lq_replay_ready_o[p]=available;
             sq_replay_ready_o[p]=available && !lq_replay_valid_i[p];
             issue_ready_o[p]=available && !lq_replay_valid_i[p] && !sq_replay_valid_i[p];
         end
     end
+    assign heu_ready_o=!full_line_busy_i && !internal_busy_i && !flush_all_i &&
+        !mem_uop_i[CFG.lsu.mem_pipes-1].valid && !replay_rr_q[CFG.lsu.mem_pipes-1].valid && !heu_rr_q.valid;
     always_comb begin
         for(int p=0;p<P;p++) begin
-            lq_capture_valid_o[p]=ag_q[p].valid && ag_q[p].r.uop.is_load && !killed(ag_q[p].r.uop);
-            sq_capture_valid_o[p]=ag_q[p].valid && ag_q[p].r.uop.is_store && !killed(ag_q[p].r.uop);
-            dc_req_valid_o[p]=ag_q[p].valid && !killed(ag_q[p].r.uop);
+            deferred[p]=!ag_q[p].head && CFG.lsu.heu_enable && (ag_q[p].atomic ||
+                (CFG.lsu.split_enable && int'(ag_q[p].r.va[5:0])+(1<<int'(ag_q[p].r.uop.mem_size))>64));
+            deferred_kind[p]=ag_q[p].atomic ? o3_types_pkg::SQ_ATOMIC:o3_types_pkg::SQ_SPLIT;
+            lq_capture_valid_o[p]=ag_q[p].valid && !ag_q[p].head && ag_q[p].r.uop.is_load && !killed(ag_q[p].r.uop);
+            sq_capture_valid_o[p]=ag_q[p].valid && !ag_q[p].head && ag_q[p].r.uop.is_store && !killed(ag_q[p].r.uop);
+            dc_req_valid_o[p]=ag_q[p].valid && !deferred[p] && !killed(ag_q[p].r.uop);
             dc_req_o[p]='0;dc_req_o[p].src=o3_types_pkg::DC_SRC_LOAD;
             dc_req_o[p].vaddr=ag_q[p].r.va;dc_req_o[p].paddr=o3_types_pkg::paddr_t'(ag_q[p].r.va);
             dc_req_o[p].size=2'(ag_q[p].r.uop.mem_size);dc_req_o[p].is_signed=!ag_q[p].r.uop.mem_unsigned;
@@ -90,7 +102,9 @@ module load_store_unit import o3_pkg::*; #(
             dc_req_o[p].is_rob_head=ag_q[p].r.uop.rob_idx==rob_head_i;
             dc_req_o[p].is_sta=ag_q[p].r.uop.is_store;dc_req_o[p].wdata=ag_q[p].r.uop.store_value;
             dc_req_o[p].wmask=size_mask(ag_q[p].r.uop.mem_size);dc_req_o[p].exc=ag_q[p].r.exc;
-            tlb_valid[p]=dc_req_valid_o[p];tlb_va[p]=ag_q[p].r.va;tlb_store[p]=ag_q[p].r.uop.is_store;
+            if(ag_q[p].head) dc_req_o[p]=ag_q[p].h;
+            if(ag_q[p].atomic && !CFG.lsu.heu_enable) dc_req_o[p].exc='{valid:1'b1,cause:EXCEPTION_CAUSE_ILLEGAL_INSTRUCTION,tval:'0};
+            tlb_valid[p]=dc_req_valid_o[p];tlb_va[p]=ag_q[p].r.va;tlb_store[p]=ag_q[p].head ? ag_q[p].h.write:ag_q[p].r.uop.is_store;
         end
     end
     for(genvar p=0;p<P;p++) assign capture_o[p]=ag_q[p].r;
@@ -104,21 +118,26 @@ module load_store_unit import o3_pkg::*; #(
             // Protection precedes forwarding, RFO and all architectural effects.
             if(!translated_req[p].exc.valid && !translated_req[p].translation_miss) begin
                 if(tlb_rsp[p].page_fault || tlb_rsp[p].access_fault ||
-                    (!(csr_i.satp_mode==8 && csr_i.priv_eff!=3) && (s1_q[p].r.va>>o3_types_pkg::MEM_PADDR_W)!=0) ||
-                    !o3_types_pkg::pma_main(64'(translated_req[p].paddr),1<<int'(translated_req[p].size)) ||
-                    !o3_types_pkg::pmp_allow(pmp_i,translated_req[p].paddr,1<<int'(translated_req[p].size),csr_i.priv_eff,s1_q[p].r.uop.is_load,s1_q[p].r.uop.is_store,1'b0)) begin
+                    (!(csr_i.satp_mode==8 && csr_i.priv_eff!=3) && (s1_q[p].r.va>>o3_types_pkg::MEM_PADDR_W)!=0)) begin
                     translated_req[p].exc='{valid:1'b1,cause:(tlb_rsp[p].page_fault ?
-                        (s1_q[p].r.uop.is_store ? o3_isa_pkg::EXCEPTION_CAUSE_STORE_PAGE_FAULT:o3_isa_pkg::EXCEPTION_CAUSE_LOAD_PAGE_FAULT):
-                        (s1_q[p].r.uop.is_store ? o3_isa_pkg::EXCEPTION_CAUSE_STORE_ACCESS_FAULT:o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ACCESS_FAULT)),tval:s1_q[p].r.va};
+                        ((translated_req[p].write || translated_req[p].is_sta) ? o3_isa_pkg::EXCEPTION_CAUSE_STORE_PAGE_FAULT:o3_isa_pkg::EXCEPTION_CAUSE_LOAD_PAGE_FAULT):
+                        ((translated_req[p].write || translated_req[p].is_sta) ? o3_isa_pkg::EXCEPTION_CAUSE_STORE_ACCESS_FAULT:o3_isa_pkg::EXCEPTION_CAUSE_LOAD_ACCESS_FAULT)),tval:s1_q[p].r.va};
                 end
             end
-            sq_query_valid_o[p]=s1_q[p].valid && s1_q[p].r.uop.is_load && !translated_req[p].translation_miss && !translated_req[p].exc.valid;
+            translated_req[p].access_valid=1;
+            translated_req[p].access_write=s1_req_q[p].write || s1_req_q[p].is_sta;
+            translated_req[p].access_read=!translated_req[p].access_write || (s1_req_q[p].src==o3_types_pkg::DC_SRC_AMO && !(s1_req_q[p].amo_op inside {o3_types_pkg::AMO_SC,o3_types_pkg::AMO_LR}));
+            translated_req[p].priv=csr_i.priv_eff;
+            translated_req[p].permission=o3_types_pkg::dc_permissions(translated_req[p],pmp_i,csr_i.priv_eff);
+            translated_req[p].need_d=tlb_rsp_valid[p] && tlb_rsp[p].hit && !tlb_rsp[p].perm_d && csr_i.adue;
+            sq_query_valid_o[p]=s1_q[p].valid && !s1_q[p].head && kind_s1_q[p]==o3_types_pkg::SQ_NORMAL &&
+                s1_q[p].r.uop.is_load && !translated_req[p].translation_miss;
             sq_query_rob_idx_o[p]=s1_q[p].r.uop.rob_idx;sq_query_addr_o[p]=64'(translated_req[p].paddr);
             sq_query_mask_o[p]=size_mask(s1_q[p].r.uop.mem_size);
             translated_req[p].forward_valid=0;translated_req[p].forward_data=0;translated_req[p].blocked=0;
-            d_needed[p]=s1_q[p].valid && s1_q[p].r.uop.is_store && tlb_rsp_valid[p] && tlb_rsp[p].hit &&
+            d_needed[p]=s1_q[p].valid && !s1_q[p].head && kind_s1_q[p]==o3_types_pkg::SQ_NORMAL && s1_q[p].r.uop.is_store && tlb_rsp_valid[p] && tlb_rsp[p].hit &&
                 !tlb_rsp[p].perm_d && csr_i.adue && !translated_req[p].exc.valid;
-            ad_block[p]=(d_pending_q || d_reserved_q) && age(s1_q[p].r.uop.rob_idx)>age(d_uop_q.rob_idx);
+            ad_block[p]=!s1_q[p].head && (d_pending_q || d_reserved_q) && age(s1_q[p].r.uop.rob_idx)>age(d_uop_q.rob_idx);
             if(ad_block[p]) begin translated_req[p].blocked=1;translated_req[p].is_sta=0;translated_req[p].is_rob_head=0;end
         end
         d_pick=-1;
@@ -133,21 +152,30 @@ module load_store_unit import o3_pkg::*; #(
     end
     o3_types_pkg::dcache_req_t s1_req_q[P];logic ad_block_s2_q[P],d_need_s2_q[P];
     always_comb begin
+        heu_resp_o='0;
+        for(int p=0;p<P;p++) if(dc_resp_i[p].valid && dc_resp_i[p].head) heu_resp_o=dc_resp_i[p];
         d_mark_o=0;d_clear_o=0;d_idx_o=d_uop_q.rob_idx;d_va_o=d_va_q;d_sq_o=d_uop_q.sq_idx;
         // The owner must revalidate after DTLB refresh. Younger LQ entries
         // remain asleep until that revalidation clears needs_D, otherwise
         // their retries can consume every result reservation ahead of SQ.
         for(int p=0;p<P;p++) begin
             update_o[p]=dc_resp_i[p];
+            if(kind_s2_q[p]!=o3_types_pkg::SQ_NORMAL && !s2_q[p].head && s2_q[p].valid) begin
+                update_o[p]='0;update_o[p].valid=1;update_o[p].status=o3_types_pkg::DC_REPLAY;
+                update_o[p].reason=o3_types_pkg::LDW_HEAD;update_o[p].sq_idx=s2_q[p].r.uop.sq_idx;
+                update_o[p].lq_tag=s2_tag_q[p];
+            end
+            sq_kind_o[p]=kind_s2_q[p];
+            if(update_o[p].reason==o3_types_pkg::LDW_HEAD && update_o[p].io) sq_kind_o[p]=o3_types_pkg::SQ_MMIO;
             if(ad_block_s2_q[p]) begin update_o[p].status=o3_types_pkg::DC_REPLAY;update_o[p].reason=o3_types_pkg::LDW_AD_ORDER;end
-            lq_update_valid_o[p]=s2_q[p].valid && s2_q[p].r.uop.is_load && dc_resp_i[p].valid && !killed(s2_q[p].r.uop);
-            sq_update_valid_o[p]=s2_q[p].valid && s2_q[p].r.uop.is_store && dc_resp_i[p].valid && !killed(s2_q[p].r.uop);
-            sq_execute_valid_o[p]=sq_update_valid_o[p] && dc_resp_i[p].status==o3_types_pkg::DC_OK && !ad_block_s2_q[p];
+            lq_update_valid_o[p]=s2_q[p].valid && !s2_q[p].head && s2_q[p].r.uop.is_load && update_o[p].valid && !killed(s2_q[p].r.uop);
+            sq_update_valid_o[p]=s2_q[p].valid && !s2_q[p].head && s2_q[p].r.uop.is_store && update_o[p].valid && !killed(s2_q[p].r.uop);
+            sq_execute_valid_o[p]=sq_update_valid_o[p] && (update_o[p].status==o3_types_pkg::DC_OK || update_o[p].reason==o3_types_pkg::LDW_HEAD) && !ad_block_s2_q[p];
             if(d_need_s2_q[p] && sq_execute_valid_o[p] && !d_refresh_q) begin update_o[p].status=o3_types_pkg::DC_REPLAY;update_o[p].reason=o3_types_pkg::LDW_AD_ORDER;end
             sq_execute_idx_o[p]=s2_q[p].r.uop.sq_idx;sq_execute_addr_o[p]=64'(s2_pa_q[p]);
             sq_execute_rob_idx_o[p]=s2_q[p].r.uop.rob_idx;sq_execute_size_o[p]=s2_q[p].r.uop.mem_size;sq_execute_va_o[p]=s2_q[p].r.va;
             sq_execute_data_o[p]=s2_q[p].r.uop.store_value;sq_execute_mask_o[p]=size_mask(s2_q[p].r.uop.mem_size);
-            store_complete_valid_o[p]=sq_execute_valid_o[p];
+            store_complete_valid_o[p]=sq_execute_valid_o[p] && update_o[p].reason!=o3_types_pkg::LDW_HEAD;
             store_complete_rob_idx_o[p]=s2_q[p].r.uop.rob_idx;
             if(sq_execute_valid_o[p] && d_need_s2_q[p] && !d_pending_q) begin d_mark_o=1;d_idx_o=s2_q[p].r.uop.rob_idx;end
             if(sq_execute_valid_o[p] && d_pending_q && s2_q[p].r.uop.rob_idx==d_uop_q.rob_idx && d_refresh_q) begin
@@ -192,27 +220,38 @@ module load_store_unit import o3_pkg::*; #(
         fifo_pop[p]=count_q[p]>0 && (killed_result(fifo_q[p][head_q[p]].load) ||
             (fifo_q[p][head_q[p]].exc.valid ? (!(p==0 && d_fault_q) && exc_ready_i[p]):load_result_ready_i[p]));
     end
-    o3_types_pkg::paddr_t s2_pa_q[P];
+    o3_types_pkg::paddr_t s2_pa_q[P];o3_types_pkg::lq_tag_t s2_tag_q[P];
     function automatic logic killed_result(input load_result_t r);
         return !r.valid || flush_all_i || (resolution_valid_i && resolution_mispredict_i && r.branch_mask[resolution_tag_i]);
     endfunction
     always_ff @(posedge clk) begin
         if(rst) begin
+            heu_rr_q<='0;kind_s1_q<='{default:o3_types_pkg::SQ_NORMAL};kind_s2_q<='{default:o3_types_pkg::SQ_NORMAL};s2_tag_q<='{default:'0};
             replay_rr_q<='{default:'0};ag_q<='{default:'0};s1_q<='{default:'0};s2_q<='{default:'0};
             s1_req_q<='{default:'0};s2_pa_q<='{default:'0};ad_block_s2_q<='{default:0};d_need_s2_q<='{default:0};
             count_q<='{default:0};head_q<='{default:0};tail_q<='{default:0};
             d_pending_q<=0;d_reserved_q<=0;d_refresh_q<=0;d_fence_q<=0;d_uop_q<='0;d_fault_q<=0;d_fault_exc_q<='0;d_va_q<=0;
         end else begin
+            heu_rr_q<='0;
+            if(heu_valid_i && heu_ready_o) begin
+                heu_rr_q.valid<=1;heu_rr_q.head<=1;heu_rr_q.h<=heu_req_i;
+                heu_rr_q.r.va<=heu_req_i.vaddr;heu_rr_q.r.uop.valid<=1;
+                heu_rr_q.r.uop.rob_idx<=heu_req_i.rob_idx;
+            end
             for(int p=0;p<P;p++) begin
                 replay_rr_q[p]<='0;
-                if(lq_replay_valid_i[p] && lq_replay_ready_o[p]) replay_rr_q[p]<='{valid:1'b1,replay:1'b1,r:lq_replay_i[p]};
-                else if(sq_replay_valid_i[p] && sq_replay_ready_o[p]) replay_rr_q[p]<='{valid:1'b1,replay:1'b1,r:sq_replay_i[p]};
+                if(lq_replay_valid_i[p] && lq_replay_ready_o[p]) replay_rr_q[p]<='{valid:1'b1,replay:1'b1,r:lq_replay_i[p],default:'0};
+                else if(sq_replay_valid_i[p] && sq_replay_ready_o[p]) replay_rr_q[p]<='{valid:1'b1,replay:1'b1,r:sq_replay_i[p],default:'0};
                 ag_q[p]<='0;
                 if(replay_rr_q[p].valid && !killed(replay_rr_q[p].r.uop)) begin ag_q[p]<=replay_rr_q[p];ag_q[p].r.uop.branch_mask<=replay_rr_q[p].r.uop.branch_mask & ~(resolution_valid_i ? (branch_mask_t'(1)<<resolution_tag_i):'0);end
                 else if(mem_uop_i[p].valid && !killed(mem_uop_i[p])) begin
-                    ag_q[p].valid<=1;ag_q[p].r.uop<=mem_uop_i[p];ag_q[p].r.uop.branch_mask<=mem_uop_i[p].branch_mask & ~(resolution_valid_i ? (branch_mask_t'(1)<<resolution_tag_i):'0);ag_q[p].r.va<=mem_uop_i[p].base_value+mem_uop_i[p].imm_value;
+                    ag_q[p].valid<=1;ag_q[p].atomic<=atomic_i[p];ag_q[p].r.uop<=mem_uop_i[p];ag_q[p].r.uop.branch_mask<=mem_uop_i[p].branch_mask & ~(resolution_valid_i ? (branch_mask_t'(1)<<resolution_tag_i):'0);ag_q[p].r.va<=mem_uop_i[p].base_value+mem_uop_i[p].imm_value;
                 end
-                s1_q[p]<=ag_q[p];s1_req_q[p]<=dc_req_o[p];s1_q[p].valid<=dc_req_valid_o[p];
+                if(p==CFG.lsu.mem_pipes-1 && heu_rr_q.valid) begin ag_q[p]<=heu_rr_q;end
+                s1_q[p]<=ag_q[p];s1_req_q[p]<=dc_req_o[p];s1_q[p].valid<=ag_q[p].valid && !killed(ag_q[p].r.uop);
+                kind_s1_q[p]<=deferred[p] ? deferred_kind[p]:o3_types_pkg::SQ_NORMAL;
+                kind_s2_q[p]<=kind_s1_q[p];
+                s2_tag_q[p]<=s1_req_q[p].lq_tag;
                 s2_q[p]<=s1_q[p];s2_pa_q[p]<=dc_s1_o[p].paddr;
                 s2_q[p].valid<=s1_q[p].valid && !killed(s1_q[p].r.uop);
                 ad_block_s2_q[p]<=ad_block[p];d_need_s2_q[p]<=d_needed[p];

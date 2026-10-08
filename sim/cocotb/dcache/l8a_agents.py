@@ -89,7 +89,7 @@ class CacheBench:
         lq, sq, rob, branch = self.widths
         return pack((3, r.src), (56, r.addr), (64, r.addr if r.va is None else r.va), (2, r.size),
                     (1, int(r.write)), (1, int(r.sta)), (1, int(r.signed)), (1, int(r.flw)),
-                    (1, int(r.head)), (1, int(r.forward)), (1, int(r.blocked)), (1, int(r.translation_miss)),
+                    (1, int(r.head)), (5, 0), (4, 0), (2, 3), (6, 0), (3, 0), (1, int(r.forward)), (1, int(r.blocked)), (1, int(r.translation_miss)),
                     (64, r.forward_data), (71, r.exc), (64, r.data), (8, r.mask), (4, 0),
                     (lq, r.ident & ((1 << lq) - 1)), (8, 1), (sq, r.ident & ((1 << sq) - 1)),
                     (rob, r.rob), (branch, r.branch))
@@ -97,14 +97,14 @@ class CacheBench:
     def resp_fields(self, raw):
         lq, sq, _, _ = self.widths
         return unpack(raw, [('valid', 1), ('src', 3), ('status', 3), ('reason', 4), ('mshr', 2),
-                            ('ident', lq), ('gen', 8), ('sq', sq), ('data', 64), ('sc_fail', 1), ('exc', 71)])
+                            ('ident', lq), ('gen', 8), ('sq', sq), ('data', 64), ('sc_fail', 1), ('need_d', 1), ('io', 1), ('head', 1), ('pa', 56), ('exc', 71)])
 
     async def reset(self):
         d = self.d
         inputs = ('cpu_valid','cpu0','cpu1','s1_cpu0','s1_cpu1','rob_head_i','flush_i',
                   'resolution_valid_i','resolution_mispredict_i','resolution_tag_i','st_req_valid_i',
                   'st_req_i','ptw_req_valid_i','ptw_req_i','pte_ad_req_valid_i','pte_ad_req_i',
-                  'cur_epoch_i','pmp_i','clean_all_req_i','l2_req_ready_i','l2_resp_valid_i',
+                  'cur_epoch_i','pmp_i','l2_req_ready_i','l2_resp_valid_i',
                   'l2_resp_i','rsp_up_ready_i','snp_valid_i','snp_i')
         for name in inputs:
             getattr(d, name).value = 0
@@ -158,7 +158,7 @@ class CacheBench:
         d.snp_valid_i.value = int(self.snp is not None and not self.snp_sent)
         if self.snp:
             op, owner, line = self.snp
-            d.snp_i.value = pack((1, op), (1, owner), (26, line))
+            d.snp_i.value = pack((1, op), (1, owner), (1, 0), (26, line))
         await Timer(5, unit='ns')
         v = {name: int(getattr(d, name).value) for name in (
             'cpu_ready','resp0','resp1','st_req_ready_o','st_resp_o','ptw_req_ready_o','ptw_resp_o',

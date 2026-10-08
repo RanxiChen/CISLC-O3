@@ -15,7 +15,6 @@ module memsys_tb_top import o3_types_pkg::*; #(
     input logic ptw_req_valid_i,output logic ptw_req_ready_o,input dcache_req_t ptw_req_i,output dcache_resp_t ptw_resp_o,
     input logic pte_ad_req_valid_i,output logic pte_ad_req_ready_o,input pte_ad_req_t pte_ad_req_i,
     output pte_ad_resp_t pte_ad_resp_o,input xlate_epoch_t cur_epoch_i,input pmp_state_t pmp_i,
-    input logic clean_all_req_i,output logic clean_all_done_o,clean_all_busy_o,
     output dc_wake_t wake_o,
     output logic l2_req_valid_o,output logic l2_req_ready_i,output coh_req_t l2_req_o,
     output logic l2_resp_valid_i,output coh_rsp_down_t l2_resp_i,output logic l2_resp_ready_o,

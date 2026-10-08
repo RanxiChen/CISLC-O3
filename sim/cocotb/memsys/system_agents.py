@@ -37,7 +37,7 @@ class SystemBench(CacheBench):
         for name in ('cpu_valid','cpu0','cpu1','s1_cpu0','s1_cpu1','rob_head_i','flush_i',
                      'resolution_valid_i','resolution_mispredict_i','resolution_tag_i','st_req_valid_i',
                      'st_req_i','ptw_req_valid_i','ptw_req_i','pte_ad_req_valid_i','pte_ad_req_i',
-                     'cur_epoch_i','pmp_i','clean_all_req_i','l1i_req_valid_i','l1i_req_i',
+                     'cur_epoch_i','pmp_i','l1i_req_valid_i','l1i_req_i',
                      'm_axi_awready','m_axi_wready','m_axi_bvalid','m_axi_bid','m_axi_bresp',
                      'm_axi_arready','m_axi_rvalid','m_axi_rid','m_axi_rdata','m_axi_rresp','m_axi_rlast'):
             getattr(d, name).value = 0
@@ -190,7 +190,7 @@ class SystemBench(CacheBench):
                 self.probe_pending=None
             self.note('up',op,line,q['dirty'])
         if v['snp_valid_i'] and v['snp_ready_o']:
-            raw = v['snp_i'];line=raw&((1<<26)-1);owner=(raw>>26)&1;op=raw>>27
+            raw = v['snp_i'];line=raw&((1<<26)-1);owner=(raw>>27)&1;op=raw>>28
             self.check(self.probe_pending is None, 'multiple SNP in flight')
             self.probe_pending=(op,owner,line)
             self.note('snp',op,owner,line)

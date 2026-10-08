@@ -11,6 +11,7 @@ module l2_probe_engine import o3_types_pkg::*; #(
     assign job_ready_o=!busy_q;
     assign snp_valid_o=busy_q && !sent_q;
     assign snp_o='{op:job_q.probe_op,owner:job_q.probe_owner,
+        dma_write:(job_q.is_probe && job_q.client==2 && job_q.req.op==COH_MASKWRITE && job_q.probe_op==COH_INV),
         addr:(job_q.is_probe ? job_q.req.addr:job_q.victim_addr)};
     assign collected_o=answer_valid_i && busy_q && !done_q;
     assign collected_slot_o=job_q.slot;assign active_o=busy_q && !done_q;

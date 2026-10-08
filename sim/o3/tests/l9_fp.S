@@ -17,7 +17,7 @@ _start:
     la t0, trap
     csrw mtvec, t0
     csrr t0, misa
-    check t0, 0x800000000014112c
+    check t0, 0x800000000014112d
     csrr t0, mstatus
     srli t0, t0, 13
     andi t0, t0, 3

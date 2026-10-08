@@ -88,6 +88,8 @@ module store_queue_tb_top
     assign query_forward_valid=qf[0];assign query1_forward_valid=qf[1];
     assign query_forward_data=qdata[0];assign query1_forward_data=qdata[1];
     store_queue #(.CFG(o3_cfg_pkg::O3_CFG.be), .DCACHE_DRAIN(1'b1)) dut (
+        .alloc_kind_i('{default:SQ_NORMAL}),.execute_kind_i('{default:SQ_NORMAL}),
+        .heu_done_i(1'b0),.heu_done_idx_i('0),.heu_valid_o(),.heu_entry_o(),.heu_kind_o(),
         .clk(clk), .rst(rst),.flush_all_i(flush_all_i),
         .alloc_req_i(alloc_req), .alloc_fire_i(multi_mode_i ? multi_alloc_count_i != 0 : alloc_valid),
         .alloc_rob_idx_i(alloc_rob_idx), .alloc_branch_mask_i(alloc_branch_mask),

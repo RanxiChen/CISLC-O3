@@ -15,7 +15,7 @@
  *      交给 commit_ctrl/trap_ctrl，故障项不退休，整体清除年轻状态（committed 边界恢复）；
  *      合法 xRET 自身退休触发返回（B27）；中断 EPC 用 committed_next_pc（B37）。
  *   5) 每项保存 succ_pc（B37）：普通指令 pc+inst_len，控制流由 BRU 解析写入真实后继；
- *      crossline_misalign（旧身份保留，B49 拆分留 L8）；fuse_role（B34：融合成员各自占 ROB 项、各自退休，成员由
+ *      fuse_role（B34：融合成员各自占 ROB 项、各自退休，成员由
  *      FUSE_HEAD 的同一次乘法请求的低位结果完成，不独立执行）。
  * - U3：保存动态 FTQ 身份、槽位与 ftq_last；实际退休由 backend 转为 ftq_commit_t。
  * 当前实现状态：闭环简化（L10），四宽分配/退休、队头精确 trap，needs_D 阻止对应退休前缀。

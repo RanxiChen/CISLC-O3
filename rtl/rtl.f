@@ -142,10 +142,13 @@ rtl/lsu/pte_ad_updater.sv
 rtl/lsu/dcache_mshr.sv
 rtl/lsu/dcache_writeback.sv
 rtl/lsu/dcache_probe.sv
+rtl/lsu/dcache_amo_unit.sv
+rtl/lsu/lrsc_reservation.sv
 rtl/lsu/dcache.sv
 rtl/backend/load_queue.sv
 rtl/backend/store_queue.sv
 rtl/backend/load_store_unit.sv
+rtl/backend/mem_head_unit.sv
 
 // ---------- 9. 后端：ROB / 系统 ----------
 rtl/backend/rob.sv
@@ -160,6 +163,8 @@ rtl/system/commit_ctrl.sv
 rtl/backend/backend.sv
 
 // ---------- 11. 存储层次 ----------
+rtl/memory/dma_line_adapter.sv
+rtl/memory/mmio_axil_master.sv
 rtl/memory/l2_slots.sv
 rtl/memory/l2_probe_engine.sv
 rtl/memory/l2_mem_engine.sv
