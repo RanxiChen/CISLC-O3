@@ -70,12 +70,13 @@ module ICache
         SW=$clog2(SETS),TW=MEM_PADDR_W-7-SW,WAITERS=CFG.fetch.return_queue_depth;
     typedef struct packed {logic valid;logic [TW-1:0] tag;} tag_t;
     tag_t tags_q[BANKS][SETS][WAYS];
-    (* ram_style="block" *) coh_data_t data_q[BANKS][WAYS][SETS];
     logic [WAYS-2:0] plru_q[BANKS][SETS];logic [31:0] version_q[BANKS][SETS];
     typedef struct packed {icache_req_t req;paddr_t pa;logic pf,af;logic [31:0] version;} query_t;
     query_t s1_q,s2_q,s3_q;logic v1_q,v2_q,v3_q,s1_ready,s2_ready,s3_ready;
     tag_t tag_read_q[WAYS],tags2_q[WAYS],tags3_q[WAYS];
     coh_data_t data_read_q[WAYS],data2_q[WAYS],data3_q[WAYS];
+    coh_data_t bank_data_read_q[BANKS][WAYS];
+    logic data_read_bank_q;
     logic tlb_valid,tlb_hit,tlb_miss,tlb_pf,tlb_af;logic [43:0] tlb_ppn;logic [1:0] tlb_level;
     fe_perf_t tlb_perf,mshr_perf;
     logic xlate_saved_q; paddr_t saved_pa_q;logic saved_pf_q,saved_af_q;
@@ -171,6 +172,26 @@ module ICache
         perf_o=tlb_perf | mshr_perf;perf_o[PE_ICACHE_DEMAND_HIT]=PERF_INC_W'(v3_q && !stale && hit && !fault && s3_ready);
         perf_o[PE_ICACHE_DEMAND_MISS]=PERF_INC_W'(v3_q && !stale && !hit && !fault && s3_ready);
     end
+    // Each bank/way has one synchronous read and one fill write port. Select
+    // the registered bank result with the bank captured at the same S0 edge.
+    // Holding the bank selector with the read enable preserves S1 stalls.
+    always_ff @(posedge clk) begin
+        if(rst) data_read_bank_q<=0;
+        else if(fire) data_read_bank_q<=selected_req.region_base[6];
+    end
+    for(genvar b=0;b<BANKS;b++) begin : g_data_bank
+        for(genvar w=0;w<WAYS;w++) begin : g_data_way
+            (* ram_style="block" *) logic [$bits(coh_data_t)-1:0] mem[0:SETS-1];
+            always_ff @(posedge clk) begin
+                if(!rst && fire && selected_req.region_base[6]==b)
+                    bank_data_read_q[b][w]<=mem[SW'(selected_req.region_base>>7)];
+                if(!rst && fill_done && !fill_error && fill_bank==b && fill_way==w)
+                    mem[SW'(fill_set)]<=fill_data;
+            end
+        end
+    end
+    for(genvar w=0;w<WAYS;w++)
+        assign data_read_q[w]=bank_data_read_q[data_read_bank_q][w];
     always_ff @(posedge clk) begin
         if(rst) begin
             v1_q<=0;v2_q<=0;v3_q<=0;s1_q<='0;s2_q<='0;s3_q<='0;
@@ -201,7 +222,6 @@ module ICache
                     s1_q.req<=selected_req;s1_q.version<=version_q[selected_req.region_base[6]][SW'(selected_req.region_base>>7)];
                     for(int w=0;w<WAYS;w++) begin
                         tag_read_q[w]<=tags_q[selected_req.region_base[6]][SW'(selected_req.region_base>>7)][w];
-                        data_read_q[w]<=data_q[selected_req.region_base[6]][w][SW'(selected_req.region_base>>7)];
                     end
                 end
             end
@@ -221,7 +241,6 @@ module ICache
                     waiter_ready_q[n]<=1;waiter_data_q[n]<=fill_data;waiter_error_q[n]<=fill_error;
                 end
                 if(!fill_error) begin
-                    data_q[fill_bank][fill_way][fill_set]<=fill_data;
                     tags_q[fill_bank][fill_set][fill_way]<='{valid:1'b1,tag:TW'(fill_line>>(7+SW))};
                     plru_q[fill_bank][fill_set]<=touch(plru_q[fill_bank][fill_set],fill_way);
                     version_q[fill_bank][fill_set]<=version_q[fill_bank][fill_set]+1;
