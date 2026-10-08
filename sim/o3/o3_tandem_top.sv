@@ -17,6 +17,7 @@ module o3_tandem_top
     input logic [AXI_DATA_W-1:0] axi_init_data_i,
     input logic [AXI_DATA_W/8-1:0] axi_init_wmask_i,
     output logic done_o, fatal_o, inclusion_err_o,
+    output logic cache_init_done_o,output logic [31:0] cfg_l2_sets_o,
     output logic [63:0] retired_inst_count_o,
     output logic [31:0] icache_refill_count_o,
     output logic [31:0] load_replay_count_o,
@@ -39,6 +40,10 @@ module o3_tandem_top
     output logic [63:0] tandem_exc_tval_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0],
     output logic [XLEN-1:0] tandem_rd_wdata_o [o3_cfg_pkg::O3_CFG.core.commit_width-1:0]
 );
+    // Passive startup observation lets cocotb retain its functional watchdog
+    // while checking the new sequential default cache initialization separately.
+    assign cache_init_done_o=u_core.u_l2_home.init_done_q && u_core.u_backend.u_dcache.init_done_q;
+    assign cfg_l2_sets_o=o3_cfg_pkg::O3_CFG.be.l2.sets;
     localparam int RETIRE_W = o3_cfg_pkg::O3_CFG.core.commit_width;
     retire_info_t retire_info [RETIRE_W-1:0];
     logic awvalid, awready, wvalid, wready, bvalid, bready;

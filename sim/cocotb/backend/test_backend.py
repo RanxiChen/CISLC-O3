@@ -10,10 +10,6 @@ async def four_integer_uops_through_icache_l2_axi(dut):
     dut.clk_i.value = 0
     dut.rst_i.value = 1
     dut.reset_pc_i.value = base
-    dut.dtcm_init_valid_i.value = 0
-    dut.dtcm_init_addr_i.value = 0
-    dut.dtcm_init_wdata_i.value = 0
-    dut.dtcm_init_wmask_i.value = 0
     dut.axi_init_valid_i.value = 1
     dut.axi_init_addr_i.value = base
     dut.axi_init_data_i.value = sum(word << (32*idx) for idx, word in enumerate(instructions))
@@ -41,6 +37,12 @@ async def four_integer_uops_through_icache_l2_axi(dut):
         await tick()
     dut.axi_init_valid_i.value = 0
     dut.rst_i.value = 0
+    # L8a initializes the default 512-set L2 metadata sequentially. This
+    # bounded startup check precedes the unchanged 160-cycle functional gate.
+    for startup in range(int(dut.cfg_l2_sets_o.value)+1):
+        if int(dut.cache_init_done_o.value):break
+        assert not await tick(), "retirement before cache initialization"
+    assert int(dut.cache_init_done_o.value), "cache initialization watchdog"
     retired = []
     for cycle in range(160):
         retired.extend(await tick())
@@ -66,8 +68,6 @@ async def long_branch_program_ftq_recycles_and_wrong_path_readback(dut):
         if line.startswith('@'):addr=int(line[1:],0)
         else:image[addr]=int(line,16);addr+=4
     dut.clk_i.value=0;dut.rst_i.value=1;dut.reset_pc_i.value=0x80000000
-    dut.dtcm_init_valid_i.value=0;dut.dtcm_init_addr_i.value=0
-    dut.dtcm_init_wdata_i.value=0;dut.dtcm_init_wmask_i.value=0
     for beat in sorted({a&~15 for a in image}):
         dut.axi_init_valid_i.value=1;dut.axi_init_addr_i.value=beat
         dut.axi_init_data_i.value=sum(image.get(beat+4*n,0)<<(32*n) for n in range(4))
