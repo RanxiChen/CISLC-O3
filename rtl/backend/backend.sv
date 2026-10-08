@@ -9,15 +9,15 @@
  * Split pinned CVFPU opgroups use killed identity slots and stable held results;
  * FP/INT writeback and ROB flags share the actual grant event. Retirement merges flags/Dirty.
  * FLW/FLD and FSW/FSD use the existing L3 LSU/SQ path; FP RVC expands upstream.
- * 当前实现状态：闭环简化（L10）：当前特权、IRQ、WFI、mtime、PMP/PMA 已接通。
+ * 当前实现状态：L8b总装：特权、HEU/AMO/MMIO/拆分/DMA与双行order重取已接通。
  * B33 early wakeup for FP FUs is deferred to performance work; actual writes wake FP consumers.
  * B42 single-cycle rename/map-table bypass retained; R1/R2 split awaits timing evidence.
- * Existing L5/L8 limitations (including MRET and memory concurrency/maintenance) remain.
+ * L5 historical lockstep limitations and L8c speculation remain outside this closure.
  * N: prepare rename prefix/issue candidates/read grants/writeback grants/retirement.
  * N edge: accepted prefix allocates atomically; granted IQ entries enter RegRead;
  * held results write PRF/ready/ROB; actual retirement updates committed maps and CSR FP state.
  * N+1: queues/tables expose updated identities, readiness and operands.
- * L10 Sv39/PTW/queue-head A-D integrated; validation and known VM failure in O3-T08-report.md.
+ * L10 Sv39/PTW/queue-head A-D integrated; VM and IRQ retirement validation in O3-T10-report.md.
  */
 `ifdef O3_SIM
 `include "dpi_functions.svh"

@@ -1,6 +1,6 @@
-# O3-T10 L8b 实施报告（进行中）
+# O3-T10 L8b 实施报告（分层完成；最终验收见确认单）
 
-当前停点：N3全部通过，N1–N6分层验收全部通过，准备最终同SHA的12.8总门禁；Y11/B36已按用户批准修复，原VM_AD=1在mem_pipes1/2都通过。2026-10-08起按任务书加速修订执行，中间层使用结果表和失败修复记录；完整审计留到最终12.8。此前章节中的等待审批、全量下层与快照记录是历史状态。
+当前停点：N3全部通过，N1–N6分层验收全部通过，最终收尾提交冻结后执行同SHA的12.8总门禁；Y11/B36已按用户批准修复，原VM_AD=1在mem_pipes1/2都通过。2026-10-08起按任务书加速修订执行，中间层使用结果表和失败修复记录；完整审计留到最终12.8。此前章节中的等待审批、全量下层与快照记录是历史状态。
 
 ## 当前状态与证据边界
 
@@ -445,3 +445,27 @@ IRQ退休保护修复后，原四个自查程序全部tohost1；含中断的MMIO
 | l8b_dma | 12762 | 3346 | lr_exec1，sc_fail1，rsv_probe_hold_cycle62，mmio_read274，mmio_write266，ld_order_flush3，dma_read1，dma_write131 |
 
 N6运行前均重读主机配置、cloud_chen SSH预检成功。失败与修复见上一节和并行记录。尚未把分层通过当作12.8总门禁通过；完整同SHA审计在收尾候选进行。
+
+
+## 最终收尾提交的 12.8 总门禁
+
+最终SHA为包含本节、LOOP更新与backend头注释更新的收尾提交，完整SHA以git rev-parse HEAD和确认单sha字段核对。冻结提交后不改树，所有套件在此SHA独立cwd完整新跑，不复用前述候选结果；实际主机按实时共享配置预检。主机预检、命令、exit、XML/原trace/严格前缀及哈希在此次完整审计保留。
+
+**本节同SHA总门禁通过结论仅在acceptance.json中passed=true且sha与收尾提交完全匹配时生效。** 未满足时不能声明12.8通过或推送。证据根/home/cloud_chen/evidence/t10/<final_sha8>，cwd/home/cloud_chen/work/20261008-t10-<final_sha8>，远端确认单为证据根/acceptance.json；本地固定确认单/tmp/o3-t10-evidence/final-acceptance.json。最终确认单记录实际逐项SHA、host、cwd、展开命令、exit、XML条数以及N6周期/事件，不能从中间候选复制接受结果。
+
+| 最终同SHA范围 | 确认要求 |
+| --- | --- |
+| M1–M4 | 原48次237例；全部exit0/XML无failure/error/skip；八个M3组合、种子61/62与M4 1/7/29保持 |
+| N1 | 正常11例与精确DMA op断言负例；负例必须非零且命中指定断言，外层检查exit0 |
+| N2 | MSHR1/4各20例，全模块显式筛选，不能接受0例或skip |
+| N3 | default/pressure × MSHR1/4，各3例，共12；71/72各2000 CPU/2000 DMA/500 I Read |
+| N4 | 38次165例，包含旧M4及新模块测试；种子1/7/29保持 |
+| M5/M6及N5 | mem_pipes1：M5全部目标与VM_AD=1（15程序）；默认：M6全部目标与VM_AD=1（16程序）；原自查与严格截止前缀通过 |
+| N6 | 原四程序全部自查/tohost1；96次副作用读、1000次LRSC、全拆分偏移/cause/tval/D位/精确拆分数、DMA完整值检查保持；记录十事件 |
+| 既有非访存 | 原41项121例加backend IRQ回归1例，共122；含独立FTQ3例与MDU DIV=1；所有XML无failure/error/skip |
+| 比较脚本 | 原5边界用例通过，非法尾部/前缀差异/缺成功tohost仍拒绝 |
+| lint | bash scripts/lint.sh exit0/0 errors，告警原样记录 |
+
+正常cocotb共587个用例实例（下层与N4既有测试重复复验分别计数）；精确负例与软件比较器另列。中间周期表是分层候选观测，最终统计以确认单现场读取为准。仅当完整确认通过才推送origin feat/L1-closure并停止；不开始L8c，不做SoC/FPGA、Spike/ACT4/litmus/综合。
+
+已知边界：单PTW、单D owner、单笔MMIO/DMA及L8c未开始；L5历史随机lockstep/ACT4问题不在T10门禁范围。Y11原VM与MMIO重复外部效果的失败已由本任务回归覆盖并修复，历史失败证据保留。
