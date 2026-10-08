@@ -1,6 +1,6 @@
 # O3-T09：L8a 实施与分层验证记录
 
-日期：2026-10-07。第 1 步 RTL 静态门禁已完成；M1 已通过；M2 的冻结等待契约冲突已由用户批准 X11（eb1432c）解决，继续分层验证。前半部分保留第 1 步历史记录，第 2 步结果见文末；本文不是 L8a 总验收声明。
+日期：2026-10-08。M1～M5 已通过，正在进入M6。X11 与 spec12退休解释均按用户批准执行。前半部分保留历史实施/停点记录，当前结果见文末；尚未声明12.8总门禁通过。
 
 ## 基线与源码
 
@@ -27,7 +27,7 @@
 
 ## 执行主机与预检
 
-每次编译或 RTL 模型生成前重新读取 `/home/chen/leisure/flow/docs/cross-project/simulation-host.md`，按当时的首选配置预检。全部实际执行都在 `cloud_chen@47.111.104.2:22`；没有使用 Alan 或在本地运行仿真。
+每次编译或 RTL 模型生成前重新读取 `/home/chen/leisure/flow/docs/cross-project/simulation-host.md`，按当时的首选配置预检。本节第1步历史执行都在当时的 `cloud_chen@47.111.104.2:22`；没有使用 Alan 或在本地运行仿真。2026-10-08续跑的实时配置/主机与证据见文末。
 
 - 免密 SSH：`BatchMode=yes`、`ConnectTimeout=8`，成功。
 - 环境：`source /home/cloud_chen/setup/activate-o3.sh`，成功。
@@ -794,3 +794,64 @@ backend只改相应连线，测试top适配新输出。修复后M4定向1/1、51
 
 下一步固定新的完整候选，从M1开始重跑全部下层（加入M3新序列和M4新断言），
 全部通过后再跑完整M5。上述0a203583和诊断SHA不能拼接为新候选的门禁证据。
+
+
+#### M5 通过证据（2026-10-08）
+
+固定执行 SHA `d7d3db3f305507b86e2ee9d20909b681481f4f7b`，实际主机
+cloud_chen@47.96.71.231，cwd `/home/cloud_chen/work/20261008-t09-d7d3db3f`。
+证据根 `/home/cloud_chen/evidence/t09/d7d3db3f`，本地完整日志/XML副本
+`/tmp/t09-resume-evidence/d7d3db3f`。每项都重新读共享配置并通过cloud_chen预检，
+未用Alan替代失败测试，没有本地仿真。工具/依赖pin保持上述版本。
+
+M1～M4在这个SHA完整重跑48项、237用例，exit全部0，failure/error/skip全部0；
+包含M3八组合各5例（两个原seed随机规模不变，以及三条M5访问序列回归），
+M4每seed LSU6例（新增真实DTLB/D-refresh/LQ等待用例）、PTE独立2例；其余清单
+及顺序与前一候选一致。lower-plan.json、各lower-*/{manifest.json,run.log,exit,results.xml}
+保留逐项证明，原始XML总数237/237已核查。退休比较脚本5个边界测试同SHA exit0。
+
+M5 build exit0；全部目标使用 MEM_PIPES=1、MSHRS=4、RFO=1，命令形式：
+
+```bash
+make -j4 -C sim/o3 build MEM_PIPES=1 MSHRS=4 RFO=1 \
+  BUILD_DIR=/home/cloud_chen/evidence/t09/d7d3db3f/m5-build/build
+make -j4 -C sim/o3 <target> MEM_PIPES=1 MSHRS=4 RFO=1 \
+  BUILD_DIR=/home/cloud_chen/evidence/t09/d7d3db3f/m5-build/build
+python3 sim/o3/tests/compare_retire_traces.py <reference> <actual> --require-tohost
+```
+
+定长目标不传最后的--require-tohost，严格比对全部事件。每项完整展开命令在对应
+m5-<target>/manifest.json，run.log/exit和原trace/前缀比较JSON同目录。
+九项回归+run-l10-ad+三个dcache/unified：13目标、14程序，原自查/golden和逐条
+前缀比较均exit0；截止前缀与T08/定长golden一致，没有拼接其他SHA结果。
+
+| 程序 | 周期 | 全事件 | 截止前缀 | 豁免尾部 | 前缀正常退休/trap | exit |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| dcache_data | 589 | 7 | 7 | 0 | 7/0 | 0 |
+| dcache_replay | 597 | 6 | 6 | 0 | 6/0 | 0 |
+| l10_ad | 16393 | 6251 | 6249 | 2 | 6249/0 | 0 |
+| l10_priv | 3987 | 437 | 436 | 1 | 419/17 | 0 |
+| l3_branch_dense | 2478 | 365 | 365 | 0 | 365/0 | 0 |
+| l7_predict_a | 44296 | 19396 | 19393 | 3 | 19393/0 | 0 |
+| l7_predict_b | 44362 | 19445 | 19444 | 1 | 19444/0 | 0 |
+| l7b_rvc | 6361 | 2214 | 2213 | 1 | 2213/0 | 0 |
+| l9_fp | 2361 | 615 | 614 | 1 | 613/1 | 0 |
+| l9_fp_smoke | 1370 | 265 | 264 | 1 | 264/0 | 0 |
+| replay-integer | 624 | 20 | 18 | 2 | 18/0 | 0 |
+| rv64i_instructions | 576 | 14 | 14 | 0 | 14/0 | 0 |
+| icache_smoke | 545 | 4 | 4 | 0 | 4/0 | 0 |
+| unified_memory | 630 | 18 | 18 | 0 | 18/0 | 0 |
+
+run-l10-ad此前在store VA0x7000超时，修复后完成：16393周期、6249正常退休的
+截止前缀、2条合法同拍末尾JAL；PTE与data自查通过，原程序/黄金值/终止逻辑不变。
+本提交按任务书标记M5通过；下一层M6尚未运行。
+
+run-l10-vm只作为已知问题观察，未算入通过目标。make exit2、驱动exit1、tohost=3，
+全事件6295（6292正常+3trap），末事件cycle16670；由tohost终止拍可推导运行16671周期。
+没有成功tohost，故无可验收截止前缀，豁免0，不能把失败尾部当作退休解释例外。
+首个失败点**已变化**：T08在cause15/PC0x800001c4后触发旧分支断言，当前没有在该点停止，
+前6248个PC/指令/trap事件与T08失败trace逐条相同；随后推进至PC0x80000204
+`bne t1,t2,fail`（event6288、cycle16645）。PC0x800001f8的PTE读返回
+0x20040c07，AND0xc0得0，而程序期望A=0x40；跳到fail并在PC0x80000420写tohost=3。
+这里记录观察到的首个失败及寄存器值，不声称完整VM正确，不修改程序/断言/golden。
+原trace与run.log/exit保存在m5-run-l10-vm/。M6及最终SHA将再次观察，按任务书不因它停下。
