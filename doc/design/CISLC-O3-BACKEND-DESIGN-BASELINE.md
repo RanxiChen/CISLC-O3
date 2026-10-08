@@ -204,6 +204,8 @@ SD DMA 是当前系统需求。第一版只允许一笔 DMA 行协调事务在�
 
 ## 11. B09：A 扩展执行与精确异常（已定基本路线，前进性细节待闭合）
 
+> **2026-10-08 L8b：** AMO/LR/SC、MMIO 与 B49 跨行拆分统一由 ROB 队头执行单元（HEU）执行，启动条件为队头且已提交 SQ 排空；reservation 清除表按 B35 修订注记。见 [L8b spec](../spec/l8b-atomic-mmio-dma-spec.md) 第 4、5 节。
+
 A 扩展分为 AMO 与 LR/SC；reservation 不是乱序调度的保留站。首版在 Dcache 内增加低吞吐原子执行入口，一次处理一条，不复制完整 LSU，不用普通 store 提交后 drain 来拆开原子读改写。
 
 ### 11.1 AMO
@@ -615,6 +617,8 @@ CSRFile 承接 M/S pending、enable、delegation、trap entry/return 及软件 S
 - 这是本项目方案，不能写成 BOOM/香山已实现同样的双结果融合。
 
 ### 35.4 B35：LR/SC reservation（补全 B09 11.2 清除表与前进性）
+
+> **2026-10-08 L8b（用户确认 Y3/Y4）：** 清除表修订——L1D 处理到保留行的任何 Inv probe、或把保留行逐出时清除；Down probe 不清除。原因：B50 精确目录下行被逐出后 DMA 写不再 probe L1D，按下文“cache 替换不清”会让 SC 错误成功。下文“不清”列表中的“cache 替换”“L2 容量回收”不再适用，其余不变。前进性采用 Breeze 的 LR 后 80 拍同行 probe 保护窗口（窗口到期本身不清除 reservation）。见 [L8b spec](../spec/l8b-atomic-mmio-dma-spec.md) 5.3 节。
 
 - 一条独立 reservation，以物理 cache line 为冲突粒度，并保留 LR 地址/大小用于配对；首版只允许同物理地址、同大小的 SC 成功。不设固定超时；不从 LR 到 SC 一直锁住 cache line。
 - LR 在队首执行，读取数据与建立 reservation 处于一致的访问边界。SC 先完成地址/权限/对齐/PMA 检查，miss 可以取行等待；最终在短保护窗口内重新检查 reservation 并条件写入，不能提前锁定成功。新 LR 替换记录；SC 成功或失败都清除。
