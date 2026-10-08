@@ -18,5 +18,8 @@ async def redirect_link_hold_hints_and_alignment(d):
         for _ in range(3):await edge(d);assert int(d.valid_o.value) and int(d.link_o.value)==0x80000024
         d.consume_i.value=1;await edge(d);d.consume_i.value=0
     d.src_i.value=0x80001002;d.imm_i.value=0;d.grant_i.value=1;await edge(d);d.grant_i.value=0;await edge(d)
-    assert int(d.exc_o.value) and int(d.tval_o.value)==0x80001002 and not int(d.resolve_o.value)
+    # L7b spec 5: IALIGN=16 permits bit1; JALR clears only bit0.
+    assert not int(d.exc_o.value) and int(d.resolve_o.value) and int(d.mispredict_o.value)
+    assert int(d.target_o.value)==0x80001002 and int(d.link_o.value)==0x80000024
+    assert int(d.valid_o.value)
     d.rst.value=1;await edge(d);d.rst.value=0;assert not int(d.valid_o.value)
