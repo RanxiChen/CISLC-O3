@@ -19,15 +19,18 @@ async def actual_shared_arbiter_holds_old_result_and_kills_young_regread(d):
         await settle()
         assert val(d.result_valid_o)==1 and val(d.result_rob_o)==3
         assert val(d.rr_valid_o)==1 and val(d.old_consume_o)==0,(seed,case,'real WB backpressure missing')
+        assert val(d.pressure_load_consume_o)==1,(seed,case,'older load not using third port')
+        assert any(val(d.complete_valid_o[n]) and val(d.complete_idx_o[n])==2
+                   for n in range(len(d.complete_valid_o))),(seed,case,'older load completion missing')
         d.resolution_i.value=1;d.tag_i.value=tag
         await settle()
-        assert all(not val(d.complete_valid_o[n]) or val(d.complete_idx_o[n])!=4 for n in range(4))
+        assert all(not val(d.complete_valid_o[n]) or val(d.complete_idx_o[n])!=4 for n in range(len(d.complete_valid_o)))
         await tick(d)
         assert val(d.rr_valid_o)==0
         assert val(d.result_valid_o)==1 and val(d.result_rob_o)==3,(seed,case,'old result lost')
         d.resolution_i.value=0
         for delay in range(rng.randrange(2,6)):
             await settle()
-            assert all(not val(d.complete_valid_o[n]) or val(d.complete_idx_o[n])!=4 for n in range(4)),(seed,case,delay,'young completion escaped')
+            assert all(not val(d.complete_valid_o[n]) or val(d.complete_idx_o[n])!=4 for n in range(len(d.complete_valid_o))),(seed,case,delay,'young completion escaped')
             await tick(d)
         assert val(d.result_valid_o)==0
