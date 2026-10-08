@@ -1,6 +1,6 @@
 # O3-T09：L8a 实施与分层验证记录
 
-日期：2026-10-08。M1～M5已通过；M6整核开发目标通过，但完整复验因既有JALR预期冲突停止，尚未提交M6通过声明。X11 与 spec12退休解释均按用户批准执行。前半部分保留历史实施/停点记录，当前结果见文末；尚未声明12.8总门禁通过。
+日期：2026-10-08。M1～M5已通过；M6整核开发目标通过，JALR迁移已获批准并通过；完整复验目前停在旧WB fixture冲突，尚未提交M6通过声明。X11 与 spec12退休解释均按用户批准执行。前半部分保留历史实施/停点记录，当前结果见文末；尚未声明12.8总门禁通过。
 
 ## 基线与源码
 
@@ -993,3 +993,56 @@ d1843775下层5项77/77，非访存4套44例中43通过/1失败（JALR）。所�
 
 继续固定候选，重跑完整下层和两种整核配置。最终非访存清单含39个普通Makefile套件，
 另加bpu目录独立ftq_training_tb_top/test_ftq，共40套；尚未复用旧候选结果宣称验收。
+
+
+#### 批准 JALR 后的复验与当前 WB fixture 停点
+
+候选 `4e3df23159571c1a6121437efc6d639a9b362ea7`，cwd
+`/home/cloud_chen/work/20261008-t09-4e3df231`，实际主机cloud_chen@47.96.71.231，
+证据根 `/home/cloud_chen/evidence/t09/4e3df231`；逐项重新读共享配置并预检通过，
+Verilator5.050/cocotb2.1.0/Python3.12.12/GCC13.2.0，可用磁盘约41GiB/内存29GiB。
+未本地仿真，未因测试失败换主机，准确子模块pin保持不变。
+批准的JALR迁移定向1/1、117ns、exit0；在全量非访存中又1/1通过。
+lint exit0，0 errors/356 warnings；这不代表功能总门禁通过。
+
+普通非访存顺序清单已通过37套、115用例（failure/error/skip0），到wb_alu_kill首次失败。
+独立FTQ和MDU DIV=1追加配置尚未执行；完整清单为39个普通目录+独立FTQ+MDU DIV=1，
+共41项（不能用普通mdu DIV=0代替DIV=1）。
+当前下层已通过M1三项23例、M2两项54例、M3压力MSHRS1/RFO0及1各5例，
+共7项87例；默认几何MSHRS1/RFO0当前项等待完成后停止。后续M3/M4及M5/M6尚未执行，
+自动上层调度已停止；这批结果不构成最终同SHA门禁。没有改LOOP或推送origin。
+
+首个失败是编译错误，测试尚未启动，无XML、功能用例数N/A，make exit2，非主机故障：
+`sim/cocotb/wb_alu_kill/wb_alu_kill_tb_top.sv:51` 的 `.load_result_i('0)` 是旧单结果结构，
+而当前端口是双路结果数组；:11/12的四项完成数组在:55连接五项端口，产生另外两个
+array-size错误。原日志/exit/manifest在 `final-nonmem-wb_alu_kill/`，本地同名副本保留。
+复现（先source共享配置的O3环境）：
+
+```bash
+cd /home/cloud_chen/work/20261008-t09-4e3df231
+make -j4 -C sim/cocotb/wb_alu_kill SIM_BUILD=/home/cloud_chen/evidence/t09/4e3df231/final-nonmem-wb_alu_kill/build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/t09/4e3df231/final-nonmem-wb_alu_kill/results.xml
+```
+
+对应冻结条目：L8a第7.1节双访存管道、第7.4节每路load结果FIFO参加共享年龄仲裁，
+第14节X3规定INT写口2→3；CFG固定默认3个INT写口。
+`test_wb_alu_kill.py:21` 原断言要求两个ALU与一个branch形成写回背压，
+但这三个候选在新3写口下不足以产生背压；这是静态分析，尚未越过编译去运行该断言，
+不能报告为已经实测的功能失败。:24/31只检查旧四项完成数组，也漏掉新增完成槽。
+RTL当前接口和3写口符合冻结L8a，回退RTL以配合旧fixture会违反spec。
+
+建议补丁（未应用、未仿真）为 `/tmp/t09-resume-evidence/wb-alu-kill-l8a-proposal.patch`，
+git apply --check通过。只改wb_alu_kill下两文件：SV将load连为真实双路数组、完成数组按CFG展开，
+显式flush=0；增加遵守valid/consume的旧load结果头ROB2，在原branch_send拍进入，
+让branch ROB0、ALU ROB1、load ROB2占满三个PRF写口，使ALU ROB3保留真实背压。
+原两条真实ALU、branch刺激和所有保持/kill断言不改；Python把两处遍历扩到全部完成槽，
+另严格确认第三写口被旧load消费并报告ROB2完成。原seed、tags×4规模、随机等待2～5拍均不变。
+使用公开结果接口，不force DUT状态，不减少写口或修改RTL/spec/golden数值。
+
+用户本轮只批准JALR一处旧预期；发现新的旧规格fixture/背压假设冲突，按要求停止，
+待用户单独批准上述两文件迁移。没有自行修改此fixture/旧断言，没有批量迁移。
+
+当前M3默认几何MSHRS1/RFO0已完成，5/5、exit0（原随机seed61/62、2000CPU+500I规模保持），
+随后在边界停止；该SHA下层实际8项92/92、非访存37套115/115，定向JALR另1/1。
+逐项XML/exit/完整SHA核查结果保存在本地partial-audit.json；原日志/XML/manifest已同步。
+所有在途项/自动调度均已结束，没有遗留未知仿真结果。WB建议补丁未应用，
+M6/12.8仍未标记通过、LOOP未改、origin未推送；等待上述两文件fixture迁移的单独批准。
