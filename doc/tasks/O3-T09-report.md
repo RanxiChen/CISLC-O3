@@ -976,3 +976,20 @@ early_wakeup1例失败；35b20b4c非访存8套33例中32通过/1失败，M5 buil
 d1843775下层5项77/77，非访存4套44例中43通过/1失败（JALR）。所有已有XML skip/error0。
 所有在途项均已结束，自动调度已停止；没有遗留未知仿真结果。日志/XML/manifest已同步本地。
 继续时最终非访存清单还必须包含bpu目录的独立FTQ harness，不能仅运行普通Makefile目录清单。
+
+
+#### 用户批准的测试迁移（2026-10-08）
+
+用户批准仅应用 `jalr-ialign16-proposal.patch`，只改
+`sim/cocotb/jalr/test_jalr.py` 中0x80001002这一步旧预期。
+该用例写于L6/IALIGN=32；冻结L7b spec第5节改为IALIGN=16并删除taken目标bit1异常，
+当时漏迁此单元测试。RTL符合冻结spec，不改RTL或spec。
+提交 `fdf588540e4b54a679b7732602ae185c7310d419`，标题为用户指定的
+`test(jalr): migrate stale IALIGN=32 expectation to frozen L7b IALIGN=16`。
+原刺激和其余检查全部保留；该步严格检查exc=0、resolve=1、mispredict=1、target、link、valid，
+复位后invalid检查保留。补丁仅hunk行数格式错误，使用git apply --recount应用，实际diff与批准内容相同。
+这项批准不扩展到其他旧规格断言。全量套件遇到任何新的旧规格冲突，都保留文件/行号、
+冻结spec条目和建议补丁，停下另请批准；不能批量迁移。
+
+继续固定候选，重跑完整下层和两种整核配置。最终非访存清单含39个普通Makefile套件，
+另加bpu目录独立ftq_training_tb_top/test_ftq，共40套；尚未复用旧候选结果宣称验收。
