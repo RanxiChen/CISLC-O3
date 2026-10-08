@@ -1,4 +1,7 @@
 VERILATOR ?= verilator
+MEM_PIPES ?= 2
+MSHRS ?= 4
+RFO ?= 1
 
 SIM_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 REPO_ROOT := $(abspath $(SIM_DIR)/../..)
@@ -14,6 +17,7 @@ TOP := o3_tandem_top
 RUN_BIN := $(BUILD_DIR)/V$(TOP)
 
 VERILATOR_FLAGS := \
+	-GMEM_PIPES=$(MEM_PIPES) -GMSHRS=$(MSHRS) -GRFO=$(RFO) \
 	--cc \
 	--exe \
 	--build \
@@ -102,7 +106,7 @@ run-unified-memory:
 	fi
 	cd $(SIM_DIR) && env -u O3_INJECT $(RUN_BIN) $(SPIKE_ARGS) \
 		--image tests/unified_memory.hex \
-		--reset-pc 0x10000000 \
+		--reset-pc 0x80000000 \
 		--trace unified_memory.jsonl \
 		--max-cycles 5000 --max-retires 18
 	cd $(SIM_DIR) && python3 check_trace.py \

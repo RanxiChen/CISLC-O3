@@ -6,6 +6,7 @@ module o3_tandem_top
     import o3_types_pkg::*;
     import o3_pkg::*;
 #(
+    parameter int MEM_PIPES=2, MSHRS=4, RFO=1,
     localparam int AXI_ID_W = o3_cfg_pkg::O3_CFG.be.l2.axi_id_bits,
     localparam int AXI_DATA_W = o3_cfg_pkg::O3_CFG.be.l2.axi_data_bits
 ) (
@@ -60,7 +61,14 @@ module o3_tandem_top
         void'($value$plusargs("irq_s_ext_at=%d",irq_s_ext_at));
     end
     always_ff @(posedge clk_i) if(rst_i) mtime_q<=0; else mtime_q<=mtime_q+1;
-    o3_core u_core (
+    function automatic o3_cfg_pkg::o3_cfg_t simulation_config();
+        o3_cfg_pkg::o3_cfg_t c;c=o3_cfg_pkg::O3_CFG;
+        c.be.lsu.mem_pipes=MEM_PIPES;c.be.dcache.mshrs=MSHRS;
+        c.be.dcache.rfo_enable=1'(RFO);return c;
+    endfunction
+    localparam o3_cfg_pkg::o3_cfg_t SIM_CFG=simulation_config();
+    initial begin assert(MEM_PIPES inside {1,2});assert(MSHRS inside {[1:4]});assert(RFO inside {0,1});end
+    o3_core #(.CFG(SIM_CFG)) u_core (
         .clk_i(clk_i), .rst_i(rst_i), .reset_pc_i(reset_pc_i),
         .m_axi_awvalid(awvalid), .m_axi_awready(awready), .m_axi_awid(awid),
         .m_axi_awaddr(awaddr), .m_axi_awlen(awlen), .m_axi_awsize(awsize),
@@ -199,6 +207,21 @@ module o3_tandem_top
                     u_core.u_backend.u_load_store_unit.d_pending_q,u_core.u_backend.u_load_store_unit.d_refresh_q,u_core.u_backend.u_load_store_unit.d_fence_q,
                     u_core.u_backend.u_load_store_unit.ag_q[0].valid,u_core.u_backend.u_load_store_unit.ag_q[0].r.uop.rob_idx,
                     u_core.u_backend.u_load_store_unit.ag_q[0].r.va,u_core.u_backend.u_ptw.state_q,u_core.u_backend.t_dmmu_csr.epoch);
+            end
+            if ($test$plusargs("L8A_DEBUG") &&
+                ((debug_cycle_q>=3750 && debug_cycle_q<4000) || debug_cycle_q%1024==0)) begin
+                $display("[l8a] c=%0d head=%b/%0d pc=%h complete=%b exc=%b/%0d flush=%b M=%b IQ=%b grant=%b ready=%b/%b RR=%b AG=%b S1=%b S2=%b DC=%b/%0d/%0d FIFO=%0d EXC=%b/%0d ready=%b SQempty=%b SQreplay=%b LQreplay=%b",
+                    debug_cycle_q,u_core.u_backend.head_valid,u_core.u_backend.rob_head,
+                    u_core.u_backend.rob_head_info.pc,u_core.u_backend.rob_head_info.complete,
+                    u_core.u_backend.rob_head_info.exc.valid,u_core.u_backend.rob_head_info.exc.cause,
+                    u_core.u_backend.global_flush,u_core.u_backend.branch_mispredict,u_core.u_backend.mem_iq_issue_valid,
+                    u_core.u_backend.mem_read_grant,u_core.u_backend.mem_issue_ready[0],u_core.u_backend.mem_issue_ready[1],
+                    u_core.u_backend.mem_execute_q[0].valid,u_core.u_backend.u_load_store_unit.ag_q[0].valid,
+                    u_core.u_backend.u_load_store_unit.s1_q[0].valid,u_core.u_backend.u_load_store_unit.s2_q[0].valid,
+                    u_core.u_backend.t_dc_ld_resp[0].valid,u_core.u_backend.t_dc_ld_resp[0].status,u_core.u_backend.t_dc_ld_resp[0].reason,
+                    u_core.u_backend.u_load_store_unit.count_q[0],u_core.u_backend.mem_exc_valid[0],
+                    u_core.u_backend.mem_exc_idx[0],u_core.u_backend.mem_exc_ready[0],u_core.u_backend.t_sq_committed_empty,
+                    u_core.u_backend.sq_replay_valid[0],u_core.u_backend.lq_replay_valid[0]);
             end
             debug_cycle_q <= debug_cycle_q + 1;
             if ($test$plusargs("L5_DEBUG") && debug_cycle_q < 2000) begin

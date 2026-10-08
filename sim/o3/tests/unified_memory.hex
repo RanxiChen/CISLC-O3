@@ -1,32 +1,32 @@
-# Unified byte-addressed image. @ changes the absolute byte address.
-@0x10000000
-110000b7 # lui  x1,0x11000       DTCM base
+# X5: unified main-memory image; data/golden and 18 operations retained.
+@0x80000000
+00010097 # auipc x1,0x10: main data A
 05500393 # addi x7,x0,0x55
-0070b423 # sd   x7,8(x1)         local DTCM write
-120001b7 # lui  x3,0x12000       software memory address
-0071b423 # sd   x7,8(x3)         external software memory write
-0000b103 # ld   x2,0(x1)         local DTCM read
-0001b203 # ld   x4,0(x3)         external software memory read
+0070b423 # sd   x7,8(x1)         main data A write
+00020197 # auipc x3,0x20: main data B + 12
+fe71be23 # sd x7,-4(x3): main data B + 8
+0000b103 # ld   x2,0(x1)         main data A read
+ff41b203 # ld x4,-12(x3): main data B
 00110293 # addi x5,x2,1
 00120313 # addi x6,x4,1
-0081b603 # ld   x12,8(x3)        verify external Store reached software memory
-0080b683 # ld   x13,8(x1)        verify local DTCM Store
+ffc1b603 # ld x12,-4(x3): verify main store
+0080b683 # ld   x13,8(x1)        verify main data A Store
 00800413 # addi x8,x0,8          leave time for committed Stores to drain
 00900493 # addi x9,x0,9
 00a00513 # addi x10,x0,10
 00b00593 # addi x11,x0,11
-11040737 # lui  x14,0x11040
-ffc70713 # addi x14,x14,-4      address crosses DTCM end
-00073783 # ld   x15,0(x14)      whole access must use software memory
+00050717 # auipc x14,0x50
+fb870713 # addi x14,x14,-72: unaligned within one line
+00073783 # ld x15,0(x14): two adjacent word banks
 
-@0x11000000
+@0x80010000
 55667788
 11223344
 
-@0x12000000
+@0x80020000
 44332211
 88776655
 
-@0x1103fffc
+@0x8004fff4
 eeff0011
 aabbccdd
