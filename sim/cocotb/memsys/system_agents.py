@@ -206,7 +206,7 @@ class SystemBench(CacheBench):
             self.check(line not in self.puts.values(), 'Get before PutAck')
             self.sent[tid]=(line,op)
             self.note('get',op,line,tid)
-        if self.ipresent and v['l1i_req_ready_o']:
+        if self.ipresent and int(d.l1i_req_valid_i.value) and v['l1i_req_ready_o']:
             tid,line,start = self.ipresent
             self.iout[tid]=(line,start);self.ipresent=None
         if v['m_axi_arvalid'] and v['m_axi_arready']:

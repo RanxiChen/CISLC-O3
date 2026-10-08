@@ -22,6 +22,9 @@ class AtomicDmaBench(SystemBench):
         d.dma_req_valid_i.value = self.dma_pending is not None
         d.dma_req_i.value = req(*self.dma_pending) if self.dma_pending else 0
         d.dma_resp_ready_i.value = self.dma_rng.randrange(4) != 0
+        active = self.dma_pending or self.dma_inflight
+        if active and active[0] == MASKWRITE and self.ipresent and self.ipresent[1] == active[1]:
+            d.l1i_req_valid_i.value = 0
 
     def sample_extra(self):
         d = self.d
@@ -58,6 +61,9 @@ class AtomicDmaBench(SystemBench):
         self.check(self.dma_pending is self.dma_inflight is None, 'DMA one at a time')
         # Serialize this line with explicit CPU writes; I reads keep running and
         # check their independent history across Down/Inv and DMA WriteAck.
+        if op == MASKWRITE:
+            await self.until(lambda: all(t[0] != line for t in self.iout.values()) and
+                             (self.ipresent is None or self.ipresent[1] != line), 5000)
         self.dma_result = None
         self.dma_pending = (op, line, 0, mask, data)
         await self.until(lambda: self.dma_result is not None, 5000)
