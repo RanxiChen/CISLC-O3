@@ -121,7 +121,7 @@ module ICache
         for(int w=0;w<WAYS;w++) if(tags3_q[w].valid && tags3_q[w].tag==TW'(s3_q.pa>>(7+SW))) begin hit=1;hit_way=w;hit_line=data3_q[w];end
         stale=s3_q.version!=version_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)];
         fault=s3_q.pf || s3_q.af || !pma_main(64'(s3_q.pa),FETCH_BYTES) ||
-            !pmp_allow(pmp_i,s3_q.pa,FETCH_BYTES,csr_i.priv,1'b0,1'b0,1'b1);
+            !pmp_allow_dec(pmp_i.dec,s3_q.pa,FETCH_BYTES,csr_i.priv,1'b0,1'b0,1'b1);
     end
     assign demand_miss_pending=v3_q && !stale && !hit && !fault;
     assign alloc_line=demand_miss_pending ? {s3_q.pa[PADDR_W-1:6],6'b0}:pf_req_i.line_paddr;

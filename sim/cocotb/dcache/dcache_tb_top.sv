@@ -33,6 +33,8 @@ module dcache_tb_top import o3_types_pkg::*; #(
     output logic [SETS*(WAYS-1)-1:0] mon_plru,
     output logic [31:0] widths
 );
+    pmp_state_t pmp_test;
+    always_comb begin pmp_test=pmp_i;pmp_test.dec=pmp_decode(pmp_i.entries);end
     function automatic o3_cfg_pkg::backend_cfg_t test_config();
         o3_cfg_pkg::backend_cfg_t c;c=o3_cfg_pkg::O3_CFG.be;
         c.dcache.sets=SETS;c.dcache.ways=WAYS;c.dcache.mshrs=MSHRS;
@@ -49,12 +51,12 @@ module dcache_tb_top import o3_types_pkg::*; #(
         ld_s1_i='{s1_cpu0,s1_cpu1};
         for(int p=0;p<2;p++) begin
             ld_s1_i[p].priv=priv_i;
-            ld_s1_i[p].permission=dc_permissions(ld_s1_i[p],pmp_i,priv_i);
+            ld_s1_i[p].permission=dc_permissions(ld_s1_i[p],pmp_test,priv_i);
         end
     end
     assign cpu_ready={ld_req_ready_o[1],ld_req_ready_o[0]};
     assign resp0=ld_resp_o[0];assign resp1=ld_resp_o[1];
-    dcache #(.CFG(CFG)) dut(.*);
+    dcache #(.CFG(CFG)) dut(.pmp_i(pmp_test),.*);
     assign init_done=dut.init_done_q;
     assign mon_ps_valid=dut.ps_valid_q;assign mon_ps_write=dut.ps_write;
     assign mon_ps_alloc=dut.ps_lane>=0;

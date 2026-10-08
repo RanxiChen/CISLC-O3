@@ -24,15 +24,15 @@ module pmp_checker import o3_types_pkg::*; #(
         else if(!stall_i) begin
             s3_valid_o<=s2_valid_i; default_q<=priv_i==PRIV_M;
             for(int n=0;n<PMP_N;n++) begin
-                match_q[n]<=cfg_i.entries[n].cfg[4:3]!=0 &&
-                    {1'b0,s2_paddr_i}<pmp_upper(cfg_i,n) &&
-                    ({1'b0,s2_paddr_i}+57'(bytes_i))>pmp_lower(cfg_i,n);
-                allow_q[n]<={1'b0,s2_paddr_i}>=pmp_lower(cfg_i,n) &&
-                    ({1'b0,s2_paddr_i}+57'(bytes_i))<=pmp_upper(cfg_i,n) &&
-                    ((priv_i==PRIV_M && !cfg_i.entries[n].cfg[7]) ||
-                     ((!read_i || cfg_i.entries[n].cfg[0]) &&
-                      (!write_i || cfg_i.entries[n].cfg[1]) &&
-                      (!exec_i || cfg_i.entries[n].cfg[2])));
+                match_q[n]<=cfg_i.dec[n].en &&
+                    {1'b0,s2_paddr_i}<cfg_i.dec[n].hi &&
+                    ({1'b0,s2_paddr_i}+57'(bytes_i))>cfg_i.dec[n].lo;
+                allow_q[n]<={1'b0,s2_paddr_i}>=cfg_i.dec[n].lo &&
+                    ({1'b0,s2_paddr_i}+57'(bytes_i))<=cfg_i.dec[n].hi &&
+                    ((priv_i==PRIV_M && !cfg_i.dec[n].l) ||
+                     ((!read_i || cfg_i.dec[n].r) &&
+                      (!write_i || cfg_i.dec[n].w) &&
+                      (!exec_i || cfg_i.dec[n].x)));
             end
         end
     end

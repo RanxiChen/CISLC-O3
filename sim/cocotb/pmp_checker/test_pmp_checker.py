@@ -58,3 +58,27 @@ async def pma_full_range_no_bare_high_bit_alias(d):
   assert (bool(int(d.pma_exists_o.value)),bool(int(d.pma_cache_o.value)),bool(int(d.pma_exec_o.value)),bool(int(d.pma_read_o.value)),bool(int(d.pma_write_o.value)))==(exists,cached,executable,exists,exists),(hex(addr),size)
 
   assert (bool(int(d.pma_io_o.value)),bool(int(d.pma_amo_o.value)),bool(int(d.pma_rsrv_o.value)))==(io,cached,cached),(hex(addr),size)
+
+@cocotb.test()
+async def predecode_all_modes_trailing_ones_and_random_equivalence(d):
+ rng=random.Random(int(os.getenv('TEST_SEED','1')))
+ for name in ('clk','valid_i','stall_i','rd_i','wr_i','ex_i','addr_i','bytes_i','priv_i','pma_addr_i','cfg_i','pmpaddr_i'):getattr(d,name).value=0
+ d.rst.value=1;await edge(d);d.rst.value=0
+ async def check(configs,addresses):
+  d.cfg_i.value=sum(v<<(8*i) for i,v in enumerate(configs))
+  d.pmpaddr_i.value=sum(v<<(54*i) for i,v in enumerate(addresses))
+  d.addr_i.value=rng.getrandbits(56);d.bytes_i.value=rng.choice([1,2,4,8,16,64,127])
+  d.priv_i.value=rng.choice([0,1,3])
+  for x in ('rd_i','wr_i','ex_i'):getattr(d,x).value=rng.randrange(2)
+  await Timer(1,unit='ns')
+  assert int(d.decode_equal_o.value)==1,(configs,addresses)
+  assert int(d.allow_dec_o.value)==int(d.allow_ref_o.value)
+ for n in range(16):
+  for mode in (0,1,3):
+   for ones in range(55):
+    cs=[0]*16;ads=[rng.getrandbits(54) for _ in range(16)]
+    cs[n]=(mode<<3)|rng.randrange(8)|(rng.randrange(2)<<7)
+    ads[n]=((rng.getrandbits(54) & ~((1<<(ones+1))-1)) | ((1<<ones)-1)) & ((1<<54)-1)
+    await check(cs,ads)
+ for _ in range(10000):
+  await check([(rng.choice([0,1,3])<<3)|rng.randrange(8)|(rng.randrange(2)<<7) for _ in range(16)], [rng.getrandbits(54) for _ in range(16)])

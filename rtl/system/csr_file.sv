@@ -86,6 +86,7 @@ module csr_file
     logic [2:0] frm_q;
     logic [4:0] fflags_q;
     pmp_entry_t [PMP_N-1:0] pmp_q,pmp_next;
+    pmp_dec_t [PMP_N-1:0] pmp_dec_q;
     xlate_epoch_t epoch_q;
     logic [63:0] old_value,modify_value,status_value,mip_value,rmw_value;
     logic implemented,access_illegal,hpm_implemented,overflow;
@@ -228,7 +229,7 @@ module csr_file
         dmmu_csr_o='{priv_eff:(priv_q==PRIV_M && status_q[17] ? status_q[12:11] : priv_q),priv:priv_q,
             mprv:status_q[17],mpp:status_q[12:11],sum:status_q[18],mxr:status_q[19],adue:menvcfg_q[61],
             satp_mode:satp_q[63:60],satp_asid:satp_q[59:44],satp_ppn:satp_q[43:0],epoch:epoch_q};
-        pmp_o='{update:pmp_change,entries:pmp_q};priv_o=priv_q;status_o=status_value;
+        pmp_o='{update:pmp_change,dec:pmp_dec_q,entries:pmp_q};priv_o=priv_q;status_o=status_value;
         fs_o=status_q[14:13];frm_o=frm_q;
         irq_view_o='{mip:mip_value,mie:mie_q}; irq_take_o=0;irq_cause_o=0;
         // Reverse loop implements the frozen total priority, not Breeze's destination grouping.
@@ -259,10 +260,11 @@ module csr_file
             mtvec_q<=64'h200;stvec_q<=0;mepc_q<=0;sepc_q<=0;mcause_q<=0;scause_q<=0;
             mtval_q<=0;stval_q<=0;mscratch_q<=0;sscratch_q<=0;
             satp_q<=0;menvcfg_q<=64'h2000000000000000;stimecmp_q<='1;
-            mcounteren_q<=0;scounteren_q<=0;frm_q<=0;fflags_q<=0;pmp_q<=0;epoch_q<=0;
+            mcounteren_q<=0;scounteren_q<=0;frm_q<=0;fflags_q<=0;pmp_q<=0;pmp_dec_q<=0;epoch_q<=0;
         end else begin
             if(sfence_epoch_i) epoch_q<=epoch_q+1'b1;
             pmp_q<=pmp_next;
+            pmp_dec_q<=pmp_decode(pmp_next);
             if(trap_update_valid_i) begin
                 assert(!req_valid_i && (trap_update_i.is_xret || retire_count_i==0));
                 if(trap_update_i.is_xret) begin
@@ -327,4 +329,8 @@ module csr_file
             end
         end
     end
+`ifndef SYNTHESIS
+    always_ff @(posedge clk) if(!rst)
+        assert(pmp_dec_q==pmp_decode_ref(pmp_q)) else $fatal(1,"PMP decoded state mismatch");
+`endif
 endmodule

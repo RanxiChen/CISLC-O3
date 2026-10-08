@@ -44,6 +44,7 @@ module icache_tb_top
             pmp.entries[n].cfg=pmpcfg_i[n*8+:8];
             pmp.entries[n].addr=pmpaddr_i[n*54+:54];
         end
+        pmp.dec=pmp_decode(pmp.entries);
     end
     assign req = '{region_base:req_pc, ftq_id:req_ftq_id,
                    rq_idx:req_rq_idx, epoch:'0};

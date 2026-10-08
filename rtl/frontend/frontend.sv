@@ -363,7 +363,7 @@ module frontend
     );
 
     // D28：PMP 派生状态更新脉冲由同步序列给出（序列未实现）。
-    assign pmp_to_icache = '{update: pmp_update_sync, entries: pmp_i.entries};
+    assign pmp_to_icache = '{update: pmp_update_sync, dec:pmp_i.dec, entries: pmp_i.entries};
 
     ICache #(.CFG(CFG)) u_icache (
         .clk                 (clk_i),

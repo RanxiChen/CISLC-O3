@@ -521,7 +521,14 @@ package o3_types_pkg;
     } pmp_entry_t;
 
     typedef struct packed {
+        logic en;
+        logic [56:0] lo, hi;
+        logic r, w, x, l;
+    } pmp_dec_t;
+
+    typedef struct packed {
         logic                    update; // 有效修改脉冲：更新范围预解码派生状态（D28）
+        pmp_dec_t [PMP_N-1:0] dec;
         pmp_entry_t [PMP_N-1:0]  entries;
     } pmp_state_t;
 
@@ -576,6 +583,60 @@ package o3_types_pkg;
                       (!ex || cfg.entries[n].cfg[2])));
         end
         return priv==PRIV_M;
+    endfunction
+    // CSR-side arithmetic only. XOR with the increment forms the trailing-one
+    // mask, including 54-bit wraparound. The exclusive upper bound is 57 bits.
+    function automatic logic [$bits(pmp_dec_t)*PMP_N-1:0] pmp_decode(
+        input pmp_entry_t [PMP_N-1:0] entries);
+        pmp_dec_t [PMP_N-1:0] d;
+        logic [53:0] e, m;
+        logic [56:0] mask, a;
+        for (int n=0;n<PMP_N;n++) begin
+            e=pmp_addr_read(entries[n]); m=e^(e+54'd1);
+            a={1'b0,e,2'b0}; mask={1'b0,m,2'b11};
+            d[n]='{en:entries[n].cfg[4:3]!=0,lo:a,hi:a,
+                r:entries[n].cfg[0],w:entries[n].cfg[1],
+                x:entries[n].cfg[2],l:entries[n].cfg[7]};
+            case(entries[n].cfg[4:3])
+                2'b01: begin
+                    d[n].lo=n==0 ? 57'd0 : {1'b0,(entries[n-1].addr & ~54'd3),2'b0};
+                    d[n].hi=a;
+                end
+                2'b11: begin
+                    d[n].lo=a & ~mask;
+                    d[n].hi=(a | mask)+57'd1;
+                end
+                default: ;
+            endcase
+        end
+        return d;
+    endfunction
+    function automatic logic [$bits(pmp_dec_t)*PMP_N-1:0] pmp_decode_ref(
+        input pmp_entry_t [PMP_N-1:0] entries);
+        pmp_state_t c;
+        pmp_dec_t [PMP_N-1:0] d;
+        c='0;c.entries=entries;
+        for(int n=0;n<PMP_N;n++)
+            d[n]='{en:entries[n].cfg[4:3]!=0,lo:pmp_lower(c,n),hi:pmp_upper(c,n),
+                r:entries[n].cfg[0],w:entries[n].cfg[1],x:entries[n].cfg[2],l:entries[n].cfg[7]};
+        return d;
+    endfunction
+    function automatic logic pmp_allow_dec(input pmp_dec_t [PMP_N-1:0] dec,
+        input paddr_t addr,input int unsigned bytes,input logic [1:0] priv,
+        input logic rd,wr,ex);
+        logic [PMP_N-1:0] match_bits, permissions;
+        logic [56:0] a,b;
+        logic result;
+        a={1'b0,addr}; b=a+57'(bytes);
+        for(int n=0;n<PMP_N;n++) begin
+            match_bits[n]=dec[n].en && a<dec[n].hi && b>dec[n].lo;
+            permissions[n]=a>=dec[n].lo && b<=dec[n].hi &&
+                ((priv==PRIV_M && !dec[n].l) ||
+                ((!rd || dec[n].r) && (!wr || dec[n].w) && (!ex || dec[n].x)));
+        end
+        result=priv==PRIV_M;
+        for(int n=PMP_N-1;n>=0;n--) if(match_bits[n]) result=permissions[n];
+        return result;
     endfunction
     function automatic logic pma_main(input logic [63:0] addr, input int unsigned bytes);
         logic [64:0] last_addr;
@@ -1036,7 +1097,7 @@ package o3_types_pkg;
         main=pma_main(64'(r.paddr),dc_bytes(r));io=pma_io(64'(r.paddr),dc_bytes(r));
         wr=r.write || r.is_sta;rd=!wr || (r.src==DC_SRC_AMO && !(r.amo_op inside {AMO_SC,AMO_LR}));
         if(r.access_valid) begin rd=r.access_read;wr=r.access_write;end
-        a='{pmp_ok:pmp_allow(pmp,r.paddr,dc_bytes(r),priv,rd,wr,1'b0),exists:main || io,
+        a='{pmp_ok:pmp_allow_dec(pmp.dec,r.paddr,dc_bytes(r),priv,rd,wr,1'b0),exists:main || io,
             io:io,amo_ok:main,rsrv_ok:main,high_addr:((64'(r.paddr)>>MEM_PADDR_W)!=0)};
         return a;
     endfunction

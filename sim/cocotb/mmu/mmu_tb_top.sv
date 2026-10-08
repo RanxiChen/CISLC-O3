@@ -35,6 +35,7 @@ module mmu_tb_top import o3_types_pkg::*; (
         dv[0]=d_valid_i;ds[0]=d_store_i;da[0]=d_va_i;dv[1]=d1_valid_i;ds[1]=d1_store_i;da[1]=d1_va_i;
         mem_resp='{valid:mem_valid_i,src:DC_SRC_PTW,status:(mem_fault_i ? DC_ERROR : DC_OK),reason:LDW_NONE,rdata:mem_data_i,default:'0};
         ad_resp='{valid:ad_valid_i,updated:ad_updated_i,mismatch:ad_mismatch_i,access_fault:ad_fault_i};
+        pmp.dec=pmp_decode(pmp.entries);
     end
     itlb #(.CFG(o3_cfg_pkg::O3_CFG.fe)) i_tlb(.clk_i(clk),.rst_i(rst),.kill_i(kill_i),
         .s0_valid_i(i_valid_i),.s0_vaddr_i(i_va_i),.s1_valid_o(i_resp_o),.s1_hit_o(i_hit_o),.s1_miss_o(i_miss_o),
