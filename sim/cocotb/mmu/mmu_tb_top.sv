@@ -4,6 +4,8 @@ module mmu_tb_top import o3_types_pkg::*; (
     output logic d1_resp_o,d1_hit_o,d1_miss_o,d1_pf_o,d1_af_o,d1_dirty_o,
     output logic [55:0] d1_pa_o,
     input logic d_commit_i,output logic d_commit_ready_o,d_commit_done_o,d_commit_exc_o,
+    input logic i_probe_i,
+    output logic i_walk_o,output fe_perf_t i_perf_o,
     input logic i_valid_i,d_valid_i,d_store_i,input logic [63:0] i_va_i,d_va_i,
     input logic [3:0] mode_i,input logic [1:0] priv_i,input logic sum_i,mxr_i,adue_i,
     input logic [15:0] asid_i,input logic [43:0] root_i,input logic [7:0] epoch_i,
@@ -26,7 +28,7 @@ module mmu_tb_top import o3_types_pkg::*; (
     logic ptw_ad_valid,ptw_ad_ready,rewalk_valid,rewalk_ready;
     ptw_req_t rewalk_req;exc_info_t d_exc;
     always_comb begin
-        fe='{priv:priv_i,adue:adue_i,satp_mode:mode_i,satp_asid:asid_i,satp_ppn:root_i,epoch:xlate_epoch_t'(epoch_i)};
+        fe='{fe_feat:'0,priv:priv_i,adue:adue_i,satp_mode:mode_i,satp_asid:asid_i,satp_ppn:root_i,epoch:xlate_epoch_t'(epoch_i)};
         csr='{priv_eff:priv_i,sum:sum_i,mxr:mxr_i,adue:adue_i,satp_mode:mode_i,
             satp_asid:asid_i,satp_ppn:root_i,epoch:xlate_epoch_t'(epoch_i),default:'0};
         sf='{valid:sf_valid_i,rs1_is_x0:sf_rs1_x0_i,rs2_is_x0:sf_rs2_x0_i,vaddr:sf_va_i,asid:sf_asid_i};
@@ -38,14 +40,15 @@ module mmu_tb_top import o3_types_pkg::*; (
         pmp.dec=pmp_decode(pmp.entries);
     end
     itlb #(.CFG(o3_cfg_pkg::O3_CFG.fe)) i_tlb(.clk_i(clk),.rst_i(rst),.kill_i(kill_i),
-        .s0_valid_i(i_valid_i),.s0_vaddr_i(i_va_i),.s1_valid_o(i_resp_o),.s1_hit_o(i_hit_o),.s1_miss_o(i_miss_o),
+        .s0_probe_i(i_probe_i),.s0_valid_i(i_valid_i),.s0_vaddr_i(i_va_i),.s1_valid_o(i_resp_o),.s1_hit_o(i_hit_o),.s1_miss_o(i_miss_o),
         .s1_ppn_o(i_ppn),.s1_level_o(i_level),.s1_page_fault_o(i_pf_o),.s1_access_fault_o(i_af_o),
         .ptw_req_valid_o(i_req_valid),.ptw_req_ready_i(i_ready),.ptw_req_o(i_req),.ptw_resp_i(resp),
-        .csr_i(fe),.sfence_i(sf),.sfence_done_o(i_sf),.perf_o());
+        .csr_i(fe),.sfence_i(sf),.sfence_done_o(i_sf),.perf_o(i_perf_o));
     dtlb #(.CFG(o3_cfg_pkg::O3_CFG.be)) d_tlb(.clk(clk),.rst(rst),.kill_i(kill_i),
         .lookup_valid_i(dv),.lookup_vaddr_i(da),.lookup_is_store_i(ds),.resp_valid_o(dr),.resp_o(dp),
         .ptw_req_valid_o(d_req_valid),.ptw_req_ready_i(d_ready),.ptw_req_o(d_req),.ptw_resp_i(resp),
         .csr_i(csr),.sfence_i(sf),.sfence_done_o(d_sf),.perf_o());
+    assign i_walk_o=i_req_valid;
     assign i_pa_o=sv39_pa(i_ppn,i_va_i,i_level);
     assign d1_resp_o=dr[1];assign d1_hit_o=dp[1].hit;assign d1_miss_o=dp[1].miss;
     assign d1_pf_o=dp[1].page_fault;assign d1_af_o=dp[1].access_fault;assign d1_dirty_o=dp[1].perm_d;

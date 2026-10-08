@@ -37,6 +37,9 @@ module ICache
     input  icache_req_t req_i,
     output icache_resp_t resp_o,
 
+    input logic xprobe_valid_i=1'b0,input vaddr_t xprobe_vaddr_i='0,
+    output logic xprobe_grant_o,output xprobe_resp_t xprobe_resp_o,
+    output xlate_fill_t xlate_fill_o,
     input  logic pf_req_valid_i,
     output logic pf_req_ready_o,
     input  pf_req_t pf_req_i,
@@ -68,7 +71,7 @@ module ICache
 
     localparam int BANKS=CFG.icache.banks,WAYS=CFG.icache.ways,SETS=CFG.icache.sets/BANKS,
         SW=$clog2(SETS),TW=MEM_PADDR_W-7-SW,WAITERS=CFG.fetch.return_queue_depth;
-    typedef struct packed {logic valid;logic [TW-1:0] tag;} tag_t;
+    typedef struct packed {logic valid,pf;logic [TW-1:0] tag;} tag_t;
     tag_t tags_q[BANKS][SETS][WAYS];
     logic [WAYS-2:0] plru_q[BANKS][SETS];logic [31:0] version_q[BANKS][SETS];
     typedef struct packed {icache_req_t req;paddr_t pa;logic pf,af;logic [31:0] version;} query_t;
@@ -77,6 +80,7 @@ module ICache
     coh_data_t data_read_q[WAYS],data2_q[WAYS],data3_q[WAYS];
     coh_data_t bank_data_read_q[BANKS][WAYS];
     logic data_read_bank_q;
+    logic tlb_raw_valid,probe_q,tlb_g,tlb_demand_lookup;
     logic tlb_valid,tlb_hit,tlb_miss,tlb_pf,tlb_af;logic [43:0] tlb_ppn;logic [1:0] tlb_level;
     fe_perf_t tlb_perf,mshr_perf;
     logic xlate_saved_q; paddr_t saved_pa_q;logic saved_pf_q,saved_af_q;
@@ -95,6 +99,8 @@ module ICache
     assign retry_pop=retry_valid_q && fire;
     logic hit,stale,fault;int hit_way;coh_data_t hit_line;
     logic alloc_valid,alloc_ready,alloc_merged,probe_inflight,demand_miss_pending;
+    logic [$clog2(CFG.icache.mshrs+1)-1:0] mshr_free;
+    logic fill_pf,prefetch_bad;
     paddr_t alloc_line;logic fill_valid,fill_ready,fill_error,fill_done,mshr_idle;
     paddr_t fill_line,fill_done_line;coh_data_t fill_data;
     logic waiter_valid_q[WAITERS],waiter_ready_q[WAITERS],waiter_error_q[WAITERS];
@@ -111,21 +117,37 @@ module ICache
         for(int l=0;l<$clog2(WAYS);l++) begin d=(w>>($clog2(WAYS)-l-1))&1;t[node]=1'(1-d);node=2*node+1+d;end
         return t;
     endfunction
+    assign tlb_demand_lookup=fire || (v1_q && !xlate_saved_q && !(tlb_valid && !tlb_miss));
+    assign xprobe_grant_o=!rst && !inv_all_i && !sfence_i.valid && !tlb_demand_lookup;
+    assign tlb_valid=tlb_raw_valid && !probe_q;
+    assign xprobe_resp_o='{valid:tlb_raw_valid && probe_q,hit:tlb_hit && !tlb_pf && !tlb_af,ppn:tlb_ppn,level:tlb_level,g:tlb_g};
+    always_comb begin
+        xlate_fill_o='0;
+        if(v1_q && tlb_valid && tlb_hit && !tlb_pf && !tlb_af && csr_i.satp_mode==8 && csr_i.priv!=3)
+            xlate_fill_o='{valid:1'b1,vpn:s1_q.req.region_base[38:12],ppn:tlb_ppn,level:tlb_level,g:tlb_g,asid:csr_i.satp_asid,epoch:csr_i.epoch};
+    end
+    always_ff @(posedge clk) begin
+        if(rst) probe_q<=0;
+        else begin
+            probe_q<=xprobe_valid_i && xprobe_grant_o;
+            if(probe_q) assert(!v1_q || xlate_saved_q) else $fatal(1,"ITLB probe conflicts with demand S1");
+        end
+    end
     itlb #(.CFG(CFG)) u_itlb(.clk_i(clk),.rst_i(rst),.kill_i(xlate_kill_i),
-        .s0_valid_i(fire || (v1_q && !xlate_saved_q && !(tlb_valid && !tlb_miss))),
-        .s0_vaddr_i(fire ? selected_req.region_base:s1_q.req.region_base),
-        .s1_valid_o(tlb_valid),.s1_hit_o(tlb_hit),.s1_miss_o(tlb_miss),.s1_ppn_o(tlb_ppn),.s1_level_o(tlb_level),
+        .s0_probe_i(xprobe_valid_i && xprobe_grant_o),.s0_valid_i(tlb_demand_lookup || (xprobe_valid_i && xprobe_grant_o)),
+        .s0_vaddr_i(tlb_demand_lookup ? (fire ? selected_req.region_base:s1_q.req.region_base) : xprobe_vaddr_i),
+        .s1_g_o(tlb_g),.s1_valid_o(tlb_raw_valid),.s1_hit_o(tlb_hit),.s1_miss_o(tlb_miss),.s1_ppn_o(tlb_ppn),.s1_level_o(tlb_level),
         .s1_page_fault_o(tlb_pf),.s1_access_fault_o(tlb_af),
         .ptw_req_valid_o(ptw_req_valid_o),.ptw_req_ready_i(ptw_req_ready_i),.ptw_req_o(ptw_req_o),.ptw_resp_i(ptw_resp_i),
         .csr_i(csr_i),.sfence_i(sfence_i),.sfence_done_o(sfence_done_o),.perf_o(tlb_perf));
     icache_mshr #(.CFG(CFG)) u_mshr(.clk_i(clk),.rst_i(rst),.alloc_valid_i(alloc_valid),.alloc_ready_o(alloc_ready),
-        .alloc_line_paddr_i(alloc_line),.alloc_kind_i(L2_DEMAND),.alloc_merged_o(alloc_merged),
+        .alloc_line_paddr_i(alloc_line),.alloc_kind_i(demand_miss_pending ? L2_DEMAND:L2_PREFETCH),.alloc_merged_o(alloc_merged),
         .probe_line_paddr_i(pf_req_i.line_paddr),.probe_inflight_o(probe_inflight),
         .l2_req_valid_o(l2_req_valid_o),.l2_req_ready_i(l2_req_ready_i),.l2_req_o(l2_req_o),
         .l2_resp_valid_i(l2_resp_valid_i),.l2_resp_i(l2_resp_i),.l2_resp_ready_o(l2_resp_ready_o),
         .fill_wr_valid_o(fill_valid),.fill_wr_ready_i(fill_ready),.fill_wr_line_paddr_o(fill_line),
         .fill_wr_data_o(fill_data),.fill_wr_error_o(fill_error),.fill_done_o(fill_done),.fill_done_line_paddr_o(fill_done_line),
-        .idle_o(mshr_idle),.perf_o(mshr_perf));
+        .free_count_o(mshr_free),.fill_pf_o(fill_pf),.idle_o(mshr_idle),.perf_o(mshr_perf));
     assign fill_ready=!inv_all_i; // independent SRAM write port
     logic prefetch_fire;logic prefetch_hit;
     always_comb begin
@@ -161,13 +183,15 @@ module ICache
         prefetch_hit=0;
         for(int w=0;w<WAYS;w++) prefetch_hit|=tags_q[pf_req_i.line_paddr[6]][SW'(pf_req_i.line_paddr>>7)][w].valid &&
             tags_q[pf_req_i.line_paddr[6]][SW'(pf_req_i.line_paddr>>7)][w].tag==TW'(pf_req_i.line_paddr>>(7+SW));
-        pf_req_ready_o=!rst && !inv_all_i && !demand_miss_pending && (!pf_req_i.paddr_valid || prefetch_hit || probe_inflight || alloc_ready);
+        prefetch_bad=!pf_req_i.paddr_valid || pf_req_i.epoch!=csr_i.epoch ||
+            !pma_main(64'(pf_req_i.line_paddr),ICACHE_LINE_BYTES) ||
+            !pmp_allow_dec(pmp_i.dec,pf_req_i.line_paddr,ICACHE_LINE_BYTES,csr_i.priv,0,0,1);
+        pf_req_ready_o=!rst && !inv_all_i && (prefetch_bad || prefetch_hit || probe_inflight ||
+            (!demand_miss_pending && int'(mshr_free)>int'(CFG.prefetch.mshr_reserve) && alloc_ready));
         prefetch_fire=pf_req_valid_i && pf_req_ready_o;
-        if(prefetch_fire && pf_req_i.paddr_valid && !prefetch_hit && !probe_inflight &&
-            pma_main(64'(pf_req_i.line_paddr),ICACHE_LINE_BYTES)) begin alloc_valid=1;end
+        if(prefetch_fire && !prefetch_bad && !prefetch_hit && !probe_inflight) alloc_valid=1;
         pf_resp_o='0;pf_resp_o.valid=prefetch_fire;
-        pf_resp_o.status=!pf_req_i.paddr_valid || !pma_main(64'(pf_req_i.line_paddr),ICACHE_LINE_BYTES) ? PF_XLATE_FAIL:
-            prefetch_hit ? PF_HIT:probe_inflight ? PF_INFLIGHT:PF_ISSUED;
+        pf_resp_o.status=prefetch_bad ? PF_XLATE_FAIL:prefetch_hit ? PF_HIT:probe_inflight ? PF_INFLIGHT:PF_ISSUED;
         resp_o='0;
         if(ready_waiter>=0) begin
             resp_o.valid=1;resp_o.rq_idx=waiter_req_q[ready_waiter].rq_idx;resp_o.ftq_id=waiter_req_q[ready_waiter].ftq_id;
@@ -181,7 +205,10 @@ module ICache
         if(inv_all_i) resp_o='0;
     end
     always_comb begin
-        perf_o=tlb_perf | mshr_perf;perf_o[PE_ICACHE_DEMAND_HIT]=PERF_INC_W'(v3_q && !stale && hit && !fault && s3_ready);
+        perf_o=tlb_perf | mshr_perf;
+        perf_o[PE_PF_THROTTLED]=PERF_INC_W'(pf_req_valid_i && !pf_req_ready_o && !inv_all_i);
+        perf_o[PE_PF_USEFUL]=PERF_INC_W'(v3_q && !stale && hit && !fault && s3_ready && tags_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)][hit_way].pf);
+        perf_o[PE_PF_UNUSED_EVICT]=PERF_INC_W'(fill_done && !fill_error && tags_q[fill_bank][fill_set][fill_way].valid && tags_q[fill_bank][fill_set][fill_way].pf);perf_o[PE_ICACHE_DEMAND_HIT]=PERF_INC_W'(v3_q && !stale && hit && !fault && s3_ready);
         perf_o[PE_ICACHE_DEMAND_MISS]=PERF_INC_W'(v3_q && !stale && !hit && !fault && s3_ready);
     end
     // Each bank/way has one synchronous read and one fill write port. Select
@@ -259,16 +286,17 @@ module ICache
                     waiter_ready_q[n]<=1;waiter_data_q[n]<=fill_data;waiter_error_q[n]<=fill_error;
                 end
                 if(!fill_error) begin
-                    tags_q[fill_bank][fill_set][fill_way]<='{valid:1'b1,tag:TW'(fill_line>>(7+SW))};
+                    tags_q[fill_bank][fill_set][fill_way]<='{valid:1'b1,pf:fill_pf,tag:TW'(fill_line>>(7+SW))};
                     plru_q[fill_bank][fill_set]<=touch(plru_q[fill_bank][fill_set],fill_way);
                     version_q[fill_bank][fill_set]<=version_q[fill_bank][fill_set]+1;
                 end
             end
+            if(v3_q && !stale && hit && !fault && s3_ready) tags_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)][hit_way].pf<=0;
             if(v3_q && !stale && hit && s3_ready) plru_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)]<=
                 touch(plru_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)],hit_way);
             if(inv_all_i) begin
                 assert(mshr_idle);v1_q<=0;v2_q<=0;v3_q<=0;retry_count_q<=0;retry_head_q<=0;retry_tail_q<=0;xlate_saved_q<=0;
-                for(int b=0;b<BANKS;b++) for(int s=0;s<SETS;s++) for(int w=0;w<WAYS;w++) tags_q[b][s][w].valid<=0;
+                for(int b=0;b<BANKS;b++) for(int s=0;s<SETS;s++) for(int w=0;w<WAYS;w++) tags_q[b][s][w]<='0;
             end
         end
     end

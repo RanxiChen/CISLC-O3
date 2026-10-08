@@ -55,3 +55,18 @@ async def partial_kill_discards_younger_resolution(d):
  d.train_free_i.value=4;await edge(d)
  assert int(d.train_valid_o.value) and not int(d.train_cfi_valid_o.value) and not int(d.train_mask_o.value)
  await edge(d);assert int(d.occupancy_o.value)==0
+
+@cocotb.test()
+async def prefetch_waits_slow_and_catches_demand(d):
+ await init(d);d.demand_ready_i.value=0;ids=[]
+ for n in range(3):
+  d.alloc_valid_i.value=1;d.alloc_pc_i.value=0x80008000+16*n;await Timer(1,unit='ns');ids.append(int(d.alloc_id_o.value));await edge(d)
+ d.alloc_valid_i.value=0;await Timer(1,unit='ns');assert not int(d.pf_valid_o.value)
+ d.slow_valid_i.value=1;d.slow_id_i.value=ids[0];d.slow_pc_i.value=0x80008000;await edge(d);d.slow_valid_i.value=0
+ assert int(d.pf_valid_o.value) and int(d.pf_pc_o.value)==0x80008000
+ d.demand_ready_i.value=1;await edge(d);d.demand_ready_i.value=0
+ assert not int(d.pf_valid_o.value)
+ d.slow_valid_i.value=1;d.slow_id_i.value=ids[1];d.slow_pc_i.value=0x80008010;await edge(d);d.slow_valid_i.value=0
+ assert int(d.pf_valid_o.value) and int(d.pf_pc_o.value)==0x80008010
+ d.pf_ready_i.value=1;await edge(d);d.pf_ready_i.value=0
+ assert not int(d.pf_valid_o.value)

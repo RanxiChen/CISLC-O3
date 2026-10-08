@@ -527,10 +527,17 @@ package o3_types_pkg;
         asid_t  asid;
     } sfence_req_t;
 
+    function automatic logic sfence_match(input sfence_req_t sf,
+        input sv39_vpn_t vpn,input logic [1:0] level,input logic g,input asid_t asid);
+        return (sf.rs1_is_x0 || sv39_covers(vpn,sf.vaddr[38:12],level)) &&
+            (sf.rs2_is_x0 || (!g && asid==sf.asid));
+    endfunction
+    typedef struct packed {logic loop_dis,pf_dis;} fe_feat_t;
     // ============================================================
     // CSR 派生状态 → 前端
     // ============================================================
     typedef struct packed {
+        fe_feat_t     fe_feat;
         logic [1:0]   priv;           // architectural privilege, L10
         logic         adue;
         logic [3:0]   satp_mode;
@@ -723,6 +730,21 @@ package o3_types_pkg;
     // 预取（D18/D19）
     // ============================================================
     typedef struct packed {
+        logic valid,hit;
+        logic [PPN_W-1:0] ppn;
+        logic [1:0] level;
+        logic g;
+    } xprobe_resp_t;
+    typedef struct packed {
+        logic valid;
+        sv39_vpn_t vpn;
+        logic [PPN_W-1:0] ppn;
+        logic [1:0] level;
+        logic g;
+        asid_t asid;
+        xlate_epoch_t epoch;
+    } xlate_fill_t;
+    typedef struct packed {
         vaddr_t       line_vaddr;
         logic         paddr_valid;    // 复用近期页翻译得到的物理地址
         paddr_t       line_paddr;
@@ -807,7 +829,9 @@ package o3_types_pkg;
         PE_CMT_LOOP_WRONG = 'h3c,
         PE_TRAIN_STALL_CYCLE = 'h3d,
         PE_RQ_ZOMBIE = 'h3e,
-        PE_NUM = 'h3f
+        PE_PF_USEFUL='h3f, PE_PF_LATE='h40, PE_PF_UNUSED_EVICT='h41,
+        PE_PF_XLATE_MISS='h42, PE_PF_XLATE_PROBE='h43,
+        PE_NUM = 'h44
     } fe_perf_evt_e;
 
     typedef logic [PE_NUM-1:0][PERF_INC_W-1:0] fe_perf_t;

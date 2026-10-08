@@ -8,7 +8,7 @@ module sv39_tlb import o3_types_pkg::*; #(
     parameter bit INSTRUCTION=0
 )(
     input logic clk,rst,kill_i,
-    input logic lookup_valid_i,
+    input logic lookup_valid_i,lookup_probe_i=1'b0,
     input vaddr_t lookup_vaddr_i,
     input logic lookup_store_i,
     input logic [1:0] priv_i,
@@ -36,6 +36,7 @@ module sv39_tlb import o3_types_pkg::*; #(
     } entry_t;
     entry_t base_q[8][4],super_q[4],selected;
     logic [2:0] plru_q[8],sp_plru_q;
+    logic probe_q;
     logic valid_q,store_q,translate_q,sum_q,mxr_q,adue_q;
     logic [1:0] priv_q;
     vaddr_t va_q;
@@ -71,7 +72,7 @@ module sv39_tlb import o3_types_pkg::*; #(
         resp_o='0;
         if(!translate_q) begin resp_o.hit=1;resp_o.ppn=va_q[55:12];resp_o.perm_d=1;end
         else if(!sv39_canonical(va_q)) resp_o.page_fault=1;
-        else if(pending_match) begin resp_o.access_fault=fault_access_q;resp_o.page_fault=!fault_access_q;end
+        else if(pending_match && !probe_q) begin resp_o.access_fault=fault_access_q;resp_o.page_fault=!fault_access_q;end
         else if(!hit) resp_o.miss=1;
         else if(!sv39_perm({56'b0,selected.d,selected.a,selected.g,selected.u,selected.x,selected.w,selected.r,1'b1},
             priv_q,INSTRUCTION,store_q,sum_q,mxr_q) || !selected.a || (store_q && !selected.d && !adue_q)) resp_o.page_fault=1;
@@ -80,13 +81,13 @@ module sv39_tlb import o3_types_pkg::*; #(
             resp_o.perm_r=selected.r;resp_o.perm_w=selected.w;resp_o.perm_x=selected.x;
             resp_o.perm_u=selected.u;resp_o.perm_g=selected.g;resp_o.perm_a=selected.a;resp_o.perm_d=selected.d;
         end
-        miss_now=resp_valid_o && resp_o.miss;
+        miss_now=resp_valid_o && resp_o.miss && !probe_q;
         fill_set=int'(ptw_resp_i.vpn[2:0]);victim=ptw_resp_i.level==0 ? mmu_plru_victim(plru_q[fill_set]) : mmu_plru_victim(sp_plru_q);
         for(int w=3;w>=0;w--) if(ptw_resp_i.level==0 ? !base_q[fill_set][w].valid : !super_q[w].valid) victim=w;
     end
     always_ff @(posedge clk) begin
         if(rst) begin
-            valid_q<=0;miss_q<=0;granted_q<=0;killed_q<=0;fault_q<=0;sf_pending_q<=0;sf_done_q<=0;
+            probe_q<=0;valid_q<=0;miss_q<=0;granted_q<=0;killed_q<=0;fault_q<=0;sf_pending_q<=0;sf_done_q<=0;
             last_epoch_q<=epoch_i;miss_req_q<='0;fault_req_q<='0;fault_access_q<=0;
             va_q<=0;priv_q<=0;asid_q<=0;epoch_q<=0;store_q<=0;translate_q<=0;sum_q<=0;mxr_q<=0;adue_q<=0;sf_q<='0;
             sp_plru_q<=0;
@@ -96,15 +97,15 @@ module sv39_tlb import o3_types_pkg::*; #(
             last_epoch_q<=epoch_i;sf_done_q<=0;
             valid_q<=lookup_valid_i && !kill_i && !sfence_i.valid && !sf_pending_q;
             if(lookup_valid_i) begin
-                va_q<=lookup_vaddr_i;store_q<=lookup_store_i;priv_q<=priv_i;
+                probe_q<=lookup_probe_i;va_q<=lookup_vaddr_i;store_q<=lookup_store_i;priv_q<=priv_i;
                 translate_q<=mode_i==8 && priv_i!=3;asid_q<=asid_i;epoch_q<=epoch_i;
                 sum_q<=sum_i;mxr_q<=mxr_i;adue_q<=adue_i;
             end
-            if(resp_valid_o && resp_o.hit && translate_q) begin
+            if(resp_valid_o && resp_o.hit && translate_q && !probe_q) begin
                 if(hit_way>=0) plru_q[set_idx]<=mmu_plru_touch(plru_q[set_idx],hit_way);
                 else if(hit_super>=0) sp_plru_q<=mmu_plru_touch(sp_plru_q,hit_super);
             end
-            if(pending_match && resp_valid_o) fault_q<=0;
+            if(pending_match && resp_valid_o && !probe_q) fault_q<=0;
             if(miss_now && !miss_q && !fault_q) begin
                 miss_q<=1;granted_q<=0;killed_q<=0;miss_req_q<=query_q;
             end
@@ -138,10 +139,8 @@ module sv39_tlb import o3_types_pkg::*; #(
             if(sf_pending_q) begin
                 sf_pending_q<=0;sf_done_q<=1;
                 for(int s=0;s<8;s++) for(int w=0;w<4;w++)
-                    if((sf_q.rs1_is_x0 || (s==int'(sf_q.vaddr[14:12]) && base_q[s][w].vpn==sf_q.vaddr[38:12])) &&
-                        (sf_q.rs2_is_x0 || (!base_q[s][w].g && base_q[s][w].asid==sf_q.asid))) base_q[s][w].valid<=0;
-                for(int w=0;w<4;w++) if((sf_q.rs1_is_x0 || sv39_covers(super_q[w].vpn,sf_q.vaddr[38:12],super_q[w].level)) &&
-                    (sf_q.rs2_is_x0 || (!super_q[w].g && super_q[w].asid==sf_q.asid))) super_q[w].valid<=0;
+                    if(sfence_match(sf_q,base_q[s][w].vpn,0,base_q[s][w].g,base_q[s][w].asid)) base_q[s][w].valid<=0;
+                for(int w=0;w<4;w++) if(sfence_match(sf_q,super_q[w].vpn,super_q[w].level,super_q[w].g,super_q[w].asid)) super_q[w].valid<=0;
             end
         end
     end
@@ -149,8 +148,8 @@ endmodule
 
 module itlb import o3_types_pkg::*; #(parameter o3_cfg_pkg::frontend_cfg_t CFG)(
     input logic clk_i,rst_i,kill_i=1'b0,
-    input logic s0_valid_i,input vaddr_t s0_vaddr_i,
-    output logic s1_valid_o,s1_hit_o,s1_miss_o,
+    input logic s0_valid_i,s0_probe_i=1'b0,input vaddr_t s0_vaddr_i,
+    output logic s1_valid_o,s1_hit_o,s1_miss_o,s1_g_o,
     output logic [PPN_W-1:0] s1_ppn_o,output logic [1:0] s1_level_o,
     output logic s1_page_fault_o,s1_access_fault_o,
     output logic ptw_req_valid_o,input logic ptw_req_ready_i,output ptw_req_t ptw_req_o,input ptw_resp_t ptw_resp_i,
@@ -159,12 +158,15 @@ module itlb import o3_types_pkg::*; #(parameter o3_cfg_pkg::frontend_cfg_t CFG)(
     initial assert(CFG.itlb.entries==32 && CFG.itlb.ways==4) else $fatal(1,"L10 ITLB organization must match X4");
     tlb_resp_t resp;
     sv39_tlb #(.INSTRUCTION(1)) u_tlb(.clk(clk_i),.rst(rst_i),.kill_i(kill_i),
-        .lookup_valid_i(s0_valid_i),.lookup_vaddr_i(s0_vaddr_i),.lookup_store_i(1'b0),
+        .lookup_probe_i(s0_probe_i),.lookup_valid_i(s0_valid_i),.lookup_vaddr_i(s0_vaddr_i),.lookup_store_i(1'b0),
         .priv_i(csr_i.priv),.sum_i(1'b0),.mxr_i(1'b0),.adue_i(csr_i.adue),
         .mode_i(csr_i.satp_mode),.asid_i(csr_i.satp_asid),.root_i(csr_i.satp_ppn),.epoch_i(csr_i.epoch),
         .resp_valid_o(s1_valid_o),.resp_o(resp),.ptw_req_valid_o(ptw_req_valid_o),.ptw_req_ready_i(ptw_req_ready_i),
         .ptw_req_o(ptw_req_o),.ptw_resp_i(ptw_resp_i),.sfence_i(sfence_i),.sfence_done_o(sfence_done_o));
+    assign s1_g_o=resp.perm_g;
     assign s1_hit_o=resp.hit;assign s1_miss_o=resp.miss;assign s1_ppn_o=resp.ppn;assign s1_level_o=resp.level;
     assign s1_page_fault_o=resp.page_fault;assign s1_access_fault_o=resp.access_fault;
-    always_comb begin perf_o='0;perf_o[PE_ITLB_MISS]=PERF_INC_W'(s1_valid_o && resp.miss);perf_o[PE_ITLB_HIT]=PERF_INC_W'(s1_valid_o && resp.hit);end
+    logic probe_q;
+    always_ff @(posedge clk_i) if(rst_i) probe_q<=0;else probe_q<=s0_valid_i && s0_probe_i;
+    always_comb begin perf_o='0;perf_o[PE_ITLB_MISS]=PERF_INC_W'(s1_valid_o && resp.miss && !probe_q);perf_o[PE_ITLB_HIT]=PERF_INC_W'(s1_valid_o && resp.hit && !probe_q);end
 endmodule

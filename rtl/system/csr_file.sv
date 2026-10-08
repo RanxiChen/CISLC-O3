@@ -81,6 +81,7 @@ module csr_file
     logic [1:0] priv_q;
     logic [63:0] status_q,mie_q,mip_sw_q,medeleg_q,mideleg_q;
     logic [63:0] mtvec_q,stvec_q,mepc_q,sepc_q,mcause_q,scause_q,mtval_q,stval_q,mscratch_q,sscratch_q;
+    logic [1:0] fecfg_q;
     logic [63:0] satp_q,menvcfg_q,stimecmp_q;
     logic [31:0] mcounteren_q,scounteren_q;
     logic [2:0] frm_q;
@@ -128,6 +129,7 @@ module csr_file
             12'h143: old_value=stval_q;
             12'h144: old_value=mip_value & mideleg_q;
             12'h14d: old_value=stimecmp_q;
+            12'h7c0: old_value=64'(fecfg_q);
             12'h180: old_value=satp_q;
             12'h300: old_value=status_value;
             12'h301: old_value=MISA;
@@ -192,6 +194,7 @@ module csr_file
             12'h106,12'h306: write_value_o=modify_value & 64'hffffffff;
             12'h10a: write_value_o=0;
             12'h30a: write_value_o=modify_value & 64'ha000000000000000;
+            12'h7c0: write_value_o=modify_value & 64'd3;
             12'h180: if(!(modify_value[63:60] inside {0,8})) write_value_o=satp_q; // Sv39 and Bare are the supported WARL modes.
             default: if(hpm_implemented) write_value_o=hpm_write;
         endcase
@@ -225,7 +228,7 @@ module csr_file
             ((write_value_o^status_value) & (req_i.addr==12'h100 ? 64'hc0000:64'he1800))!=0;
         resp_o.needs_refetch=pmp_change || satp_write || adue_change || context_change;
         resp_o.refetch_kind=(pmp_change || context_change) ? SYS_PMP : SYS_SATP;
-        fe_csr_o='{priv:priv_q,adue:menvcfg_q[61],satp_mode:satp_q[63:60],satp_asid:satp_q[59:44],satp_ppn:satp_q[43:0],epoch:epoch_q};
+        fe_csr_o='{fe_feat:'{loop_dis:fecfg_q[0],pf_dis:fecfg_q[1]},priv:priv_q,adue:menvcfg_q[61],satp_mode:satp_q[63:60],satp_asid:satp_q[59:44],satp_ppn:satp_q[43:0],epoch:epoch_q};
         dmmu_csr_o='{priv_eff:(priv_q==PRIV_M && status_q[17] ? status_q[12:11] : priv_q),priv:priv_q,
             mprv:status_q[17],mpp:status_q[12:11],sum:status_q[18],mxr:status_q[19],adue:menvcfg_q[61],
             satp_mode:satp_q[63:60],satp_asid:satp_q[59:44],satp_ppn:satp_q[43:0],epoch:epoch_q};
@@ -259,7 +262,7 @@ module csr_file
             priv_q<=PRIV_M;status_q<=64'h1800;mie_q<=0;mip_sw_q<=0;medeleg_q<=0;mideleg_q<=0;
             mtvec_q<=64'h200;stvec_q<=0;mepc_q<=0;sepc_q<=0;mcause_q<=0;scause_q<=0;
             mtval_q<=0;stval_q<=0;mscratch_q<=0;sscratch_q<=0;
-            satp_q<=0;menvcfg_q<=64'h2000000000000000;stimecmp_q<='1;
+            fecfg_q<=0;satp_q<=0;menvcfg_q<=64'h2000000000000000;stimecmp_q<='1;
             mcounteren_q<=0;scounteren_q<=0;frm_q<=0;fflags_q<=0;pmp_q<=0;pmp_dec_q<=0;epoch_q<=0;
         end else begin
             if(sfence_epoch_i) epoch_q<=epoch_q+1'b1;
@@ -318,6 +321,7 @@ module csr_file
                     if(mideleg_q[1]) mip_sw_q[1]<=modify_value[1];
                     if(mideleg_q[13]) mip_sw_q[13]<=modify_value[13];
                 end
+                12'h7c0: fecfg_q<=write_value_o[1:0];
                 12'h180: if(satp_write) begin satp_q<=write_value_o;epoch_q<=epoch_q+1'b1;end
                 default: ;
             endcase

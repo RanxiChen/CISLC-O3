@@ -5,6 +5,7 @@ module csr_file_tb_top import o3_types_pkg::*; (
  input logic [63:0] mtime_i,
  input logic [3:0] irq_i,
  input logic sret_i,interrupt_i,
+ output logic loop_dis_o,pf_dis_o,
  output logic [1:0] priv_o,
  output xlate_epoch_t epoch_o,
  output sys_redirect_kind_e refetch_kind_o,
@@ -21,6 +22,7 @@ module csr_file_tb_top import o3_types_pkg::*; (
  assign fe_w_o=PERF_INC_W;assign be_w_o=BE_PERF_INC_W;
  csr_req_t req;csr_resp_t resp;trap_req_t trap;
  irq_view_t irq_view;pmp_state_t pmp;fe_csr_t fe_csr;
+ assign loop_dis_o=fe_csr.fe_feat.loop_dis;assign pf_dis_o=fe_csr.fe_feat.pf_dis;
  assign epoch_o=fe_csr.epoch;assign refetch_kind_o=resp.refetch_kind;
  assign mip_o=irq_view.mip;assign mie_o=irq_view.mie;assign refetch_o=resp.needs_refetch;
  for(genvar n=0;n<PMP_N;n++) begin

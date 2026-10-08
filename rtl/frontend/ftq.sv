@@ -289,8 +289,8 @@ module ftq
     assign demand_fire = demand_valid_o && demand_ready_i;
 
     assign pf_valid_o = !rst_i && !hold_i && !kill_i.valid &&
-                        (count_q != '0) && entries_q[pf_q].valid &&
-                        !entries_q[pf_q].pf_issued;
+                        (count_q != '0) && entries_q[pf_q].valid && entries_q[pf_q].slow_done &&
+                        !entries_q[pf_q].demand_issued && !entries_q[pf_q].pf_issued;
     assign pf_region_base_o = (count_q != '0) ? entries_q[pf_q].fast_pred.region_base : '0;
     assign pf_ftq_id_o = (count_q != '0) ? entries_q[pf_q].id : '0;
     assign pf_fire = pf_valid_o && pf_ready_i;
@@ -367,7 +367,7 @@ module ftq
             count_d = count_d - 1'b1;
             // Issuer may equal a released head after a full-ring wrap.
             // It then denotes the next allocation, so release must not move it.
-            if (pf_d == old_head) pf_d = head_d;
+
         end
 
         if (slow_i.valid && int'(slow_i.ftq_id.idx) < DEPTH &&
@@ -550,6 +550,8 @@ module ftq
                 pf_d = advance(pf_q);
             end
         end
+        if(((int'(pf_d)+DEPTH-int'(head_d))%DEPTH)<((int'(demand_d)+DEPTH-int'(head_d))%DEPTH))
+            pf_d=demand_d;
     end
 
     always_ff @(posedge clk_i) begin

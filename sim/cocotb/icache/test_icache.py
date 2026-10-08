@@ -13,6 +13,8 @@ class Harness:
         self.cycle = 0
         self.responses = []
         self.accepted = []
+        for n in ('pf_valid','pf_addr','pf_epoch','epoch_i','probe_valid','probe_va'):getattr(dut,n).value=0
+        self.events=[0]*0x44
         dut.clk.value = 0
         dut.rst.value = 1
         dut.priv_i.value = 3
@@ -50,6 +52,8 @@ class Harness:
                 int(d.resp_data.value),
                 int(d.resp_exc.value),
             ))
+        perf=int(d.perf_o.value)
+        for e in range(0x44):self.events[e]+=(perf>>(e*(len(d.perf_o)//0x44)))&((1<<(len(d.perf_o)//0x44))-1)
         d.clk.value = 1
         await Timer(5, unit="ns")
         self.cycle += 1
@@ -283,3 +287,57 @@ async def l10_recheck_cached_line_pmp_and_pma_without_refill(d):
             obs=await h.tick();assert not obs['l2_req_valid']
             if len(h.responses)==target:break
         assert len(h.responses)==target and h.responses[-1][4]==1,(hex(bad_pc),h.responses)
+
+@cocotb.test()
+async def prefetch_permission_reserve_and_provenance(dut):
+ h=Harness(dut);await h.reset();base=0x80008000;data=bytes(range(64))
+ async def pf(addr,epoch=0):
+  dut.pf_addr.value=addr;dut.pf_epoch.value=epoch;dut.pf_valid.value=1
+  await Timer(1,unit='ns');ready=int(dut.pf_ready.value);status=int(dut.pf_status.value)
+  await h.tick();dut.pf_valid.value=0
+  return ready,status
+ # Epoch/PMA/PMP failure consumes even if allocation would be blocked.
+ assert await pf(base,1)==(1,3)
+ assert await pf(0x02000000)==(1,3)
+ dut.priv_i.value=1
+ assert await pf(base)==(1,3)
+ dut.priv_i.value=3
+ assert await pf(base)==(1,0)
+ await h.accept_l2_request(base);await h.refill(data)
+ for _ in range(3):await h.tick()
+ assert not h.responses,'prefetch never creates demand responses'
+ await h.request(base,1,1);await h.expect_count(1)
+ assert h.responses[0][3]==int.from_bytes(data[:16],'little') and h.events[0x3f]==1
+ await h.request(base+16,2,2);await h.expect_count(2);assert h.events[0x3f]==1
+ # A demand joins a pending PF exactly once, making the install non-PF.
+ assert await pf(base+64)==(1,0)
+ await h.accept_l2_request(base+64);await h.request(base+64,3,3)
+ for _ in range(5):await h.tick()
+ assert h.events[0x40]==1
+ await h.refill(data);await h.expect_count(3)
+ await h.request(base+80,4,4);await h.expect_count(4);assert h.events[0x3f]==1
+ # Fill five PF lines in one set: the first unused PF is evicted.
+ for n in range(5):
+  a=0x80010000+n*8192
+  assert await pf(a)==(1,0)
+  await h.accept_l2_request(a);await h.refill(data)
+  for _ in range(3):await h.tick()
+ assert h.events[0x41]>=1
+ # Three PF MSHRs leave the fourth reserved for demand.
+ for n in range(3):
+  a=base+0x400+64*n
+  assert await pf(a)==(1,0)
+  await h.accept_l2_request(a)
+ assert await pf(base+0x600)==(0,0)
+ assert h.events[0x2d]>=1
+ assert await pf(base+0x600,1)==(1,3)
+
+@cocotb.test()
+async def demand_has_priority_over_idle_port_probe(dut):
+ h=Harness(dut);await h.reset()
+ dut.probe_valid.value=1;dut.probe_va.value=0x80004000
+ await Timer(1,unit='ns');assert int(dut.probe_grant.value)
+ await h.tick();assert int(dut.probe_resp.value) and int(dut.probe_hit.value)
+ dut.req_valid.value=1;dut.req_pc.value=0x80000000
+ await Timer(1,unit='ns');assert not int(dut.probe_grant.value)
+ await h.tick();dut.req_valid.value=0;dut.probe_valid.value=0

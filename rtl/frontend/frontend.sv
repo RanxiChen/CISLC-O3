@@ -379,6 +379,7 @@ module frontend
         .req_ready_o         (demand_ready),
         .req_i               (demand_req),
         .resp_o              (icache_resp),
+        .xprobe_valid_i(xprobe_valid),.xprobe_vaddr_i(xprobe_vaddr),.xprobe_grant_o(xprobe_grant),.xprobe_resp_o(xprobe_resp),.xlate_fill_o(xlate_fill),
         .pf_req_valid_i      (pf_req_valid),
         .pf_req_ready_o      (pf_req_ready),
         .pf_req_i            (pf_req),
@@ -405,6 +406,10 @@ module frontend
         .perf_o              (perf_icache)
     );
 
+    logic xprobe_valid,xprobe_grant;
+    vaddr_t xprobe_vaddr;
+    xprobe_resp_t xprobe_resp;
+    xlate_fill_t xlate_fill;
     fetch_prefetcher #(.CFG(CFG)) u_fetch_prefetcher (
         .clk_i               (clk_i),
         .rst_i               (rst_i),
@@ -412,6 +417,7 @@ module frontend
         .ftq_pf_ready_o      (ftq_pf_ready),
         .ftq_pf_region_base_i(ftq_pf_region_base),
         .ftq_pf_ftq_id_i     (ftq_pf_ftq_id),
+        .xprobe_valid_o(xprobe_valid),.xprobe_vaddr_o(xprobe_vaddr),.xprobe_grant_i(xprobe_grant),.xprobe_resp_i(xprobe_resp),.xlate_fill_i(xlate_fill),
         .pf_req_valid_o      (pf_req_valid),
         .pf_req_ready_i      (pf_req_ready),
         .pf_req_o            (pf_req),
@@ -420,7 +426,7 @@ module frontend
         .sfence_i            (sync_sfence),
         .kill_i              (fe_kill),
         .hold_i              (sync_hold),
-        .perf_o              () // Prefetcher remains a shell; its events are zero in L7a.
+        .perf_o              (perf_pf)
     );
 
     // ============================================================
@@ -507,9 +513,7 @@ module frontend
         .f0_clear_o        (f0_sync_clear)
     );
 
-    // The unimplemented prefetcher has no driven perf output. Do not let an
-    // undriven shell contaminate every event; spec 6.3 leaves those events zero.
-    assign perf_pf = '0;
+
     always_comb begin
         perf_sum = '0;
         if (!rst_i) begin

@@ -27,7 +27,7 @@ class Tb:
             addr=self.get('mem_addr_o');self.reads.append(addr);self.queue.append((self.cycle+self.rng.randrange(1,6),addr))
         self.put('clk',1);await settle();self.put('clk',0);await settle();self.cycle+=1
     async def reset(self):
-        for n in ('d1_valid_i','d1_store_i','d1_va_i','d_commit_i','clk','kill_i','i_valid_i','d_valid_i','d_store_i','i_va_i','d_va_i','sum_i','mxr_i','epoch_i','asid_i','sf_valid_i','sf_rs1_x0_i','sf_rs2_x0_i','sf_va_i','sf_asid_i','mem_valid_i','mem_ready_i','mem_fault_i','mem_data_i','deny_read_i','deny_write_i','ad_ready_i','ad_valid_i','ad_updated_i','ad_mismatch_i','ad_fault_i'):
+        for n in ('i_probe_i','d1_valid_i','d1_store_i','d1_va_i','d_commit_i','clk','kill_i','i_valid_i','d_valid_i','d_store_i','i_va_i','d_va_i','sum_i','mxr_i','epoch_i','asid_i','sf_valid_i','sf_rs1_x0_i','sf_rs2_x0_i','sf_va_i','sf_asid_i','mem_valid_i','mem_ready_i','mem_fault_i','mem_data_i','deny_read_i','deny_write_i','ad_ready_i','ad_valid_i','ad_updated_i','ad_mismatch_i','ad_fault_i'):
             self.put(n,0)
         self.put('priv_i',1);self.put('mode_i',8);self.put('adue_i',0);self.put('root_i',0x80000);self.put('rst',1)
         await self.tick();await self.tick();self.put('rst',0)
@@ -233,3 +233,18 @@ async def dual_dtlb_bare_hits_and_shared_miss_progress(d):
         assert t.get('d_hit_o') and t.get('d1_hit_o')
         assert (t.get('d_pa_o'),t.get('d1_pa_o'))==(0x80010000+cycle,0x80020000+cycle)
     t.put('d_valid_i',0);t.put('d1_valid_i',0)
+
+@cocotb.test()
+async def instruction_probe_never_walks_or_counts(d):
+ t=Tb(d);await t.reset();t.put('i_probe_i',1)
+ for n in range(32):
+  r=await t.lookup(0x100000+4096*n,'fetch');assert r['miss']
+  assert not t.get('i_walk_o') and not t.get('i_perf_o')
+ assert not t.reads and t.get('idle_o')
+ t.put('i_probe_i',0);t.map(0x4000,0x80010000)
+ assert (await t.access(0x4000,'fetch','hit'))['pa']==0x80010000
+ before=len(t.reads);t.put('i_probe_i',1)
+ for _ in range(8):
+  assert (await t.lookup(0x4000,'fetch'))['hit']
+  assert not t.get('i_walk_o') and not t.get('i_perf_o')
+ assert len(t.reads)==before

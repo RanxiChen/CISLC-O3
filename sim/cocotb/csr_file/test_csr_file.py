@@ -303,3 +303,22 @@ async def sv39_satp_warl_and_refetch(d):
     assert (await t.csr(0x180))[0]==value
     assert (await t.csr(0x180,0,True))[2]==1
     assert (await t.csr(0x180))[0]==0
+
+@cocotb.test()
+async def frontend_feature_csr_warl_nonserial_privilege(d):
+ for n in ['mtime_i','irq_i','sret_i','interrupt_i','fp_valid_i','fp_dirty_i','fp_flags_i','clk','req_valid_i','write_i','op_i','addr_i','data_i','retired_i','fe_perf_i','be_perf_i','trap_i','xret_i','cause_i','epc_i','tval_i']:getattr(d,n).value=0
+ d.rst.value=1;await edge(d);d.rst.value=0
+ async def access(addr,data=0,write=False,op=1):
+  d.req_valid_i.value=1;d.addr_i.value=addr;d.data_i.value=data;d.write_i.value=write;d.op_i.value=op;await settle()
+  out=(int(d.read_o.value),int(d.illegal_o.value),int(d.refetch_o.value));await edge(d);d.req_valid_i.value=0;return out
+ assert await access(0x7c0)==(0,0,0)
+ assert await access(0x7c0,0xffff,True)==(0,0,0)
+ assert await access(0x7c0)==(3,0,0)
+ assert int(d.loop_dis_o.value) and int(d.pf_dis_o.value) and not int(d.epoch_o.value)
+ assert await access(0x7c0,1,True,3)==(3,0,0)
+ assert await access(0x7c0)==(2,0,0)
+ await access(0x300,1<<11,True) # MPP=S, then MRET.
+ d.trap_i.value=1;d.xret_i.value=1;await edge(d);d.trap_i.value=0;d.xret_i.value=0
+ assert int(d.priv_o.value)==1
+ assert (await access(0x7c0,0,True))[1]==1
+ assert int(d.pf_dis_o.value)==1

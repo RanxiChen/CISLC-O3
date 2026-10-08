@@ -137,8 +137,7 @@ package o3_cfg_pkg;
 
     typedef struct packed {
         int unsigned xlate_reuse_entries; // 待定：预取近期页翻译复用记录项数（D19、第 11.2 节）
-        int unsigned lead_distance;       // 待定：预取领先 demand 的距离（第 11.1 节）
-        int unsigned req_queue_depth;     // 待定：去重后待发预取请求队列深度
+        int unsigned mshr_reserve;        // L7c W4: demand reserved MSHRs
     } prefetch_cfg_t;
 
     typedef struct packed {
@@ -342,8 +341,7 @@ package o3_cfg_pkg;
             },
             prefetch: '{
                 xlate_reuse_entries: 4,
-                lead_distance:       2,
-                req_queue_depth:     4
+                mshr_reserve:        1
             },
             perf: '{
                 counter_bits: 64
