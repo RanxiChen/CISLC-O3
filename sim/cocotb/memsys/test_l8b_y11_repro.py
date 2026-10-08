@@ -1,15 +1,16 @@
-"""Characterize Y11's observed physical order; the original VM check stays failing.
+"""Characterize Y11 physical order and the approved A-write broadcast.
 
 The cache cannot retroactively replace a response delivered before the A CAS.
 This diagnostic distinguishes that ordering gap from an omitted PTE write.
 """
 import cocotb
-from system_agents import SystemBench, Cpu, OK
+from system_agents import Cpu, OK
+from test_l8b_memsys import AtomicDmaBench
 
 
 @cocotb.test()
 async def y11_early_pte_read_then_a_cas_then_translated_data_read(d):
-    e = SystemBench(d, 66)
+    e = AtomicDmaBench(d, 66)
     await e.reset()
     d.cur_epoch_i.value = 2
     pte_addr, data_addr, old = 0x80102038, 0x80103000, 0x20040c07
@@ -32,6 +33,7 @@ async def y11_early_pte_read_then_a_cas_then_translated_data_read(d):
     await e.until(lambda: bool(e.ad_responses), 5000)
     cas_cycle, answer = e.ad_responses[-1]
     assert answer == 12
+    assert e.a_writes == [(cas_cycle, pte_addr >> 6)]
     e.gold[pte_addr >> 6] = (old | 0x40) << offset
     e.history.setdefault(pte_addr >> 6, []).append((cas_cycle, e.gold[pte_addr >> 6]))
     await e.loads([Cpu(data_addr, va=0x7000, rob=1)])

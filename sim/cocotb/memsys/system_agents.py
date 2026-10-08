@@ -41,6 +41,9 @@ class SystemBench(CacheBench):
                      'm_axi_awready','m_axi_wready','m_axi_bvalid','m_axi_bid','m_axi_bresp',
                      'm_axi_arready','m_axi_rvalid','m_axi_rid','m_axi_rdata','m_axi_rresp','m_axi_rlast'):
             getattr(d, name).value = 0
+        d.dma_req_valid_i.value = 0
+        d.dma_req_i.value = 0
+        d.dma_resp_ready_i.value = 1
         d.l1i_resp_ready_i.value = 1
         d.pmp_i.value = (0x1f << 54) | 0x1fffffff
         d.rst.value = 1
@@ -103,6 +106,7 @@ class SystemBench(CacheBench):
             self.bhold = self.bq.popleft()[1]
         d.m_axi_bvalid.value = int(self.bhold is not None)
         d.m_axi_bid.value = self.bhold or 0;d.m_axi_bresp.value = 0
+        self.drive_extra()
         await Timer(5, unit='ns')
         names = ('cpu_ready','resp0','resp1','st_req_ready_o','st_resp_o','ptw_req_ready_o','ptw_resp_o',
                  'wake_o','l2_req_valid_o','l2_req_ready_i','l2_req_o','l2_resp_valid_i','l2_resp_i',
@@ -232,12 +236,19 @@ class SystemBench(CacheBench):
         if self.st and v['st_req_ready_o']:self.st=None
         if self.ptw and v['ptw_req_ready_o']:self.ptw=None
         if self.ad and v['pte_ad_req_ready_o']:self.ad=None
+        self.sample_extra()
         self.prev_cpu=list(self.cpu);self.cpu=[None,None]
         d.clk.value=1
         await Timer(5,unit='ns')
         self.cycle+=1
         self.directory_check()
         return v
+
+    def drive_extra(self):
+        pass
+
+    def sample_extra(self):
+        pass
 
     def directory_check(self):
         d=self.d
