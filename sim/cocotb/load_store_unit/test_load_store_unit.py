@@ -154,7 +154,7 @@ async def dirty_refresh_keeps_young_load_asleep_until_owner_revalidates(d):
     await e.issue(e.uop(2,addr=0x7000,load=False,rob=14,value=0x55667788))
     await e.until(lambda:val(d.sq_capture_valid_o[0]))
     owner=val(d.capture_o[0])
-    await e.until(lambda:val(d.d_mark_o));await e.tick()
+    await e.until(lambda:bool(e.d_marks))
     # Younger load reaches AD_ORDER while the owner is waiting on D update.
     await e.issue(e.uop(3,addr=0x7000,rob=15,lq=2))
     await e.until(lambda:e.waits.get(2)==10)
@@ -168,9 +168,8 @@ async def dirty_refresh_keeps_young_load_asleep_until_owner_revalidates(d):
         await e.tick();d.sq_replay_valid_i[0].value=0
     await owner_replay();await fill(True)
     for _ in range(5):await e.tick()
-    await owner_replay();await e.until(lambda:val(d.d_clear_o))
-    assert val(d.ad_wake_o) and val(d.d_idx_o)==14 and val(d.d_va_o)==0x7000
-    await e.tick()
+    await owner_replay();await e.until(lambda:bool(e.d_clears))
+    assert e.d_clears[-1][1:]==(14,0x7000) and e.d_clears[-1][0] in e.ad_wakes
     e.forward=True;e.data=0x55667788
     await e.replay(2)
     await e.until(lambda:any(field(d,'result',r,'instruction_id')==3 for _,_,r in e.results))

@@ -15,6 +15,7 @@ class Bench:
         self.d=d;self.cycle=0;self.reply=[0,0];self.s0=[None,None]
         self.saved={};self.waits={};self.updates=[];self.results=[];self.stores=[];self.requests=[]
         self.error=False;self.exceptions=[];self.block=False;self.forward=False;self.data=0;self.miss=False;self.hold_result=True
+        self.d_marks=[];self.d_clears=[];self.ad_wakes=[]
 
     async def reset(self):
         clear(self.d,INPUTS);self.d.rst.value=1
@@ -38,6 +39,9 @@ class Bench:
         array(d.sq_query_forward_data_i,[self.data]*2)
         array(d.load_result_ready_i,[int(not self.hold_result)]*2)
         await Timer(5,unit='ns')
+        if hasattr(d,'d_mark_o') and val(d.d_mark_o):self.d_marks.append((self.cycle,val(d.d_idx_o),val(d.d_va_o)))
+        if hasattr(d,'d_clear_o') and val(d.d_clear_o):self.d_clears.append((self.cycle,val(d.d_idx_o),val(d.d_va_o)))
+        if hasattr(d,'ad_wake_o') and val(d.ad_wake_o):self.ad_wakes.append(self.cycle)
         next_reply=[0,0];next_s0=[None,None]
         for p in range(2):
             if val(d.load_result_o[p]):
