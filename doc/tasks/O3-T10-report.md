@@ -164,7 +164,7 @@ PTW/PTE A/D：dcache 的 internal_choose 在内部发射时以 S 特权、完整
 
 dcache.sv 的 Y13 一致性断言和 dc_permissions shadow 调用一起包在 ifndef SYNTHESIS 内：对有效、未被取消、已完成翻译且无既有异常的 CPU/内部请求，按 S2 当拍 pmp_i/current priv_i 重算，与寄存权限比较，差异 fatal。所有动态测试须使用 --assert；目前只有静态解析/代码生成，不声明上述一致性已获功能验证。
 
-## 新发现的同类常量迁移：T09 截止前缀参考（待用户批准，未应用）
+## 新发现的同类常量迁移：T09 截止前缀参考（用户已批准）
 
 静态审计完整 T09 最终 SHA 6f0565fa8ce0a28655559aa116ae8c85c5d43786 的 15 份退休参考 JSONL，只有 l9_fp.jsonl 依赖旧 MISA 常量。它不在仓库中；本地证据文件 /tmp/t09-resume-evidence/6f0565fa/references/l9_fp.jsonl，远端冻结证据 /home/cloud_chen/evidence/t09/6f0565fa/references/l9_fp.jsonl。原文件 SHA256=7cae0bba9fb513868090ecee6cbc88b78a0ee64b537105fcd27d4e467b6aa365。
 
@@ -176,9 +176,9 @@ dcache.sv 的 Y13 一致性断言和 dc_permissions shadow 调用一起包在 if
 
 冻结 L8b 第 3 节要求 A=1；用户已批准 sim/o3/tests/l9_fp.S:20 常量变化。对应 ADDI 机器码必然改变，但 sim/o3/tests/compare_retire_traces.py:34-38 的严格 key 包含 instruction，所以原参考会在事件索引 10（order=10，0x80000028）发生确定的黄金冲突。该处是静态定位，尚未运行整核，不能写作已复现的动态失败。
 
-建议只在 T10 证据目录创建参考副本，将上述两个原值字段及一个机器码字段准确迁移；先断言源 SHA/hash、PC、order、原值与唯一匹配条数，再写副本。T09 冻结原始证据不改；其余所有行、PC、顺序、异常、退休/截止/尾部条数保留。比较脚本完全不变，继续逐事件严格比较；最终报告同时记录原/迁移副本哈希及批准依据。生成工具可放在允许的 sim/o3/tests/ 下。未应用迁移，不使用 DUT 输出建立参考。
+建议只在 T10 证据目录创建参考副本，将上述两个原值字段及一个机器码字段准确迁移；先断言源 SHA/hash、PC、order、原值与唯一匹配条数，再写副本。T09 冻结原始证据不改；其余所有行、PC、顺序、异常、退休/截止/尾部条数保留。比较脚本完全不变，继续逐事件严格比较；最终报告同时记录原/迁移副本哈希及批准依据。生成工具可放在允许的 sim/o3/tests/ 下。迁移按批准方案应用；不使用 DUT 输出建立参考。
 
-按任务书“旧测试与冻结 spec 冲突时停下”规则：第 1 步静态门禁完成后提交已批准的 RTL/源码测试迁移，再停在 N1 之前，等待这一项参考副本迁移的批准；不进入上层，不将旧参考差异豁免为退休尾部。
+用户批准此项迁移，并补充授权：已批准源码/常量修改必然引起的机器码、写回值、同源 hex/参考 trace 可以直接迁移；须逐字段追溯、断言原值并在报告逐条记录。不能追溯的差异仍停止询问。此授权不改变任何比较断言或退休尾部规则。
 
 ## 第 1 步最终静态门禁
 
@@ -188,4 +188,12 @@ dcache.sv 的 Y13 一致性断言和 dc_permissions shadow 调用一起包在 if
 
 64 组合：verilator --lint-only --assert -Wno-fatal -f rtl/rtl.f --top-module l8b_elaborate_top sim/o3/tests/l8b_elaborate_top.sv -GHEU=<0/1> -GSPLIT=<0/1> -GORDER_FLUSH=<0/1> -GRFO=<0/1> -GMEM_PIPES=<1/2> -GMSHRS=<1/4>；全部 exit 0。该前端解析完整展开参数与实例，默认项另执行 C++ 代码生成。工具告警原样保留；不宣称 0 warnings 或功能正确。
 
-动态功能用例数、退休数、周期数均 N/A；N1～N6 和 run-l10-vm 动态复现尚未开始。未改 spec/design/LOOP，未推送 origin。下一步受上述退休参考常量审批约束。
+动态功能用例数、退休数、周期数均 N/A；N1～N6 和 run-l10-vm 动态复现尚未开始。未改 spec/design/LOOP，未推送 origin。退休参考常量审批已收到，继续 N1。
+
+## 用户批准的测试迁移：退休参考已执行
+
+首次 RTL 提交：dc261d24c858e25a314513d53994d34bb827c646。生成器 sim/o3/tests/migrate_t10_misa_reference.py 校验源 SHA256、PC、order、原值、唯一匹配条数后，只替换批准的 3 个字段；其余行逐字节不变。T09 原始证据再次校验不变。
+
+原文件 SHA256=7cae0bba9fb513868090ecee6cbc88b78a0ee64b537105fcd27d4e467b6aa365；T10 副本 SHA256=9c88fb8b707acc3d24e5933d123d5ad3d87262547c935b43c0b6584ae17800c0；两者均 616 行。字段清单见上表及副本旁的 migration.json。远端每个准确 SHA 的 T10 证据目录使用同一生成器建立副本，比较脚本不改。
+
+N1 开始；尚未声明任何功能层通过。
