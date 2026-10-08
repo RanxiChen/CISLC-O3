@@ -11,7 +11,8 @@
  */
 module o3_sram_1r1w #(
     parameter int DATA_WIDTH = 128,
-    parameter int ENTRIES = 128
+    parameter int ENTRIES = 128,
+    parameter bit ALLOW_COLLISION = 0
 ) (
     input  logic clk_i,
     input  logic read_en_i,
@@ -26,11 +27,15 @@ module o3_sram_1r1w #(
     always_ff @(posedge clk_i) begin
         if (read_en_i) begin
             read_data_o <= mem[read_addr_i];
+`ifndef SYNTHESIS
+            if(ALLOW_COLLISION && write_en_i && read_addr_i==write_addr_i)
+                read_data_o <= ~mem[read_addr_i];
+`endif
         end
         if (write_en_i) begin
             mem[write_addr_i] <= write_data_i;
         end
-        assert (!(read_en_i && write_en_i && read_addr_i == write_addr_i))
+        assert (ALLOW_COLLISION || !(read_en_i && write_en_i && read_addr_i == write_addr_i))
             else $error("o3_sram_1r1w: same-address read/write");
     end
 endmodule

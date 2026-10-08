@@ -8,7 +8,7 @@
  * 不给目标。提交时 base 始终训练；原查询 provider 尚在表内时训练其 ctr，
  * provider 与 alt 不同时按实际结果调整 useful；该槽原最终方向错误时，
  * 在更长历史表中找无效/低 useful 行分配，全部被保护时先衰减最短候选行。
- * 所有训练使用 train_i.ctx.folds，不能使用提交时的当前推测历史。
+ * 所有训练使用 train_i.folds，不能使用提交时的当前推测历史。
  *
  * meta 低位按槽编码：每槽 3-bit provider（7=base），随后各一位 alt、
  * provider 与最终方向。高位清零；它属于原预测上下文，FTQ 须原样保存。
@@ -55,11 +55,6 @@ module tage
     localparam int USEFUL_BITS = CFG.tage.useful_bits;
     localparam int REGION_SHIFT = $clog2(CFG.fetch.region_bytes);
     localparam int BASE_IDX_BITS = $clog2(BASE_ENTRIES);
-    localparam int META_PROVIDER_BITS = 3;
-    localparam int META_ALT_OFFSET = REGION_SLOTS * META_PROVIDER_BITS;
-    localparam int META_PROVIDER_PRED_OFFSET = META_ALT_OFFSET + REGION_SLOTS;
-    localparam int META_FINAL_OFFSET = META_PROVIDER_PRED_OFFSET + REGION_SLOTS;
-    localparam int META_USED_BITS = META_FINAL_OFFSET + REGION_SLOTS;
     localparam logic [META_PROVIDER_BITS-1:0] BASE_CODE = '1;
 
     function automatic int max_index_bits();
@@ -97,8 +92,6 @@ module tage
         logic [REGION_SLOTS-1:0][USEFUL_BITS-1:0] useful;
     } tagged_row_t;
 
-    base_row_t base_q [BASE_ENTRIES];
-    tagged_row_t tagged_q [TABLES][MAX_ENTRIES];
 
     base_idx_t s1_base_idx_q;
     tagged_idx_t s1_idx_q [TABLES];
@@ -231,85 +224,97 @@ module tage
         end
     end
 
-    always_ff @(posedge clk_i) begin : state_update
-        tagged_idx_t train_idx [TABLES];
-        tag_t train_tag [TABLES];
-        tagged_row_t updated [TABLES];
-        logic touched [TABLES];
-        base_idx_t train_base_idx;
-        int provider_idx;
-        int first_longer;
-        logic provider_still_matches;
-        logic allocated;
-        logic actual_taken;
-        logic meta_provider_pred;
-        logic meta_alt_pred;
-        logic meta_final_pred;
-
-        if (rst_i) begin
-            s1_valid_q <= 1'b0;
-            s2_valid_q <= 1'b0;
-            for (int idx = 0; idx < BASE_ENTRIES; idx++) begin
-                for (int slot = 0; slot < REGION_SLOTS; slot++)
-                    base_q[idx][slot] <= ctr_t'((1 << (CTR_BITS-1)) - 1);
-            end
-            for (int table_idx = 0; table_idx < TABLES; table_idx++) begin
-                for (int idx = 0; idx < (1 << CFG.tage.index_bits[table_idx]); idx++)
-                    tagged_q[table_idx][idx].valid <= 1'b0;
-            end
-        end else begin
-            if (kill_i) begin
-                s1_valid_q <= 1'b0;
-                s2_valid_q <= 1'b0;
-            end else if (!stall_i) begin
-                s2_valid_q <= s1_valid_q;
-                if (s1_valid_q) begin
-                    s2_base_q <= base_q[s1_base_idx_q];
-                    for (int table_idx = 0; table_idx < TABLES; table_idx++) begin
-                        s2_row_q[table_idx] <= tagged_q[table_idx][s1_idx_q[table_idx]];
-                        s2_tag_q[table_idx] <= s1_tag_q[table_idx];
-                    end
+    // T0 reads the training replicas and captures the packet. T1 computes
+    // the legacy update and writes both replicas, forwarding the previous
+    // T1 write across a read-during-write collision.
+    bpu_train_t t1_packet_q;
+    logic t1_valid_q, base_we, wb_base_valid_q;
+    base_idx_t train_base_idx, wb_base_idx_q;
+    tagged_idx_t train_idx[TABLES], wb_idx_q[TABLES];
+    tag_t train_tag[TABLES];
+    tagged_row_t train_old[TABLES],updated[TABLES],wb_row_q[TABLES];
+    logic touched[TABLES],wb_valid_q[TABLES];
+    base_row_t train_base_old,base_updated,base_qraw,base_traw,wb_base_data_q;
+    logic base_wr_q[BASE_ENTRIES];
+    logic tvalid_q[TABLES][MAX_ENTRIES];
+    logic query_base_written_q,query_base_collision_q;
+    base_row_t query_base_forward_q;
+    function automatic base_row_t reset_base();
+        base_row_t r;
+        for(int slot=0;slot<REGION_SLOTS;slot++) r[slot]=ctr_t'((1<<(CTR_BITS-1))-1);
+        return r;
+    endfunction
+    assign train_base_idx=base_index_of(t1_packet_q.region_base);
+    assign base_we=!rst_i && t1_valid_q && |t1_packet_q.br_commit_mask;
+    assign train_base_old=wb_base_valid_q && wb_base_idx_q==train_base_idx ? wb_base_data_q :
+        (base_wr_q[train_base_idx] ? base_traw : reset_base());
+    assign s2_base_q=query_base_written_q ? (query_base_collision_q ? query_base_forward_q : base_qraw) : reset_base();
+    o3_sram_1r1w #(.DATA_WIDTH($bits(base_row_t)),.ENTRIES(BASE_ENTRIES),.ALLOW_COLLISION(1)) u_base_query(
+        .clk_i(clk_i),.read_en_i(!rst_i && !stall_i && !kill_i && s1_valid_q),.read_addr_i(s1_base_idx_q),.read_data_o(base_qraw),
+        .write_en_i(base_we),.write_addr_i(train_base_idx),.write_data_i(base_updated));
+    o3_sram_1r1w #(.DATA_WIDTH($bits(base_row_t)),.ENTRIES(BASE_ENTRIES),.ALLOW_COLLISION(1)) u_base_train(
+        .clk_i(clk_i),.read_en_i(train_valid_i && !rst_i),.read_addr_i(base_index_of(train_i.region_base)),.read_data_o(base_traw),
+        .write_en_i(base_we),.write_addr_i(train_base_idx),.write_data_i(base_updated));
+    for(genvar t=0;t<TABLES;t++) begin : g_table
+        localparam int IW=CFG.tage.index_bits[t],RW=CFG.tage.tag_bits[t]+REGION_SLOTS*(CTR_BITS+USEFUL_BITS);
+        logic [RW-1:0] qraw,traw;
+        logic query_collision_q,query_valid_q;
+        tagged_row_t query_forward_q;
+        assign train_idx[t]=index_of(t1_packet_q.region_base,t1_packet_q.folds,t);
+        assign train_tag[t]=tag_of(t1_packet_q.region_base,t1_packet_q.folds,t);
+        always_comb begin
+            train_old[t]=tagged_row_t'(traw);
+            train_old[t].valid=tvalid_q[t][train_idx[t]];
+            if(wb_valid_q[t] && wb_idx_q[t]==train_idx[t]) train_old[t]=wb_row_q[t];
+            s2_row_q[t]=query_collision_q ? query_forward_q : tagged_row_t'(qraw);
+            s2_row_q[t].valid=query_valid_q;
+        end
+        o3_sram_1r1w #(.DATA_WIDTH(RW),.ENTRIES(1<<IW),.ALLOW_COLLISION(1)) u_query(
+            .clk_i(clk_i),.read_en_i(!rst_i && !stall_i && !kill_i && s1_valid_q),.read_addr_i(IW'(s1_idx_q[t])),.read_data_o(qraw),
+            .write_en_i(!rst_i && touched[t]),.write_addr_i(IW'(train_idx[t])),.write_data_i(RW'(updated[t])));
+        o3_sram_1r1w #(.DATA_WIDTH(RW),.ENTRIES(1<<IW),.ALLOW_COLLISION(1)) u_train(
+            .clk_i(clk_i),.read_en_i(train_valid_i && !rst_i),.read_addr_i(IW'(index_of(train_i.region_base,train_i.folds,t))),.read_data_o(traw),
+            .write_en_i(!rst_i && touched[t]),.write_addr_i(IW'(train_idx[t])),.write_data_i(RW'(updated[t])));
+        always_ff @(posedge clk_i) begin
+            if(rst_i) begin
+                query_collision_q<=0;query_valid_q<=0;query_forward_q<='0;
+                wb_valid_q[t]<=0;wb_idx_q[t]<='0;wb_row_q[t]<='0;
+                for(int n=0;n<(1<<IW);n++) tvalid_q[t][n]<=0;
+            end else begin
+                wb_valid_q[t]<=touched[t];wb_idx_q[t]<=train_idx[t];wb_row_q[t]<=updated[t];
+                if(touched[t]) tvalid_q[t][train_idx[t]]<=updated[t].valid;
+                if(!stall_i && !kill_i && s1_valid_q) begin
+                    query_collision_q<=touched[t] && train_idx[t]==s1_idx_q[t];
+                    query_forward_q<=updated[t];
+                    query_valid_q<=touched[t] && train_idx[t]==s1_idx_q[t] ? updated[t].valid : tvalid_q[t][s1_idx_q[t]];
                 end
-                s1_valid_q <= s0_valid_i;
-                if (s0_valid_i) begin
-                    s1_base_idx_q <= base_index_of(s0_region_base_i);
-                    for (int table_idx = 0; table_idx < TABLES; table_idx++) begin
-                        s1_idx_q[table_idx] <= index_of(s0_region_base_i, s0_folds_i,
-                                                         table_idx);
-                        s1_tag_q[table_idx] <= tag_of(s0_region_base_i, s0_folds_i,
-                                                       table_idx);
-                    end
-                end
             end
-
-            // 一包最多训练本区域八个条件槽；每张 tagged 表同拍只写同一行。
-            if (train_valid_i && train_ready_o && (|train_i.br_commit_mask)) begin
-                train_base_idx = base_index_of(train_i.region_base);
-                for (int table_idx = 0; table_idx < TABLES; table_idx++) begin
-                    train_idx[table_idx] = index_of(train_i.region_base,
-                                                     train_i.ctx.folds, table_idx);
-                    train_tag[table_idx] = tag_of(train_i.region_base,
-                                                   train_i.ctx.folds, table_idx);
-                    updated[table_idx] = tagged_q[table_idx][train_idx[table_idx]];
-                    touched[table_idx] = 1'b0;
-                end
-
+        end
+    end
+    always_comb begin : legacy_training_update
+        int provider_idx,first_longer;
+        logic provider_still_matches,allocated,actual_taken,meta_provider_pred,meta_alt_pred,meta_final_pred;
+        provider_idx=0;first_longer=0;provider_still_matches=0;allocated=0;actual_taken=0;
+        meta_provider_pred=0;meta_alt_pred=0;meta_final_pred=0;
+        base_updated=train_base_old;
+        for(int t=0;t<TABLES;t++) begin updated[t]=train_old[t];touched[t]=0;end
+        if(base_we) begin
                 for (int slot = 0; slot < REGION_SLOTS; slot++) begin
-                    if (train_i.br_commit_mask[slot]) begin
-                        actual_taken = train_i.br_taken_mask[slot];
-                        base_q[train_base_idx][slot] <=
-                            train_ctr(base_q[train_base_idx][slot], actual_taken);
-                        provider_idx = int'(train_i.tage_meta[
+                    if (t1_packet_q.br_commit_mask[slot]) begin
+                        actual_taken = t1_packet_q.br_taken_mask[slot];
+                        base_updated[slot] =
+                            train_ctr(train_base_old[slot], actual_taken);
+                        provider_idx = int'(t1_packet_q.tage_meta[
                             slot*META_PROVIDER_BITS +: META_PROVIDER_BITS]);
-                        meta_alt_pred = train_i.tage_meta[META_ALT_OFFSET + slot];
+                        meta_alt_pred = t1_packet_q.tage_meta[META_ALT_OFFSET + slot];
                         meta_provider_pred =
-                            train_i.tage_meta[META_PROVIDER_PRED_OFFSET + slot];
-                        meta_final_pred = train_i.tage_meta[META_FINAL_OFFSET + slot];
+                            t1_packet_q.tage_meta[META_PROVIDER_PRED_OFFSET + slot];
+                        meta_final_pred = t1_packet_q.tage_meta[META_FINAL_OFFSET + slot];
                         provider_still_matches = 1'b0;
                         if (provider_idx < TABLES)
                             provider_still_matches =
-                                tagged_q[provider_idx][train_idx[provider_idx]].valid &&
-                                tagged_q[provider_idx][train_idx[provider_idx]].tag ==
+                                train_old[provider_idx].valid &&
+                                train_old[provider_idx].tag ==
                                 train_tag[provider_idx];
                         if (provider_still_matches) begin
                             updated[provider_idx].ctr[slot] =
@@ -358,9 +363,35 @@ module tage
                         end
                     end
                 end
-                for (int table_idx = 0; table_idx < TABLES; table_idx++)
-                    if (touched[table_idx])
-                        tagged_q[table_idx][train_idx[table_idx]] <= updated[table_idx];
+        end
+    end
+    always_ff @(posedge clk_i) begin
+        if(rst_i) begin
+            s1_valid_q<=0;s2_valid_q<=0;t1_valid_q<=0;t1_packet_q<='0;
+            wb_base_valid_q<=0;wb_base_idx_q<='0;wb_base_data_q<='0;
+            query_base_written_q<=0;query_base_collision_q<=0;query_base_forward_q<='0;
+            for(int n=0;n<BASE_ENTRIES;n++) base_wr_q[n]<=0;
+        end else begin
+            t1_valid_q<=train_valid_i;t1_packet_q<=train_i;
+            wb_base_valid_q<=base_we;wb_base_idx_q<=train_base_idx;wb_base_data_q<=base_updated;
+            if(base_we) base_wr_q[train_base_idx]<=1;
+            if(kill_i) begin s1_valid_q<=0;s2_valid_q<=0;end
+            else if(!stall_i) begin
+                s2_valid_q<=s1_valid_q;
+                if(s1_valid_q) begin
+                    query_base_written_q<=base_wr_q[s1_base_idx_q] || (base_we && train_base_idx==s1_base_idx_q);
+                    query_base_collision_q<=base_we && train_base_idx==s1_base_idx_q;
+                    query_base_forward_q<=base_updated;
+                    for(int t=0;t<TABLES;t++) s2_tag_q[t]<=s1_tag_q[t];
+                end
+                s1_valid_q<=s0_valid_i;
+                if(s0_valid_i) begin
+                    s1_base_idx_q<=base_index_of(s0_region_base_i);
+                    for(int t=0;t<TABLES;t++) begin
+                        s1_idx_q[t]<=index_of(s0_region_base_i,s0_folds_i,t);
+                        s1_tag_q[t]<=tag_of(s0_region_base_i,s0_folds_i,t);
+                    end
+                end
             end
         end
     end

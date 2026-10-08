@@ -247,3 +247,27 @@ async def seeded_transactions(dut):
             kill=rng.random() < 0.08,
             train=train,
         ))
+
+@cocotb.test()
+async def consecutive_same_set_matches_frozen_legacy(dut):
+    from legacy_btb_reference import BtbModel as Legacy, Inputs as OldInputs, Train as OldTrain
+    b=await new_bench(dut,7);m=b.model
+    ref=Legacy(vaddr_bits=m.vaddr_bits,region_bytes=m.region_bytes,sets=m.sets,ways=m.ways,tag_bits=m.tag_bits,slots=m.slots)
+    previous=None;rng=random.Random(7)
+    # Five aliases in one set exercise invalid-first, match and replacement.
+    for n in range(128):
+        pc=0x4000+(n%5)*m.sets*m.region_bytes
+        t=Train(True,pc,1<<rng.randrange(8),0,True,rng.randrange(8),rng.choice((CFI_BR,CFI_JAL,CFI_JALR)),RAS_PUSH,0x80000000+16*n)
+        await b.step(Inputs(query_valid=True,query_pc=pc,train=t))
+        if previous is not None:ref.tick(OldInputs(train=previous))
+        previous=OldTrain(**vars(t))
+        rows=int(dut.mon_rows_o.value);width=len(dut.mon_rows_o)//m.ways
+        for w,e in enumerate(ref.table[m.set_of(pc)]):
+            actual=(rows>>(width*w))&((1<<width)-1)
+            if e is None:assert not actual>>(width-1)
+            else:
+                r=e.response;expected=1
+                for value,bits in ((e.tag,m.tag_bits),(r.br_mask,m.slots),(r.jal_mask,m.slots),(r.cfi_slot,3),(r.cfi_type,2),(r.ras_action,2),(r.target,m.vaddr_bits),(0,1),(0,1)):
+                    expected=(expected<<bits)|value
+                assert actual==expected,(n,w)
+    await b.step(Inputs());ref.tick(OldInputs(train=previous))

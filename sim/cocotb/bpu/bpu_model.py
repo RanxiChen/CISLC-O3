@@ -43,7 +43,7 @@ class Records:
                         ('ras_action', 2), ('actual_taken', 1),
                         ('actual_target', addr), ('redirect_pc', addr)]
         self.sys = [('valid', 1), ('kind', 3), ('ftq_id', idw), ('slot', slotw), ('target_pc', addr)]
-        self.train = [('region_base', addr), ('ctx', history+folds), ('tage_meta', meta),
+        self.train = [('region_base', addr), ('folds', folds), ('loop_train', 9), ('tage_meta', meta),
                       ('br_commit_mask', slots), ('br_taken_mask', slots),
                       ('cfi_valid', 1), ('cfi_slot', slotw), ('cfi_type', 2),
                       ('ras_action', 2), ('cfi_target', addr), ('mispredicted', 1),

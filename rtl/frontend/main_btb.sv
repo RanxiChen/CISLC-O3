@@ -83,7 +83,6 @@ module main_btb
         logic        is_edge;       // L7b actual instruction length/edge
     } btb_entry_t;
 
-    btb_entry_t entry_q [SETS][WAYS];
     logic [WAYS-1:0] valid_q [SETS];
     way_t replace_q [SETS];
 
@@ -132,48 +131,51 @@ module main_btb
         end
     end
 
-    always_ff @(posedge clk_i) begin : state_update
-        set_t train_set;
-        tag_t train_tag;
+    bpu_train_t t1_packet_q;
+    logic t1_valid_q,write_valid,wb_valid_q;
+    set_t train_set,wb_set_q;
+    tag_t train_tag;
+    way_t write_way,wb_way_q;
+    btb_entry_t train_old[WAYS],write_data,wb_data_q;
+    logic replace_write;
+    assign train_set=set_of(t1_packet_q.region_base);
+    assign train_tag=tag_of(t1_packet_q.region_base);
+    assign write_valid=!rst_i && t1_valid_q && ((|t1_packet_q.br_commit_mask) ||
+        (t1_packet_q.cfi_valid && t1_packet_q.cfi_type!=CFI_NONE));
+    for(genvar w=0;w<WAYS;w++) begin : g_way
+        btb_entry_t qraw,traw,query_forward_q;
+        logic query_collision_q;
+        always_comb begin
+            train_old[w]=wb_valid_q && wb_set_q==train_set && int'(wb_way_q)==w ? wb_data_q : traw;
+            s1_entry_q[w]=query_collision_q ? query_forward_q : qraw;
+        end
+        o3_sram_1r1w #(.DATA_WIDTH($bits(btb_entry_t)),.ENTRIES(SETS),.ALLOW_COLLISION(1)) u_query(
+            .clk_i(clk_i),.read_en_i(!rst_i && !stall_i && !kill_i && s0_valid_i),.read_addr_i(set_of(s0_region_base_i)),.read_data_o(qraw),
+            .write_en_i(write_valid && int'(write_way)==w),.write_addr_i(train_set),.write_data_i(write_data));
+        o3_sram_1r1w #(.DATA_WIDTH($bits(btb_entry_t)),.ENTRIES(SETS),.ALLOW_COLLISION(1)) u_train(
+            .clk_i(clk_i),.read_en_i(train_valid_i && !rst_i),.read_addr_i(set_of(train_i.region_base)),.read_data_o(traw),
+            .write_en_i(write_valid && int'(write_way)==w),.write_addr_i(train_set),.write_data_i(write_data));
+        always_ff @(posedge clk_i) begin
+            if(rst_i) begin query_collision_q<=0;query_forward_q<='0;end
+            else if(!stall_i && !kill_i && s0_valid_i) begin
+                query_collision_q<=write_valid && train_set==set_of(s0_region_base_i) && int'(write_way)==w;
+                query_forward_q<=write_data;
+            end
+        end
+    end
+    always_comb begin : legacy_training_update
         int selected_way;
-        logic matched;
-        logic found_empty;
+        logic matched,found_empty;
         btb_entry_t updated;
-
-        if (rst_i) begin
-            s1_valid_q <= 1'b0;
-            s1_way_valid_q <= '0;
-            s1_tag_q <= '0;
-            for (int set_idx = 0; set_idx < SETS; set_idx++) begin
-                valid_q[set_idx] <= '0;
-                replace_q[set_idx] <= '0;
-            end
-        end else begin
-            if (kill_i) begin
-                s1_valid_q <= 1'b0;
-            end else if (!stall_i) begin
-                s1_valid_q <= s0_valid_i;
-                if (s0_valid_i) begin
-                    s1_tag_q <= tag_of(s0_region_base_i);
-                    s1_way_valid_q <= valid_q[set_of(s0_region_base_i)];
-                    for (int way = 0; way < WAYS; way++) begin
-                        s1_entry_q[way] <= entry_q[set_of(s0_region_base_i)][way];
-                    end
-                end
-            end
-
-            // 提交路径与查询流水独立。NBA 使同拍读写碰撞明确为 read-old。
-            if (train_valid_i && train_ready_o &&
-                ((|train_i.br_commit_mask) ||
-                 (train_i.cfi_valid && (train_i.cfi_type != CFI_NONE)))) begin
-                train_set = set_of(train_i.region_base);
-                train_tag = tag_of(train_i.region_base);
+        selected_way=0;matched=0;found_empty=0;updated='0;
+        write_way='0;write_data='0;replace_write=0;
+        if(write_valid) begin
                 selected_way = int'(replace_q[train_set]);
                 matched = 1'b0;
                 found_empty = 1'b0;
                 for (int way = 0; way < WAYS; way++) begin
                     if (!matched && valid_q[train_set][way] &&
-                        (entry_q[train_set][way].tag == train_tag)) begin
+                        (train_old[way].tag == train_tag)) begin
                         selected_way = way;
                         matched = 1'b1;
                     end
@@ -188,26 +190,45 @@ module main_btb
                 end
 
                 updated = '0;
-                if (matched) updated = entry_q[train_set][selected_way];
-                updated.cfi_is_rvc = train_i.cfi_is_rvc;
-                updated.is_edge = train_i.is_edge;
+                if (matched) updated = train_old[selected_way];
+                updated.cfi_is_rvc = t1_packet_q.cfi_is_rvc;
+                updated.is_edge = t1_packet_q.is_edge;
                 updated.tag = train_tag;
-                updated.br_mask |= train_i.br_commit_mask;
-                if (train_i.cfi_valid && (train_i.cfi_type != CFI_NONE)) begin
-                    case (train_i.cfi_type)
-                        CFI_BR: updated.br_mask[train_i.cfi_slot] = 1'b1;
-                        CFI_JAL: updated.jal_mask[train_i.cfi_slot] = 1'b1;
+                updated.br_mask |= t1_packet_q.br_commit_mask;
+                if (t1_packet_q.cfi_valid && (t1_packet_q.cfi_type != CFI_NONE)) begin
+                    case (t1_packet_q.cfi_type)
+                        CFI_BR: updated.br_mask[t1_packet_q.cfi_slot] = 1'b1;
+                        CFI_JAL: updated.jal_mask[t1_packet_q.cfi_slot] = 1'b1;
                         default: ; // JALR 仅靠唯一目标归属表示。
                     endcase
-                    updated.cfi_slot = train_i.cfi_slot;
-                    updated.cfi_type = train_i.cfi_type;
-                    updated.ras_action = train_i.ras_action;
-                    updated.target = train_i.cfi_target;
+                    updated.cfi_slot = t1_packet_q.cfi_slot;
+                    updated.cfi_type = t1_packet_q.cfi_type;
+                    updated.ras_action = t1_packet_q.ras_action;
+                    updated.target = t1_packet_q.cfi_target;
                 end
-                entry_q[train_set][selected_way] <= updated;
-                valid_q[train_set][selected_way] <= 1'b1;
-                if (!matched && !found_empty) begin
-                    replace_q[train_set] <= way_t'((selected_way + 1) % WAYS);
+            write_way=way_t'(selected_way);write_data=updated;
+            replace_write=!matched && !found_empty;
+        end
+    end
+    always_ff @(posedge clk_i) begin
+        if(rst_i) begin
+            t1_valid_q<=0;t1_packet_q<='0;wb_valid_q<=0;wb_set_q<='0;wb_way_q<='0;wb_data_q<='0;
+            s1_valid_q<=0;s1_way_valid_q<='0;s1_tag_q<='0;
+            for(int n=0;n<SETS;n++) begin valid_q[n]<='0;replace_q[n]<='0;end
+        end else begin
+            t1_valid_q<=train_valid_i;t1_packet_q<=train_i;
+            wb_valid_q<=write_valid;wb_set_q<=train_set;wb_way_q<=write_way;wb_data_q<=write_data;
+            if(write_valid) begin
+                valid_q[train_set][write_way]<=1;
+                if(replace_write) replace_q[train_set]<=way_t'((int'(write_way)+1)%WAYS);
+            end
+            if(kill_i) s1_valid_q<=0;
+            else if(!stall_i) begin
+                s1_valid_q<=s0_valid_i;
+                if(s0_valid_i) begin
+                    s1_tag_q<=tag_of(s0_region_base_i);
+                    s1_way_valid_q<=valid_q[set_of(s0_region_base_i)] |
+                        (write_valid && train_set==set_of(s0_region_base_i) ? (WAYS'(1)<<write_way) : WAYS'(0));
                 end
             end
         end

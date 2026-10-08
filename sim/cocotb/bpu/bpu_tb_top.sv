@@ -109,6 +109,7 @@ module ftq_training_tb_top
     bpu_slow_t slow;
     ftq_pred_brief_t brief;
     logic snap_req, snap_response_q;
+    ftq_id_t snap_id,snap_id_q;
     always_comb begin
         for (int i=0; i<COMMIT_W; i++) commits[i] = '0;
         commits[0] = '{valid:commit_valid_i, ftq_id:ftq_id_t'(commit_id_i),
@@ -119,8 +120,8 @@ module ftq_training_tb_top
         slow.pred = bpu_pred_t'(slow_bits_i);
     end
     always_ff @(posedge clk_i)
-        if (rst_i) snap_response_q <= 1'b0;
-        else snap_response_q <= snap_req;
+        if (rst_i) begin snap_response_q<=0;snap_id_q<='0;end
+        else begin snap_response_q<=snap_req;snap_id_q<=snap_id;end
     ftq #(.CFG(O3_CFG.fe)) dut (
         .clk_i(clk_i), .rst_i(rst_i), .flush_i(1'b0),
         .bpu_valid_i(1'b0), .bpu_entry_i('0), .ifu_ready_i(1'b0),
@@ -136,8 +137,8 @@ module ftq_training_tb_top
                   ftq_id:ftq_id_t'(kill_id_i), slot:kill_slot_i}),
         .winner_i(redirect_req_t'(winner_bits_i)), .head_id_o(head_id_o),
         .ras_ckpt_rd_id_i(ftq_id_t'(brief_id_i)), .ras_ckpt_rd_o(),
-        .snap_train_rd_req_o(snap_req), .snap_train_rd_id_o(),
-        .snap_train_resp_valid_i(snap_response_q), .snap_train_i('0),
+        .snap_train_rd_req_o(snap_req), .snap_train_rd_id_o(snap_id),
+        .snap_train_resp_id_i(snap_id_q),.train_free_i(TRAIN_CREDIT_W'(train_ready_i ? 4 : 0)),.snap_train_resp_valid_i(snap_response_q), .snap_train_i('0),
         .bpu_train_valid_o(train_valid_o), .bpu_train_ready_i(train_ready_i),
         .bpu_train_o(train_bits_o), .hold_i(1'b0), .perf_o(perf_bits_o)
     );

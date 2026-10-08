@@ -23,6 +23,8 @@ module tage_tb_top
     input logic [REGION_SLOTS-1:0] train_br_commit_mask_i,
     input logic [REGION_SLOTS-1:0] train_br_taken_mask_i,
 
+    output logic [REGION_SLOTS*O3_CFG.fe.tage.ctr_bits-1:0] mon_base_o,
+    output logic [TAGE_TABLES-1:0][1+O3_CFG.fe.tage.tag_bits[0]+REGION_SLOTS*(O3_CFG.fe.tage.ctr_bits+O3_CFG.fe.tage.useful_bits)-1:0] mon_rows_o,
     output logic [31:0] cfg_region_bytes_o,
     output logic [31:0] cfg_tables_o,
     output logic [31:0] cfg_base_entries_o,
@@ -37,7 +39,7 @@ module tage_tb_top
     always_comb begin
         train = '0;
         train.region_base = train_region_base_i;
-        train.ctx.folds = train_folds_i;
+        train.folds = train_folds_i;
         train.tage_meta = train_meta_i;
         train.br_commit_mask = train_br_commit_mask_i;
         train.br_taken_mask = train_br_taken_mask_i;
@@ -52,6 +54,12 @@ module tage_tb_top
         .train_i(train), .perf_o()
     );
 
+    assign mon_base_o=dut.base_wr_q[dut.base_index_of(train_region_base_i)] ?
+        dut.u_base_train.mem[dut.base_index_of(train_region_base_i)] : dut.reset_base();
+    for(genvar t=0;t<TAGE_TABLES;t++) begin
+        assign mon_rows_o[t]={dut.tvalid_q[t][dut.index_of(train_region_base_i,train_folds_i,t)],
+            dut.g_table[t].u_train.mem[dut.index_of(train_region_base_i,train_folds_i,t)]};
+    end
     assign resp_taken_mask_o = resp.taken_mask;
     assign resp_provider_hit_mask_o = resp.provider_hit_mask;
     assign resp_meta_o = resp.meta;

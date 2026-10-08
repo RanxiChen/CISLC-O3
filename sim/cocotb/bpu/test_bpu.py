@@ -73,6 +73,7 @@ class Bench:
                 cfi_slot=slot, cfi_target=target, ras_action=ras,
                 br_commit_mask=(1<<slot) if kind==1 else 0,
                 br_taken_mask=(1<<slot) if kind==1 else 0))
+        for _ in range(3): await self.step()
 
 
 async def bench(d):
@@ -204,6 +205,7 @@ async def compressed_and_edge_call_training_and_return_address(d):
         t=dict(region_base=0x4000,cfi_valid=1,cfi_type=2,cfi_slot=slot,
                cfi_target=0x5000,ras_action=1,cfi_is_rvc=rvc,is_edge=edge)
         for _ in range(2):await b.step(train=t)
+        for _ in range(3):await b.step()
         before,after=await b.step(ready=True,fid=11)
         assert before['pred']['cfi_is_rvc']==rvc and before['pred']['is_edge']==edge
         assert after['ras']['count']==1 and after['ras']['top_addr']==push

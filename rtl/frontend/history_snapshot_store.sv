@@ -49,6 +49,7 @@ module history_snapshot_store
     input  logic           rd_train_req_i,
     input  ftq_id_t        rd_train_ftq_id_i,
     output logic           rd_train_resp_valid_o,
+    output ftq_id_t rd_train_resp_id_o,
     output hist_snapshot_t rd_train_snapshot_o
 );
     hist_snapshot_t snapshot_q [FTQ_DEPTH];
@@ -64,8 +65,8 @@ module history_snapshot_store
     assign rd_recover_resp_valid_o = recover_valid_q &&
                                      (recover_id_q == rd_recover_ftq_id_i);
     assign rd_recover_snapshot_o = recover_data_q;
-    assign rd_train_resp_valid_o = train_valid_q &&
-                                   (train_id_q == rd_train_ftq_id_i);
+    assign rd_train_resp_valid_o = train_valid_q;
+    assign rd_train_resp_id_o = train_id_q;
     assign rd_train_snapshot_o = train_data_q;
 
     always_ff @(posedge clk_i) begin

@@ -35,6 +35,7 @@ module main_btb_tb_top
     input  logic [1:0]             train_ras_action_i,
     input  logic [VADDR_W-1:0]     train_cfi_target_i,
 
+    output logic [O3_CFG.fe.btb.ways-1:0][1+O3_CFG.fe.btb.tag_bits+2*REGION_SLOTS+SLOT_W+4+VADDR_W+2-1:0] mon_rows_o,
     output logic reserved_rvc_o, reserved_is_edge_o,
     output logic [31:0]             cfg_region_bytes_o,
     output logic [31:0]             cfg_sets_o,
@@ -65,6 +66,9 @@ module main_btb_tb_top
         .train_i(train), .perf_o()
     );
 
+    for(genvar w=0;w<O3_CFG.fe.btb.ways;w++) begin
+        assign mon_rows_o[w]={dut.valid_q[dut.set_of(train_region_base_i)][w],dut.g_way[w].u_train.mem[dut.set_of(train_region_base_i)]};
+    end
     assign resp_hit_o = resp.hit;
     assign resp_br_mask_o = resp.br_mask;
     assign resp_jal_mask_o = resp.jal_mask;

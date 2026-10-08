@@ -80,7 +80,6 @@ class BtbModel:
             [None for _ in range(self.ways)] for _ in range(self.sets)
         ]
         self.victim = [0 for _ in range(self.sets)]
-        self.pending_train = Train()
         self.pending: PendingRead | None = None
 
     def set_of(self, pc: int) -> int:
@@ -109,9 +108,8 @@ class BtbModel:
             self.reset()
             return
 
-        self.train(self.pending_train)
-        self.pending_train = inputs.train
-        # Query collisions receive the T1 write-new value.
+        # Read-before-write: capture a value snapshot before this edge's
+        # independent commit training changes the table.
         if inputs.kill:
             self.pending = None
         elif not inputs.stall:
@@ -122,7 +120,7 @@ class BtbModel:
             else:
                 self.pending = None
 
-    def train(self, train: Train) -> None:
+        train = inputs.train
         if not train.valid or (train.br_commit_mask == 0 and
                                not (train.cfi_valid and train.cfi_type != CFI_NONE)):
             return

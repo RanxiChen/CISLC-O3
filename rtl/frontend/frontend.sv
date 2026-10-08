@@ -148,6 +148,8 @@ module frontend
     redirect_req_t   bpu_override;
     logic            bpu_train_valid, bpu_train_ready;
     bpu_train_t      bpu_train;
+    logic [TRAIN_CREDIT_W-1:0] train_free;
+    ftq_id_t snap_train_resp_id;
 
     // 重定向与恢复
     redirect_req_t   arb_winner;
@@ -247,6 +249,7 @@ module frontend
         .hold_i                  (sync_hold),
         .train_valid_i           (bpu_train_valid),
         .train_ready_o           (bpu_train_ready),
+        .train_free_o            (train_free),
         .train_i                 (bpu_train),
         .perf_o                  (perf_bpu)
     );
@@ -264,6 +267,7 @@ module frontend
         .rd_train_req_i         (snap_train_req),
         .rd_train_ftq_id_i      (snap_train_id),
         .rd_train_resp_valid_o  (snap_train_valid),
+        .rd_train_resp_id_o     (snap_train_resp_id),
         .rd_train_snapshot_o    (snap_train)
     );
 
@@ -303,6 +307,8 @@ module frontend
         .snap_train_rd_req_o   (snap_train_req),
         .snap_train_rd_id_o    (snap_train_id),
         .snap_train_resp_valid_i(snap_train_valid),
+        .snap_train_resp_id_i   (snap_train_resp_id),
+        .train_free_i          (train_free),
         .snap_train_i          (snap_train),
         .bpu_train_valid_o     (bpu_train_valid),
         .bpu_train_ready_i     (bpu_train_ready),

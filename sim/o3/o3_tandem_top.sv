@@ -311,7 +311,7 @@ module o3_tandem_top
                     u_core.u_frontend.demand_valid,u_core.u_frontend.demand_ready,u_core.u_frontend.demand_req.ftq_id,
                     u_core.u_frontend.u_ftq.entries_q[u_core.u_frontend.u_ftq.demand_q].demand_issued,
                     u_core.u_frontend.u_ftq.entries_q[u_core.u_frontend.u_ftq.demand_q].slow_done,
-                    u_core.u_frontend.u_ftq.train_state_q,u_core.u_frontend.u_fetch_return_queue.count_q,
+                    u_core.u_frontend.u_ftq.ho_busy_q,u_core.u_frontend.u_fetch_return_queue.count_q,
                     u_core.u_frontend.u_fetch_return_queue.head_slot,
                     u_core.u_frontend.u_fetch_return_queue.slots_q[u_core.u_frontend.u_fetch_return_queue.head_slot].state,
                     u_core.u_frontend.u_fetch_return_queue.slots_q[u_core.u_frontend.u_fetch_return_queue.head_slot].item.ftq_id,

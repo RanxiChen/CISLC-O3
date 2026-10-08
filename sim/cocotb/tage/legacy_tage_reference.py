@@ -88,7 +88,6 @@ class TageModel:
         self.tagged = [[Row(False, 0, [0] * self.slots, [0] * self.slots)
                         for _ in range(1 << self.index_bits[t])]
                        for t in range(self.tables)]
-        self.pending_train = Train()
         self.s1: Query | None = None
         self.s2: Snapshot | None = None
 
@@ -215,12 +214,11 @@ class TageModel:
         if inputs.rst:
             self.reset()
             return
-        self.train(self.pending_train)
-        self.pending_train = inputs.train
         if inputs.kill:
             self.s1 = None
             self.s2 = None
         elif not inputs.stall:
             self.s2 = self.snapshot(self.s1) if self.s1 is not None else None
             self.s1 = self.query(inputs.pc, inputs.folds) if inputs.query_valid else None
-        # T1 write-new forwarding is visible to this edge's enabled read.
+        # Reads above sample the old table; training becomes visible to later reads.
+        self.train(inputs.train)

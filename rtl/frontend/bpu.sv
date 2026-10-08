@@ -46,6 +46,7 @@ module bpu
     // 提交训练
     input  logic                          train_valid_i,
     output logic                          train_ready_o,
+    output logic [TRAIN_CREDIT_W-1:0] train_free_o,
     input  bpu_train_t      train_i,
 
     output fe_perf_t        perf_o
@@ -71,14 +72,35 @@ module bpu
 
     assign alloc_valid_o = !rst_i && !hold_i && !recover_busy_i && !kill_i.valid;
     assign alloc_fire = alloc_valid_o && alloc_ready_i;
-    assign train_ready_o = ubtb_train_ready && btb_train_ready && tage_train_ready;
+    localparam int TD=CFG.ftq.train_queue_depth,TW=$clog2(TD),TCW=$clog2(TD+1);
+    bpu_train_t train_queue_q[TD],t1_train_q;
+    logic [TW-1:0] train_head_q,train_tail_q;
+    logic [TCW-1:0] train_count_q;
+    logic train_pop,t1_train_valid_q;
+    assign train_ready_o=!rst_i && int'(train_count_q)<TD;
+    assign train_free_o=TRAIN_CREDIT_W'(TD-int'(train_count_q));
+    assign train_pop=!rst_i && train_count_q!=0;
+    always_ff @(posedge clk_i) begin
+        if(rst_i) begin train_head_q<=0;train_tail_q<=0;train_count_q<=0;t1_train_valid_q<=0;t1_train_q<='0;end
+        else begin
+            t1_train_valid_q<=train_pop;
+            if(train_pop) begin t1_train_q<=train_queue_q[train_head_q];train_head_q<=TW'((int'(train_head_q)+1)%TD);end
+            if(train_fire) begin train_queue_q[train_tail_q]<=train_i;train_tail_q<=TW'((int'(train_tail_q)+1)%TD);end
+            case({train_fire,train_pop})
+                2'b10:train_count_q<=train_count_q+1'b1;
+                2'b01:train_count_q<=train_count_q-1'b1;
+                default: ;
+            endcase
+            assert(!train_pop || (btb_train_ready && tage_train_ready && ubtb_train_ready));
+        end
+    end
     assign train_fire = train_valid_i && train_ready_o;
 
     ubtb #(.CFG(CFG)) u_ubtb (
         .clk_i(clk_i), .rst_i(rst_i), .lookup_valid_i(1'b1),
         .lookup_pc_i(pred_pc_q), .stall_i(1'b0), .hit_o(ubtb_hit), .pred_o(fast),
-        .train_valid_i(train_fire), .train_ready_o(ubtb_train_ready),
-        .train_i(train_i), .perf_o()
+        .train_valid_i(t1_train_valid_q), .train_ready_o(ubtb_train_ready),
+        .train_i(t1_train_q), .perf_o()
     );
     always_comb begin
         alloc_pred_o = fast;
@@ -118,14 +140,14 @@ module bpu
     main_btb #(.CFG(CFG)) u_main_btb (
         .clk_i(clk_i), .rst_i(rst_i), .s0_valid_i(alloc_fire),
         .s0_region_base_i(alloc_pred_o.region_base), .stall_i(1'b0), .kill_i(1'b0),
-        .resp_valid_o(btb_valid), .resp_o(btb_resp), .train_valid_i(train_fire),
-        .train_ready_o(btb_train_ready), .train_i(train_i), .perf_o()
+        .resp_valid_o(btb_valid), .resp_o(btb_resp), .train_valid_i(train_pop),
+        .train_ready_o(btb_train_ready), .train_i(train_queue_q[train_head_q]), .perf_o()
     );
     tage #(.CFG(CFG)) u_tage (
         .clk_i(clk_i), .rst_i(rst_i), .s0_valid_i(alloc_fire),
         .s0_region_base_i(alloc_pred_o.region_base), .s0_folds_i(alloc_snapshot_o.folds),
         .stall_i(1'b0), .kill_i(1'b0), .resp_valid_o(tage_valid), .resp_o(tage_resp),
-        .train_valid_i(train_fire), .train_ready_o(tage_train_ready), .train_i(train_i), .perf_o()
+        .train_valid_i(train_pop), .train_ready_o(tage_train_ready), .train_i(train_queue_q[train_head_q]), .perf_o()
     );
     bpu_slow_check #(.CFG(CFG)) u_slow_check (
         .clk_i(clk_i), .rst_i(rst_i), .fast_valid_i(p2_q.valid),

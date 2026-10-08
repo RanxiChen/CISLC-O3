@@ -209,6 +209,28 @@ package o3_types_pkg;
         tage_meta_t  meta;
     } tage_resp_t;
 
+    localparam int LOOP_ENTRIES=8,LOOP_ITER_BITS=10,LOOP_IDX_W=3;
+    localparam int TRAIN_CREDIT_W=$clog2(o3_cfg_pkg::O3_CFG.fe.ftq.train_queue_depth+1);
+    typedef logic [LOOP_ENTRIES-1:0][LOOP_ITER_BITS-1:0] loop_ckpt_t;
+    typedef struct packed {
+        logic hit;
+        logic [LOOP_IDX_W-1:0] idx;
+        fetch_slot_t slot;
+        logic used,pred;
+    } loop_train_t;
+    typedef struct packed {
+        loop_train_t train;
+        logic upd_valid,upd_taken;
+        loop_ckpt_t ckpt;
+    } loop_meta_t;
+    localparam int META_PROVIDER_BITS=3;
+    localparam int META_ALT_OFFSET=REGION_SLOTS*META_PROVIDER_BITS;
+    localparam int META_PROVIDER_PRED_OFFSET=META_ALT_OFFSET+REGION_SLOTS;
+    localparam int META_FINAL_OFFSET=META_PROVIDER_PRED_OFFSET+REGION_SLOTS;
+    localparam int META_USED_BITS=META_FINAL_OFFSET+REGION_SLOTS;
+    function automatic logic tage_final(input tage_meta_t meta,input int slot);
+        return meta[META_FINAL_OFFSET+slot];
+    endfunction
     // 慢预测结果写回 FTQ：确认或覆盖；override=1 时同时发出 D24 慢覆盖请求。
     typedef struct packed {
         logic       valid;
@@ -216,13 +238,15 @@ package o3_types_pkg;
         bpu_pred_t  pred;
         tage_meta_t tage_meta;
         logic       override;
+        loop_meta_t loop_meta;
     } bpu_slow_t;
 
     // 提交训练请求（D08，第 6.1 节）。使用原预测上下文，不在提交时重新查询。
     // 块内多条分支的排程、提交带宽和字段压缩待定。
     typedef struct packed {
         vaddr_t      region_base;
-        hist_snapshot_t ctx;          // 原查询上下文（只需 C；是否传 E 待定）
+        logic [HIST_FOLD_W-1:0] folds;
+        loop_train_t loop_train;
         tage_meta_t  tage_meta;
         slot_mask_t  br_commit_mask;  // 已提交的条件分支槽位
         slot_mask_t  br_taken_mask;   // 其中实际 taken 的槽位
@@ -772,6 +796,16 @@ package o3_types_pkg;
         PE_IFU_CROSS_REGION = 'h31,
         PE_DELIVER_LT4_BACKEND_READY_CYCLE = 'h32,
         PE_BACKEND_BACKPRESSURE_CYCLE = 'h33,
+        PE_CMT_COND_BR = 'h34,
+        PE_CMT_COND_MISPRED = 'h35,
+        PE_CMT_COND_TAGE_WRONG = 'h36,
+        PE_CMT_JALR = 'h37,
+        PE_CMT_JALR_MISPRED = 'h38,
+        PE_CMT_RET = 'h39,
+        PE_CMT_RET_MISPRED = 'h3a,
+        PE_CMT_LOOP_USED = 'h3b,
+        PE_CMT_LOOP_WRONG = 'h3c,
+        PE_TRAIN_STALL_CYCLE = 'h3d,
         PE_RQ_ZOMBIE = 'h3e,
         PE_NUM = 'h3f
     } fe_perf_evt_e;

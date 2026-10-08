@@ -63,13 +63,10 @@ async def brief_winner_acceptance_and_commit_classification(d):
         await b.step(fid=fid,commit=True)
         for _ in range(4):
             _,events=await b.step(fid=fid)
-            assert events[:6]==[0]*6
-            if int(d.train_valid_o.value):break
+            assert events[:6]==[0]*6 and not int(d.train_valid_o.value)
+        await b.step(fid=fid,ready=True) # H0 reserves a free slot.
         assert int(d.train_valid_o.value)==1
-        for _ in range(3):
-            _,events=await b.step(fid=fid)
-            assert events[:6]==[0]*6, 'training backpressure must not count commits'
-        _,events=await b.step(fid=fid,ready=True)
+        _,events=await b.step(fid=fid,ready=True) # H1 uses the reservation.
         assert events[0]==1 and sum(events[1:5])==1 and events[event-0x0f]==1
         assert events[5]==0
         _,events=await b.step(fid=fid,ready=True)
@@ -91,9 +88,7 @@ async def exec_fix_mispred_event_and_full_cycle(d):
     assert brief['next_pc']==brief['cfi_target']==0x5000 and brief['cfi_slot']==2
     assert brief['cfi_valid']==brief['raw_pred_taken']==1
     await b.step(fid=fid,commit=True,slot=2)
-    for _ in range(4):
-        await b.step(fid=fid)
-        if int(d.train_valid_o.value):break
+    await b.step(fid=fid,ready=True)
     train=decode(b.r.train,int(d.train_bits_o.value))
     assert train['br_commit_mask']==train['br_taken_mask']==4
     assert train['cfi_target']==0x5000 and train['mispredicted']==1
@@ -122,12 +117,10 @@ async def empty_regions_release_and_actual_instruction_flags(d):
         # Empty older region has no commit of its own.
         await b.step(fid=target,commit=True,slot=0,last=False)
         # Even a non-last commit closes the older empty region.
-        for _ in range(4):
-            await b.step()
-            if int(d.train_valid_o.value):break
-        assert int(d.train_valid_o.value)
-        assert decode(b.r.train,int(d.train_bits_o.value))['region_base']==0x4000
+        for _ in range(4): await b.step()
+        assert not int(d.train_valid_o.value), 'zero credits stall H0'
         await b.step(fid=target,commit=True,slot=0)
+        await b.step(ready=True)
         seen=[]
         for _ in range(16):
             if int(d.train_valid_o.value):seen.append(decode(b.r.train,int(d.train_bits_o.value)))

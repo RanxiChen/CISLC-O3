@@ -267,3 +267,33 @@ async def allocation_starts_strictly_after_each_provider(dut):
         else:
             assert (prediction.meta & 7) == 7
             assert prediction.provider_hit_mask == 0
+
+@cocotb.test()
+async def consecutive_rows_match_frozen_legacy_bitwise(dut):
+    from legacy_tage_reference import TageModel as Legacy, Train as OldTrain
+    b=await new_bench(dut,29);m=b.model
+    ref=Legacy(vaddr_bits=m.vaddr_bits,region_bytes=1<<m.shift,slots=m.slots,
+        tables=m.tables,base_entries=m.base_entries,index_bits=m.index_bits,tag_bits=m.tag_bits,
+        ctr_bits=m.ctr_bits,useful_bits=m.useful_bits)
+    rng=random.Random(29);previous=None;pc=0x4000
+    for n in range(256):
+        mask=rng.randrange(1,256)
+        pred=ref.predict(ref.snapshot(ref.query(pc,0)))
+        t=Train(True,pc,0,pred.meta,mask,rng.getrandbits(8)&mask)
+        await b.step(Inputs(query_valid=True,pc=pc,train=t))
+        if previous is not None:ref.train(previous)
+        previous=OldTrain(t.valid,t.pc,t.folds,t.meta,t.commit_mask,t.taken_mask)
+        q=ref.query(pc,0)
+        packed=sum(v<<(s*m.ctr_bits) for s,v in enumerate(ref.base[q.base_idx]))
+        assert int(dut.mon_base_o.value)==packed
+        rows=int(dut.mon_rows_o.value);width=len(dut.mon_rows_o)//m.tables
+        for j in range(m.tables):
+            r=ref.tagged[j][q.idx[j]]
+            if r.valid:
+                ctr=sum(v<<(s*m.ctr_bits) for s,v in enumerate(r.ctr))
+                useful=sum(v<<(s*m.useful_bits) for s,v in enumerate(r.useful))
+                expected=(1<<(width-1)) | (r.tag<<(m.slots*(m.ctr_bits+m.useful_bits))) | (ctr<<(m.slots*m.useful_bits)) | useful
+                assert (rows>>(j*width))&((1<<width)-1)==expected,(n,j)
+    await b.step(Inputs());ref.train(previous)
+    await query(b,pc)
+    assert b.model.base==ref.base and all(vars(a)==vars(c) for ar,cr in zip(b.model.tagged,ref.tagged) for a,c in zip(ar,cr))

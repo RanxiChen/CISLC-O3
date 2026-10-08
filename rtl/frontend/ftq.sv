@@ -173,6 +173,8 @@ module ftq
     output logic                            snap_train_rd_req_o,
     output o3_types_pkg::ftq_id_t           snap_train_rd_id_o,
     input  logic                            snap_train_resp_valid_i,
+    input  o3_types_pkg::ftq_id_t snap_train_resp_id_i,
+    input logic [$clog2(CFG.ftq.train_queue_depth+1)-1:0] train_free_i,
     input  o3_types_pkg::hist_snapshot_t    snap_train_i,
     output logic                            bpu_train_valid_o,
     input  logic                            bpu_train_ready_i,
@@ -207,6 +209,7 @@ module ftq
         logic slow_done, demand_issued, pf_issued, commit_last;
         slot_mask_t resolved_br, resolved_taken, committed_br, committed_taken;
         logic actual_cfi_valid, mispredicted;
+        slot_mask_t mispred_mask;
         logic actual_cfi_is_rvc, actual_cfi_is_edge;
         fetch_slot_t actual_cfi_slot;
         cfi_type_e actual_cfi_type;
@@ -214,14 +217,13 @@ module ftq
         vaddr_t actual_cfi_target;
     } entry_t;
 
-    typedef enum logic [1:0] {TRAIN_IDLE, TRAIN_WAIT, TRAIN_SEND} train_state_e;
     entry_t entries_q [DEPTH], entries_d [DEPTH];
     logic [FTQ_GEN_W-1:0] gen_q [DEPTH], gen_d [DEPTH];
     idx_t alloc_q, alloc_d, demand_q, demand_d, pf_q, pf_d, head_q, head_d;
     count_t count_q, count_d;
-    train_state_e train_state_q, train_state_d;
-    ftq_id_t train_id_q, train_id_d;
-    bpu_train_t train_q, train_d;
+    logic ho_busy_q;
+    ftq_id_t ho_id_q;
+    idx_t ho_sel;
     logic demand_hold_q, demand_hold_d;
     icache_req_t demand_hold_req_q, demand_hold_req_d;
     logic alloc_fire, demand_fire, pf_fire, train_fire;
@@ -312,15 +314,28 @@ module ftq
             ras_ckpt_rd_o = entries_q[ras_ckpt_rd_id_i.idx].ras_ckpt;
     end
 
-    // A committed region stays at the head until its original history
-    // snapshot arrives and the BPU accepts training. This uses FTQ capacity
-    // as the lossless pending queue even when four regions commit together.
-    assign snap_train_rd_req_o = !rst_i && train_state_q == TRAIN_IDLE &&
-                                 (count_q != '0) && entries_q[head_q].commit_last;
-    assign snap_train_rd_id_o = (train_state_q == TRAIN_IDLE) ? head_id_o : train_id_q;
-    assign bpu_train_valid_o = !rst_i && train_state_q == TRAIN_SEND;
-    assign bpu_train_o = train_q;
-    assign train_fire = bpu_train_valid_o && bpu_train_ready_i;
+    assign ho_sel=add_idx(head_q,int'(ho_busy_q));
+    assign snap_train_rd_req_o=!rst_i && int'(count_q)>int'(ho_busy_q) &&
+        entries_q[ho_sel].valid && entries_q[ho_sel].commit_last && int'(train_free_i)>int'(ho_busy_q);
+    assign snap_train_rd_id_o=entries_q[ho_sel].id;
+    assign bpu_train_valid_o=!rst_i && ho_busy_q;
+    assign train_fire=bpu_train_valid_o && bpu_train_ready_i;
+    always_comb begin
+        bpu_train_o='0;
+        bpu_train_o.region_base=entries_q[head_q].fast_pred.region_base;
+        bpu_train_o.folds=snap_train_i.folds;
+        bpu_train_o.tage_meta=entries_q[head_q].tage_meta;
+        bpu_train_o.br_commit_mask=entries_q[head_q].committed_br;
+        bpu_train_o.br_taken_mask=entries_q[head_q].committed_taken;
+        bpu_train_o.cfi_valid=entries_q[head_q].actual_cfi_valid;
+        bpu_train_o.cfi_slot=entries_q[head_q].actual_cfi_slot;
+        bpu_train_o.cfi_type=entries_q[head_q].actual_cfi_type;
+        bpu_train_o.ras_action=entries_q[head_q].actual_ras_action;
+        bpu_train_o.cfi_target=entries_q[head_q].actual_cfi_target;
+        bpu_train_o.cfi_is_rvc=entries_q[head_q].actual_cfi_is_rvc;
+        bpu_train_o.is_edge=entries_q[head_q].actual_cfi_is_edge;
+        bpu_train_o.mispredicted=|entries_q[head_q].mispred_mask;
+    end
 
     always_comb begin : next_state
         int unsigned keep_count, protected_count;
@@ -328,6 +343,8 @@ module ftq
         logic prefix_open, found_demand, found_pf;
         idx_t slot_idx, old_head;
         slot_mask_t keep_mask;
+        keep_count=0;protected_count=0;boundary_pos=-1;prefix_open=0;
+        found_demand=0;found_pf=0;slot_idx='0;old_head='0;keep_mask='0;
 
         for (int n = 0; n < DEPTH; n++) begin
             entries_d[n] = entries_q[n];
@@ -338,9 +355,6 @@ module ftq
         pf_d = pf_q;
         head_d = head_q;
         count_d = count_q;
-        train_state_d = train_state_q;
-        train_id_d = train_id_q;
-        train_d = train_q;
         demand_hold_d = demand_hold_q;
         demand_hold_req_d = demand_hold_req_q;
 
@@ -351,7 +365,6 @@ module ftq
             entries_d[old_head] = '0;
             head_d = advance(old_head);
             count_d = count_d - 1'b1;
-            train_state_d = TRAIN_IDLE;
             // Issuer may equal a released head after a full-ring wrap.
             // It then denotes the next allocation, so release must not move it.
             if (pf_d == old_head) pf_d = head_d;
@@ -393,6 +406,7 @@ module ftq
                     ==entries_d[resolve_i.ftq_id.idx].fast_pred.region_base-vaddr_t'(2);
             end
             entries_d[resolve_i.ftq_id.idx].mispredicted |= resolve_i.mispredict;
+            if(resolve_i.mispredict) entries_d[resolve_i.ftq_id.idx].mispred_mask[resolve_i.slot]=1;
         end
 
         // All commit lanes can mark distinct regions in one edge. A region's
@@ -418,32 +432,6 @@ module ftq
                     entries_d[commit_i[lane].ftq_id.idx].commit_last = 1'b1;
             end
         end
-
-        case (train_state_q)
-            TRAIN_IDLE: if (snap_train_rd_req_o) begin
-                train_id_d = head_id_o;
-                train_state_d = TRAIN_WAIT;
-            end
-            TRAIN_WAIT: if (snap_train_resp_valid_i && count_d != '0 &&
-                           entries_d[head_d].valid && entries_d[head_d].id == train_id_q) begin
-                train_d = '0;
-                train_d.region_base = entries_d[head_d].fast_pred.region_base;
-                train_d.ctx = snap_train_i;
-                train_d.tage_meta = entries_d[head_d].tage_meta;
-                train_d.br_commit_mask = entries_d[head_d].committed_br;
-                train_d.br_taken_mask = entries_d[head_d].committed_taken;
-                train_d.cfi_valid = entries_d[head_d].actual_cfi_valid;
-                train_d.cfi_slot = entries_d[head_d].actual_cfi_slot;
-                train_d.cfi_type = entries_d[head_d].actual_cfi_type;
-                train_d.ras_action = entries_d[head_d].actual_ras_action;
-                train_d.cfi_target = entries_d[head_d].actual_cfi_target;
-                train_d.cfi_is_rvc=entries_d[head_d].actual_cfi_is_rvc;
-                train_d.is_edge=entries_d[head_d].actual_cfi_is_edge;
-                train_d.mispredicted = entries_d[head_d].mispredicted;
-                train_state_d = TRAIN_SEND;
-            end
-            default: ;
-        endcase
 
         if (kill_i.valid) begin
             // D24's already-selected winner is authoritative. Preserve the
@@ -492,6 +480,12 @@ module ftq
                 keep_mask = '0;
                 for (int s = 0; s < REGION_SLOTS; s++)
                     if (s <= int'(kill_i.slot)) keep_mask[s] = 1'b1;
+                entries_d[slot_idx].resolved_br &= keep_mask;
+                entries_d[slot_idx].resolved_taken &= keep_mask;
+                entries_d[slot_idx].mispred_mask &= keep_mask;
+                entries_d[slot_idx].mispredicted=|entries_d[slot_idx].mispred_mask;
+                if(entries_d[slot_idx].actual_cfi_valid && entries_d[slot_idx].actual_cfi_slot>kill_i.slot)
+                    entries_d[slot_idx].actual_cfi_valid=0;
                 entries_d[slot_idx].final_pred.br_mask &= keep_mask;
                 entries_d[slot_idx].final_pred.jal_mask &= keep_mask;
                 if (entries_d[slot_idx].final_pred.cfi_valid &&
@@ -569,9 +563,7 @@ module ftq
             pf_q <= '0;
             head_q <= '0;
             count_q <= '0;
-            train_state_q <= TRAIN_IDLE;
-            train_id_q <= '0;
-            train_q <= '0;
+            ho_busy_q<=0;ho_id_q<='0;
             demand_hold_q <= 1'b0;
             demand_hold_req_q <= '0;
         end else begin
@@ -584,9 +576,12 @@ module ftq
             pf_q <= pf_d;
             head_q <= head_d;
             count_q <= count_d;
-            train_state_q <= train_state_d;
-            train_id_q <= train_id_d;
-            train_q <= train_d;
+            ho_busy_q<=snap_train_rd_req_o;
+            if(snap_train_rd_req_o) ho_id_q<=snap_train_rd_id_o;
+            if(ho_busy_q) begin
+                assert(snap_train_resp_valid_i && snap_train_resp_id_i==ho_id_q && entries_q[head_q].id==ho_id_q && bpu_train_ready_i)
+                    else $fatal(1,"FTQ H1 identity or reserved training credit lost");
+            end
             demand_hold_q <= demand_hold_d;
             demand_hold_req_q <= demand_hold_req_d;
         end
@@ -595,10 +590,25 @@ module ftq
     always_comb begin
         perf_o = '0;
         if (!rst_i) begin
+            perf_o[PE_TRAIN_STALL_CYCLE]=PERF_INC_W'(int'(count_q)>int'(ho_busy_q) && entries_q[ho_sel].valid && entries_q[ho_sel].commit_last && int'(train_free_i)<=int'(ho_busy_q));
             perf_o[PE_RQ_FULL_CYCLE]=PERF_INC_W'(!hold_i && !kill_i.valid && count_q!=0 && entries_q[demand_q].valid && !entries_q[demand_q].demand_issued && !rq_rsv_ready_i);
             perf_o[PE_FTQ_FULL_CYCLE] = PERF_INC_W'(alloc_valid_i && !alloc_ready_o);
             if (train_fire) begin
                 perf_o[PE_CMT_REGION] = 1;
+                perf_o[PE_CMT_COND_BR]=PERF_INC_W'($countones(entries_q[head_q].committed_br));
+                perf_o[PE_CMT_COND_MISPRED]=PERF_INC_W'($countones(entries_q[head_q].committed_br & entries_q[head_q].mispred_mask));
+                for(int slot=0;slot<REGION_SLOTS;slot++)
+                    if(entries_q[head_q].committed_br[slot] && tage_final(entries_q[head_q].tage_meta,slot)!=entries_q[head_q].committed_taken[slot])
+                        perf_o[PE_CMT_COND_TAGE_WRONG]+=PERF_INC_W'(1);
+                if(entries_q[head_q].actual_cfi_valid && entries_q[head_q].actual_cfi_type==CFI_JALR) begin
+                    if(entries_q[head_q].actual_ras_action inside {RAS_POP,RAS_POP_PUSH}) begin
+                        perf_o[PE_CMT_RET]=1;
+                        perf_o[PE_CMT_RET_MISPRED]=PERF_INC_W'(entries_q[head_q].mispred_mask[entries_q[head_q].actual_cfi_slot]);
+                    end else begin
+                        perf_o[PE_CMT_JALR]=1;
+                        perf_o[PE_CMT_JALR_MISPRED]=PERF_INC_W'(entries_q[head_q].mispred_mask[entries_q[head_q].actual_cfi_slot]);
+                    end
+                end
                 case ({entries_q[head_q].fast_pred.next_pc == entries_q[head_q].final_next_pc,
                        entries_q[head_q].slow_next_pc == entries_q[head_q].final_next_pc})
                     2'b11: perf_o[PE_CMT_FAST_OK_SLOW_OK] = 1;
