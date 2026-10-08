@@ -8,7 +8,7 @@
 
 - 机器宽度统一为 4：解码、重命名、派发、提交均为 4（B42，取代 B01 的六宽重命名）。
 - 其余已定机制不削减：TAGE/uBTB/BTB/RAS 预测与恢复、非阻塞多 MSHR 访存与重放、A 扩展、F/D 与浮点重命名、Sv39 MMU、精确异常、L2 inclusive、SD DMA 协调、性能计数。（L2 与 DMA 协调的实现方式 2026-10-07 改为 Breeze MESI L2 Home，B50。）
-- 自建 SoC（B28），不使用 LiteX；与 Breeze 不共用 SoC。
+- SoC 使用 LiteX，核与 SoC 之间只用 AXI，内存口直连 LiteDRAM；复用 Breeze 的 KCU105 AXI 接法（B52，2026-10-08 取代 B28 的“不使用 LiteX”）。
 
 ## 2. 实施方式
 
@@ -58,7 +58,7 @@ L0～L4 及 L3 的已有证据见 `LOOP.md`。v1 从 L3 收尾开始。
 | L8 | 完整非阻塞访存（机制来源 Breeze v1 MESI/L2 Home，按乱序吞吐修改，B50；结构与 L8a/b/c 分步见 B51）：多 MSHR、重放、同 line 非对齐、跨 line/跨页非对齐硬件拆分（B49）、A 扩展、FENCE/FENCE.I、硬件 A/D 条件写入口、一致性 DMA 客户端 | B03～B05、B09、B23、B31、B32、B35、B49、B50、B51 | RV64IMAC；litmus；死锁 watchdog；随机访存程序 |
 | L9 | F/D：拆分 CVFPU、FP 重命名、fflags/FS 退休 | B14、B15、B40 | ACT4 RV64GC（用户态） |
 | L10 | S/U 模式、Sv39 MMU（翻译 Breeze MMU 的 TLB/PTW/walk cache，LSU 侧接口按 O3 重新设计）、SFENCE.VMA、satp、PMP、A/D 更新、WFI；计数器 S/U 访问与 Sscofpmf 溢出中断（B48）；`time` CSR 硬件读、Sstc 的 `stimecmp`/`menvcfg.STCE`/STIP 比较（B49）；DTLB/PTW 接口允许一条访存两次翻译（B49） | B06、B07、B24、B36、B38、B49、D25～D28 | 特权测试；riscv-tests p/v 变体 |
-| L11 | SoC：L2 + DDR4（Vivado MIG）+ CLINT/PLIC + UART + SD（AXI Quad SPI）+ SD DMA 协调 + FASE；fatal 隔离；OpenSBI PMU 与 Linux perf（B48）；CLINT `mtime` 接入核、Sstc 中断交付与 OpenSBI/设备树声明（B49） | B08、B28、B29、B39、B41、B44、B49 | 仿真中启动 OpenSBI + Linux；上板启动 Linux，镜像经 SD 卡加载 |
+| L11 | SoC（LiteX，B52）：L2 + DDR4（LiteDRAM）+ CLINT/PLIC + UART + SD（控制器在 L11 spec 中重选）+ SD DMA 协调 + FASE；fatal 隔离；OpenSBI PMU 与 Linux perf（B48）；CLINT `mtime` 接入核、Sstc 中断交付与 OpenSBI/设备树声明（B49） | B08、B28、B29、B39、B41、B44、B49 | 仿真中启动 OpenSBI + Linux；上板启动 Linux，镜像经 SD 卡加载 |
 
 每一级都可以拆成多个任务；级内的局部 cocotb 测试规则见 `agent.md` 第 2 节。
 
@@ -76,7 +76,7 @@ Breeze 仓库：`/home/chen/leisure/flow`。
 | CVFPU | `third_party/cvfpu`（已是 SV，含 100 MHz 切分） | 直接复用，按 B14 拆分 | L9 |
 | Sv39 MMU | `docs/breeze-mmu-rtl-spec.md` 与 `design/src/main/scala/mmu/sv39/` | 手工翻译 TLB 阵列、PTW、walk cache；LSU 侧接口按 B04/B06 重做 | L10 |
 | CSRFile 语义 | `design/src/main/scala/core/RegFile.scala` | 按语义重写，B29 | L5 起逐步 |
-| PLIC / CLINT | `litex_wrapper/flow/rtl/FlowPlic.sv`、`FlowClint.sv` | 直接复用，换 AXI-Lite 包装并重查地址与访问宽度 | L11 |
+| PLIC / CLINT | `litex_wrapper/flow/rtl/FlowPlic.sv`、`FlowClint.sv` | 直接复用；接法按 B52 在 L11 spec 中确定（AXI-Lite 包装或 LiteX 主总线），重查地址与访问宽度 | L11 |
 | FASE | `design/src/main/scala/fase/`、`litex_wrapper/flow/rtl/FlowFaseJtag.sv` | 手工翻译，改接 O3 的退休与调试接口 | L11 |
 
 **翻译的对照验证**（B47）：以同一提交的 Chisel 生成 Verilog 为参照，寄存器结构一致的模块用 Yosys `eqy` 做形式化等价检查；结构不一致的用 Verilator 并排运行两份 RTL、随机激励逐拍比较输出。参照 Verilog 只用于验证，不进入 O3 的 `rtl/`。

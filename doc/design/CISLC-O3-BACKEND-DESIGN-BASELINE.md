@@ -1,6 +1,6 @@
 # CISLC-O3 后端设计基线与决策记录
 
-更新日期：2026-10-07。**最新：第 40 节 B51（L8 乱序访存微架构：三类等待者与重放接口、64B 行/512 位链路、访存 32 位物理地址、32KB 8 路 L1D 双管道 bank 化、4 MSHR、256KB 8 路 L2、store 所有权预取、L8c 依赖推测、L1I 只读客户端与简化 FENCE.I）。此前：第 39 节 B50（L8 访存以 Breeze v1 MESI 协议与 L2 Home 为机制来源，按乱序高吞吐修改；B08/B41 的协调方式被取代）。此前：第 38 节 B49（能由硬件处理的不交给软件 trap：跨 line/跨页非对齐硬件拆分、`time` CSR 硬件读、Sstc；B31 的“跨 line 报异常”部分被取代）。此前：第 37 节 B48（性能计数器 Zihpm + Sscofpmf）；B45 已暂停。此前：第 36 节 B42～B47（v1 实施计划确认，见 [`../O3-v1-plan.md`](../O3-v1-plan.md)）；B01 改为四宽；B16/B17/B19/B20 已移入附录 A。**
+更新日期：2026-10-08。**最新：第 41 节 B52（L11 SoC 改用 LiteX，核与 SoC 之间只用 AXI，内存通路直连 LiteDRAM；取代 B28 的“不用 LiteX”与 B44 的前提）。此前：第 40 节 B51（L8 乱序访存微架构：三类等待者与重放接口、64B 行/512 位链路、访存 32 位物理地址、32KB 8 路 L1D 双管道 bank 化、4 MSHR、256KB 8 路 L2、store 所有权预取、L8c 依赖推测、L1I 只读客户端与简化 FENCE.I）。此前：第 39 节 B50（L8 访存以 Breeze v1 MESI 协议与 L2 Home 为机制来源，按乱序高吞吐修改；B08/B41 的协调方式被取代）。此前：第 38 节 B49（能由硬件处理的不交给软件 trap：跨 line/跨页非对齐硬件拆分、`time` CSR 硬件读、Sstc；B31 的“跨 line 报异常”部分被取代）。此前：第 37 节 B48（性能计数器 Zihpm + Sscofpmf）；B45 已暂停。此前：第 36 节 B42～B47（v1 实施计划确认，见 [`../O3-v1-plan.md`](../O3-v1-plan.md)）；B01 改为四宽；B16/B17/B19/B20 已移入附录 A。**
 
 原更新日期：2026-10-02。目标工程：`/home/chen/work/CISLC-O3`。本文暂存于 Flow，仅记录设计与只读源码核对；不代表 RTL、编译、仿真、时序或 FPGA 验证完成。
 
@@ -508,6 +508,8 @@ SQ 排空后，按前端 D26 的 rs1 虚拟地址、rs2 ASID、global 与页大�
 
 ## 31. B28：首版面向 Linux 的自建 SoC（2026-10-02，已定范围与候选参考）
 
+> **2026-10-08 B52：** “不采用 LiteX 框架、SoC 使用 Vivado IP 与自写逻辑集成”被取代，改用 LiteX，见第 41 节。单 hart RV64GC/Linux 平台范围、CLINT/PLIC 机制复用与定时器路线不变。
+
 用户明确首版按单 hart RV64GC/Linux 完整平台需求设计；不采用 LiteX 框架，SoC 使用 Vivado IP 与自写逻辑集成。此要求取代任何把 Flow 的 LiteX/LiteDRAM 集成方式直接继承到 CISLC-O3 的假设。借鉴 Breeze 已有的软件可见接口及验证经验，不把其板级或 Linux 历史结果算作 CISLC-O3 验证结果。具体 IP 型号、地址图、启动介质和中断控制器实现尚未全部冻结；既有 SD DMA 需求保持在首版系统范围内。SD 控制器选型见 B44（2026-10-05）。
 
 本轮核对 Breeze：`litex_wrapper/flow/rtl/FlowClint.sv` 和 `FlowPlic.sv` 是独立 SV 模块，当前带 64-bit Wishbone slave；`fpga/kcu105/target.py` 负责地址译码、总线和 msip/mtip/mtime/meip/seip 接线。可参考其寄存器与 gateway/claim/complete 机制，后续改接 AXI/AXI-Lite 等选定总线时必须重查字节地址、访问宽度、写 strobe 和握手，不能把原包装直接当 AXI 外设。`design/src/main/scala/core/RegFile.scala` 包含 M/S pending、enable、delegation 仲裁、软件 STIP 路径及可选 Sstc 路径；核内 CSRFile 应承接这些架构语义。
@@ -698,6 +700,8 @@ CSRFile 承接 M/S pending、enable、delegation、trap entry/return 及软件 S
 - O3 包装要求不变（ROB 身份、按条取消、完成 FIFO，B33/B34）。除法仍按 B21 沿用 radix-4。
 
 ### 36.3 B44：SD 卡使用 AXI Quad SPI + SPI 模式
+
+> **2026-10-08 B52：** 前提“不使用 LiteX”已撤销，SD 控制器改由 L11 spec 在 LiteX 方案下重选（候选 LiteSDCard），见第 41 节。
 
 - 不使用 LiteX 框架（B28），Xilinx 也没有可用的免费 PL 端 SD 主控 IP。v1 使用 Vivado AXI Quad SPI IP 以 SPI 模式访问 SD 卡，Linux 使用 `mmc_spi` 驱动，OpenSBI/启动程序使用 SPI 模式读取镜像。
 - 带宽为几 MB/s，满足启动与镜像加载；不追求 SD 原生 4 位模式的吞吐。
@@ -916,6 +920,15 @@ litmus 与完整一致性测试按 2026-10-06 策略推迟到 FPGA。按 B47，�
 ### 40.10 资源
 
 按上述几何，BRAM 粗估为 L1D 数据约 64 块 BRAM36（8 个字 bank × 每 bank 512 位宽，64 组只用到 BRAM 深度的 1/8；2026-10-07 写 L8a spec 时修正，原估 16～32 块有误）、L2 约 60～70 块，合计约 130/600。LUT 主要花在 LQ/SQ 地址比较、两条管道的 8 路 tag 比较、512 位多路选择和 L2 慢槽上，数字以 L11 综合为准。
+
+## 41. B52：L11 SoC 改用 LiteX，核与 SoC 之间只用 AXI（2026-10-08，用户确认）
+
+- **取代**：B28 的“不采用 LiteX、Vivado IP + 自写 SoC”；B44 的 SD 控制器选型前提；计划中 L11 的“Vivado MIG”。B28/B29 的平台范围、CLINT/PLIC 语义复用、定时器与 Sstc 路线不变。
+- **理由**：B28 拒绝 LiteX 的顾虑是 Wishbone 桥的性能损失。Breeze 已在同一块 KCU105 上实现 SOC-axi 接法（`/home/chen/leisure/flow` `docs/cluster-soc-rtl-spec.md`、`fpga/kcu105/target.py`）：核内存口 AXI4 经 SoC 侧路由器直连 LiteDRAM 的 AXI 端口，可缓存通路不经过 Wishbone；只有 boot ROM/SRAM 与 AXI-Lite MMIO 经 LiteX 自带桥进入主总线，均为低带宽或阻塞单字访问。采用 LiteX 可复用 Breeze 的 KCU105 target、AXI 路由（R/B 按 AR/AW 顺序）、BIOS 冒烟、LiteDRAM 仿真模型，以及 LiteX 的 SD 加载、设备树生成与 Linux 主线驱动。
+- **边界**：O3 核对 SoC 只暴露 AXI4 内存口与 AXI4-Lite MMIO 口（L8a/L8b 已有）。不修改核内 L1D/L2/后端行为来适配 SoC；SoC 侧不得吞响应或改顺序（同 Breeze C1/C2）。
+- **DDR**：LiteDRAM（USDDRPHY）。O3 L2 内存口位宽在 L11 spec 中按 LiteDRAM native 口确定（L8a X10 的“随 MIG 改”改为“随 LiteDRAM 改”）。上板后用 HPM 测 L2 miss 延迟；若 DDR 延迟成为瓶颈，再评估在 LiteX 内改接 MIG，不在 L11 首版做。
+- **DMA 一致性**：O3 已有一致性 DMA 客户端口（`o3_core.sv` 的 `dma_req_*`，L8b）。任何 SoC 侧 DMA 主设备（如 SD 控制器）写主存必须经该口进入 L2 Home，不得直接写 LiteDRAM 绕过 cache 一致性；做不到时首版改用 CPU PIO。具体在 L11 spec 中确定。
+- **待 L11 spec 闭合**：SD 控制器及其 DMA 接法、UART 型号、地址图（是否沿用 Breeze `config/breeze_mcu_platform.json`）、LiteX 主总线是否改 `bus_standard='axi'`、CLINT/PLIC 的 AXI-Lite 接法、FASE 接入、启动链（LiteX BIOS → OpenSBI/DTB/Linux）。
 
 ## 附录 A：已被取代的历史决策
 

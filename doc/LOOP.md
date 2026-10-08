@@ -31,7 +31,7 @@
 | L8c | 推测load越过地址未知的更老store | 待冻结任务与门禁 | 未开始 |
 | L9 | F/D：拆分 CVFPU、FP 重命名、fflags/FS 退休、浮点访存/RVC | T07 定向 cocotb + 整核 FP 自查 + 回归；ACT4 推迟到 FPGA | **单槽 replay 等待环修复，本次指定门禁通过；完整合同验收未完成**（`f0f4106`）：Alan Memory IQ 2/2、整数 replay 自查 121 周期/20 退休、完整 FP 自查 1860 周期/616 退休（另 1 trap）、顺序 FP 与既有五项回归 PASS，lint 0 errors；历史T07采用load按序发射；L8a已改为双发射事件重放，见T09报告；历史证据见 [T07 报告](tasks/O3-T07-report.md) |
 | L10 带已知问题收口 | S/U、Sv39 MMU、SFENCE.VMA/satp/PMP、A/D、WFI | T08a→b→c 定向门禁；2026-10-07 用户修订 | T08a `8610b9a`、T08b `2e5333b` 已通过指定既有门禁；T08c `1d0d6f8` 已接入队头 D/CAS/年轻访存排序，Alan 同 SHA 38套件132/132、八项既有整核回归、T08a 全部与 AD 正向程序通过，lint 0 errors。完整 VM 在 cause 15 / PC 0x800001c4 的旧分支断言失败保留，详见 [T08 报告](tasks/O3-T08-report.md)。X2：TLB hit-under-miss/单 miss 槽/单 PTW；X8：SFENCE 先等 SQ 写完成再 PTW idle。L10历史收尾；L8a当前状态见L8a行，L11未开始 |
-| L11 | SoC：L2 + DDR4（MIG）+ CLINT/PLIC + UART + SD（AXI Quad SPI，B44）+ SD DMA + FASE | 仿真启动 OpenSBI + Linux；上板经 SD 卡启动 Linux | 未开始 |
+| L11 | SoC（LiteX，B52）：L2 + DDR4（LiteDRAM）+ CLINT/PLIC + UART + SD（L11 spec 重选）+ SD DMA + FASE | 仿真启动 OpenSBI + Linux；上板经 SD 卡启动 Linux | 未开始 |
 
 ## 2. L4 缓存取指闭环（历史范围；L7a/L7b 已完成定向验收）
 
