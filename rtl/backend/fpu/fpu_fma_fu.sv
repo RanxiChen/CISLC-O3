@@ -50,12 +50,19 @@ module o3_fpu_opgroup import o3_pkg::*; #(
     logic op_mod;
     logic [NOP-1:0][63:0] operands;
     logic [fpnew_pkg::NUM_FP_FORMATS-1:0][NOP-1:0] is_boxed;
+    // Vivado needs an explicit assignment context for array patterns before
+    // they enter a conditional expression. Preserve every format's latency.
+    localparam fpnew_pkg::fmt_unsigned_t ADDMUL_REGS = '{3,4,1,1,1};
+    localparam fpnew_pkg::fmt_unsigned_t DIVSQRT_REGS = '{default:2};
+    localparam fpnew_pkg::fmt_unsigned_t NONCOMP_REGS = '{default:1};
+    localparam fpnew_pkg::fmt_unsigned_t CONV_REGS = '{default:4};
     localparam fpnew_pkg::fmt_unsigned_t PIPE_REGS = GROUP==fpnew_pkg::ADDMUL ?
-        '{3,4,1,1,1} : GROUP==fpnew_pkg::DIVSQRT ? '{default:2} :
-        GROUP==fpnew_pkg::NONCOMP ? '{default:1} : '{default:4};
+        ADDMUL_REGS : GROUP==fpnew_pkg::DIVSQRT ? DIVSQRT_REGS :
+        GROUP==fpnew_pkg::NONCOMP ? NONCOMP_REGS : CONV_REGS;
+    localparam fpnew_pkg::fmt_unit_types_t PARALLEL_UNITS = '{default:fpnew_pkg::PARALLEL};
+    localparam fpnew_pkg::fmt_unit_types_t MERGED_UNITS = '{default:fpnew_pkg::MERGED};
     localparam fpnew_pkg::fmt_unit_types_t UNIT_TYPES =
-        (GROUP==fpnew_pkg::ADDMUL || GROUP==fpnew_pkg::NONCOMP) ?
-        '{default:fpnew_pkg::PARALLEL} : '{default:fpnew_pkg::MERGED};
+        (GROUP==fpnew_pkg::ADDMUL || GROUP==fpnew_pkg::NONCOMP) ? PARALLEL_UNITS : MERGED_UNITS;
 
     function automatic logic branch_killed(input branch_mask_t mask);
         return resolution_i.valid && resolution_i.mispredict && mask[resolution_i.branch_tag];

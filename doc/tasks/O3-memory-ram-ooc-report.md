@@ -28,3 +28,11 @@ cloud_chen 首选SSH/环境成功，Verilator5.050/cocotb2.1.0。独立WIP目录
 源码候选 `baa4441be2197adcf4f0371b94653acc0e1e5187`：cloud_chen lint0/357 warnings；dcache MSHR4共49/49、MSHR1基础26/26、MSHR1 N2原子20/20；TAGE seed1/7/29各3/3；L2 12/12（含原随机规模）；pressure N3 MSHR1/4各3/3。其他门禁仍在运行，不能提前计入通过。
 
 Alan首轮L2 OOC完成（201.5秒）。directory已识别为LUTRAM，不再展开FF，但block属性被Vivado拒绝。进一步将RAM读结果先作为完整packed word寄存，再在RAM过程外转换为struct；初始化/运行写地址与数据在外部统一，RAM内部只留一条写表达式。该修正不改变读写拍数或优先级，WIP整核lint再次exit0/357 warnings；随后在新准确SHA复验。
+
+## 目录 BRAM 与整核首次复验
+
+`94ec4e27717b636a864f0b64cb3e3a881f1597fd` 的 Alan L2 OOC exit0/215.5秒：24002 LUT（9.90%）、34264 FF、57 RAMB36+8 RAMB18（61 tiles），WNS+1.709ns。directory八个way各512×22明确推断为RAMB18，属性不再不可实现。全局WHS仍-0.143ns/2516边界输入违例；内部hold另有报告，不能宣称实现时序闭合。
+
+该候选cloud_chen默认MEM_PIPES=2整核构建exit0/220.6秒，13项既有短程序全部exit0：smoke、dcache data/replay、branch-dense、predict、l8a mem、FP、priv、VM及四项L8b。VM保持17534周期/6434退休/tohost1；AMO42937周期/7802退休、MMIO4416/1245、拆分18941/7048、DMA12762/3346。未执行Spike/ACT4或修改黄金。
+
+Alan整核首次复验已经越过TAGE，58.8秒后在`rtl/backend/fpu/fpu_fma_fu.sv:54`报Synth8-27：条件表达式中的数组assignment pattern缺赋值上下文。修为独立显式类型localparam，再用条件表达式选择它们；所有format流水级数与unit类型逐值保持。WIP lint exit0/357 warnings。此次只变FPU参数写法，L1D/L2/TAGE及其测试源码与94ec4e27逐字节相同；既有memory证据明确归于94ec4e27，不冒充后续候选新跑。随后复跑FPU定向、整核短程序与整核OOC。
