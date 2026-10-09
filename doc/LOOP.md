@@ -32,7 +32,7 @@
 | L8c | 推测load越过地址未知的更老store | 待冻结任务与门禁 | 未开始 |
 | L9 | F/D：拆分 CVFPU、FP 重命名、fflags/FS 退休、浮点访存/RVC | T07 定向 cocotb + 整核 FP 自查 + 回归；ACT4 推迟到 FPGA | **单槽 replay 等待环修复，本次指定门禁通过；完整合同验收未完成**（`f0f4106`）：Alan Memory IQ 2/2、整数 replay 自查 121 周期/20 退休、完整 FP 自查 1860 周期/616 退休（另 1 trap）、顺序 FP 与既有五项回归 PASS，lint 0 errors；历史T07采用load按序发射；L8a已改为双发射事件重放，见T09报告；历史证据见 [T07 报告](tasks/O3-T07-report.md) |
 | L10 带已知问题收口 | S/U、Sv39 MMU、SFENCE.VMA/satp/PMP、A/D、WFI | T08a→b→c 定向门禁；2026-10-07 用户修订 | T08a `8610b9a`、T08b `2e5333b` 已通过指定既有门禁；T08c `1d0d6f8` 已接入队头 D/CAS/年轻访存排序，Alan 同 SHA 38套件132/132、八项既有整核回归、T08a 全部与 AD 正向程序通过，lint 0 errors。完整 VM 在 cause 15 / PC 0x800001c4 的旧分支断言失败保留，详见 [T08 报告](tasks/O3-T08-report.md)。X2：TLB hit-under-miss/单 miss 槽/单 PTW；X8：SFENCE 先等 SQ 写完成再 PTW idle。L10历史收尾；L8a当前状态见L8a行，L11未开始 |
-| L11 | SoC（LiteX，B52）：L2 + DDR4（LiteDRAM）+ CLINT/PLIC + UART + SD（L11 spec 重选）+ SD DMA + FASE | 仿真启动 OpenSBI + Linux；上板经 SD 卡启动 Linux | 未开始 |
+| L11 | 首版完整 SoC（LiteX，B52）：O3+L1/L2、DDR4、ROM/SRAM、CLINT/PLIC/UART、LiteSDCard+一致性DMA；后续FASE/perf | 用户授权Alan BIOS/Vivado与cloud回归并行；验证提交78db957 | **功能门禁通过，FPGA待结果**：同提交模块461/461、平台补充6/6、整核27目标、SoC S1/S2与断言通过，lint0 errors；CSR/PMA同源、IRQ及MMIO lane修复，Alan BIOS已编译。生产Vivado在运行、调试排队；SD实卡/Linux/物理DDR/上板未验收。见[T11a报告](tasks/O3-T11a-report.md)及[功能证据](tasks/O3-T11a-functional-evidence.json) |
 
 ## 2. L4 缓存取指闭环（历史范围；L7a/L7b 已完成定向验收）
 

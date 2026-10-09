@@ -1,0 +1,66 @@
+{
+  "source_sha": "78db9574b175383603b46238533335ad3eaa58df",
+  "host": "cloud_chen@47.96.71.231",
+  "cwd": "/home/cloud_chen/work/o3-l11a-final-78db957",
+  "evidence_root": "/home/cloud_chen/evidence/o3-l11a-final-78db957",
+  "source_manifest_files": 878,
+  "source_manifest_verified": true,
+  "source_archive_sha256": "6582844bf9a303af0c237b62ba0409533f9d71cfe8e5ed307086a421941378eb",
+  "start": "2026-10-09T04:39:07Z",
+  "end": "2026-10-09T04:45:20.522389+00:00",
+  "cases": {
+    "modules": 461,
+    "directed": 6
+  },
+  "stages": {
+    "modules": 97,
+    "directed": 9,
+    "core2": 14,
+    "core1": 13
+  },
+  "sram_forbidden_collision_negative_gate": true,
+  "lint_errors": 0,
+  "lint_warnings": 357,
+  "smoke": {
+    "cwd": "/home/cloud_chen/work/o3-l11a-final-78db957",
+    "command": [
+      "/home/cloud_chen/envs/cislc-o3/bin/python",
+      "-u",
+      "/home/cloud_chen/work/o3-l11a-final-78db957/sim/litex/o3_sim.py",
+      "--output-dir",
+      "/home/cloud_chen/evidence/o3-l11a-final-78db957/s2-alan-deps/build",
+      "--rom-init",
+      "/home/cloud_chen/work/o3-l11a-final-78db957/bios-s2.bin",
+      "--run",
+      "--selftest"
+    ],
+    "start_utc": "2026-10-09T04:42:07.285118+00:00",
+    "end_utc": "2026-10-09T04:45:20.522389+00:00",
+    "elapsed_seconds": 193.2372731850046,
+    "wall_limit_seconds": 1800,
+    "bios_sha256": "de7f83478ec7c563311d6a2fbc43fe46e9061aaf345c38c8cb7d0125e3afccbe",
+    "assertions_enabled": true,
+    "memtest_bytes": 65536,
+    "result": "PASS",
+    "child_exit": -15,
+    "selftest_requested": true,
+    "selftest_command_sent": true,
+    "runner_exit": 0
+  },
+  "functional_gate_passed": true,
+  "fpga_gate_passed": null,
+  "l11a_complete": false,
+  "board_verified": false,
+  "opensbi_linux_verified": false,
+  "physical_sd_verified": false,
+  "sd_dma_err_only_stall_limit": true,
+  "litesdcard_commit": "5429f5d7ef57f7e0a4802087033dbde8f1b7a4d5",
+  "notes": [
+    "FPGA BIOS and build sources match the code commit; Vivado remains in progress.",
+    "No tests, seeds, assertions or sizes were weakened; exactly two legacy address-map oracle changes were approved."
+  ],
+  "regression_start": "2026-10-09T04:39:07Z",
+  "regression_end": "2026-10-09T04:43:57Z",
+  "debug_watchdog_passed": true,
+  "debug_watchdog_reason_cases": 15
+}

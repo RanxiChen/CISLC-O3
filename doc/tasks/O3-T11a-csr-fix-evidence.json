@@ -1,0 +1,81 @@
+{
+  "parent_sha": "c522369c11b88b819e2ca9192f491e266bd16cee",
+  "source_kind": "uncommitted workspace snapshot; parent SHA is not tested source SHA",
+  "tested_source_manifest_sha256": "393ad7e9beb4824ab5a6cc01c3ca344f23a64e53693628178ec8e6cf31166a0e",
+  "platform_json_sha256": "b82edabbaf28fd545680030801e1fd5f1ab163ae72c0ad5d93a36173c4be6e30",
+  "dependency_manifest_sha256": "8a15a7d055a93a56f593d89e2d4ffb34e1f93d9476bb841d90021a866cfacd19",
+  "host": "cloud_chen@47.96.71.231",
+  "cwd": "/home/cloud_chen/work/o3-soc-csr-fix-20261009",
+  "evidence_root": "/home/cloud_chen/evidence/o3-soc-csr-fix-20261009",
+  "stages": {
+    "generate-pma": {
+      "exit": 0,
+      "command": "python scripts/gen_platform_pkg.py \n",
+      "start": "2026-10-09T02:57:49Z",
+      "end": "2026-10-09T02:57:49Z",
+      "log": "/home/cloud_chen/evidence/o3-soc-csr-fix-20261009/generate-pma.log"
+    },
+    "check-pma": {
+      "exit": 0,
+      "command": "python scripts/gen_platform_pkg.py --check \n",
+      "start": "2026-10-09T02:57:49Z",
+      "end": "2026-10-09T02:57:49Z",
+      "log": "/home/cloud_chen/evidence/o3-soc-csr-fix-20261009/check-pma.log"
+    },
+    "platform-pma": {
+      "exit": 0,
+      "command": "make -C sim/cocotb/platform_pma sim COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-soc-csr-fix-20261009/platform-pma.xml \n",
+      "start": "2026-10-09T02:57:49Z",
+      "end": "2026-10-09T02:57:51Z",
+      "log": "/home/cloud_chen/evidence/o3-soc-csr-fix-20261009/platform-pma.log"
+    },
+    "csr-bus-v3": {
+      "exit": 0,
+      "command": "python sim/litex/check_csr_window.py",
+      "start": "2026-10-09T02:59:18Z",
+      "end": "2026-10-09T02:59:20Z",
+      "log": "/home/cloud_chen/evidence/o3-soc-csr-fix-20261009/csr-bus-v3.log"
+    },
+    "lint": {
+      "exit": 0,
+      "command": "env TOP=o3_litex_top bash scripts/lint.sh \n",
+      "start": "2026-10-09T02:57:51Z",
+      "end": "2026-10-09T02:58:00Z",
+      "log": "/home/cloud_chen/evidence/o3-soc-csr-fix-20261009/lint.log"
+    },
+    "standard": {
+      "exit": 0,
+      "command": "python fpga/kcu105/target.py --no-compile-software --output-dir /home/cloud_chen/evidence/o3-soc-csr-fix-20261009/build/standard \n",
+      "start": "2026-10-09T02:58:00Z",
+      "end": "2026-10-09T02:58:04Z",
+      "log": "/home/cloud_chen/evidence/o3-soc-csr-fix-20261009/standard.log"
+    },
+    "debug": {
+      "exit": 0,
+      "command": "python fpga/kcu105/target.py --debug --no-compile-software --output-dir /home/cloud_chen/evidence/o3-soc-csr-fix-20261009/build/debug \n",
+      "start": "2026-10-09T02:58:04Z",
+      "end": "2026-10-09T02:58:08Z",
+      "log": "/home/cloud_chen/evidence/o3-soc-csr-fix-20261009/debug.log"
+    },
+    "guardrails": {
+      "exit": 0,
+      "command": "python /home/cloud_chen/evidence/o3-soc-csr-fix-20261009/guardrails.py",
+      "start": "2026-10-09T03:00:22Z",
+      "end": "2026-10-09T03:00:23Z",
+      "log": "/home/cloud_chen/evidence/o3-soc-csr-fix-20261009/guardrails.log"
+    }
+  },
+  "overall_exit": 0,
+  "csr_window": [
+    301989888,
+    303038464
+  ],
+  "csr_address_width": 18,
+  "ddr_capacity_bytes": 2147483648,
+  "limitations": [
+    "initial csr-bus and csr-bus-v2 failed due to fixture setup/API; logs retained",
+    "PMA checker and CSR bus tested separately; no CPU-to-LiteX fault integration claim",
+    "full regression deferred; existing expectations unchanged",
+    "SD DMA ERR stall remains; no BIOS smoke, SD, Linux, Vivado or board acceptance"
+  ]
+}
