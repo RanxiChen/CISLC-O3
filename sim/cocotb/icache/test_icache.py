@@ -278,15 +278,32 @@ async def l10_recheck_cached_line_pmp_and_pma_without_refill(d):
             obs=await h.tick();assert not obs['l2_req_valid']
             if len(h.responses)==target:break
         assert len(h.responses)==target and h.responses[-1][4]==1,(priv,cfg,h.responses)
-    # M no-match is allowed by PMP; PMA rejects DTCM execute and high Bare VA.
+    # M no-match is allowed by PMP; PMA rejects the SRAM-end hole and high Bare VA.
     d.priv_i.value=3;d.pmpcfg_i.value=0
-    for bad_pc in (0x11000000,0x100000000,0x180000000,0xffffffffffffff00):
+    for bad_pc in (0x11010000,0x100000000,0x180000000,0xffffffffffffff00):
         target=len(h.responses)+1
         await h.request(bad_pc,3,3)
         for _ in range(10):
             obs=await h.tick();assert not obs['l2_req_valid']
             if len(h.responses)==target:break
         assert len(h.responses)==target and h.responses[-1][4]==1,(hex(bad_pc),h.responses)
+
+@cocotb.test()
+async def platform_sram_fetch_refill_and_cached_hit(d):
+    h=Harness(d);await h.reset()
+    pc=0x11000000
+    payload=bytes((i*17+9)&255 for i in range(64))
+    await h.request(pc,1,1)
+    await h.accept_l2_request(pc)
+    await h.refill(payload)
+    await h.expect_count(1)
+    assert h.responses[-1][1:]==(1,1,int.from_bytes(payload[:16],'little'),0)
+    await h.request(pc+16,2,2)
+    for _ in range(10):
+        obs=await h.tick();assert not obs['l2_req_valid']
+        if len(h.responses)==2:break
+    assert len(h.responses)==2
+    assert h.responses[-1][1:]==(2,2,int.from_bytes(payload[16:32],'little'),0)
 
 @cocotb.test()
 async def prefetch_permission_reserve_and_provenance(dut):

@@ -7,7 +7,7 @@ SETS ?= 2
 WAYS ?= 2
 SLOTS ?= 2
 export SETS WAYS SLOTS
-VERILOG_SOURCES := $(REPO_ROOT)/rtl/common/o3_isa_pkg.sv $(REPO_ROOT)/rtl/common/o3_cfg_pkg.sv $(REPO_ROOT)/rtl/common/o3_types_pkg.sv $(wildcard $(REPO_ROOT)/rtl/memory/l2_*.sv) $(CURDIR)/l2_home_tb_top.sv
+VERILOG_SOURCES := $(REPO_ROOT)/rtl/common/o3_isa_pkg.sv $(REPO_ROOT)/rtl/common/o3_platform_pkg.sv $(REPO_ROOT)/rtl/common/o3_cfg_pkg.sv $(REPO_ROOT)/rtl/common/o3_types_pkg.sv $(wildcard $(REPO_ROOT)/rtl/memory/l2_*.sv) $(CURDIR)/l2_home_tb_top.sv
 SIM_BUILD ?= $(CURDIR)/sim_build/s$(SETS)-w$(WAYS)-n$(SLOTS)
 COCOTB_RESULTS_FILE ?= $(CURDIR)/results.xml
 COMPILE_ARGS += --timing --assert -Wno-fatal -GSETS=$(SETS) -GWAYS=$(WAYS) -GSLOTS=$(SLOTS)

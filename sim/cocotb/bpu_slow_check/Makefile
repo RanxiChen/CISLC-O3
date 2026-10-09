@@ -5,7 +5,7 @@ COCOTB_TEST_MODULES := test_bpu_slow_check
 REPO_ROOT := $(abspath ../../..)
 VERILOG_SOURCES := \
   $(REPO_ROOT)/rtl/common/o3_isa_pkg.sv \
-  $(REPO_ROOT)/rtl/common/o3_cfg_pkg.sv \
+  $(REPO_ROOT)/rtl/common/o3_platform_pkg.sv $(REPO_ROOT)/rtl/common/o3_cfg_pkg.sv \
   $(REPO_ROOT)/rtl/common/o3_types_pkg.sv \
   $(REPO_ROOT)/rtl/frontend/bpu_slow_check.sv \
   $(CURDIR)/bpu_slow_check_tb_top.sv

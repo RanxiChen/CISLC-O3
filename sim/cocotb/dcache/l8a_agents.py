@@ -99,7 +99,7 @@ class CacheBench:
         return pack((3, r.src), (56, r.addr), (64, r.addr if r.va is None else r.va), (2, r.size),
                     (1, int(r.write)), (1, int(r.sta)), (1, int(r.signed)), (1, int(r.flw)),
                     (1, int(r.head)), (1, int(r.heu)), (1, int(r.check_only)), (1, int(r.split)),
-                    (1, int(r.raw)), (1, int(r.need_d)), (4, r.bytes), (2, 3), (6, 0), (3, 0),
+                    (1, int(r.raw)), (1, int(r.need_d)), (4, r.bytes), (2, 3), (8, 0), (3, 0),
                     (1, int(r.forward)), (1, int(r.blocked)), (1, int(r.translation_miss)),
                     (64, r.forward_data), (71, r.exc), (64, r.data), (8, r.mask), (4, r.amo),
                     (lq, r.ident & ((1 << lq) - 1)), (8, 1), (sq, r.ident & ((1 << sq) - 1)),
