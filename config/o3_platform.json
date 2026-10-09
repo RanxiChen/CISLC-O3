@@ -1,14 +1,179 @@
 {
   "schemaVersion": 1,
-  "platform": "o3-sim-v1",
+  "platform": "o3-kcu105-v1",
   "addressWidth": 32,
+  "resetVector": "0x10010000",
   "regions": [
-    {"name": "clint", "origin": "0x02000000", "size": "0x00010000", "implemented": false},
-    {"name": "plic", "origin": "0x0c000000", "size": "0x04000000", "implemented": false},
-    {"name": "itcm", "origin": "0x10000000", "size": "0x00010000", "implemented": true},
-    {"name": "dtcm", "origin": "0x11000000", "size": "0x00040000", "implemented": true},
-    {"name": "litex_mmio", "origin": "0x12000000", "size": "0x01000000", "implemented": false},
-    {"name": "ethmac", "origin": "0x30000000", "size": "0x00020000", "implemented": false},
-    {"name": "main_ram", "origin": "0x80000000", "size": "0x02000000", "implemented": true}
-  ]
+    {
+      "name": "machine_timer",
+      "origin": "0x02000000",
+      "size": "0x00010000",
+      "readable": true,
+      "writable": true,
+      "executable": false,
+      "cacheable": false,
+      "device": true,
+      "mainMemory": false,
+      "amo": "none",
+      "reservability": "none"
+    },
+    {
+      "name": "plic",
+      "origin": "0x0c000000",
+      "size": "0x04000000",
+      "readable": true,
+      "writable": true,
+      "executable": false,
+      "cacheable": false,
+      "device": true,
+      "mainMemory": false,
+      "amo": "none",
+      "reservability": "none"
+    },
+    {
+      "name": "boot_rom",
+      "origin": "0x10000000",
+      "size": "0x00010000",
+      "readable": true,
+      "writable": false,
+      "executable": true,
+      "cacheable": true,
+      "device": false,
+      "mainMemory": false,
+      "amo": "none",
+      "reservability": "none"
+    },
+    {
+      "name": "linux_boot_rom",
+      "origin": "0x10010000",
+      "size": "0x00010000",
+      "readable": true,
+      "writable": false,
+      "executable": true,
+      "cacheable": true,
+      "device": false,
+      "mainMemory": false,
+      "amo": "none",
+      "reservability": "none"
+    },
+    {
+      "name": "sram",
+      "origin": "0x11000000",
+      "size": "0x00010000",
+      "readable": true,
+      "writable": true,
+      "executable": true,
+      "cacheable": true,
+      "device": false,
+      "mainMemory": true,
+      "amo": "arithmetic",
+      "reservability": "eventual"
+    },
+    {
+      "name": "litex_mmio",
+      "origin": "0x12000000",
+      "size": "0x00100000",
+      "readable": true,
+      "writable": true,
+      "executable": false,
+      "cacheable": false,
+      "device": true,
+      "mainMemory": false,
+      "amo": "none",
+      "reservability": "none"
+    },
+    {
+      "name": "main_ram",
+      "origin": "0x80000000",
+      "size": "0x80000000",
+      "readable": true,
+      "writable": true,
+      "executable": true,
+      "cacheable": true,
+      "device": false,
+      "mainMemory": true,
+      "amo": "arithmetic",
+      "reservability": "eventual"
+    }
+  ],
+  "reservedRegions": [],
+  "machineTimer": {
+    "region": "machine_timer",
+    "mtimeFrequencyHz": 1000000,
+    "mtimecmpOffset": "0x00004000",
+    "mtimeOffset": "0x0000bff8",
+    "interrupt": "mtip",
+    "msipOffset": "0x00000000"
+  },
+  "mmioPages": [
+    {
+      "name": "ctrl",
+      "origin": "0x12000000",
+      "size": "0x00001000"
+    },
+    {
+      "name": "uart",
+      "origin": "0x12001000",
+      "size": "0x00001000"
+    },
+    {
+      "name": "timer0",
+      "origin": "0x12002000",
+      "size": "0x00001000"
+    },
+    {
+      "name": "ddrphy",
+      "origin": "0x12003000",
+      "size": "0x00001000"
+    },
+    {
+      "name": "identifier_mem",
+      "origin": "0x12004000",
+      "size": "0x00001000"
+    },
+    {
+      "name": "sdram",
+      "origin": "0x12005000",
+      "size": "0x00001000"
+    },
+    {
+      "name": "sdcard",
+      "origin": "0x12006000",
+      "size": "0x00001000"
+    }
+  ],
+  "externalInterrupts": {
+    "width": 3,
+    "numSources": 31,
+    "sources": [
+      {
+        "index": 0,
+        "plicId": 10,
+        "name": "uart"
+      },
+      {
+        "index": 1,
+        "plicId": 11,
+        "name": "sdcard"
+      },
+      {
+        "index": 2,
+        "plicId": 12,
+        "name": "timer0"
+      }
+    ]
+  },
+  "systemClockHz": 100000000,
+  "source": {
+    "repository": "Breeze",
+    "commit": "ec899c7c4367cfab56b9a6206d82066bc79f8a8b",
+    "path": "config/breeze_mcu_platform.json"
+  },
+  "sdcard": {
+    "mode": "read+write",
+    "dmaDataWidth": 64,
+    "dmaRegion": "main_ram",
+    "biosScratchOrigin": "0xfffff000",
+    "biosScratchSize": "0x1000"
+  }
 }

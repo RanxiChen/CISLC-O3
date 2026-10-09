@@ -4,6 +4,7 @@
  * an accepted read and returns its old identity solely to release ownership.
  * Svadu: permission check precedes A/D CAS; only queue-head DCOMMIT sets D.
  * SFENCE waits for idle outside this module. Tests: sim/cocotb/mmu/.
+ * 当前实现状态：目标实现；L11允许只读ROM页表读取，A/D更新另查W，新增测试待补。
  */
 module ptw import o3_types_pkg::*; #(parameter o3_cfg_pkg::backend_cfg_t CFG)(
     input logic clk,rst,
@@ -35,8 +36,8 @@ module ptw import o3_types_pkg::*; #(parameter o3_cfg_pkg::backend_cfg_t CFG)(
     assign itlb_req_ready_o=idle_o && !rewalk_req_valid_i && (!dtlb_req_valid_i || last_d_q);
     assign vpn_index=level_q==2 ? req_q.vpn[26:18] : level_q==1 ? req_q.vpn[17:9] : req_q.vpn[8:0];
     assign address={base_q,vpn_index,3'b0};
-    assign physical_ok=pma_main({8'b0,address},8) && pmp_allow_dec(pmp_i.dec,address,8,2'b01,1'b1,1'b0,1'b0);
-    assign ad_physical_ok=pma_main({8'b0,pte_pa_q},8) && pmp_allow_dec(pmp_i.dec,pte_pa_q,8,2'b01,1'b1,1'b1,1'b0);
+    assign physical_ok=pma_cached_read({8'b0,address},8) && pmp_allow_dec(pmp_i.dec,address,8,2'b01,1'b1,1'b0,1'b0);
+    assign ad_physical_ok=pma_cached_write({8'b0,pte_pa_q},8) && pmp_allow_dec(pmp_i.dec,pte_pa_q,8,2'b01,1'b1,1'b1,1'b0);
     assign ad_needed=!pte_q[6] || (req_q.src==PTW_SRC_DCOMMIT && !pte_q[7]);
     assign bad_pte=!pte_q[0] || (!pte_q[1] && pte_q[2]) || |pte_q[63:54];
     assign leaf=pte_q[1] || pte_q[3];

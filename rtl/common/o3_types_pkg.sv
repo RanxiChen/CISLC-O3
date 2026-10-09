@@ -676,8 +676,20 @@ package o3_types_pkg;
         return bytes>0 && addr>=o3_cfg_pkg::PMA_MAIN_BASE && last_addr<=65'(o3_cfg_pkg::PMA_MAIN_END) && last_addr<=65'h100000000;
     endfunction
     function automatic logic pma_io(input logic [63:0] addr,input int unsigned bytes);
-        return bytes>0 && addr>=o3_cfg_pkg::PMA_IO_BASE &&
-            {1'b0,addr}+65'(bytes)<=65'(o3_cfg_pkg::PMA_MAIN_BASE);
+        o3_platform_pkg::pma_attr_t a;
+        a=o3_platform_pkg::lookup(addr,bytes); return a.device;
+    endfunction
+    function automatic logic pma_exec(input logic [63:0] addr,input int unsigned bytes);
+        o3_platform_pkg::pma_attr_t a;
+        a=o3_platform_pkg::lookup(addr,bytes); return a.cacheable && a.executable;
+    endfunction
+    function automatic logic pma_cached_read(input logic [63:0] addr,input int unsigned bytes);
+        o3_platform_pkg::pma_attr_t a;
+        a=o3_platform_pkg::lookup(addr,bytes); return a.cacheable && a.readable;
+    endfunction
+    function automatic logic pma_cached_write(input logic [63:0] addr,input int unsigned bytes);
+        o3_platform_pkg::pma_attr_t a;
+        a=o3_platform_pkg::lookup(addr,bytes); return a.cacheable && a.writable;
     endfunction
     // 前端系统同步请求（D25～D28）。由 commit_ctrl 统一编排（2026-10-02 确认）：
     // 前端 frontend_sync_ctrl 只负责前端部分（停取指/预取、隔离旧请求、ICache/ITLB/PMP 派生
@@ -1132,7 +1144,7 @@ package o3_types_pkg;
     typedef enum logic [2:0] {DC_OK,DC_MISS_WAIT,DC_REPLAY,DC_ERROR} dc_status_e;
     typedef enum logic [1:0] {SQ_NORMAL,SQ_ATOMIC,SQ_MMIO,SQ_SPLIT} sq_kind_e;
     typedef struct packed {
-        logic pmp_ok,exists,io,amo_ok,rsrv_ok,high_addr;
+        logic pmp_ok,exists,io,amo_ok,rsrv_ok,high_addr,read_ok,write_ok;
     } dc_permission_t;
     typedef struct packed {
         dc_src_e src; paddr_t paddr; vaddr_t vaddr; logic [1:0] size;
@@ -1153,12 +1165,14 @@ package o3_types_pkg;
         return r.bytes!=0 ? int'(r.bytes):(1<<int'(r.size));
     endfunction
     function automatic dc_permission_t dc_permissions(input dcache_req_t r,input pmp_state_t pmp,input logic [1:0] priv);
-        dc_permission_t a; logic main,io,rd,wr;
-        main=pma_main(64'(r.paddr),dc_bytes(r));io=pma_io(64'(r.paddr),dc_bytes(r));
+        dc_permission_t a; logic rd,wr; o3_platform_pkg::pma_attr_t region;
+        region=o3_platform_pkg::lookup(64'(r.paddr),dc_bytes(r));
         wr=r.write || r.is_sta;rd=!wr || (r.src==DC_SRC_AMO && !(r.amo_op inside {AMO_SC,AMO_LR}));
         if(r.access_valid) begin rd=r.access_read;wr=r.access_write;end
-        a='{pmp_ok:pmp_allow_dec(pmp.dec,r.paddr,dc_bytes(r),priv,rd,wr,1'b0),exists:main || io,
-            io:io,amo_ok:main,rsrv_ok:main,high_addr:((64'(r.paddr)>>MEM_PADDR_W)!=0)};
+        a='{pmp_ok:pmp_allow_dec(pmp.dec,r.paddr,dc_bytes(r),priv,rd,wr,1'b0),exists:region.exists,
+            io:region.device,amo_ok:region.amo,rsrv_ok:region.rsrv,
+            high_addr:((64'(r.paddr)>>MEM_PADDR_W)!=0),
+            read_ok:!rd || region.readable,write_ok:!wr || region.writable};
         return a;
     endfunction
     typedef struct packed {

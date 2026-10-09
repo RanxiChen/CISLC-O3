@@ -19,6 +19,7 @@
 
 // ---------- 1. 类型 / 配置（package，顺序敏感） ----------
 rtl/common/o3_isa_pkg.sv
+rtl/common/o3_platform_pkg.sv
 rtl/common/o3_cfg_pkg.sv
 rtl/common/o3_types_pkg.sv
 rtl/common/o3_pkg.sv
@@ -174,6 +175,12 @@ rtl/memory/axi_master.sv
 
 // ---------- 12. 顶层 ----------
 rtl/core/o3_core.sv
+
+// ---------- 13. L11 platform / coherent SD DMA ----------
+rtl/platform/sd_dma_bridge.sv
+rtl/platform/o3_litex_top.sv
+rtl/platform/FlowClint.sv
+rtl/platform/FlowPlic.sv
 
 // ============================================================================
 // 以下文件**不在** o3_core 编译单元内，故意不列入上面清单。

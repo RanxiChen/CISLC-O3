@@ -40,10 +40,10 @@ package o3_cfg_pkg;
     // ------------------------------------------------------------
     // core 公共宽度
     // ------------------------------------------------------------
-    // L10 X12 physical map; the exclusive ends permit full-range checking.
-    parameter logic [63:0] PMA_IO_BASE=64'h02000000;
-    parameter logic [63:0] PMA_MAIN_BASE=64'h80000000;
-    parameter logic [63:0] PMA_MAIN_END=64'h100000000;
+    // L11 platform authority; aliases retained for existing consumers.
+    parameter logic [63:0] PMA_IO_BASE=o3_platform_pkg::MACHINE_TIMER_BASE;
+    parameter logic [63:0] PMA_MAIN_BASE=o3_platform_pkg::MAIN_RAM_BASE;
+    parameter logic [63:0] PMA_MAIN_END=64'(o3_platform_pkg::MAIN_RAM_END);
     typedef struct packed {
         // 待定：RV64GC/Linux 下 Sv39 有效虚拟地址为 39 位符号扩展；PC/目标寄存
         // 保存 39、40 还是 64 位，以及非规范地址的异常检查方式未定（B12 第 4 条）。

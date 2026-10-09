@@ -1,6 +1,7 @@
 /** L8a L1D: two unstalled S0/S1/S2 lanes, eight word banks, line-only
  * MSHRs, exact clean/dirty Put, one PS and one SNP. All line operations
- * reserve their S0 bank slot two cycles in advance. Replay leaves S2. */
+ * reserve their S0 bank slot two cycles in advance. Replay leaves S2.
+ * 当前实现状态：目标实现；L11独立PMA读写权限拒绝ROM写，新增功能测试待补。 */
 module dcache import o3_types_pkg::*; #(
     parameter o3_cfg_pkg::backend_cfg_t CFG,localparam int P=CFG.lsu.agu_pipes,
     localparam int SETS=CFG.dcache.sets,WAYS=CFG.dcache.ways,BANKS=CFG.dcache.banks,
@@ -297,6 +298,7 @@ module dcache import o3_types_pkg::*; #(
                 if(s2_q[p].req.exc.valid) decision[p].status=DC_ERROR;
                 else if(s2_q[p].req.translation_miss) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_TLB_MISS;end
                 else if(s2_q[p].req.permission.high_addr || !s2_q[p].req.permission.pmp_ok || !s2_q[p].req.permission.exists ||
+                    !s2_q[p].req.permission.read_ok || !s2_q[p].req.permission.write_ok ||
                     (s2_q[p].req.permission.io && s2_q[p].internal) ||
                     (s2_q[p].req.src==DC_SRC_AMO && !(s2_q[p].req.amo_op inside {AMO_LR,AMO_SC} ?
                         s2_q[p].req.permission.rsrv_ok:s2_q[p].req.permission.amo_ok)) ||
@@ -472,6 +474,10 @@ module dcache import o3_types_pkg::*; #(
                 else if(!init_done_q) mem[SW'(init_q)]<='0;
             end
 `ifndef SYNTHESIS
+    // L11: a read-only cache line must never become dirty.
+    always_ff @(posedge clk) if(!rst && ps_valid_q && ps_write)
+        assert(pma_cached_write(64'(ps_req_q.paddr),dc_bytes(ps_req_q)))
+            else $fatal(1,"L11 write to read-only cache line");
             for(genvar s=0;s<SETS;s++) assign tags_q[p][s][w]=tag_t'(mem[s]);
 `endif
         end

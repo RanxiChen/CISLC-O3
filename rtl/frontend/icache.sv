@@ -1,6 +1,7 @@
 /** L8a ICache Read client. Four line MSHRs, physical-line merge and
  * independent request waiters. Redirects discard deliveries outside this
- * cache; accepted fills still install. L1I has no directory/recall path. */
+ * cache; accepted fills still install. L1I has no directory/recall path.
+ * 当前实现状态：目标实现；L11 ROM/SRAM取指按平台X/cacheable属性判断，新增功能测试待补。 */
 module ICache
     import o3_types_pkg::*;
 #(
@@ -154,7 +155,7 @@ module ICache
         hit=0;hit_way=0;hit_line='0;
         for(int w=0;w<WAYS;w++) if(tags3_q[w].valid && tags3_q[w].tag==TW'(s3_q.pa>>(7+SW))) begin hit=1;hit_way=w;hit_line=data3_q[w];end
         stale=s3_q.version!=version_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)];
-        fault=s3_q.pf || s3_q.af || !pma_main(64'(s3_q.pa),FETCH_BYTES) ||
+        fault=s3_q.pf || s3_q.af || !pma_exec(64'(s3_q.pa),FETCH_BYTES) ||
             !pmp_allow_dec(pmp_i.dec,s3_q.pa,FETCH_BYTES,csr_i.priv,1'b0,1'b0,1'b1);
     end
     assign demand_miss_pending=v3_q && !stale && !hit && !fault;
@@ -184,7 +185,7 @@ module ICache
         for(int w=0;w<WAYS;w++) prefetch_hit|=tags_q[pf_req_i.line_paddr[6]][SW'(pf_req_i.line_paddr>>7)][w].valid &&
             tags_q[pf_req_i.line_paddr[6]][SW'(pf_req_i.line_paddr>>7)][w].tag==TW'(pf_req_i.line_paddr>>(7+SW));
         prefetch_bad=!pf_req_i.paddr_valid || pf_req_i.epoch!=csr_i.epoch ||
-            !pma_main(64'(pf_req_i.line_paddr),ICACHE_LINE_BYTES) ||
+            !pma_exec(64'(pf_req_i.line_paddr),ICACHE_LINE_BYTES) ||
             !pmp_allow_dec(pmp_i.dec,pf_req_i.line_paddr,ICACHE_LINE_BYTES,csr_i.priv,0,0,1);
         pf_req_ready_o=!rst && !inv_all_i && (prefetch_bad || prefetch_hit || probe_inflight ||
             (!demand_miss_pending && int'(mshr_free)>int'(CFG.prefetch.mshr_reserve) && alloc_ready));

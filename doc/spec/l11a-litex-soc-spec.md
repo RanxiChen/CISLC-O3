@@ -1,6 +1,6 @@
-# O3-T11a：L11a LiteX SoC 接入、平台 PMA 与 KCU105 首次上板 spec（已冻结）
+# O3-T11a：L11a LiteX SoC 接入、平台 PMA 与 KCU105 首次上板 spec（已冻结；2026-10-09 用户修订首版含 SD）
 
-日期：2026-10-08。分支：`feat/L1-closure`。审计快照：`b539547`（L8b 冻结提交 `70425b1` 之上只多 B52 文档）。行号均指该快照。
+日期：2026-10-08；范围修订：2026-10-09。分支：`feat/L1-closure`。审计快照：`b539547`（L8b 冻结提交 `70425b1` 之上只多 B52 文档）。行号均指该快照。
 
 依据：[v1 计划](../O3-v1-plan.md) 第 3 节 L11；[后端基线](../design/CISLC-O3-BACKEND-DESIGN-BASELINE.md) **B52**（L11 改用 LiteX）、B28/B29（平台范围、CLINT/PLIC 语义、定时器路线，保留部分）、B39、B48、B49；[L8b spec](l8b-atomic-mmio-dma-spec.md) 第 6.1 节与 Y7（IO 区“L11 按 SoC 地址图细化”）、Y8（DMA AXI/总线从口转换在 L11）。
 
@@ -23,11 +23,12 @@
 目标：L11a —— O3 单核接入 LiteX，在 KCU105 上跑出 LiteX BIOS：
       平台地址图沿用 Breeze（Rocket 风格），O3 PMA 按平台表精确实现（新增 ROM/SRAM，洞 → 不存在）；
       O3 LiteX CPU 包装 + AXI 路由（内存口直连 LiteDRAM）+ CLINT/PLIC/LiteUART；
+      首版直接包含 LiteSDCard 双向 DMA，经 Wishbone 从口→O3 一致性 DMA 入口；
       分钟级 LiteX 冒烟仿真；Alan 上生产版与调试版 bitstream。
 涉及文件（允许改动）：
   rtl/common/{o3_cfg_pkg,o3_types_pkg,pma_checker}.sv；新增 rtl/common/o3_platform_pkg.sv（生成）
   rtl/frontend/icache.sv；rtl/lsu/{dcache,ptw,pte_ad_updater}.sv；rtl/memory/dma_line_adapter.sv；rtl/rtl.f
-  新增 rtl/platform/{o3_litex_top.sv,FlowClint.sv,FlowPlic.sv}
+  新增 rtl/platform/{o3_litex_top.sv,sd_dma_bridge.sv,FlowClint.sv,FlowPlic.sv}
   新增 config/o3_platform.json；新增 scripts/gen_platform_pkg.py
   新增 litex_wrapper/o3/*；新增 fpga/kcu105/*；新增 sim/litex/*
   对应 sim/cocotb/*（PMA、dcache、ptw、icache、dma_line_adapter 套件）
@@ -65,7 +66,7 @@
 
 ### 3.1 单一来源
 
-- 新增 `config/o3_platform.json`，结构与 PJ 相同（`schemaVersion`、`regions`、`machineTimer`、`mmioPages`、`externalInterrupts`），区域内容逐项取 PJ（Z1），`platform` 字段改为 `o3-kcu105-v1`。
+- 新增 `config/o3_platform.json`，结构与 PJ 相同（`schemaVersion`、`regions`、`machineTimer`、`mmioPages`、`externalInterrupts`），区域内容以 PJ（Z1）为起点，`platform` 字段改为 `o3-kcu105-v1`；2026-10-09 CSR 一致性修订见第 16 节。
 - `scripts/gen_platform_pkg.py` 由该文件生成 `rtl/common/o3_platform_pkg.sv`（区域起止、属性位常量）。RTL 只引用生成包，不手写第二份地址；LiteX 侧（第 6 节）同样只读该 JSON。门禁检查生成包与 JSON 一致（重新生成后 `git diff` 为空）。
 - `reset_pc` 由 LiteX 赋给的 `reset_address` 驱动（= `linux_boot_rom` 起点，同 Breeze）。
 
@@ -78,7 +79,7 @@
 | `boot_rom` | `0x1000_0000` / 64 KiB | ✓ | – | ✓ | ✓ | – | AMONone | RsrvNone | L1I/L1D → L2 → 路由低速口 |
 | `linux_boot_rom`（LiteX BIOS） | `0x1001_0000` / 64 KiB | ✓ | – | ✓ | ✓ | – | AMONone | RsrvNone | 同上 |
 | `sram` | `0x1100_0000` / 64 KiB | ✓ | ✓ | ✓ | ✓ | – | AMOArithmetic | RsrvEventual | 同上 |
-| `litex_mmio`（LiteX CSR） | `0x1200_0000` / 16 MiB | ✓ | ✓ | – | – | ✓ | AMONone | RsrvNone | HEU MMIO |
+| `litex_mmio`（LiteX CSR） | `0x1200_0000` / 1 MiB | ✓ | ✓ | – | – | ✓ | AMONone | RsrvNone | HEU MMIO |
 | `main_ram` | `0x8000_0000` / 2 GiB | ✓ | ✓ | ✓ | ✓ | – | AMOArithmetic | RsrvEventual | L2 → 路由 DRAM 口 |
 | 其余（洞、≥2^32） | — | 不存在 | | | | | | | 一律 access fault，不发总线访问 |
 
@@ -116,7 +117,7 @@
 
 - 例化 `o3_core`，端口按 LiteX `Instance` 需要命名并保持稳定：AXI4 内存主口（128 位、ID 4 位、32 位地址）、AXI4-Lite 主口（64 位）、`mtime[63:0]`、`msip/mtip/meip/seip`、`reset_pc`、`fatal`。
 - `irq_m_soft_i←msip`、`irq_m_timer_i←mtip`、`irq_m_ext_i←meip`、`irq_s_ext_i←seip`、`mtime_i←CLINT mtime`。
-- DMA 口本级 tie-off：`dma_req_valid_i=0`、`dma_resp_ready_i=1`（L11b 接 SD）。
+- DMA 口本级接 `sd_dma_bridge`：64 位 Wishbone 字访问转 64B 行请求；不再 tie-off。
 - 生产版与调试版由参数区分；调试版另引出第 9 节探针。生产版不带空探针（同 CS 第 2 节）。
 - 仅包装与接线，不含协议转换逻辑。
 
@@ -127,7 +128,7 @@
 - CPU 类 `O3`（单 hart，`gcc_arch = rv64imafdc_zicsr_zifencei`、`lp64d`）；`memory_bus` 为 AXI4（数据 128 位）只接 AXI 路由器；`mmio_bus` 为 AXI-Lite 64 位，挂 LiteX 主总线（`periph_buses`）；`io_regions` 与 `mem_map` 只从 `config/o3_platform.json` 读取。
 - AXI 路由器：复制 Breeze `axi_router.py` 到 `litex_wrapper/o3/`，位宽随 master。必须满足 CS R1～R4：R 按 AR 接受顺序返回（跨两路也如此），B 按 AW 顺序；W 随其 AW 去向；resp 原样回传；按 burst 首地址路由，跨区域返回错误；地址表只读 JSON。`main_ram → LiteDRAM` 的 AXI 端口（保留 INCR burst），`boot_rom/linux_boot_rom/sram →` LiteX 主总线（AXI→Wishbone），其余 → 本地 DECERR。
 - O3 L2 的 AXI 读回填按 ID 区分（`l2_mem_engine`），路由器的保序性比 O3 所需更强，保留不改。
-- **只有 O3 能写 `main_ram`**：除路由器 DRAM 口外，LiteX 主总线不得有任何其他主设备可达 `main_ram`；构建脚本检查 LiteX 生成的地址译码并在报告中列出 `main_ram` 的全部主设备（L11b 的 SD DMA 必须经 O3 一致性 DMA 口，见第 13 节）。
+- **只有 O3 能写 `main_ram`**：除路由器 DRAM 口外，LiteX 主总线不得有任何其他主设备可达 `main_ram`；构建脚本检查 LiteX 生成的地址译码并在报告中列出 `main_ram` 的全部主设备（首版 SD DMA 必须经 O3 一致性 DMA 口，见第 15 节）。
 - CLINT/PLIC：复制 Breeze `FlowClint.sv`、`FlowPlic.sv` 到 `rtl/platform/`，`clint_verilog.py`、`plic_verilog.py` 到 `litex_wrapper/o3/`，作为 LiteX 主总线上的 Wishbone 从设备（与 Breeze 完全相同，不另做 AXI-Lite 包装，取代计划 §4 的“换 AXI-Lite 包装”）。偏移取 JSON `machineTimer`；PLIC 源号沿用 PJ `externalInterrupts`（UART=10）。
 - UART：LiteX 自带 LiteUART，地址取 `mmioPages.uart`（`0x1200_1000`），中断接 PLIC 源 10。
 - 其他：`with_ctrl`、`with_timer`、`csr_paging=0x1000` 等 SoCCore 参数沿用 Breeze `target.py:57-63`。
@@ -199,7 +200,7 @@
 
 ## 13. 不做（L11b/L11c）
 
-- **L11b**：SD 卡（LiteSDCard，`add_sdcard`）及其 DMA。LiteSDCard 的 DMA 是 Wishbone 主设备，必须经新增“Wishbone 从口 → O3 行粒度 DMA 口”转换进入 L2 Home（Breeze 旧版 `coherent-dma` 入口同此做法，见 `sd-bringup.md`），不得直接写 LiteDRAM；BIOS 从 SD 装载（`boot.json`）、启动跳板、OpenSBI、设备树（含 `rv64imafdc`、Sstc、Sscofpmf、`riscv,sv39`）、Linux（以 Breeze 6.18.7 启动包为起点）；板上启动到 shell。
+- **2026-10-09 用户修订**：SD 卡（LiteSDCard，`add_sdcard`）及其 DMA 已前移到首版 L11a，硬件范围见第 15 节。后续软件启动工作：LiteSDCard 的 DMA 是 Wishbone 主设备，必须经新增“Wishbone 从口 → O3 行粒度 DMA 口”转换进入 L2 Home（Breeze 旧版 `coherent-dma` 入口同此做法，见 `sd-bringup.md`），不得直接写 LiteDRAM；BIOS 从 SD 装载（`boot.json`）、启动跳板、OpenSBI、设备树（含 `rv64imafdc`、Sstc、Sscofpmf、`riscv,sv39`）、Linux（以 Breeze 6.18.7 启动包为起点）；板上启动到 shell。
 - **L11c**：FASE、OpenSBI PMU 与 Linux perf（B48）、fatal 隔离的板级观测、内存口改 512 位、DDR 控制器改 MIG 的评估。
 - 本级不做：OpenSBI/Linux 全系统仿真；多 hart；PCIe；频率优化。
 
@@ -216,4 +217,29 @@
 | Z7 | 平台表来源 | O3 仓库自有 `config/o3_platform.json`（内容取自 PJ），RTL 包由脚本生成 | 直接引用 Breeze 仓库的 PJ：跨仓库依赖、版本漂移 |
 | Z8 | LiteX 胶合代码 | 复制 Breeze 的 router/CLINT/PLIC/ILA 到 O3 仓库并记录来源 SHA | 跨仓库 import：省复制，但两边同时演进会互相破坏 |
 | Z9 | 冒烟内容 | S1（BIOS 横幅+memtest）+ S2（CLINT/PLIC/UART 中断、洞与 ROM 写的异常） | 只做 S1（同 Breeze）：中断线接错要到 L11b 上 Linux 才发现 |
-| Z10 | L11 拆分 | L11a（本文）→ L11b（SD+Linux）→ L11c（FASE/perf/优化）；L8c 排在 L11 之后 | 一次做完 L11：单个任务过大，失败难定位 |
+| Z10 | L11 拆分 | 2026-10-09 修订：L11a 首版完整 SoC（包含 SD/DMA）；随后验证 SD 启动 OpenSBI/Linux，再做 FASE/perf/优化；L8c 保持后置 | 一次做完 L11：单个任务过大，失败难定位 |
+
+## 15. 2026-10-09 用户授权：首版完整 SoC，代码先行
+
+用户明确首版就包含 SD，不沿用“先无 SD 的 L11a，再补 SD 硬件”的拆分；随后批准“先写代码，待会补充测试”。本轮先实现，不运行原 P1～P4/12.5 功能门禁或 Vivado，不要求旧 T10 确认单作为本轮代码开工阻断；原验证结论不因此升级。工作分支从含 L7c 的当前 HEAD 派生，既有未提交文件保留。
+
+- SoC 首版：O3+L1/L2、DDR4、ROM/SRAM、CLINT/PLIC、UART、LiteSDCard 双向 DMA、板级时钟复位与 ILA 调试选项。
+- Breeze 的 SV/Python/启动支持代码按 `ec899c7` 复制并注明来源；不 fork、不加子模块、不跨仓库 import。LiteX/LiteDRAM/LiteSDCard 是独立上游依赖。
+- 新增的 DMA 桥是独立 SV 模块。每次保留一个 64 位 Wishbone 字事务；29 位 word address 转 32 位字节地址，按 64B 行和 8 字节槽构造读或 MaskWrite。部分写保留 `sel`；全零写不发 L2；只允许 `main_ram`。ACK/ERR 在真实一致性响应后返回；请求握手后 master 撤销 `cyc` 时仍排空响应，不回假 ACK。
+- LiteX `cpu.dma_bus` 连接该桥，`add_sdcard(mode="read+write")` 把两个 DMA master 加到独立 DMA bus。LiteX 主总线不建立到 DDR 的旁路；构建代码检查主设备与 slave 列表。
+- UART/SD/LiteX 辅助 timer0 的 PLIC ID 为 10/11/12；CLINT 继续提供核所需 `mtime`/MSIP/MTIP。地址、CSR 页面、中断号统一从平台 JSON 读取。
+- 原仓库 `o3_platform.json` 是旧仿真 ITCM/DTCM/32MiB 配置，本轮按第 3 节替换为 KCU105 平台表。LiteSDCard 的 PHY/core/DMA/event CSR 同属 `sdcard` 页面（`0x12006000`）；不人为拆成五页。CSR 窗口及参数按第 16 节修订，撤销 14 位 CSR 加 ERR slave 补足 16MiB 的旧方案。
+- BIOS 的 SRAM/未对齐 SD 缓冲区通过 DDR bounce buffer 搬运，不扩大 DMA PMA。预留最后 4KiB DDR（`0xfffff000`），扇区缓冲在起点、CMD6 status 在 +0x200；设备树保留此页。软件适配生成到独立构建目录，不修改安装的 LiteX；保留原始上游文件 SHA256。
+- 本轮允许新增 `litex_wrapper/o3` 下的 BIOS 支持与软件适配、`fpga/kcu105` 下的 CRG/设备树/SD 文件打包代码，以及源文件清单依赖更新。测试内容、golden、断言、种子、规模保持；新增功能测试留下一阶段。静态解析/代码生成只能报告对应范围，不能称 SoC 功能、Linux 或 FPGA 已验收。
+
+## 16. 2026-10-09 审核修订：平台表与实际译码一致
+
+用户指出核 PMA 与总线实际应答窗口必须共用来源，并要求先修 SoC；完整回归可以随后执行，不能成为本次修复的前置阻断。采用讨论中的 D 方案：`litex_mmio` 为 `[0x12000000, 0x12100000)`（1MiB），七个已用 CSR 页的地址不变。
+
+- 唯一地址来源仍为 `config/o3_platform.json`。LiteX 的 32-bit CSR word 地址位数由窗口字节数推导：`log2(size)-2`，当前为 18，不另写一份大小或参数常量。桥覆盖整个窗口；未分配 CSR 页是桥内保留寄存器空间，不能宣称每页都存在外设。
+- 窗口以外及跨区域访问由 PMA 拒绝；删除 CSR ERR 补洞。当前 LiteX AXI-Lite→Wishbone 桥只等待 ACK，RESP 为 OKAY，不能用 Wishbone ERR 实现核访问异常。该限制不扩大 DMA 权限。
+- 平台加载拒绝非 2 的幂大小及未按大小对齐的区域，防止 LiteX 向上取整译码。构建前检查生成 PMA 包未过期；CSR 桥建立时，在生成/综合前检查全部七个 PMA 区域的 origin、size、实际 decoder size、R/W/X、cacheable，以及非 DDR 区域存在从设备。最终再次检查并导出 `address-map.json`。
+- DDR 容量按 LiteDRAM 几何、PHY 数据位宽与 rank 数独立计算，必须等于 JSON `main_ram.size`；并检查 LiteDRAM 最终区域相等。标准 KCU105 为 2GiB，现配置保留该容量及最后 4KiB BIOS scratch。构建检查不证明训练、物理 DDR 或板上读写通过。
+- **SD DMA 已知限制**：`sd_dma_bridge` 对非 DDR 请求或一致性错误只返回 Wishbone ERR；当前 LiteSDCard DMA 引擎只等 ACK，可能停滞。BIOS bounce buffer 使正常地址落在 DDR，但不构成 SD 错误恢复证明。Linux 阶段再选择地址寄存器范围检查，或 ACK 配合可观测 sticky 错误状态；本次不改变错误行为、不返回假成功。
+- **DMA 后续性能项**：每个 8B 字请求独立进行 64B 一致性事务，无行缓存/写合并；同一行可能重复八次。50MHz SD 吞吐需实测，未来可考虑行写合并与读缓存，同时保持一致性和真实完成语义。
+- **旧测试待审核**：ICache 的旧 DTCM 不可执行期望、PMP/PMA 的宽 IO 范围模型与当前平台表冲突。完整回归后按地址表变化逐项分类，更新期望值须经用户批准；其他 golden、断言、种子与规模保持。构建生成、lint、定向行为测试、完整回归、SoC 仿真及板上证据分别报告。
