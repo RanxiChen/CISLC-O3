@@ -109,7 +109,7 @@ class O3KCU105SoC(SoCCore):
         if debug:
             from o3.ila import O3DebugILA
             self.debug_ila = O3DebugILA(self.cpu, platform)
-            self.comb += platform.request("user_led", 0).eq(self.cpu.fatal)
+            self.comb += platform.request("user_led", 0).eq(self.cpu.fatal | self.debug_ila.hang)
 
     def check_memory_paths(self):
         if "main_ram" in self.bus.slaves:
