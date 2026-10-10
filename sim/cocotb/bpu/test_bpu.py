@@ -35,11 +35,12 @@ class Bench:
     async def step(self, *, rst=False, boot=0x1000, ready=False, fid=1,
                    hold=False, busy=False, kill=False, redirect=None, train=None,
                    restore=None, inject=False, hpc=0, htgt=0, ras_restore=None,
-                   ras_fix=0, ras_push=0):
+                   ras_fix=0, ras_push=0, kill_all=True, kill_id=0, kill_slot=0, head_id=0):
         d, r = self.d, self.r
         d.clk_i.value = 0
         values = dict(rst_i=rst, boot_pc_i=boot, alloc_ready_i=ready,
             alloc_ftq_id_i=fid, hold_i=hold, recover_busy_i=busy, kill_valid_i=kill,
+            kill_all_i=kill_all, kill_id_i=kill_id, kill_slot_i=kill_slot, head_id_i=head_id,
             arb_redirect_valid_i=redirect is not None, arb_redirect_pc_i=redirect or 0,
             train_valid_i=train is not None, train_bits_i=encode(r.train, train or {}),
             hist_restore_valid_i=restore is not None, hist_restore_bits_i=encode(r.hist, restore or {}),
@@ -61,6 +62,15 @@ class Bench:
         return before, after
 
     async def reset(self, pc=0x1000):
+        # Registered outputs may retain the preceding test's last packet until
+        # the synchronous reset edge. Establish that edge before field checks.
+        self.d.clk_i.value = 0
+        self.d.rst_i.value = 1
+        self.d.boot_pc_i.value = pc
+        await Timer(1, unit='ns')
+        self.d.clk_i.value = 1
+        await Timer(1, unit='ns')
+        self.d.clk_i.value = 0
         await self.step(rst=True, boot=pc)
         await self.step()
 
@@ -249,3 +259,24 @@ async def slow_winner_retains_its_loop_action_on_kill(d):
  before,_=await b.step(kill=True)
  assert before['slow_valid'] and (before['loop_meta']>>90)&1
  assert (before['loop_meta']>>81)&1,'recovery must replay the winner action even when its speculative edge is killed'
+
+
+@cocotb.test()
+async def selective_kill_preserves_older_slow_queries(d):
+    # A delayed correction must not discard an older still-pending result.
+    # Exercise both p1 and p2, plus age comparison across the ring wrap.
+    b = await bench(d)
+    for older, boundary, younger in ((4, 5, 6), (31, 0, 1)):
+        await b.reset()
+        await b.step(ready=True, fid=older, head_id=older)
+        await b.step(kill=True, kill_all=False, kill_id=boundary, head_id=older)
+        _, result = await b.step(head_id=older)
+        assert result['slow_valid'] and result['slow_id'] == older
+        await b.step(head_id=older)
+        await b.step(ready=True, fid=older, head_id=older)
+        await b.step(ready=True, fid=younger, head_id=older)
+        _, result = await b.step(kill=True, kill_all=False, kill_id=boundary, head_id=older)
+        assert result['slow_valid'] and result['slow_id'] == older
+        for _ in range(3):
+            _, result = await b.step(head_id=older)
+            assert not result['slow_valid'], 'killed younger owner must never reappear'
