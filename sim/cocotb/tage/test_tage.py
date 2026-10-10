@@ -275,14 +275,19 @@ async def consecutive_rows_match_frozen_legacy_bitwise(dut):
     ref=Legacy(vaddr_bits=m.vaddr_bits,region_bytes=1<<m.shift,slots=m.slots,
         tables=m.tables,base_entries=m.base_entries,index_bits=m.index_bits,tag_bits=m.tag_bits,
         ctr_bits=m.ctr_bits,useful_bits=m.useful_bits)
-    rng=random.Random(29);previous=None;pc=0x4000
-    for n in range(256):
-        mask=rng.randrange(1,256)
-        pred=ref.predict(ref.snapshot(ref.query(pc,0)))
-        t=Train(True,pc,0,pred.meta,mask,rng.getrandbits(8)&mask)
-        await b.step(Inputs(query_valid=True,pc=pc,train=t))
-        if previous is not None:ref.train(previous)
-        previous=OldTrain(t.valid,t.pc,t.folds,t.meta,t.commit_mask,t.taken_mask)
+    rng=random.Random(29);pc=0x4000
+    # Change only the acceptance/write schedule; the frozen row-update
+    # reference, all 256 accepted packets and every bit comparison remain.
+    pending=[None,None]
+    stalls=0
+    async def edge(t=None):
+        nonlocal stalls
+        before,_=await b.step(Inputs(query_valid=True,pc=pc,train=t or Train(pc=pc)))
+        old=pending.pop(0)
+        if old is not None: ref.train(old)
+        accepted=t is not None and before.ready
+        pending.append(OldTrain(t.valid,t.pc,t.folds,t.meta,t.commit_mask,t.taken_mask) if accepted else None)
+        if t is not None and not accepted: stalls+=1
         q=ref.query(pc,0)
         packed=sum(v<<(s*m.ctr_bits) for s,v in enumerate(ref.base[q.base_idx]))
         assert int(dut.mon_base_o.value)==packed
@@ -293,7 +298,16 @@ async def consecutive_rows_match_frozen_legacy_bitwise(dut):
                 ctr=sum(v<<(s*m.ctr_bits) for s,v in enumerate(r.ctr))
                 useful=sum(v<<(s*m.useful_bits) for s,v in enumerate(r.useful))
                 expected=(1<<(width-1)) | (r.tag<<(m.slots*(m.ctr_bits+m.useful_bits))) | (ctr<<(m.slots*m.useful_bits)) | useful
-                assert (rows>>(j*width))&((1<<width)-1)==expected,(n,j)
-    await b.step(Inputs());ref.train(previous)
+                assert (rows>>(j*width))&((1<<width)-1)==expected,(b.cycle,j)
+        return accepted
+    for n in range(256):
+        mask=rng.randrange(1,256)
+        pred=ref.predict(ref.snapshot(ref.query(pc,0)))
+        t=Train(True,pc,0,pred.meta,mask,rng.getrandbits(8)&mask)
+        for retry in range(4):
+            if await edge(t): break
+        else: raise AssertionError('training did not accept a held packet')
+    await edge();await edge()
+    assert stalls==255, 'same-row dependency must insert exactly one cycle'
     await query(b,pc)
     assert b.model.base==ref.base and all(vars(a)==vars(c) for ar,cr in zip(b.model.tagged,ref.tagged) for a,c in zip(ar,cr))

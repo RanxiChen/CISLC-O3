@@ -125,7 +125,7 @@ module bpu
     logic train_pop,t1_train_valid_q;
     assign train_ready_o=!rst_i && int'(train_count_q)<TD;
     assign train_free_o=TRAIN_CREDIT_W'(TD-int'(train_count_q));
-    assign train_pop=!rst_i && train_count_q!=0;
+    assign train_pop=!rst_i && train_count_q!=0 && tage_train_ready && btb_train_ready && ubtb_train_ready;
     always_ff @(posedge clk_i) begin
         if(rst_i) begin train_head_q<=0;train_tail_q<=0;train_count_q<=0;t1_train_valid_q<=0;t1_train_q<='0;end
         else begin

@@ -89,6 +89,7 @@ class TageModel:
                         for _ in range(1 << self.index_bits[t])]
                        for t in range(self.tables)]
         self.pending_train = Train()
+        self.write_train = Train()
         self.s1: Query | None = None
         self.s2: Snapshot | None = None
 
@@ -150,9 +151,19 @@ class TageModel:
             meta |= final << (self.final_offset + slot)
         return Response(taken, provider_hit, meta)
 
+    def ready(self, inputs: Inputs) -> bool:
+        if inputs.rst:
+            return False
+        pending = self.pending_train
+        incoming = inputs.train
+        if not (pending.valid and pending.commit_mask and incoming.commit_mask):
+            return True
+        a, b = self.query(pending.pc, pending.folds), self.query(incoming.pc, incoming.folds)
+        return a.base_idx != b.base_idx and all(x != y for x, y in zip(a.idx, b.idx))
+
     def visible(self, inputs: Inputs) -> tuple[bool, bool, Response]:
         valid = self.s2 is not None and not (inputs.rst or inputs.stall or inputs.kill)
-        return valid, not inputs.rst, self.predict(self.s2) if valid else Response()
+        return valid, self.ready(inputs), self.predict(self.s2) if valid else Response()
 
     def train_ctr(self, ctr: int, taken: int) -> int:
         return min(self.ctr_max, ctr + 1) if taken else max(0, ctr - 1)
@@ -215,12 +226,14 @@ class TageModel:
         if inputs.rst:
             self.reset()
             return
-        self.train(self.pending_train)
-        self.pending_train = inputs.train
+        accepted = self.ready(inputs)
+        self.train(self.write_train)
+        self.write_train = self.pending_train
+        self.pending_train = inputs.train if accepted else Train()
         if inputs.kill:
             self.s1 = None
             self.s2 = None
         elif not inputs.stall:
             self.s2 = self.snapshot(self.s1) if self.s1 is not None else None
             self.s1 = self.query(inputs.pc, inputs.folds) if inputs.query_valid else None
-        # T1 write-new forwarding is visible to this edge's enabled read.
+        # T2 write-new forwarding is visible to this edge's enabled read.

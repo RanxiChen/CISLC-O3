@@ -51,7 +51,7 @@ class Bench:
         await Timer(1, unit='ns')
         before = self.view()
         assert before['valid'] == (not (rst or hold or busy or kill))
-        assert before['ready'] == (not rst)
+        assert before['ready'] == (not rst and int(d.train_free_o.value)>0)
         assert before['perf'](1) == (before['valid'] and ready)
         assert int(d.hist_done_o.value) == (restore is not None and not rst)
         assert int(d.ras_done_o.value) == (ras_restore is not None and not rst)
@@ -60,6 +60,21 @@ class Bench:
         after = self.view()
         d.clk_i.value = 0
         return before, after
+
+    async def send_train(self, packet):
+        for retry in range(16):
+            before,after=await self.step(train=packet)
+            if before['ready']: return before,after
+        raise AssertionError('held training packet was not accepted')
+
+    async def drain_train(self):
+        for retry in range(16):
+            await self.step()
+            if int(self.d.train_free_o.value)==4:
+                # T0/T1/T2 update still in flight after queue becomes empty.
+                for _ in range(3): await self.step()
+                return
+        raise AssertionError('training queue failed to drain')
 
     async def reset(self, pc=0x1000):
         # Registered outputs may retain the preceding test's last packet until
@@ -79,11 +94,11 @@ class Bench:
 
     async def train(self, base, kind, slot, target, ras=0, count=2):
         for _ in range(count):
-            await self.step(train=dict(region_base=base, cfi_valid=1, cfi_type=kind,
+            await self.send_train(dict(region_base=base, cfi_valid=1, cfi_type=kind,
                 cfi_slot=slot, cfi_target=target, ras_action=ras,
                 br_commit_mask=(1<<slot) if kind==1 else 0,
                 br_taken_mask=(1<<slot) if kind==1 else 0))
-        for _ in range(3): await self.step()
+        await self.drain_train()
 
 
 async def bench(d):
@@ -220,8 +235,8 @@ async def compressed_and_edge_call_training_and_return_address(d):
         await b.reset(0x4000)
         t=dict(region_base=0x4000,cfi_valid=1,cfi_type=2,cfi_slot=slot,
                cfi_target=0x5000,ras_action=1,cfi_is_rvc=rvc,is_edge=edge)
-        for _ in range(2):await b.step(train=t)
-        for _ in range(3):await b.step()
+        for _ in range(2):await b.send_train(t)
+        await b.drain_train()
         before,after=await b.step(ready=True,fid=11)
         assert before['pred']['cfi_is_rvc']==rvc and before['pred']['is_edge']==edge
         assert after['ras']['count']==1 and after['ras']['top_addr']==push
@@ -249,12 +264,12 @@ async def training_credit_and_t0_t1_drain(d):
 async def slow_winner_retains_its_loop_action_on_kill(d):
  b=await bench(d);await b.reset()
  packet=dict(region_base=0x4000,br_commit_mask=4,br_taken_mask=0,tage_meta=4<<40,loop_train=0)
- await b.step(train=packet)
+ await b.send_train(packet)
  packet.update(loop_train=0x108,tage_meta=4<<40)
  for loop in range(4):
-  for _ in range(200):await b.step(train=dict(packet,br_taken_mask=4,cfi_valid=1,cfi_type=1,cfi_slot=2,cfi_target=0x4000))
-  await b.step(train=packet)
- for _ in range(3):await b.step()
+  for _ in range(200):await b.send_train(dict(packet,br_taken_mask=4,cfi_valid=1,cfi_type=1,cfi_slot=2,cfi_target=0x4000))
+  await b.send_train(packet)
+ await b.drain_train()
  await b.goto(0x4000);await b.step(ready=True,fid=2);await b.step();await b.step()
  before,_=await b.step(kill=True)
  assert before['slow_valid'] and (before['loop_meta']>>90)&1
