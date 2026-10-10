@@ -243,6 +243,7 @@ module frontend
         .arb_redirect_pc_i       (arb_bpu_redirect_pc),
         .recover_busy_i          (recover_busy),
         .kill_i                  (fe_kill),
+        .ftq_head_i              (ftq_head_id),
         .hist_restore_valid_i    (snap_recover_valid),
         .hist_restore_snapshot_i (snap_recover),
         .hist_restore_inject_i   (arb_winner.hist_inject),

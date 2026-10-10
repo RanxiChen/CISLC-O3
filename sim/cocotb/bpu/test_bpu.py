@@ -86,7 +86,7 @@ async def bench(d):
 async def sequential_pipeline_and_stalls(d):
     b = await bench(d)
     await b.reset(0x1004)
-    pending = []
+    pending = [None, None]
     expected_pc = 0x1004
     rng = random.Random(int(os.environ.get('TEST_SEED','1')))
     for cycle in range(120):
@@ -104,7 +104,7 @@ async def sequential_pipeline_and_stalls(d):
         completion = pending.pop(0) if pending else None
         if kill:
             completion = None
-            pending = []
+            pending = [None, None]
         else:
             pending.append((fid, before['pred']) if before['valid'] and ready else None)
         assert after['slow_valid'] == (completion is not None)
@@ -128,6 +128,8 @@ async def taken_branch_history_once_and_recovery(d):
     event=fold8(0x4004) ^ (((fold8(0x5000)<<1) | (fold8(0x5000)>>7)) & 255)
     assert first['hist']['events'] == event
     stable = first['hist']
+    _, waiting = await b.step(hold=True, ready=True)
+    assert not waiting['slow_valid'], 'slow result/control has a separate register stage'
     _, slow = await b.step(hold=True, ready=True)
     assert slow['slow_valid'] and slow['slow_id']==0x41
     assert slow['slow']['next_pc']==0x5000 and slow['disagree']==0
@@ -160,7 +162,9 @@ async def call_return_use_entry_ras_checkpoint(d):
     old,ret=await b.step(ready=True, fid=0x62)
     assert old['pred']['cfi_target']==old['pred']['next_pc']==0x1008
     assert old['perf'](0x0c)==1 and ret['ras']['count']==0
-    assert ret['slow_id']==0x61 and ret['slow']['next_pc']==0x2000
+    assert not ret['slow_valid']
+    _,call_slow=await b.step(hold=True)
+    assert call_slow['slow_id']==0x61 and call_slow['slow']['next_pc']==0x2000
     _,ret_slow=await b.step(hold=True)
     assert ret_slow['slow_id']==0x62 and ret_slow['slow']['next_pc']==0x1008
     assert ret_slow['disagree']==0, 'slow return must use saved entry stack, not current empty stack'
@@ -178,6 +182,8 @@ async def eviction_slow_override_and_inflight_kill(d):
     old,one=await b.step(ready=True, fid=0x83)
     assert old['pred']['cfi_valid']==0 and old['pred']['next_pc']==0x1010
     assert old['perf'](2)==0 and one['slow_valid']==0
+    _,waiting=await b.step(hold=True)
+    assert not waiting['slow_valid']
     _,two=await b.step(hold=True)
     assert two['slow_valid'] and two['slow_id']==0x83
     assert two['slow']['cfi_valid'] and two['slow']['next_pc']==0x8000
@@ -209,6 +215,8 @@ async def compressed_and_edge_call_training_and_return_address(d):
         before,after=await b.step(ready=True,fid=11)
         assert before['pred']['cfi_is_rvc']==rvc and before['pred']['is_edge']==edge
         assert after['ras']['count']==1 and after['ras']['top_addr']==push
+        _,waiting=await b.step(hold=True)
+        assert not waiting['slow_valid']
         _,slow=await b.step(hold=True)
         assert slow['slow_valid'] and slow['slow']['cfi_is_rvc']==rvc and slow['slow']['is_edge']==edge
         assert not slow['disagree']
@@ -237,7 +245,7 @@ async def slow_winner_retains_its_loop_action_on_kill(d):
   for _ in range(200):await b.step(train=dict(packet,br_taken_mask=4,cfi_valid=1,cfi_type=1,cfi_slot=2,cfi_target=0x4000))
   await b.step(train=packet)
  for _ in range(3):await b.step()
- await b.goto(0x4000);await b.step(ready=True,fid=2);await b.step()
+ await b.goto(0x4000);await b.step(ready=True,fid=2);await b.step();await b.step()
  before,_=await b.step(kill=True)
  assert before['slow_valid'] and (before['loop_meta']>>90)&1
  assert (before['loop_meta']>>81)&1,'recovery must replay the winner action even when its speculative edge is killed'

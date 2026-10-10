@@ -1,4 +1,4 @@
-/** L7a BPU: one fast action per allocation, BTB/TAGE checked at N+2.
+/** L7a BPU: one fast action per allocation, BTB/TAGE checked at N+2, result/control registered for N+3.
  * Slow outputs depend only on the aligned query registers, never on kill_i.
  * Tests: sim/cocotb/bpu/ and sim/cocotb/bpu_slow_check/.
  */
@@ -25,6 +25,7 @@ module bpu
     input  vaddr_t          arb_redirect_pc_i,
     input  logic                          recover_busy_i,
     input  fe_kill_t        kill_i,
+    input  ftq_id_t         ftq_head_i = '0,
     input  logic                          hist_restore_valid_i,
     input  hist_snapshot_t  hist_restore_snapshot_i,
     input  logic                          hist_restore_inject_i,
@@ -67,7 +68,12 @@ module bpu
     logic [LOOP_IDX_W-1:0] loop_idx,loop_idx_q;
     loop_train_t loop_prediction;
     loop_ckpt_t loop_ckpt;
-    bpu_slow_t slow_raw;
+    bpu_slow_t slow_raw, slow_complete;
+    redirect_req_t override_raw;
+    fe_perf_t slow_perf_q;
+    logic p1_killed, p2_killed;
+    assign p1_killed = fe_killed_by(kill_i,p1_q.id,fetch_slot_t'(REGION_SLOTS-1),ftq_head_i);
+    assign p2_killed = fe_killed_by(kill_i,p2_q.id,fetch_slot_t'(REGION_SLOTS-1),ftq_head_i);
     assign loop_path_valid=p2_q.valid && loop_prediction.hit &&
         (!slow_raw.pred.cfi_valid || loop_prediction.slot<=slow_raw.pred.cfi_slot);
     assign loop_spec_valid=loop_path_valid && !kill_i.valid;
@@ -79,12 +85,23 @@ module bpu
         .recover_valid_i(ras_recover_valid_i),.recover_meta_i(loop_recover_meta_i),.winner_i(loop_winner_i),
         .train_valid_i(t1_train_valid_q),.train_i(t1_train_q));
     always_comb begin
-        slow_o=slow_raw;
-        slow_o.loop_meta='{train:loop_prediction,upd_valid:loop_path_valid,
+        slow_complete=slow_raw;
+        slow_complete.loop_meta='{train:loop_prediction,upd_valid:loop_path_valid,
             upd_taken:(slow_raw.pred.cfi_valid && slow_raw.pred.cfi_slot==loop_prediction.slot),ckpt:loop_ckpt};
     end
+    // A complete result owns its identity and loop action across this stage.
+    // Registered outputs are never combinationally gated by the kill they
+    // cause. At capture, discard killed owners while preserving older queries.
     always_ff @(posedge clk_i) begin
-        if(rst_i || kill_i.valid) begin loop_hit_q<=0;loop_idx_q<=0;end
+        if (rst_i) begin slow_o<='0; override_o<='0; slow_perf_q<='0; end
+        else begin
+            slow_o <= p2_killed ? bpu_slow_t'('0) : slow_complete;
+            override_o <= p2_killed ? redirect_req_t'('0) : override_raw;
+            slow_perf_q <= p2_killed ? fe_perf_t'('0) : perf_slow;
+        end
+    end
+    always_ff @(posedge clk_i) begin
+        if(rst_i || p1_killed) begin loop_hit_q<=0;loop_idx_q<=0;end
         else begin loop_hit_q<=loop_hit;loop_idx_q<=loop_idx;end
     end
     vaddr_t pred_pc_q;
@@ -181,7 +198,7 @@ module bpu
         .fast_ftq_id_i(p2_q.id), .fast_i(p2_q.fast), .fast_ras_ckpt_i(p2_q.ras_before),
         .btb_valid_i(btb_valid_q), .btb_i(btb_q), .tage_valid_i(tage_valid),
         .tage_i(tage_resp),.loop_i(loop_prediction), .kill_i('0), .slow_o(slow_raw),
-        .override_o(override_o), .perf_o(perf_slow)
+        .override_o(override_raw), .perf_o(perf_slow)
     );
 
     always_ff @(posedge clk_i) begin
@@ -194,18 +211,11 @@ module bpu
         end else begin
             if (arb_redirect_valid_i) pred_pc_q <= arb_redirect_pc_i;
             else if (alloc_fire) pred_pc_q <= alloc_pred_o.next_pc;
-            if (kill_i.valid) begin
-                p1_q <= '0;
-                p2_q <= '0;
-                btb_q <= '0;
-                btb_valid_q <= 1'b0;
-            end else begin
-                p1_q <= '{valid:alloc_fire, id:alloc_ftq_id_i,
-                          fast:alloc_pred_o, ras_before:alloc_ras_ckpt_o};
-                p2_q <= p1_q;
-                btb_q <= btb_resp;
-                btb_valid_q <= btb_valid;
-            end
+            p1_q <= '{valid:alloc_fire, id:alloc_ftq_id_i,
+                      fast:alloc_pred_o, ras_before:alloc_ras_ckpt_o};
+            p2_q <= p1_killed ? query_t'('0) : p1_q;
+            btb_q <= btb_resp;
+            btb_valid_q <= btb_valid && !p1_killed;
             if (p2_q.valid) begin
                 assert (btb_valid_q && tage_valid)
                     else $fatal(1, "BPU slow-query alignment lost");
@@ -215,7 +225,7 @@ module bpu
     always_comb begin
         perf_o = '0;
         for (int evt=0; evt<PE_NUM; evt++)
-            perf_o[evt] = perf_ras[evt] + perf_slow[evt];
+            perf_o[evt] = perf_ras[evt] + slow_perf_q[evt];
         perf_o[PE_UBTB_LOOKUP] = PERF_INC_W'(alloc_fire);
         perf_o[PE_UBTB_HIT] = PERF_INC_W'(alloc_fire && ubtb_hit);
     end
