@@ -437,17 +437,16 @@ module tage_update_slice
     // Ordered allocation depends on row ownership and usefulness, never on
     // the wide ctr payload. Carry only that narrow state through this slice
     // of slot decisions. Each table/slot counter has one fixed local update.
-    logic [META_PROVIDER_BITS-1:0] train_provider[SLOT_COUNT];
-    logic [TABLES-1:0] provider_update[SLOT_COUNT];
-    logic [TABLES-1:0] eligible[SLOT_COUNT], allocate[SLOT_COUNT], decay[SLOT_COUNT];
     logic row_matches[TABLES], row_replace[TABLES];
     for (genvar slot=0; slot<SLOT_COUNT; slot++) begin : g_train_slot
         localparam int S=FIRST_SLOT+slot;
         logic active, wrong, provider_is_table;
-        assign train_provider[slot] = packet_i.tage_meta[S*META_PROVIDER_BITS +: META_PROVIDER_BITS];
+        logic [META_PROVIDER_BITS-1:0] train_provider;
+        logic [TABLES-1:0] provider_update,eligible,allocate,decay;
+        assign train_provider = packet_i.tage_meta[S*META_PROVIDER_BITS +: META_PROVIDER_BITS];
         assign active = valid_i && packet_i.br_commit_mask[S];
         assign wrong = packet_i.tage_meta[META_FINAL_OFFSET+S] != packet_i.br_taken_mask[S];
-        assign provider_is_table = train_provider[slot] < META_PROVIDER_BITS'(TABLES);
+        assign provider_is_table = train_provider < META_PROVIDER_BITS'(TABLES);
         for (genvar t=0; t<TABLES; t++) begin : g_table_control
             logic claimed_before, claimed_after;
             logic [REGION_SLOTS-1:0][USEFUL_BITS-1:0] useful_before, useful_after, useful_provider;
@@ -458,25 +457,25 @@ module tage_update_slice
                 assign claimed_before = g_train_slot[slot-1].g_table_control[t].claimed_after;
                 assign useful_before = g_train_slot[slot-1].g_table_control[t].useful_after;
             end
-            assign provider_update[slot][t] = active && train_provider[slot] == META_PROVIDER_BITS'(t) && original_match_i[t];
+            assign provider_update[t] = active && train_provider == META_PROVIDER_BITS'(t) && original_match_i[t];
             for (genvar k=0; k<REGION_SLOTS; k++) begin : g_useful_provider
                 if (k == S) assign useful_provider[k] =
-                    provider_update[slot][t] && packet_i.tage_meta[META_PROVIDER_PRED_OFFSET+S] != packet_i.tage_meta[META_ALT_OFFSET+S]
+                    provider_update[t] && packet_i.tage_meta[META_PROVIDER_PRED_OFFSET+S] != packet_i.tage_meta[META_ALT_OFFSET+S]
                     ? train_useful(useful_before[k],packet_i.tage_meta[META_PROVIDER_PRED_OFFSET+S] == packet_i.br_taken_mask[S])
                     : useful_before[k];
                 else assign useful_provider[k] = useful_before[k];
             end
-            assign eligible[slot][t] = (!provider_is_table || train_provider[slot] < META_PROVIDER_BITS'(t))
+            assign eligible[t] = (!provider_is_table || train_provider < META_PROVIDER_BITS'(t))
                 && (!rows_i[t].valid || row_matches[t] || claimed_before || useful_provider == '0);
-            if (t == 0) assign allocate[slot][t] = active && wrong && eligible[slot][t];
-            else assign allocate[slot][t] = active && wrong && eligible[slot][t] && !(|eligible[slot][t-1:0]);
-            if (t == 0) assign decay[slot][t] = active && wrong && !(|eligible[slot]) && !provider_is_table;
-            else assign decay[slot][t] = active && wrong && !(|eligible[slot]) && train_provider[slot] == META_PROVIDER_BITS'(t-1);
-            assign claimed_after = claimed_before || allocate[slot][t];
+            if (t == 0) assign allocate[t] = active && wrong && eligible[t];
+            else assign allocate[t] = active && wrong && eligible[t] && !(|eligible[t-1:0]);
+            if (t == 0) assign decay[t] = active && wrong && !(|eligible) && !provider_is_table;
+            else assign decay[t] = active && wrong && !(|eligible) && train_provider == META_PROVIDER_BITS'(t-1);
+            assign claimed_after = claimed_before || allocate[t];
             for (genvar k=0; k<REGION_SLOTS; k++) begin : g_useful_next
                 assign useful_after[k] =
-                    (allocate[slot][t] && ((!rows_i[t].valid || !row_matches[t]) && !claimed_before || k == S)) ? useful_t'('0) :
-                    decay[slot][t] ? train_useful(useful_provider[k],1'b0) : useful_provider[k];
+                    (allocate[t] && ((!rows_i[t].valid || !row_matches[t]) && !claimed_before || k == S)) ? useful_t'('0) :
+                    decay[t] ? train_useful(useful_provider[k],1'b0) : useful_provider[k];
             end
         end
     end
@@ -490,11 +489,11 @@ module tage_update_slice
         for (genvar slot=0; slot<REGION_SLOTS; slot++) begin : g_counter
             if (slot>=FIRST_SLOT && slot<FIRST_SLOT+SLOT_COUNT) begin : g_active
                 localparam int K=slot-FIRST_SLOT;
-                assign writes[slot] = provider_update[K][t] || allocate[K][t] || decay[K][t];
-                assign rows_o[t].ctr[slot] = allocate[K][t]
+                assign writes[slot] = g_train_slot[K].provider_update[t] || g_train_slot[K].allocate[t] || g_train_slot[K].decay[t];
+                assign rows_o[t].ctr[slot] = g_train_slot[K].allocate[t]
                     ? ctr_t'((1 << (CTR_BITS-1))-1 + int'(packet_i.br_taken_mask[slot]))
                     : row_replace[t] ? ctr_t'((1 << (CTR_BITS-1))-1)
-                    : provider_update[K][t] ? train_ctr(rows_i[t].ctr[slot],packet_i.br_taken_mask[slot])
+                    : g_train_slot[K].provider_update[t] ? train_ctr(rows_i[t].ctr[slot],packet_i.br_taken_mask[slot])
                     : rows_i[t].ctr[slot];
             end else begin : g_keep
                 assign writes[slot]=1'b0;

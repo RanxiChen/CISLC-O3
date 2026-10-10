@@ -309,5 +309,6 @@ async def consecutive_rows_match_frozen_legacy_bitwise(dut):
         else: raise AssertionError('training did not accept a held packet')
     await edge();await edge()
     assert stalls==255, 'same-row dependency must insert exactly one cycle'
+    await b.step(Inputs());await b.step(Inputs())
     await query(b,pc)
     assert b.model.base==ref.base and all(vars(a)==vars(c) for ar,cr in zip(b.model.tagged,ref.tagged) for a,c in zip(ar,cr))
