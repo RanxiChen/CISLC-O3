@@ -103,6 +103,8 @@ async def selective_wrap_kill_and_empty_beat_metadata(d):
     b=await bench(d)
     older=b.packet(b.depth-1,last=True)
     winner=b.packet(b.depth,last=False,edge=True)
+    winner=replace(winner,lanes=tuple((w&~b.slotmask)|(slot<<b.ss)
+        for w,slot in zip(winner.lanes,(0,2,4,6))))
     await b.step(older);await b.step(winner)
     await b.step(kill=dict(id=b.depth,slot=3),head=b.depth-1,ready=True)
     assert b.queue[0]==older
