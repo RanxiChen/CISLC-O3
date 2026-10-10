@@ -175,58 +175,57 @@ module tage
     assign train_ready_o = !rst_i;
     assign perf_o = '0;
 
-    // S2 选最长匹配 tagged 行；弱且无用时用 alt，但保留 provider 元数据供训练。
-    always_comb begin : select_direction
-        logic provider_pred;
-        logic alt_pred;
-        logic final_pred;
-        logic [META_PROVIDER_BITS-1:0] provider_code;
-        useful_t provider_useful;
+    // All slots share the row tag. Compare each table once, then decode the
+    // longest and second-longest matches into fixed one-hot read selects.
+    logic [TABLES-1:0] query_hits, provider_oh, alt_oh;
+    logic [META_PROVIDER_BITS-1:0] provider_code;
+    for (genvar t=0; t<TABLES; t++) begin : g_query_select
+        assign query_hits[t] = s2_row_q[t].valid && s2_row_q[t].tag == s2_tag_q[t];
+        if (t == TABLES-1) assign provider_oh[t] = query_hits[t];
+        else assign provider_oh[t] = query_hits[t] && !(|query_hits[TABLES-1:t+1]);
+        if (t == TABLES-1) assign alt_oh[t] = 1'b0;
+        else assign alt_oh[t] = query_hits[t] && !provider_oh[t]
+            && !(|(query_hits[TABLES-1:t+1] & ~provider_oh[TABLES-1:t+1]));
+    end
+    always_comb begin
+        provider_code = '0;
+        for (int t=0; t<TABLES; t++)
+            provider_code |= META_PROVIDER_BITS'(t) & {META_PROVIDER_BITS{provider_oh[t]}};
+        if (!(|provider_oh)) provider_code = BASE_CODE;
+    end
+    for (genvar slot=0; slot<REGION_SLOTS; slot++) begin : g_direction
         ctr_t provider_ctr;
-        logic weak_ctr;
-
-        provider_code = BASE_CODE;
-        provider_pred = 1'b0;
-        alt_pred = 1'b0;
-        final_pred = 1'b0;
-        provider_useful = '0;
-        provider_ctr = '0;
-        weak_ctr = 1'b0;
-        resp_o = '0;
-        if (s2_valid_q) begin
-            for (int slot = 0; slot < REGION_SLOTS; slot++) begin
-                provider_code = BASE_CODE;
-                provider_pred = s2_base_q[slot][CTR_BITS-1];
-                alt_pred = provider_pred;
-                provider_useful = '0;
-                provider_ctr = s2_base_q[slot];
-                for (int table_idx = 0; table_idx < TABLES; table_idx++) begin
-                    if (s2_row_q[table_idx].valid &&
-                        s2_row_q[table_idx].tag == s2_tag_q[table_idx]) begin
-                        alt_pred = provider_pred;
-                        provider_pred = s2_row_q[table_idx].ctr[slot][CTR_BITS-1];
-                        provider_ctr = s2_row_q[table_idx].ctr[slot];
-                        provider_useful = s2_row_q[table_idx].useful[slot];
-                        provider_code = META_PROVIDER_BITS'(table_idx);
-                    end
-                end
-                weak_ctr = (provider_ctr == ctr_t'((1 << (CTR_BITS-1)) - 1)) ||
-                           (provider_ctr == ctr_t'(1 << (CTR_BITS-1)));
-                final_pred = provider_pred;
-                if (provider_code != BASE_CODE && provider_useful == '0 && weak_ctr)
-                    final_pred = alt_pred;
-                resp_o.taken_mask[slot] = final_pred;
-                resp_o.provider_hit_mask[slot] = (provider_code != BASE_CODE);
-                resp_o.meta[slot*META_PROVIDER_BITS +: META_PROVIDER_BITS] = provider_code;
-                resp_o.meta[META_ALT_OFFSET + slot] = alt_pred;
-                resp_o.meta[META_PROVIDER_PRED_OFFSET + slot] = provider_pred;
-                resp_o.meta[META_FINAL_OFFSET + slot] = final_pred;
+        useful_t provider_useful;
+        logic alt_pred, weak_ctr, final_pred;
+        always_comb begin
+            provider_ctr = '0;
+            provider_useful = '0;
+            alt_pred = 1'b0;
+            for (int t=0; t<TABLES; t++) begin
+                provider_ctr |= s2_row_q[t].ctr[slot] & {CTR_BITS{provider_oh[t]}};
+                provider_useful |= s2_row_q[t].useful[slot] & {USEFUL_BITS{provider_oh[t]}};
+                alt_pred |= s2_row_q[t].ctr[slot][CTR_BITS-1] && alt_oh[t];
             end
+            if (!(|provider_oh)) provider_ctr = s2_base_q[slot];
+            if (!(|alt_oh)) alt_pred = s2_base_q[slot][CTR_BITS-1];
+            weak_ctr = provider_ctr == ctr_t'((1 << (CTR_BITS-1))-1)
+                    || provider_ctr == ctr_t'(1 << (CTR_BITS-1));
+            final_pred = provider_ctr[CTR_BITS-1];
+            if ((|provider_oh) && provider_useful == '0 && weak_ctr) final_pred = alt_pred;
         end
+        assign resp_o.taken_mask[slot] = s2_valid_q && final_pred;
+        assign resp_o.provider_hit_mask[slot] = s2_valid_q && (|provider_oh);
+        assign resp_o.meta[slot*META_PROVIDER_BITS +: META_PROVIDER_BITS] = s2_valid_q ? provider_code : '0;
+        assign resp_o.meta[META_ALT_OFFSET+slot] = s2_valid_q && alt_pred;
+        assign resp_o.meta[META_PROVIDER_PRED_OFFSET+slot] = s2_valid_q && provider_ctr[CTR_BITS-1];
+        assign resp_o.meta[META_FINAL_OFFSET+slot] = s2_valid_q && final_pred;
+    end
+    if (CFG.tage.meta_bits > META_USED_BITS) begin : g_unused_meta
+        assign resp_o.meta[CFG.tage.meta_bits-1:META_USED_BITS] = '0;
     end
 
     // T0 reads the training replicas and captures the packet. T1 computes
-    // the legacy update and writes both replicas, forwarding the previous
+    // the table-local update and writes both replicas, forwarding the previous
     // T1 write across a read-during-write collision.
     bpu_train_t t1_packet_q;
     logic t1_valid_q, base_we, wb_base_valid_q;
@@ -245,7 +244,15 @@ module tage
         for(int slot=0;slot<REGION_SLOTS;slot++) r[slot]=ctr_t'((1<<(CTR_BITS-1))-1);
         return r;
     endfunction
-    assign train_base_idx=base_index_of(t1_packet_q.region_base);
+    always_ff @(posedge clk_i) begin
+        if (train_valid_i && !rst_i) begin
+            train_base_idx <= base_index_of(train_i.region_base);
+            for (int t=0; t<TABLES; t++) begin
+                train_idx[t] <= index_of(train_i.region_base,train_i.folds,t);
+                train_tag[t] <= tag_of(train_i.region_base,train_i.folds,t);
+            end
+        end
+    end
     assign base_we=!rst_i && t1_valid_q && |t1_packet_q.br_commit_mask;
     assign train_base_old=wb_base_valid_q && wb_base_idx_q==train_base_idx ? wb_base_data_q :
         (base_wr_q[train_base_idx] ? base_traw : reset_base());
@@ -261,8 +268,6 @@ module tage
         logic [RW-1:0] qraw,traw;
         logic query_collision_q,query_valid_q;
         tagged_row_t query_forward_q;
-        assign train_idx[t]=index_of(t1_packet_q.region_base,t1_packet_q.folds,t);
-        assign train_tag[t]=tag_of(t1_packet_q.region_base,t1_packet_q.folds,t);
         always_comb begin
             train_old[t]=tagged_row_t'(traw);
             train_old[t].valid=tvalid_q[t][train_idx[t]];
@@ -292,79 +297,64 @@ module tage
             end
         end
     end
-    always_comb begin : legacy_training_update
-        int provider_idx,first_longer;
-        logic provider_still_matches,allocated,actual_taken,meta_provider_pred,meta_alt_pred,meta_final_pred;
-        provider_idx=0;first_longer=0;provider_still_matches=0;allocated=0;actual_taken=0;
-        meta_provider_pred=0;meta_alt_pred=0;meta_final_pred=0;
-        base_updated=train_base_old;
-        for(int t=0;t<TABLES;t++) begin updated[t]=train_old[t];touched[t]=0;end
-        if(base_we) begin
-                for (int slot = 0; slot < REGION_SLOTS; slot++) begin
-                    if (t1_packet_q.br_commit_mask[slot]) begin
-                        actual_taken = t1_packet_q.br_taken_mask[slot];
-                        base_updated[slot] =
-                            train_ctr(train_base_old[slot], actual_taken);
-                        provider_idx = int'(t1_packet_q.tage_meta[
-                            slot*META_PROVIDER_BITS +: META_PROVIDER_BITS]);
-                        meta_alt_pred = t1_packet_q.tage_meta[META_ALT_OFFSET + slot];
-                        meta_provider_pred =
-                            t1_packet_q.tage_meta[META_PROVIDER_PRED_OFFSET + slot];
-                        meta_final_pred = t1_packet_q.tage_meta[META_FINAL_OFFSET + slot];
-                        provider_still_matches = 1'b0;
-                        if (provider_idx < TABLES)
-                            provider_still_matches =
-                                train_old[provider_idx].valid &&
-                                train_old[provider_idx].tag ==
-                                train_tag[provider_idx];
-                        if (provider_still_matches) begin
-                            updated[provider_idx].ctr[slot] =
-                                train_ctr(updated[provider_idx].ctr[slot], actual_taken);
-                            if (meta_provider_pred != meta_alt_pred)
-                                updated[provider_idx].useful[slot] = train_useful(
-                                    updated[provider_idx].useful[slot],
-                                    meta_provider_pred == actual_taken);
-                            touched[provider_idx] = 1'b1;
-                        end
-
-                        if (meta_final_pred != actual_taken) begin
-                            first_longer = (provider_idx < TABLES) ? provider_idx + 1 : 0;
-                            allocated = 1'b0;
-                            for (int table_idx = 0; table_idx < TABLES;
-                                 table_idx++) begin
-                                if (table_idx >= first_longer && !allocated && (!updated[table_idx].valid ||
-                                    updated[table_idx].tag == train_tag[table_idx] ||
-                                    updated[table_idx].useful == '0)) begin
-                                    if (!updated[table_idx].valid ||
-                                        updated[table_idx].tag != train_tag[table_idx]) begin
-                                        updated[table_idx] = '0;
-                                        updated[table_idx].valid = 1'b1;
-                                        updated[table_idx].tag = train_tag[table_idx];
-                                        for (int other_slot = 0; other_slot < REGION_SLOTS;
-                                             other_slot++)
-                                            updated[table_idx].ctr[other_slot] =
-                                                ctr_t'((1 << (CTR_BITS-1)) - 1);
-                                    end
-                                    updated[table_idx].ctr[slot] =
-                                        ctr_t'((1 << (CTR_BITS-1)) - 1 + int'(actual_taken));
-                                    updated[table_idx].useful[slot] = '0;
-                                    touched[table_idx] = 1'b1;
-                                    allocated = 1'b1;
-                                end
-                            end
-                            if (!allocated && first_longer < TABLES) begin
-                                // 所有候选都仍有 useful：衰减最短候选，下次可分配。
-                                for (int other_slot = 0; other_slot < REGION_SLOTS;
-                                     other_slot++)
-                                    updated[first_longer].useful[other_slot] =
-                                        train_useful(updated[first_longer].useful[other_slot],
-                                                     1'b0);
-                                touched[first_longer] = 1'b1;
-                            end
-                        end
-                    end
-                end
+    // Ordered allocation depends on row ownership and usefulness, never on
+    // the wide ctr payload. Carry only that narrow state through the eight
+    // slot decisions. Each table/slot counter has one fixed local update.
+    logic [META_PROVIDER_BITS-1:0] train_provider[REGION_SLOTS];
+    logic [TABLES-1:0] provider_update[REGION_SLOTS];
+    logic [TABLES-1:0] eligible[REGION_SLOTS], allocate[REGION_SLOTS], decay[REGION_SLOTS];
+    logic [REGION_SLOTS:0] row_claimed[TABLES];
+    logic [REGION_SLOTS-1:0][USEFUL_BITS-1:0] useful_step[TABLES][REGION_SLOTS+1];
+    logic [REGION_SLOTS-1:0][USEFUL_BITS-1:0] useful_provider[TABLES][REGION_SLOTS];
+    logic row_matches[TABLES], row_replace[TABLES];
+    for (genvar slot=0; slot<REGION_SLOTS; slot++) begin : g_train_slot
+        logic active, wrong, provider_is_table;
+        assign train_provider[slot] = t1_packet_q.tage_meta[slot*META_PROVIDER_BITS +: META_PROVIDER_BITS];
+        assign active = base_we && t1_packet_q.br_commit_mask[slot];
+        assign wrong = t1_packet_q.tage_meta[META_FINAL_OFFSET+slot] != t1_packet_q.br_taken_mask[slot];
+        assign provider_is_table = train_provider[slot] < META_PROVIDER_BITS'(TABLES);
+        assign base_updated[slot] = active ? train_ctr(train_base_old[slot],t1_packet_q.br_taken_mask[slot]) : train_base_old[slot];
+        for (genvar t=0; t<TABLES; t++) begin : g_table_control
+            assign provider_update[slot][t] = active && train_provider[slot] == META_PROVIDER_BITS'(t) && row_matches[t];
+            for (genvar k=0; k<REGION_SLOTS; k++) begin : g_useful_provider
+                if (k == slot) assign useful_provider[t][slot][k] =
+                    provider_update[slot][t] && t1_packet_q.tage_meta[META_PROVIDER_PRED_OFFSET+slot] != t1_packet_q.tage_meta[META_ALT_OFFSET+slot]
+                    ? train_useful(useful_step[t][slot][k],t1_packet_q.tage_meta[META_PROVIDER_PRED_OFFSET+slot] == t1_packet_q.br_taken_mask[slot])
+                    : useful_step[t][slot][k];
+                else assign useful_provider[t][slot][k] = useful_step[t][slot][k];
+            end
+            assign eligible[slot][t] = (!provider_is_table || train_provider[slot] < META_PROVIDER_BITS'(t))
+                && (!train_old[t].valid || row_matches[t] || row_claimed[t][slot] || useful_provider[t][slot] == '0);
+            if (t == 0) assign allocate[slot][t] = active && wrong && eligible[slot][t];
+            else assign allocate[slot][t] = active && wrong && eligible[slot][t] && !(|eligible[slot][t-1:0]);
+            if (t == 0) assign decay[slot][t] = active && wrong && !(|eligible[slot]) && !provider_is_table;
+            else assign decay[slot][t] = active && wrong && !(|eligible[slot]) && train_provider[slot] == META_PROVIDER_BITS'(t-1);
+            assign row_claimed[t][slot+1] = row_claimed[t][slot] || allocate[slot][t];
+            for (genvar k=0; k<REGION_SLOTS; k++) begin : g_useful_next
+                assign useful_step[t][slot+1][k] =
+                    (allocate[slot][t] && ((!train_old[t].valid || !row_matches[t]) && !row_claimed[t][slot] || k == slot)) ? useful_t'('0) :
+                    decay[slot][t] ? train_useful(useful_provider[t][slot][k],1'b0) : useful_provider[t][slot][k];
+            end
         end
+    end
+    for (genvar t=0; t<TABLES; t++) begin : g_train_table
+        logic [REGION_SLOTS-1:0] writes;
+        assign row_matches[t] = train_old[t].valid && train_old[t].tag == train_tag[t];
+        assign row_claimed[t][0] = 1'b0;
+        assign useful_step[t][0] = train_old[t].useful;
+        assign row_replace[t] = row_claimed[t][REGION_SLOTS] && !row_matches[t];
+        assign updated[t].valid = train_old[t].valid || row_claimed[t][REGION_SLOTS];
+        assign updated[t].tag = row_replace[t] ? train_tag[t] : train_old[t].tag;
+        assign updated[t].useful = useful_step[t][REGION_SLOTS];
+        for (genvar slot=0; slot<REGION_SLOTS; slot++) begin : g_counter
+            assign writes[slot] = provider_update[slot][t] || allocate[slot][t] || decay[slot][t];
+            assign updated[t].ctr[slot] = allocate[slot][t]
+                ? ctr_t'((1 << (CTR_BITS-1))-1 + int'(t1_packet_q.br_taken_mask[slot]))
+                : row_replace[t] ? ctr_t'((1 << (CTR_BITS-1))-1)
+                : provider_update[slot][t] ? train_ctr(train_old[t].ctr[slot],t1_packet_q.br_taken_mask[slot])
+                : train_old[t].ctr[slot];
+        end
+        assign touched[t] = |writes;
     end
     always_ff @(posedge clk_i) begin
         if(rst_i) begin
