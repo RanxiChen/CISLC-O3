@@ -14,6 +14,7 @@ foreach {label prefix} {
     bpu u_frontend/u_bpu/*
     ftq u_frontend/u_ftq/*
     icache u_frontend/u_icache/*
+    decode_queue u_frontend/u_ifu_decode_queue/*
     f0 u_frontend/u_ifu_f0/*
     f1 u_frontend/u_ifu_f1/*
     rq u_frontend/u_fetch_return_queue/*

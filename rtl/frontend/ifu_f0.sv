@@ -14,6 +14,7 @@ module ifu_f0 import o3_types_pkg::*; #(
     output logic out_beat_valid_o,out_last_o,out_edge_pend_o,
     input logic trunc_i,input fetch_slot_t trunc_slot_i,
     input fe_kill_t kill_i,input ftq_id_t ftq_head_i,
+    input logic boundary_wait_i=1'b0,
     input logic sync_clear_i,output fe_perf_t perf_o
 );
     typedef struct packed {
@@ -38,10 +39,10 @@ module ifu_f0 import o3_types_pkg::*; #(
 
     assign current_block=hold_q.valid ? hold_q.block_data:in_i;
     assign current_brief=hold_q.valid ? hold_q.brief:in_brief_i;
-    assign active=(hold_q.valid || in_valid_i) && !rst_i && !kill_i.valid && !sync_clear_i;
+    assign active=(hold_q.valid || in_valid_i) && !boundary_wait_i && !rst_i && !kill_i.valid && !sync_clear_i;
     assign out_beat_valid_o=active;
     assign out_brief_o=active ? current_brief:'0;
-    assign in_ready_o=out_ready_i && !hold_q.valid && !kill_i.valid && !sync_clear_i && !rst_i;
+    assign in_ready_o=out_ready_i && !hold_q.valid && !boundary_wait_i && !kill_i.valid && !sync_clear_i && !rst_i;
     assign fire=active && out_ready_i;
     assign perf_o='0;
     assign edge_start=!hold_q.valid && pend_q.valid

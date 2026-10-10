@@ -87,6 +87,7 @@ rtl/frontend/prefetch_xlate_cache.sv
 rtl/frontend/fetch_prefetcher.sv
 rtl/frontend/rvc_expander.sv
 rtl/frontend/ifu_f0.sv
+rtl/frontend/ifu_decode_queue.sv
 rtl/frontend/ifu_f1.sv
 rtl/frontend/redirect_arbiter.sv
 rtl/frontend/frontend_sync_ctrl.sv

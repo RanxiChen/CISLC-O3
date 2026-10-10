@@ -19,3 +19,6 @@ sim/icache/obj_dir/
 ## local planning/docs
 .codex
 docs/
+
+# Local Python compilation caches
+__pycache__/

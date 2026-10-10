@@ -59,7 +59,7 @@ module ifu_f0_tb_top
         .out_valid_o(out_valid_o),.out_beat_valid_o(out_beat_valid_o),.out_last_o(out_last_o),.out_edge_pend_o(out_edge_pend_o),
         .trunc_i(trunc_i),.trunc_slot_i(trunc_slot_i),.ftq_head_i('0), .out_ready_i(out_ready_i),
         .out_o(inst_out), .out_brief_o(brief_out),
-        .kill_i(kill), .sync_clear_i(sync_clear_i), .perf_o()
+        .kill_i(kill), .boundary_wait_i(1'b0),.sync_clear_i(sync_clear_i), .perf_o()
     );
     logic ref_ready,ref_beat,ref_last,ref_pend;
     logic [F0_SLOTS-1:0] ref_valid;
