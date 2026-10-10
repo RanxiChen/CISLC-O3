@@ -1,0 +1,698 @@
+{
+  "goal": "default full frontend at 100 MHz; routed timing required",
+  "status": "internal_100mhz_pass_full_ooc_boundary_not_closed",
+  "host": "Alan chen@localhost:2286 via clawbot",
+  "host_policy": "/home/chen/leisure/flow/docs/cross-project/simulation-host.md",
+  "simulation_host_selection": {
+    "cloud_chen": "47.96.71.231:22; BatchMode ConnectTimeout=8; SSH exit 255 connection timed out",
+    "Alan": "preflight exit 0; Verilator 5.050; cocotb 2.1.0"
+  },
+  "constraints": {
+    "part": "xcku040-ffva1156-2-e",
+    "period_ns": 10.0,
+    "input_delay_ns": 0.0,
+    "output_delay_ns": 0.0,
+    "retiming": false,
+    "false_paths": false,
+    "multicycle_paths": false,
+    "config": "O3_CFG.fe default",
+    "define": "FPGA_TARGET"
+  },
+  "source": {
+    "sha": "349d91968ce17620969266e7b53e8d68c64e32f4",
+    "files_sha256": {
+      "rtl/common/o3_isa_pkg.sv": "b4ef42fe4a13e82af455996bf42553e029312622a65a4c1c3f392431475622c7",
+      "rtl/common/o3_platform_pkg.sv": "9c42277a2490772bd6b1ab809aae801e32c57d2e5789cea210da46a5b76e03c0",
+      "rtl/common/o3_cfg_pkg.sv": "d380a884da4960cce93da906b5d2b60331f11b6d4a6fc3cb5cee7aff2a8413b9",
+      "rtl/common/o3_types_pkg.sv": "0bd232c84645ee248990947a47eef7456553f1b4de8b3b7a0ea6c28e17b78196",
+      "rtl/common/o3_pkg.sv": "ccb7ee6a91ecc5e3f06375a14fbf5d642c7cd4ed61d1df7b47ef37617630de22",
+      "rtl/frontend/ftq.sv": "a3d7181310dc55a668480987acfb9bdaf3005ea803d1171566b96c8f2039d19a",
+      "rtl/frontend/branch_history.sv": "2d121cfea1c6af7ba4bb2e0caf69272e059d952cd933a78c43d12c50dfd7d2ab",
+      "rtl/frontend/history_snapshot_store.sv": "60a47b34ab9758cf9fc44159793d78ee3378d54999029760cf86aab0563a15fb",
+      "rtl/frontend/ras.sv": "47a0371ec1895fb91f74930ab53dea531596a4fceeca96a740a71fff7e6dbffc",
+      "rtl/frontend/ubtb.sv": "93a7466a0fdd8ccf40fa418e84f049db46f912d997185df4627fb0b8e7499353",
+      "rtl/frontend/main_btb.sv": "052f3b777f36889ffa0eba2a01778356595ce553d145d6c4cb463c5821cc72b9",
+      "rtl/frontend/tage.sv": "be7a3f0ab3af287a36773e0308531c9644f4091979ddcfbc082319dc766a717d",
+      "rtl/frontend/bpu_slow_check.sv": "5ee2f410394b18a5a5b2da25d05c37bcb8f50857f403b3f3570c5cd63af2e58c",
+      "rtl/frontend/loop_predictor.sv": "2cece65ecb235d04071365b7e2c4adfe36126257881aec481b86167905e6f2c9",
+      "rtl/frontend/bpu.sv": "c485b09ae680620e3497931999d158eaf797e6fe5c94b5f9dca329bd64b2da30",
+      "rtl/frontend/fetch_buffer.sv": "b8ad46cc6a5dbcd39032b15ccb78423e0c6386b444ad9ee6a69c54d2c490b691",
+      "rtl/frontend/fetch_return_queue.sv": "a2f63946e73f754244e5b8b54ab5dd44c907c266505dcb9db0f03e1d91b999f9",
+      "rtl/frontend/icache_mshr.sv": "231a1031c726d2a44b0ae255958875094e84cf1945cca052ac159c95722814a1",
+      "rtl/frontend/itlb.sv": "abce1265a5e786c629750190ee9d306fabbe0e118237a928a92d7d9f59fe8187",
+      "rtl/frontend/prefetch_xlate_cache.sv": "3adcfef058b47627135d8a45a1f2facd51deb421d6af41c78353ce93c6e9dfc5",
+      "rtl/frontend/fetch_prefetcher.sv": "01f58f1056c93a120fa6b347ef4253ae71e6efe4d1fe6b1de436cecf7b3d1bfe",
+      "rtl/frontend/rvc_expander.sv": "cc22661d2f2452779aecfa559389624d9c66deebae77d580cf465d51e57c39b6",
+      "rtl/frontend/ifu_f0.sv": "7c53318c8b9ba755788aea360fe5bd63c79218e4d7c4495e2a4fc4c4039c1e66",
+      "rtl/frontend/ifu_decode_queue.sv": "f2dd3c69097be79da9da17d5cff885cb1e1a71adf7805b14b9e852ec6c0c668e",
+      "rtl/frontend/ifu_f1.sv": "bf6f220f84453d609dee6251e09d5ae666f696d1df7fc252a238be86dcad73f7",
+      "rtl/frontend/redirect_arbiter.sv": "73f1c40b90eb4dd97832e548b05248cd3a4d855e1ad3e654117ba8fa4ba5dc32",
+      "rtl/frontend/frontend_sync_ctrl.sv": "8584f4b3574b6ab866d8a35b3ffb81789d5fd4a892593aafd38c371d691702dc",
+      "rtl/common/pmp_checker.sv": "78221eb4143178b98245804a93c30108538c072e36dec641fd62d0a090d60f97",
+      "rtl/common/pma_checker.sv": "809b7568b17d3eb168e90309e5f2dca40a55776ecee33b275e3f4d1c62386bbc",
+      "rtl/frontend/icache.sv": "af8e4fd4b06280a40b0ee64a2f31de8a0f3d6db46e0c96f2570972337a473b64",
+      "rtl/frontend/frontend.sv": "df8c78c59611fef783bda9d6242b89b8d19b9d838b1f899408ceae74f28e4f52",
+      "rtl/common/lfsr.sv": "8ecf960071e56d0252277d630882a500755da2f8a55184cf184306a96e30b555",
+      "rtl/common/o3_sram.sv": "48aa7de7fecb02ec33c20352642b91cf6109cd555ca8c4752132018d9558f621",
+      "rtl/common/o3_sram_1r1w.sv": "5883c67294f63aaa802bf5685ef83a0a074b099205c9cce9e31ac3dc97990b71",
+      "rtl/rtl.f": "92674e43c20b44dd1e4cb9dec54689546f7ac1841ed299e20d641a5056e24f67",
+      "scripts/vivado/frontend_ooc_wrapper.sv": "0c1d137a0fae2b959f04d8c238b7f7514733bd735053980d867c8ff02599e929",
+      "scripts/vivado/frontend_ooc.tcl": "1816ce484d293299880bee1bd9c664f9a10fed46ff4961843e62aee36b6b90e9",
+      "scripts/vivado/frontend_route.tcl": "e6e15d6fc652047d1c6b31871dd7ce132268c5207ee133bfa4ce840e907ad5b6",
+      "scripts/run-frontend-100m-checks.sh": "12deb71f9d1dac2f5833a65015be16cf0deeadaa840c8e6b3b552af4696e5ff7",
+      "scripts/vivado/frontend_timing_groups.tcl": "6380c40c3b440b8b0655b295b9499bdcdb76a5ec6eed9aa20a32d2cc9c6cda5f"
+    },
+    "validation_files_sha256": {
+      "sim/rtl/frontend_age_tb.sv": "3815450541582968b8d46c1eec06777a0da8aab9167a23db104103b0e9dcf797"
+    }
+  },
+  "test_only_followup": {
+    "sha": "843be7ce4b960463fb423760068be708ec888cdf",
+    "rtl_and_scripts_identical_to": "959635a138d2e89ab554a69e474537220c58cc93"
+  },
+  "tests": {
+    "cwd": "/home/chen/FUN/CISLC-O3-runs/frontend-100m-20261010/r26-349d919",
+    "command": "EVIDENCE_DIR=\"$PWD/evidence/checks\" TEST_SEED=1 bash scripts/run-frontend-100m-checks.sh",
+    "environment": "source /home/chen/miniforge3/bin/activate cislc-o3",
+    "exit": 0,
+    "suite_count": 19,
+    "tests": 85,
+    "results": {
+      "suites": {
+        "bpu.xml": {
+          "tests": 8,
+          "failures": 0,
+          "skips": 0
+        },
+        "bpu_slow_check.xml": {
+          "tests": 1,
+          "failures": 0,
+          "skips": 0
+        },
+        "fetch_buffer.xml": {
+          "tests": 2,
+          "failures": 0,
+          "skips": 0
+        },
+        "fetch_buffer_payload.xml": {
+          "tests": 1,
+          "failures": 0,
+          "skips": 0
+        },
+        "fetch_prefetcher.xml": {
+          "tests": 4,
+          "failures": 0,
+          "skips": 0
+        },
+        "fetch_return_queue.xml": {
+          "tests": 4,
+          "failures": 0,
+          "skips": 0
+        },
+        "ftq.xml": {
+          "tests": 5,
+          "failures": 0,
+          "skips": 0
+        },
+        "icache.xml": {
+          "tests": 8,
+          "failures": 0,
+          "skips": 0
+        },
+        "ifu_decode_queue.xml": {
+          "tests": 3,
+          "failures": 0,
+          "skips": 0
+        },
+        "ifu_f0.xml": {
+          "tests": 7,
+          "failures": 0,
+          "skips": 0
+        },
+        "ifu_f1.xml": {
+          "tests": 18,
+          "failures": 0,
+          "skips": 0
+        },
+        "ifu_pipeline.xml": {
+          "tests": 3,
+          "failures": 0,
+          "skips": 0
+        },
+        "loop_predictor.xml": {
+          "tests": 5,
+          "failures": 0,
+          "skips": 0
+        },
+        "main_btb.xml": {
+          "tests": 3,
+          "failures": 0,
+          "skips": 0
+        },
+        "ras.xml": {
+          "tests": 2,
+          "failures": 0,
+          "skips": 0
+        },
+        "ras_depth1.xml": {
+          "tests": 2,
+          "failures": 0,
+          "skips": 0
+        },
+        "redirect_arbiter.xml": {
+          "tests": 2,
+          "failures": 0,
+          "skips": 0
+        },
+        "tage.xml": {
+          "tests": 4,
+          "failures": 0,
+          "skips": 0
+        },
+        "ubtb.xml": {
+          "tests": 3,
+          "failures": 0,
+          "skips": 0
+        }
+      },
+      "tests": 85,
+      "source_hash_mismatches": [],
+      "missing": []
+    },
+    "lint_exit": 0,
+    "lint_DUT_WIDTH_LATCH_UNOPTFLAT": 0,
+    "whole_core_simulation": false,
+    "age_exhaustive": {
+      "cases": 33554432,
+      "exit": 0,
+      "independent_reference": "original fe_age modular subtraction retained unchanged",
+      "evidence": "r26-349d919/evidence/checks/age.log"
+    },
+    "failures": 0,
+    "skips": 0,
+    "tage_row_ownership_assertion": "T2 carried ownership equals independent valid/tag comparison; original provider match remains separate",
+    "status": "completed"
+  },
+  "test_only_followup_check": {
+    "cwd": "/home/chen/FUN/CISLC-O3-runs/frontend-100m-20261010/r22-843be7c",
+    "command": "make -j4 -C sim/cocotb/ifu_decode_queue sim TEST_SEED=2 COCOTB_RESULTS_FILE=\"$PWD/evidence/ifu_decode_queue.xml\"",
+    "exit": 0,
+    "tests": 3,
+    "failures": 0,
+    "skips": 0
+  },
+  "baseline": {
+    "sha": "dcb6d0256505aa65fb4fbee7c381f044f8dc8c55",
+    "stage": "synthesis only",
+    "metrics": {
+      "lut": 91454,
+      "ff": 52574,
+      "lutram": 2368,
+      "bram_tiles": 93,
+      "wns_ns": -15.622,
+      "logic_levels": 73,
+      "start": "u_frontend/u_bpu/u_tage/t1_packet_q_reg[region_base][4]/C",
+      "end": "u_frontend/u_bpu/u_tage/g_table[1].u_query/mem_reg_bram_0/DINADIN[0]",
+      "synth_seconds": 781,
+      "tns_ns": -385278.406,
+      "global_whs_ns": -0.181,
+      "setup_failing_endpoints": 41622,
+      "internal_whs_ns": 0.091
+    },
+    "evidence": "doc/tasks/O3-frontend-structural-evidence.json"
+  },
+  "synthesis": {
+    "command": "vivado -mode batch -nojournal -nolog -source scripts/vivado/frontend_ooc.tcl -tclargs evidence/synth",
+    "environment": "source /home/chen/Tool/FPGA/Vivado/2022.2/settings64.sh",
+    "tool": "Vivado 2022.2",
+    "cwd": "/home/chen/FUN/CISLC-O3-runs/frontend-100m-20261010/r26-349d919",
+    "status": "completed",
+    "exit": 0,
+    "metrics": {
+      "lut": 93960,
+      "ff": 52875,
+      "lutram": 2368,
+      "bram_tiles": 93,
+      "wns_ns": 1.483,
+      "tns_ns": 0.0,
+      "global_whs_ns": -0.181,
+      "ths_ns": -2432.243,
+      "setup_failing_endpoints": 0,
+      "hold_failing_endpoints": 37710,
+      "internal_whs_ns": 0.087,
+      "logic_levels": 24,
+      "synth_seconds": 649,
+      "max_start": "u_frontend/u_bpu/u_tage/t2_match_q_reg[1]/C",
+      "max_end": "u_frontend/u_bpu/u_tage/g_table[3].tvalid_q_reg[3][16]/D"
+    },
+    "hierarchy": {
+      "bpu": {
+        "lut": 29999,
+        "ff": 20666,
+        "lutram": 236,
+        "ramb36": 22,
+        "ramb18": 22
+      },
+      "tage_in_bpu": {
+        "lut": 16570,
+        "ff": 9862,
+        "lutram": 0,
+        "ramb36": 14,
+        "ramb18": 14
+      },
+      "fetch_buffer": {
+        "lut": 7336,
+        "ff": 4709,
+        "lutram": 0,
+        "ramb36": 0,
+        "ramb18": 0
+      },
+      "ftq": {
+        "lut": 7191,
+        "ff": 2049,
+        "lutram": 872,
+        "ramb36": 0,
+        "ramb18": 0
+      },
+      "icache": {
+        "lut": 22565,
+        "ff": 17638,
+        "lutram": 44,
+        "ramb36": 56,
+        "ramb18": 8
+      },
+      "ifu_decode_queue": {
+        "lut": 14721,
+        "ff": 2312,
+        "lutram": 0,
+        "ramb36": 0,
+        "ramb18": 0
+      },
+      "ifu_f0": {
+        "lut": 4564,
+        "ff": 613,
+        "lutram": 0,
+        "ramb36": 0,
+        "ramb18": 0
+      },
+      "ifu_f1": {
+        "lut": 1158,
+        "ff": 277,
+        "lutram": 0,
+        "ramb36": 0,
+        "ramb18": 0
+      }
+    },
+    "proof_of_routed_closure": false,
+    "check_timing_issue_counts": 0
+  },
+  "route": {
+    "command": "vivado -mode batch -nojournal -nolog -source scripts/vivado/frontend_route.tcl -tclargs evidence/synth/frontend_synth.dcp evidence/route",
+    "environment": "source /home/chen/Tool/FPGA/Vivado/2022.2/settings64.sh",
+    "tool": "Vivado 2022.2",
+    "cwd": "/home/chen/FUN/CISLC-O3-runs/frontend-100m-20261010/r26-349d919",
+    "status": "completed",
+    "exit": 0,
+    "metrics": {
+      "wns_ns": 0.004,
+      "internal_wns_ns": 0.004,
+      "tns_ns": 0.0,
+      "setup_failing_endpoints": 0,
+      "internal_whs_ns": 0.052,
+      "global_whs_ns": -0.181,
+      "ths_ns": -2423.526,
+      "hold_failing_endpoints": 37173,
+      "fully_routed_nets": 113057,
+      "routable_nets": 113057,
+      "routing_errors": 0,
+      "lut": 94507,
+      "ff": 52898,
+      "lutram": 2356,
+      "bram_tiles": 93,
+      "elapsed_seconds": 1747,
+      "max_start": "u_frontend/u_icache/s3_q_reg[req][region_base][6]_rep/C",
+      "max_end": "u_frontend/u_icache/waiter_data_q_reg[6][28]/CE",
+      "min_start": "exec_resolve_i[ftq_id][idx][0]",
+      "min_end": "u_frontend/u_ftq/res_mem_reg_0_31_0_13/RAMA/WADR0",
+      "max_logic_levels": 22,
+      "max_data_path_delay_ns": 9.914,
+      "max_logic_delay_ns": 2.804,
+      "max_route_delay_ns": 7.11
+    },
+    "internal_100mhz_pass": true,
+    "full_ooc_boundary_closed": false,
+    "check_timing_issue_counts": 0,
+    "check_timing": {
+      "no_clock": 0,
+      "constant_clock": 0,
+      "pulse_width_clock": 0,
+      "unconstrained_internal_endpoints": 0,
+      "no_input_delay": 0,
+      "no_output_delay": 0,
+      "multiple_clock": 0,
+      "generated_clocks": 0,
+      "loops": 0,
+      "partial_input_delay": 0,
+      "partial_output_delay": 0,
+      "latch_loops": 0
+    },
+    "drc": {
+      "errors": 0,
+      "critical_warnings": 0,
+      "warnings": [
+        "CFGBVS-1",
+        "RTSTAT-10"
+      ]
+    },
+    "small_evidence_collected_locally": true,
+    "checkpoint": "r26-349d919/evidence/route/frontend_routed.dcp on Alan"
+  },
+  "evidence_root": "build/evidence/frontend-100m-20261010",
+  "remote_evidence_root": "/home/chen/FUN/CISLC-O3-runs/frontend-100m-20261010",
+  "excluded_claims": [
+    "whole-core timing",
+    "whole-core IPC",
+    "SoC timing",
+    "bitstream",
+    "board execution",
+    "complete zero-I/O-delay OOC setup/hold closure",
+    "robust integration timing margin"
+  ],
+  "intermediate_route": {
+    "sha": "959635a138d2e89ab554a69e474537220c58cc93",
+    "exit": 0,
+    "global_setup_ns": 0.003,
+    "global_hold_ns": -0.181,
+    "internal_hold_ns": 0.053,
+    "full_boundary_closed": false,
+    "evidence": "r21-959635a/evidence/route"
+  },
+  "physical_buffer_experiments": {
+    "adopted": false,
+    "rtl_modified": false,
+    "constraints_relaxed": false,
+    "clock_period_ns": 10.0,
+    "evidence_prefix": "r24-14a9b6a/evidence/",
+    "notes": [
+      "RAM write sink buffers moved minimum estimated hold to CSR inputs; incomplete interface repair.",
+      "Whole-input buffering introduced negative estimated setup; discarded.",
+      "Fixed placement direct sink buffering encountered shared control and incremental route conflicts; no deliverable closure."
+    ],
+    "script_snapshots": "r24-14a9b6a/evidence/diagnostic-scripts/",
+    "local_small_evidence_collected": true
+  },
+  "intermediate_14a9b6a": {
+    "source_sha": "14a9b6a15df566d6d6f38031244a489c0317144d",
+    "synthesis": {
+      "cwd": "/home/chen/FUN/CISLC-O3-runs/frontend-100m-20261010/r24-14a9b6a",
+      "command": "vivado -mode batch -nojournal -nolog -source scripts/vivado/frontend_ooc.tcl -tclargs evidence/synth",
+      "environment": "source /home/chen/Tool/FPGA/Vivado/2022.2/settings64.sh",
+      "tool": "Vivado 2022.2",
+      "exit": 0,
+      "metrics": {
+        "lut": 93156,
+        "ff": 52909,
+        "lutram": 2368,
+        "bram_tiles": 93,
+        "wns_ns": 1.23,
+        "global_whs_ns": -0.181,
+        "internal_whs_ns": 0.09,
+        "logic_levels": 25,
+        "synth_seconds": 915
+      },
+      "proof_of_routed_closure": false
+    },
+    "route": {
+      "cwd": "/home/chen/FUN/CISLC-O3-runs/frontend-100m-20261010/r24-14a9b6a",
+      "command": "vivado -mode batch -nojournal -nolog -source scripts/vivado/frontend_route.tcl -tclargs evidence/synth/frontend_synth.dcp evidence/route",
+      "status": "completed",
+      "exit": 0,
+      "tool": "Vivado 2022.2",
+      "environment": "source /home/chen/Tool/FPGA/Vivado/2022.2/settings64.sh",
+      "metrics": {
+        "wns_ns": 0.009,
+        "tns_ns": 0.0,
+        "setup_failing_endpoints": 0,
+        "internal_whs_ns": 0.053,
+        "global_whs_ns": -0.181,
+        "ths_ns": -2444.051,
+        "hold_failing_endpoints": 37344,
+        "fully_routed_nets": 112343,
+        "routable_nets": 112343,
+        "routing_errors": 0,
+        "lut": 93583,
+        "ff": 52941,
+        "lutram": 2368,
+        "bram_tiles": 93,
+        "elapsed_seconds": 2206,
+        "max_start": "u_frontend/u_bpu/u_tage/t2_rows_q_reg[1][tag][2]/C",
+        "max_end": "u_frontend/u_bpu/u_tage/g_table[1].tvalid_q_reg[1][40]/D",
+        "min_start": "exec_resolve_i[ftq_id][idx][0]",
+        "min_end": "u_frontend/u_ftq/res_mem_reg_0_31_0_13/RAMA/WADR0"
+      },
+      "internal_100mhz_pass": true,
+      "full_ooc_boundary_closed": false,
+      "check_timing_issue_counts": 0,
+      "drc": {
+        "errors": 0,
+        "critical_warnings": 0,
+        "warnings": [
+          "CFGBVS-1",
+          "RTSTAT-10"
+        ]
+      }
+    }
+  },
+  "source_archive": {
+    "method": "git archive HEAD at source.sha; extracted on Alan before launch",
+    "sha256": "d8499ad3d28e42b35b32f2a1cd4a086c3c420e1ec1a85f376e1bceda18087648",
+    "local": "/tmp/o3-frontend-100m-r26.tar",
+    "remote": "/tmp/o3-frontend-100m-r26.tar",
+    "local_remote_hash_equal": true
+  },
+  "remote_source_ref_verified": {
+    "remote": "origin",
+    "ref": "refs/heads/feat/l11a-litex-soc",
+    "sha": "349d91968ce17620969266e7b53e8d68c64e32f4"
+  },
+  "launch_errors": [
+    {
+      "stage": "r25 initial checks launch before archive extraction finished",
+      "exit": 127,
+      "reason": "remote cwd/scripts missing; no RTL compiled",
+      "resolved": "waited for archive extraction exit 0 and verified source hash before rerun"
+    },
+    {
+      "stage": "r25 initial synthesis launch before archive extraction finished",
+      "exit": 1,
+      "reason": "Tcl source missing; no RTL synthesized",
+      "resolved": "reran after completed extraction; synthesis exit 0"
+    }
+  ],
+  "intermediate_6bc3657": {
+    "source_sha": "6bc365718b4d5d007a578585191a6449a5837dd7",
+    "synthesis": {
+      "cwd": "/home/chen/FUN/CISLC-O3-runs/frontend-100m-20261010/r25-6bc3657",
+      "command": "vivado -mode batch -nojournal -nolog -source scripts/vivado/frontend_ooc.tcl -tclargs evidence/synth",
+      "environment": "source /home/chen/Tool/FPGA/Vivado/2022.2/settings64.sh",
+      "tool": "Vivado 2022.2",
+      "proof_of_routed_closure": false,
+      "status": "completed",
+      "exit": 0,
+      "metrics": {
+        "lut": 92554,
+        "ff": 52896,
+        "lutram": 2368,
+        "bram_tiles": 93,
+        "wns_ns": 1.29,
+        "global_whs_ns": -0.181,
+        "internal_whs_ns": 0.087,
+        "logic_levels": 24,
+        "synth_seconds": 630,
+        "max_start": "u_frontend/u_bpu/u_tage/g_table[5].u_query/mem_reg_bram_1/CLKBWRCLK",
+        "max_end": "u_frontend/u_bpu/slow_result_q_reg[override]/D",
+        "tns_ns": 0.0,
+        "ths_ns": -2439.043,
+        "setup_failing_endpoints": 0,
+        "hold_failing_endpoints": 37797
+      },
+      "check_timing_issue_counts": 0,
+      "hierarchy": {
+        "bpu": {
+          "lut": 29709,
+          "ff": 20666,
+          "ramb36": 22,
+          "ramb18": 22
+        },
+        "tage_in_bpu": {
+          "lut": 16371,
+          "ff": 9862,
+          "ramb36": 14,
+          "ramb18": 14
+        },
+        "ftq": {
+          "lut": 7627,
+          "ff": 2051,
+          "lutram": 872
+        },
+        "icache": {
+          "lut": 20588,
+          "ff": 17657,
+          "ramb36": 56,
+          "ramb18": 8
+        },
+        "ifu_decode_queue": {
+          "lut": 14710,
+          "ff": 2312
+        },
+        "ifu_f0": {
+          "lut": 4564,
+          "ff": 613
+        },
+        "ifu_f1": {
+          "lut": 1224,
+          "ff": 277
+        },
+        "fetch_buffer": {
+          "lut": 7775,
+          "ff": 4709
+        }
+      }
+    },
+    "route": {
+      "command": "vivado -mode batch -nojournal -nolog -source scripts/vivado/frontend_route.tcl -tclargs evidence/synth/frontend_synth.dcp evidence/route",
+      "tool": "Vivado 2022.2",
+      "environment": "source /home/chen/Tool/FPGA/Vivado/2022.2/settings64.sh",
+      "cwd": "/home/chen/FUN/CISLC-O3-runs/frontend-100m-20261010/r25-6bc3657",
+      "status": "canceled_after_source_superseded",
+      "internal_100mhz_pass": null,
+      "full_ooc_boundary_closed": null,
+      "exit": 143,
+      "placed_estimated_setup_ns": 0.005,
+      "reason": "source superseded by 349d919; stop only exact r25 Vivado process; placed checkpoint/logs retained"
+    },
+    "tests": {
+      "cwd": "/home/chen/FUN/CISLC-O3-runs/frontend-100m-20261010/r25-6bc3657",
+      "command": "EVIDENCE_DIR=\"$PWD/evidence/checks\" TEST_SEED=1 bash scripts/run-frontend-100m-checks.sh",
+      "environment": "source /home/chen/miniforge3/bin/activate cislc-o3",
+      "exit": 0,
+      "suite_count": 19,
+      "tests": 85,
+      "results": {
+        "suites": {
+          "bpu.xml": {
+            "tests": 8,
+            "failures": 0,
+            "skips": 0
+          },
+          "bpu_slow_check.xml": {
+            "tests": 1,
+            "failures": 0,
+            "skips": 0
+          },
+          "fetch_buffer.xml": {
+            "tests": 2,
+            "failures": 0,
+            "skips": 0
+          },
+          "fetch_buffer_payload.xml": {
+            "tests": 1,
+            "failures": 0,
+            "skips": 0
+          },
+          "fetch_prefetcher.xml": {
+            "tests": 4,
+            "failures": 0,
+            "skips": 0
+          },
+          "fetch_return_queue.xml": {
+            "tests": 4,
+            "failures": 0,
+            "skips": 0
+          },
+          "ftq.xml": {
+            "tests": 5,
+            "failures": 0,
+            "skips": 0
+          },
+          "icache.xml": {
+            "tests": 8,
+            "failures": 0,
+            "skips": 0
+          },
+          "ifu_decode_queue.xml": {
+            "tests": 3,
+            "failures": 0,
+            "skips": 0
+          },
+          "ifu_f0.xml": {
+            "tests": 7,
+            "failures": 0,
+            "skips": 0
+          },
+          "ifu_f1.xml": {
+            "tests": 18,
+            "failures": 0,
+            "skips": 0
+          },
+          "ifu_pipeline.xml": {
+            "tests": 3,
+            "failures": 0,
+            "skips": 0
+          },
+          "loop_predictor.xml": {
+            "tests": 5,
+            "failures": 0,
+            "skips": 0
+          },
+          "main_btb.xml": {
+            "tests": 3,
+            "failures": 0,
+            "skips": 0
+          },
+          "ras.xml": {
+            "tests": 2,
+            "failures": 0,
+            "skips": 0
+          },
+          "ras_depth1.xml": {
+            "tests": 2,
+            "failures": 0,
+            "skips": 0
+          },
+          "redirect_arbiter.xml": {
+            "tests": 2,
+            "failures": 0,
+            "skips": 0
+          },
+          "tage.xml": {
+            "tests": 4,
+            "failures": 0,
+            "skips": 0
+          },
+          "ubtb.xml": {
+            "tests": 3,
+            "failures": 0,
+            "skips": 0
+          }
+        },
+        "tests": 85,
+        "source_hash_mismatches": [],
+        "missing": []
+      },
+      "lint_exit": 0,
+      "lint_DUT_WIDTH_LATCH_UNOPTFLAT": 0,
+      "whole_core_simulation": false,
+      "age_exhaustive": {
+        "cases": 33554432,
+        "exit": 0,
+        "independent_reference": "original fe_age modular subtraction retained unchanged",
+        "evidence": "r26-349d919/evidence/checks/age.log"
+      },
+      "failures": 0,
+      "skips": 0,
+      "tage_row_ownership_assertion": "T2 carried ownership equals independent valid/tag comparison; original provider match remains separate"
+    }
+  },
+  "measurement_completed": "2026-10-11 04:21:58 Asia/Shanghai"
+}
