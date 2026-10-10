@@ -68,8 +68,8 @@ module bpu
     logic [LOOP_IDX_W-1:0] loop_idx,loop_idx_q;
     loop_train_t loop_prediction;
     loop_ckpt_t loop_ckpt;
-    bpu_slow_t slow_raw, slow_complete;
-    redirect_req_t override_raw;
+    bpu_slow_t slow_raw, slow_complete, slow_result_q;
+    redirect_req_t override_raw, override_q;
     fe_perf_t slow_perf_q;
     logic p1_killed, p2_killed;
     assign p1_killed = fe_killed_by(kill_i,p1_q.id,fetch_slot_t'(REGION_SLOTS-1),ftq_head_i);
@@ -93,13 +93,15 @@ module bpu
     // Registered outputs are never combinationally gated by the kill they
     // cause. At capture, discard killed owners while preserving older queries.
     always_ff @(posedge clk_i) begin
-        if (rst_i) begin slow_o<='0; override_o<='0; slow_perf_q<='0; end
+        if (rst_i) begin slow_result_q<='0; override_q<='0; slow_perf_q<='0; end
         else begin
-            slow_o <= p2_killed ? bpu_slow_t'('0) : slow_complete;
-            override_o <= p2_killed ? redirect_req_t'('0) : override_raw;
+            slow_result_q <= p2_killed ? bpu_slow_t'('0) : slow_complete;
+            override_q <= p2_killed ? redirect_req_t'('0) : override_raw;
             slow_perf_q <= p2_killed ? fe_perf_t'('0) : perf_slow;
         end
     end
+    assign slow_o = rst_i ? bpu_slow_t'('0) : slow_result_q;
+    assign override_o = rst_i ? redirect_req_t'('0) : override_q;
     always_ff @(posedge clk_i) begin
         if(rst_i || p1_killed) begin loop_hit_q<=0;loop_idx_q<=0;end
         else begin loop_hit_q<=loop_hit;loop_idx_q<=loop_idx;end
@@ -225,7 +227,7 @@ module bpu
     always_comb begin
         perf_o = '0;
         for (int evt=0; evt<PE_NUM; evt++)
-            perf_o[evt] = perf_ras[evt] + slow_perf_q[evt];
+            perf_o[evt] = rst_i ? PERF_INC_W'(0) : perf_ras[evt] + slow_perf_q[evt];
         perf_o[PE_UBTB_LOOKUP] = PERF_INC_W'(alloc_fire);
         perf_o[PE_UBTB_HIT] = PERF_INC_W'(alloc_fire && ubtb_hit);
     end
