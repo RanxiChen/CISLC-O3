@@ -96,45 +96,75 @@ module fetch_return_queue
             output_brief_q<=ftq_brief_i;
         end else if(deq_fire) output_valid_q<=0;
     end
-    always_comb begin : next_state
-        int s, keep;
-        logic suffix;
-        for(int n=0;n<DEPTH;n++) begin slots_d[n]=slots_q[n];ord_d[n]=ord_q[n];end
-        count_d=count_q;s=0;keep=0;suffix=0;
-        reservation_bad=0;response_bad=0;suffix_bad=0;
-        if(!rst_i) begin
-            if(rsv_fire_i) begin
-                s=int'(rsv_req_i.rq_idx);
-                reservation_bad=!(rsv_ready_o && s<DEPTH && slots_d[s].state==FREE);
-                slots_d[s]='{state:PEND,item:'{ftq_id:rsv_req_i.ftq_id,region_base:rsv_req_i.region_base,default:'0}};
-                ord_d[rq_idx_t'(count_d)]=rq_idx_t'(s);count_d=count_d+1'b1;
+    rq_idx_t ord_pre[DEPTH];
+    logic [CW-1:0] count_pre;
+    logic [DEPTH-1:0] ordered_survives, ordered_killed;
+    // Order metadata has a separate append/shift driver. Response data and
+    // response state never pass through the ordered kill-prefix calculation.
+    always_comb begin : order_before_kill
+        for (int n=0; n<DEPTH; n++) ord_pre[n]=ord_q[n];
+        count_pre=count_q;
+        if (rsv_fire_i && !rst_i) begin
+            ord_pre[rq_idx_t'(count_q)]=rsv_req_i.rq_idx;
+            count_pre=count_q+1'b1;
+        end
+    end
+    for (genvar pos=0; pos<DEPTH; pos++) begin : g_order_age
+        ftq_id_t owner;
+        assign owner = rsv_fire_i && ord_pre[pos]==rsv_req_i.rq_idx
+            ? rsv_req_i.ftq_id : slots_q[ord_pre[pos]].item.ftq_id;
+        assign ordered_killed[pos] = pos<int'(count_pre) && fe_killed_by(kill_i,owner,fetch_slot_t'(0),ftq_head_i);
+        assign ordered_survives[pos] = pos<int'(count_pre) && !ordered_killed[pos];
+    end
+    always_comb begin : order_driver
+        count_d=count_pre;
+        for (int n=0; n<DEPTH; n++) ord_d[n]=ord_pre[n];
+        reservation_bad=rsv_fire_i && !(rsv_ready_o && int'(rsv_req_i.rq_idx)<DEPTH
+            && slots_q[rsv_req_i.rq_idx].state==FREE);
+        response_bad=resp_i.valid && !(int'(resp_i.rq_idx)<DEPTH &&
+            ((rsv_fire_i && rsv_req_i.rq_idx==resp_i.rq_idx) ? rsv_req_i.ftq_id==resp_i.ftq_id
+                : ((slots_q[resp_i.rq_idx].state==PEND || slots_q[resp_i.rq_idx].state==ZOMBIE)
+                   && slots_q[resp_i.rq_idx].item.ftq_id==resp_i.ftq_id)));
+        suffix_bad=0;
+        if (!rst_i && kill_i.valid) begin
+            count_d='0;
+            for (int n=0; n<DEPTH; n++) begin
+                count_d += CW'(ordered_survives[n]);
+                for (int k=0; k<n; k++) suffix_bad |= ordered_survives[n] && ordered_killed[k];
             end
-            if(resp_i.valid) begin
-                s=int'(resp_i.rq_idx);
-                response_bad=!(s<DEPTH && (slots_d[s].state==PEND || slots_d[s].state==ZOMBIE) && slots_d[s].item.ftq_id==resp_i.ftq_id);
-                if(slots_d[s].state==ZOMBIE) slots_d[s].state=FREE;
-                else begin
-                    slots_d[s].state=READY;slots_d[s].item.data=resp_i.data;
-                    slots_d[s].item.exc_valid=resp_i.exc_valid;slots_d[s].item.exc_cause=resp_i.exc_cause;
-                end
-            end
-            if(kill_i.valid) begin
-                for(int n=0;n<DEPTH;n++) if(n<int'(count_d)) begin
-                    s=int'(ord_d[n]);
-                    if(fe_killed_by(kill_i,slots_d[s].item.ftq_id,fetch_slot_t'(0),ftq_head_i)) begin
-                        suffix=1;
-                        slots_d[s].state=slots_d[s].state==PEND ? ZOMBIE : FREE;
-                    end else begin
-                        suffix_bad|=suffix;
-                        keep++;
+        end
+        if (!rst_i && deq_fire) begin
+            for (int n=0; n<DEPTH-1; n++) ord_d[n]=ord_pre[n+1];
+            ord_d[DEPTH-1]='0;
+            count_d=count_d-1'b1;
+        end
+    end
+    // One local next-state driver per physical slot. Preserve the original
+    // reserve -> response -> kill -> dequeue same-edge priority exactly.
+    for (genvar row=0; row<DEPTH; row++) begin : g_slot_driver
+        logic reserve_row, response_row, kill_row;
+        ftq_id_t owner;
+        assign reserve_row = rsv_fire_i && rsv_req_i.rq_idx==rq_idx_t'(row);
+        assign response_row = resp_i.valid && resp_i.rq_idx==rq_idx_t'(row);
+        assign owner = reserve_row ? rsv_req_i.ftq_id : slots_q[row].item.ftq_id;
+        assign kill_row = (reserve_row || slots_q[row].state==PEND || slots_q[row].state==READY)
+            && fe_killed_by(kill_i,owner,fetch_slot_t'(0),ftq_head_i);
+        always_comb begin
+            slots_d[row]=slots_q[row];
+            if (!rst_i) begin
+                if (reserve_row) slots_d[row]='{state:PEND,item:'{ftq_id:rsv_req_i.ftq_id,
+                    region_base:rsv_req_i.region_base,default:'0}};
+                if (response_row) begin
+                    if (slots_d[row].state==ZOMBIE) slots_d[row].state=FREE;
+                    else begin
+                        slots_d[row].state=READY;
+                        slots_d[row].item.data=resp_i.data;
+                        slots_d[row].item.exc_valid=resp_i.exc_valid;
+                        slots_d[row].item.exc_cause=resp_i.exc_cause;
                     end
                 end
-                count_d=CW'(keep);
-            end
-            if(deq_fire) begin
-                slots_d[ord_d[0]].state=FREE;
-                for(int n=0;n<DEPTH-1;n++) ord_d[n]=ord_d[n+1];
-                ord_d[DEPTH-1]='0;count_d=count_d-1'b1;
+                if (kill_row) slots_d[row].state=slots_d[row].state==PEND ? ZOMBIE : FREE;
+                if (deq_fire && head_slot==rq_idx_t'(row)) slots_d[row].state=FREE;
             end
         end
     end

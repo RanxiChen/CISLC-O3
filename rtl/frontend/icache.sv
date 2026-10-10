@@ -119,7 +119,8 @@ module ICache
     paddr_t alloc_line;logic fill_valid,fill_ready,fill_error,fill_done,mshr_idle;
     paddr_t fill_line,fill_done_line;coh_data_t fill_data;
     logic waiter_valid_q[WAITERS],waiter_ready_q[WAITERS],waiter_error_q[WAITERS];
-    icache_req_t waiter_req_q[WAITERS];paddr_t waiter_line_q[WAITERS];coh_data_t waiter_data_q[WAITERS];
+    icache_req_t waiter_req_q[WAITERS];paddr_t waiter_line_q[WAITERS];
+    logic [FETCH_BYTES*8-1:0] waiter_data_q[WAITERS];
     logic [31:0] waiter_age_q[WAITERS],age_q;int free_waiter,ready_waiter;
     int fill_way,fill_bank,fill_set;
     function automatic int victim(input logic [WAYS-2:0] tree);
@@ -191,12 +192,29 @@ module ICache
     end
     assign demand_miss_pending=v3_q && !stale && !hit && !fault;
     assign alloc_line=demand_miss_pending ? {s3_q.pa[PADDR_W-1:6],6'b0}:pf_pending_req_q.line_paddr;
+    // Balanced oldest-ready tournament. Ties keep the lower slot index,
+    // matching the original strict-age comparison without an eight-way chain.
+    localparam int WA=$clog2(WAITERS), WT=1<<WA;
+    typedef struct packed {logic valid;logic [31:0] age;logic [WAITERS-1:0] select;} waiter_pick_t;
+    logic [WAITERS-1:0] ready_waiter_oh;
+    for (genvar n=1; n<2*WT; n++) begin : g_waiter_tree
+        waiter_pick_t choice;
+        if (n>=WT) begin : g_leaf
+            if (n-WT<WAITERS) assign choice = '{valid:waiter_valid_q[n-WT] && waiter_ready_q[n-WT],
+                age:waiter_age_q[n-WT],select:WAITERS'(1)<<(n-WT)};
+            else assign choice = '0;
+        end else begin : g_merge
+            assign choice = !g_waiter_tree[2*n].choice.valid ||
+                (g_waiter_tree[2*n+1].choice.valid && g_waiter_tree[2*n+1].choice.age < g_waiter_tree[2*n].choice.age)
+                ? g_waiter_tree[2*n+1].choice : g_waiter_tree[2*n].choice;
+        end
+    end
+    assign ready_waiter_oh=g_waiter_tree[1].choice.select & {WAITERS{g_waiter_tree[1].choice.valid}};
     always_comb begin
         free_waiter=-1;ready_waiter=-1;
         for(int n=0;n<WAITERS;n++) begin
             if(!waiter_valid_q[n] && free_waiter<0) free_waiter=n;
-            if(waiter_valid_q[n] && waiter_ready_q[n] &&
-                (ready_waiter<0 || waiter_age_q[n]<waiter_age_q[ready_waiter])) ready_waiter=n;
+            if(ready_waiter_oh[n]) ready_waiter=n;
         end
         s3_complete=!stale && ((ready_waiter<0 && (hit || fault)) ||
             (!hit && !fault && free_waiter>=0 && alloc_ready));
@@ -227,9 +245,14 @@ module ICache
         pf_resp_o.status=prefetch_bad ? PF_XLATE_FAIL:prefetch_hit ? PF_HIT:probe_inflight ? PF_INFLIGHT:PF_ISSUED;
         resp_o='0;
         if(ready_waiter>=0) begin
-            resp_o.valid=1;resp_o.rq_idx=waiter_req_q[ready_waiter].rq_idx;resp_o.ftq_id=waiter_req_q[ready_waiter].ftq_id;
-            resp_o.data=waiter_data_q[ready_waiter][int'(waiter_req_q[ready_waiter].region_base[5:4])*FETCH_BYTES*8+:FETCH_BYTES*8];
-            resp_o.exc_valid=waiter_error_q[ready_waiter];resp_o.exc_cause=o3_isa_pkg::EXCEPTION_CAUSE_INST_ACCESS_FAULT;
+            resp_o.valid=1;
+            resp_o.exc_cause=o3_isa_pkg::EXCEPTION_CAUSE_INST_ACCESS_FAULT;
+            for (int n=0; n<WAITERS; n++) begin
+                resp_o.rq_idx |= waiter_req_q[n].rq_idx & {RQ_IDX_W{ready_waiter_oh[n]}};
+                resp_o.ftq_id |= waiter_req_q[n].ftq_id & {$bits(ftq_id_t){ready_waiter_oh[n]}};
+                resp_o.data |= waiter_data_q[n] & {FETCH_BYTES*8{ready_waiter_oh[n]}};
+                resp_o.exc_valid |= waiter_error_q[n] && ready_waiter_oh[n];
+            end
         end else if(v3_q && s3_complete && (hit || fault)) begin
             resp_o.valid=1;resp_o.rq_idx=s3_q.req.rq_idx;resp_o.ftq_id=s3_q.req.ftq_id;
             resp_o.data=hit_line;
@@ -326,13 +349,13 @@ module ICache
                 waiter_line_q[free_waiter]<={s3_q.pa[PADDR_W-1:6],6'b0};waiter_age_q[free_waiter]<=age_q;age_q<=age_q+1;
                 // A same-cycle fill may complete the merged waiter immediately.
                 if(fill_done && fill_line=={s3_q.pa[PADDR_W-1:6],6'b0}) begin
-                    waiter_ready_q[free_waiter]<=1;waiter_data_q[free_waiter]<=fill_data;waiter_error_q[free_waiter]<=fill_error;
+                    waiter_ready_q[free_waiter]<=1;waiter_data_q[free_waiter]<=fill_data[int'(s3_q.req.region_base[5:4])*FETCH_BYTES*8+:FETCH_BYTES*8];waiter_error_q[free_waiter]<=fill_error;
                 end
             end
             if(ready_waiter>=0 && resp_o.valid) begin waiter_valid_q[ready_waiter]<=0;waiter_ready_q[ready_waiter]<=0;end
             if(fill_done) begin
                 for(int n=0;n<WAITERS;n++) if(waiter_valid_q[n] && !waiter_ready_q[n] && waiter_line_q[n]==fill_line) begin
-                    waiter_ready_q[n]<=1;waiter_data_q[n]<=fill_data;waiter_error_q[n]<=fill_error;
+                    waiter_ready_q[n]<=1;waiter_data_q[n]<=fill_data[int'(waiter_req_q[n].region_base[5:4])*FETCH_BYTES*8+:FETCH_BYTES*8];waiter_error_q[n]<=fill_error;
                 end
                 if(!fill_error) begin
                     tags_q[fill_bank][fill_set][fill_way]<='{valid:1'b1,pf:fill_pf,tag:TW'(fill_line>>(7+SW))};
