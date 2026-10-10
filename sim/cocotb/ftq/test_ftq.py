@@ -70,3 +70,23 @@ async def prefetch_waits_slow_and_catches_demand(d):
  assert int(d.pf_valid_o.value) and int(d.pf_pc_o.value)==0x80008010
  d.pf_ready_i.value=1;await edge(d);d.pf_ready_i.value=0
  assert not int(d.pf_valid_o.value)
+
+@cocotb.test()
+async def age_cursor_survives_empty_retirement_and_wrap(d):
+ await init(d)
+ for n in range(35):
+  await Timer(1,unit='ns')
+  assert int(d.occupancy_o.value)==0
+  assert int(d.head_id_o.value)==0,'empty entry identity keeps its public contract'
+  assert int(d.age_head_idx_o.value)==n%32,'age origin follows the circular cursor even when empty'
+  d.alloc_valid_i.value=1;d.alloc_pc_i.value=0x80010000+16*n
+  await Timer(1,unit='ns');fid=int(d.alloc_id_o.value)
+  await edge(d);d.alloc_valid_i.value=0
+  await Timer(1,unit='ns')
+  assert int(d.age_head_idx_o.value)==n%32
+  assert int(d.head_id_o.value)==fid
+  d.commit_valid_i.value=1;d.commit_ids_i.value=fid;d.commit_last_i.value=1
+  await edge(d);d.commit_valid_i.value=0;d.commit_last_i.value=0
+  for _ in range(8):await edge(d)
+ await Timer(1,unit='ns')
+ assert int(d.occupancy_o.value)==0 and int(d.age_head_idx_o.value)==3

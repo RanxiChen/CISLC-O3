@@ -146,6 +146,9 @@ module ftq
     input  o3_types_pkg::fe_kill_t          kill_i,
     input  o3_types_pkg::redirect_req_t    winner_i,
     output o3_types_pkg::ftq_id_t           head_id_o,
+    // Circular age origin is a cursor, including when the queue is empty.
+    // Keep occupancy/generation qualification out of the global kill path.
+    output logic [o3_types_pkg::FTQ_IDX_W-1:0] age_head_idx_o,
     input  o3_types_pkg::ftq_id_t           ras_ckpt_rd_id_i,
     output o3_types_pkg::ras_ckpt_t         ras_ckpt_rd_o,
     output o3_types_pkg::loop_meta_t loop_meta_rd_o,
@@ -294,6 +297,7 @@ module ftq
     assign alloc_ready_o = !rst_i && !kill_i.valid && count_q < count_t'(DEPTH);
     assign alloc_fire = alloc_valid_i && alloc_ready_o;
     assign head_id_o = count_q != 0 ? ftq_id_t'{gen:gen_q[mem_idx_t'(head_q)], idx:head_q} : ftq_id_t'(0);
+    assign age_head_idx_o = head_q;
 
     assign work_head = train_fire ? ring_next(head_q) : head_q;
     assign work_count = count_q - count_t'(train_fire);

@@ -174,6 +174,9 @@ module frontend
     ras_ckpt_t       arb_ras_recover_ckpt, ftq_ras_ckpt_rd;
     ftq_id_t         arb_ras_recover_id, ras_done_id;
     ftq_id_t         ftq_head_id;
+    logic [FTQ_IDX_W-1:0] ftq_age_head_idx;
+    // fe_age/fe_killed_by use only idx; this is an age origin, not an entry ID.
+    assign ftq_head_id = '{gen:'0, idx:ftq_age_head_idx};
     logic            snap_recover_valid;
     hist_snapshot_t  snap_recover;
     logic            snap_train_req, snap_train_valid;
@@ -317,7 +320,8 @@ module frontend
         .commit_i              (commit_i),
         .kill_i                (fe_kill),
         .winner_i              (arb_winner),
-        .head_id_o             (ftq_head_id),
+        .head_id_o             (),
+        .age_head_idx_o        (ftq_age_head_idx),
         .ras_ckpt_rd_id_i      (arb_snap_rd_ftq_id),
         .ras_ckpt_rd_o         (ftq_ras_ckpt_rd),
         .loop_meta_rd_o(ftq_loop_meta),

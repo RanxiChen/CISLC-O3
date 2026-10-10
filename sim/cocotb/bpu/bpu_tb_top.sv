@@ -142,7 +142,7 @@ module ftq_training_tb_top
         .resolve_i(bru_resolve_t'(resolve_bits_i)), .commit_i(commits),
         .kill_i('{valid:kill_valid_i, all:kill_all_i, kill_self:kill_self_i,
                   ftq_id:ftq_id_t'(kill_id_i), slot:kill_slot_i}),
-        .winner_i(redirect_req_t'(winner_bits_i)), .head_id_o(head_id_o),
+        .winner_i(redirect_req_t'(winner_bits_i)), .head_id_o(head_id_o), .age_head_idx_o(),
         .ras_ckpt_rd_id_i(ftq_id_t'(brief_id_i)), .ras_ckpt_rd_o(),
         .snap_train_rd_req_o(snap_req), .snap_train_rd_id_o(snap_id),
         .snap_train_resp_id_i(snap_id_q),.train_free_i(TRAIN_CREDIT_W'(train_ready_i ? 4 : 0)),.snap_train_resp_valid_i(snap_response_q), .snap_train_i('0),

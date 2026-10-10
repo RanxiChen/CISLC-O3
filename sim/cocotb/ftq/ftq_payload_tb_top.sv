@@ -44,7 +44,7 @@ module ftq_payload_tb_top
         .alloc_ras_ckpt_i(alloc_ras_i), .slow_i,
         .rq_rsv_ready_i(1'b1), .rq_rsv_idx_i('0), .demand_ready_i, .epoch_i('0), .pf_ready_i,
         .brief_rd_valid_i(1'b1), .brief_rd_id_i(read_id_i), .resolve_i, .commit_i(commits),
-        .kill_i, .winner_i, .ras_ckpt_rd_id_i(read_id_i),
+        .kill_i, .winner_i, .age_head_idx_o(), .ras_ckpt_rd_id_i(read_id_i),
         .snap_train_rd_req_o(snap_req), .snap_train_rd_id_o(snap_id),
         .snap_train_resp_valid_i(snap_valid), .snap_train_resp_id_i(response_id),
         .train_free_i(TRAIN_CREDIT_W'(4)), .snap_train_i('0), .bpu_train_ready_i(1'b1), .hold_i(1'b0)
