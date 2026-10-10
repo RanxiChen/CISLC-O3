@@ -316,6 +316,7 @@ module tage
     tagged_row_t first_updated[TABLES], t2_rows_q[TABLES];
     logic first_touched[TABLES], t2_touched_q[TABLES], second_touched[TABLES];
     logic [TABLES-1:0] original_match, t2_match_q;
+    logic [TABLES-1:0] first_row_match, t2_row_match_q;
     base_row_t first_base_updated, t2_base_q;
     always_comb begin
         conflict=t1_valid_q && (|t1_packet_q.br_commit_mask) && (|train_i.br_commit_mask)
@@ -338,17 +339,22 @@ module tage
     assign base_updated=t2_base_q;
     tage_update_slice #(.CFG(CFG),.TAG_BITS(MAX_TAG_BITS),.FIRST_SLOT(0),.SLOT_COUNT(HALF)) u_train_first(
         .valid_i(t1_valid_q),.packet_i(t1_packet_q),.rows_i_bits(train_old),.tags_i(train_tag),
-        .original_match_i(original_match),.rows_o_bits(first_updated),.touched_o(first_touched));
+        .original_match_i(original_match),.row_match_i(original_match),
+        .rows_o_bits(first_updated),.row_match_o(first_row_match),.touched_o(first_touched));
     tage_update_slice #(.CFG(CFG),.TAG_BITS(MAX_TAG_BITS),.FIRST_SLOT(HALF),.SLOT_COUNT(REGION_SLOTS-HALF)) u_train_second(
         .valid_i(t2_valid_q),.packet_i(t2_packet_q),.rows_i_bits(t2_rows_q),.tags_i(t2_tag_q),
-        .original_match_i(t2_match_q),.rows_o_bits(updated),.touched_o(second_touched));
+        .original_match_i(t2_match_q),.row_match_i(t2_row_match_q),
+        .rows_o_bits(updated),.row_match_o(),.touched_o(second_touched));
     always_ff @(posedge clk_i) begin
         if(rst_i) begin
-            t2_valid_q<=0;t2_packet_q<='0;t2_match_q<='0;t2_base_q<='0;t2_base_idx_q<='0;
+            t2_valid_q<=0;t2_packet_q<='0;t2_match_q<='0;t2_row_match_q<='0;t2_base_q<='0;t2_base_idx_q<='0;
             for(int t=0;t<TABLES;t++) begin t2_rows_q[t]<='0;t2_tag_q[t]<='0;t2_idx_q[t]<='0;t2_touched_q[t]<=0;end
         end else begin
             t2_valid_q<=t1_valid_q;
             t2_packet_q<=t1_packet_q;t2_match_q<=original_match;
+            // Allocation claims the incoming tag. Carry that ownership bit
+            // across T1/T2 separately from the original provider match.
+            t2_row_match_q<=first_row_match;
             t2_base_q<=first_base_updated;t2_base_idx_q<=train_base_idx;
             for(int t=0;t<TABLES;t++) begin
                 t2_rows_q[t]<=first_updated[t];t2_tag_q[t]<=train_tag[t];
@@ -356,6 +362,16 @@ module tage
             end
         end
     end
+
+`ifndef SYNTHESIS
+    for (genvar t=0; t<TABLES; t++) begin : g_train_match_check
+        always_ff @(posedge clk_i) begin
+            if (!rst_i && t2_valid_q)
+                assert (t2_row_match_q[t] ==
+                    (t2_rows_q[t].valid && t2_rows_q[t].tag == t2_tag_q[t]));
+        end
+    end
+`endif
     always_ff @(posedge clk_i) begin
         if(rst_i) begin
             s1_valid_q<=0;s2_valid_q<=0;t1_valid_q<=0;t1_packet_q<='0;
@@ -418,7 +434,9 @@ module tage_update_slice
  input logic [ROW_BITS-1:0] rows_i_bits[TABLES],
  input logic [TAG_BITS-1:0] tags_i[TABLES],
  input logic [TABLES-1:0] original_match_i,
+ input logic [TABLES-1:0] row_match_i,
  output logic [ROW_BITS-1:0] rows_o_bits[TABLES],
+ output logic [TABLES-1:0] row_match_o,
  output logic touched_o[TABLES]);
     typedef struct packed {
         logic valid;
@@ -490,7 +508,8 @@ module tage_update_slice
     end
     for (genvar t=0; t<TABLES; t++) begin : g_train_table
         logic [REGION_SLOTS-1:0] writes;
-        assign row_matches[t] = rows_i[t].valid && rows_i[t].tag == tags_i[t];
+        assign row_matches[t] = row_match_i[t];
+        assign row_match_o[t] = row_matches[t] || g_train_slot[SLOT_COUNT-1].g_table_control[t].claimed_after;
         assign row_replace[t] = g_train_slot[SLOT_COUNT-1].g_table_control[t].claimed_after && !row_matches[t];
         assign rows_o[t].valid = rows_i[t].valid || g_train_slot[SLOT_COUNT-1].g_table_control[t].claimed_after;
         assign rows_o[t].tag = row_replace[t] ? tags_i[t] : rows_i[t].tag;
