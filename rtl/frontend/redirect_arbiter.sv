@@ -48,7 +48,7 @@ module redirect_arbiter
 
     function automatic logic older_or_higher(input redirect_req_t lhs,
                                              input redirect_req_t rhs);
-        return fe_age(lhs.ftq_id, lhs.slot, ftq_head_i) < fe_age(rhs.ftq_id, rhs.slot, ftq_head_i)
+        return fe_before(lhs.ftq_id, lhs.slot, rhs.ftq_id, rhs.slot, ftq_head_i)
             || (lhs.ftq_id == rhs.ftq_id && lhs.slot == rhs.slot && lhs.src > rhs.src);
     endfunction
 

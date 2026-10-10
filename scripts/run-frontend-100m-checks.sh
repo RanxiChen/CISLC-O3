@@ -6,6 +6,17 @@ set -uo pipefail
 mkdir -p "$EVIDENCE_DIR"
 bash scripts/run-frontend-structural-checks.sh
 failed=$?
+age_sources=(rtl/common/o3_platform_pkg.sv rtl/common/o3_cfg_pkg.sv rtl/common/o3_isa_pkg.sv rtl/common/o3_types_pkg.sv)
+verilator --binary --assert --timing -Wno-fatal -j 4 --top-module frontend_age_tb \
+    --Mdir "$EVIDENCE_DIR/age_build" "${age_sources[@]}" sim/rtl/frontend_age_tb.sv \
+    > "$EVIDENCE_DIR/age.log" 2>&1
+rc=$?
+if ((rc==0)); then
+    "$EVIDENCE_DIR/age_build/Vfrontend_age_tb" >> "$EVIDENCE_DIR/age.log" 2>&1
+    rc=$?
+fi
+printf 'frontend_age\t%s\n' "$rc" >> "$EVIDENCE_DIR/status.tsv"
+if ((rc)); then failed=1; fi
 names=(ifu_decode_queue ubtb ras fetch_buffer tage bpu bpu_slow_check ftq redirect_arbiter loop_predictor main_btb)
 for name in "${names[@]}"; do
     make -j4 -C "sim/cocotb/$name" sim TEST_SEED="${TEST_SEED:-1}" \

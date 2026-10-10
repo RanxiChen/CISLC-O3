@@ -439,12 +439,26 @@ package o3_types_pkg;
         return region_age * REGION_SLOTS + int'(slot);
     endfunction
 
+    // Compare the two segments of a circular index space in parallel. The
+    // segment below head follows the segment at/above head. Equal indices
+    // compare instruction slots; generation affects identity, not age.
+    function automatic logic fe_before(
+        input ftq_id_t lhs, input fetch_slot_t lhs_slot,
+        input ftq_id_t rhs, input fetch_slot_t rhs_slot, input ftq_id_t head
+    );
+        logic lhs_wrap, rhs_wrap;
+        lhs_wrap = lhs.idx < head.idx;
+        rhs_wrap = rhs.idx < head.idx;
+        return lhs.idx == rhs.idx ? lhs_slot < rhs_slot
+            : lhs_wrap != rhs_wrap ? !lhs_wrap : lhs.idx < rhs.idx;
+    endfunction
+
     function automatic logic fe_killed_by(
         input fe_kill_t kill, input ftq_id_t id,
         input fetch_slot_t slot, input ftq_id_t head
     );
         return kill.valid && (kill.all
-            || fe_age(id, slot, head) > fe_age(kill.ftq_id, kill.slot, head)
+            || fe_before(kill.ftq_id, kill.slot, id, slot, head)
             || (kill.kill_self && id == kill.ftq_id && slot == kill.slot));
     endfunction
 
