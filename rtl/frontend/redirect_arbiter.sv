@@ -74,16 +74,33 @@ module redirect_arbiter
         exec_req.hist_target_pc = exec_i.actual_target;
         exec_req.ras_fix = exec_i.ras_action;
         exec_req.ras_push_addr = exec_i.branch_pc + vaddr_t'(exec_i.inst_len);
-        candidate = '0;
-        if (slow_i.valid) candidate = slow_i;
-        if (predecode_i.valid && (!candidate.valid || older_or_higher(predecode_i, candidate)))
-            candidate = predecode_i;
-        if (exec_req.valid && (!candidate.valid || older_or_higher(exec_req, candidate)))
-            candidate = exec_req;
-        if (sys_req.valid) candidate = sys_req;
-        accept = !rst_i && candidate.valid && (candidate.src == REDIR_SYS
-                  || !recover_busy_q || older_or_higher(candidate, recover_q));
     end
+    // Compare the fixed sources in parallel. Wide candidate payload selection
+    // does not feed a subsequent age comparator or the global kill-valid path.
+    logic pd_beats_slow, exec_beats_pd, exec_beats_slow;
+    logic pick_pd_before_exec, pick_slow_before_exec, pick_exec;
+    logic pick_pd, pick_slow, pick_sys;
+    logic accept_pd,accept_slow,accept_exec;
+    assign pd_beats_slow=older_or_higher(predecode_i,slow_i);
+    assign exec_beats_pd=older_or_higher(exec_req,predecode_i);
+    assign exec_beats_slow=older_or_higher(exec_req,slow_i);
+    assign pick_pd_before_exec=predecode_i.valid && (!slow_i.valid || pd_beats_slow);
+    assign pick_slow_before_exec=slow_i.valid && !pick_pd_before_exec;
+    assign pick_exec=exec_req.valid && !sys_i.valid &&
+        ((!pick_pd_before_exec && !pick_slow_before_exec) ||
+         (pick_pd_before_exec && exec_beats_pd) || (pick_slow_before_exec && exec_beats_slow));
+    assign pick_pd=pick_pd_before_exec && !pick_exec && !sys_i.valid;
+    assign pick_slow=pick_slow_before_exec && !pick_exec && !sys_i.valid;
+    assign pick_sys=sys_i.valid;
+    assign accept_pd=pick_pd && (predecode_i.src==REDIR_SYS || !recover_busy_q || older_or_higher(predecode_i,recover_q));
+    assign accept_slow=pick_slow && (slow_i.src==REDIR_SYS || !recover_busy_q || older_or_higher(slow_i,recover_q));
+    assign accept_exec=pick_exec && (!recover_busy_q || older_or_higher(exec_req,recover_q));
+    assign accept=!rst_i && (pick_sys || accept_pd || accept_slow || accept_exec);
+    assign candidate=(sys_req & {$bits(redirect_req_t){pick_sys}})
+                   | (exec_req & {$bits(redirect_req_t){pick_exec}})
+                   | (predecode_i & {$bits(redirect_req_t){pick_pd}})
+                   | (slow_i & {$bits(redirect_req_t){pick_slow}});
+
     assign winner_o = accept ? candidate : recover_q;
     assign redirect_o = accept ? candidate : '0;
     assign kill_o = '{valid:accept, all:(accept && candidate.src == REDIR_SYS),
