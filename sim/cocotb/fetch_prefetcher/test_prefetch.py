@@ -6,7 +6,7 @@ async def edge(d):
 def v(d,n):return int(getattr(d,n).value)
 def event(d,e):return (v(d,'perf_o')>>((len(d.perf_o)//0x44)*e))&((1<<(len(d.perf_o)//0x44))-1)
 async def reset(d):
- for n in ('clk_i','rst_i','valid_i','ready_i','hold_i','kill_i','pf_dis_i','va_i','id_i','priv_i','mode_i','asid_i','epoch_i','status_i','probe_grant_i','probe_valid_i','probe_hit_i','probe_g_i','probe_ppn_i','probe_level_i','fill_valid_i','fill_g_i','fill_vpn_i','fill_ppn_i','fill_level_i','fill_asid_i','fill_epoch_i','sf_i','rs1_x0_i','rs2_x0_i','sf_va_i','sf_asid_i'):getattr(d,n).value=0
+ for n in ('clk_i','rst_i','valid_i','ready_i','hold_i','kill_i','pf_dis_i','va_i','id_i','priv_i','mode_i','asid_i','epoch_i','status_i','status_valid_i','probe_grant_i','probe_valid_i','probe_hit_i','probe_g_i','probe_ppn_i','probe_level_i','fill_valid_i','fill_g_i','fill_vpn_i','fill_ppn_i','fill_level_i','fill_asid_i','fill_epoch_i','sf_i','rs1_x0_i','rs2_x0_i','sf_va_i','sf_asid_i'):getattr(d,n).value=0
  d.rst_i.value=1;await edge(d);d.rst_i.value=0;d.ready_i.value=1;d.priv_i.value=3
 @cocotb.test()
 async def bare_dedup_hold_kill_disable(d):
@@ -46,3 +46,12 @@ async def superpage_context_and_sfence_ranges(d):
     invalid=asid_all or not global_
     assert bool(v(d,'probe_o'))==bool(invalid)
     d.valid_i.value=0;d.epoch_i.value=1;await edge(d);d.valid_i.value=1;await settle();assert v(d,'probe_o')
+
+@cocotb.test()
+async def delayed_cache_decision_is_counted_without_candidate(d):
+ await reset(d);d.valid_i.value=0;d.ready_i.value=0
+ d.status_valid_i.value=1;d.status_i.value=0
+ await settle();assert event(d,0x2b)==1 and event(d,0x2a)==0
+ await edge(d);d.status_i.value=1
+ await settle();assert event(d,0x2c)==1 and event(d,0x2b)==0
+ d.status_valid_i.value=0;await settle();assert v(d,'perf_o')==0
