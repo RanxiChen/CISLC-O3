@@ -63,16 +63,18 @@ module ifu_f0 import o3_types_pkg::*; #(
     logic signed [4:0] first_pos;
     assign first_pos=edge_start ? 1:start_pos;
     for(genvar hw=0;hw<REGION_SLOTS;hw++) begin : g_halfword
+        logic start;
+        assign start_at[hw]=start;
         wire [15:0] raw=current_block.data[hw*16 +: 16];
         assign pc_at[hw]=current_block.region_base+vaddr_t'(2*hw);
         assign short_at[hw]=raw[1:0]!=2'b11;
         rvc_expander expand(.in_i(raw),.out_o(expanded_at[hw]),.legal_o(legal_at[hw]));
-        if(hw==0) assign start_at[hw]=first_pos==0;
-        else if(hw==1) assign start_at[hw]=first_pos==1 ||
-            (first_pos<1 && start_at[0] && short_at[0]);
-        else assign start_at[hw]=first_pos==hw || (first_pos<hw &&
-            ((start_at[hw-1] && short_at[hw-1]) ||
-             (start_at[hw-2] && !short_at[hw-2])));
+        if(hw==0) assign start=first_pos==0;
+        else if(hw==1) assign start=first_pos==1 ||
+            (first_pos<1 && g_halfword[0].start && short_at[0]);
+        else assign start=first_pos==hw || (first_pos<hw &&
+            ((g_halfword[hw-1].start && short_at[hw-1]) ||
+             (g_halfword[hw-2].start && !short_at[hw-2])));
         // Fixed prefix population count, independent of the selected lanes.
         always_comb begin
             rank_at[hw]='0;
@@ -96,7 +98,7 @@ module ifu_f0 import o3_types_pkg::*; #(
             assign pending_in=decode_lane[lane-1].pending_out;
         end
         always_comb begin
-            selected_pos=REGION_SLOTS;
+            selected_pos=5'(REGION_SLOTS);
             selected_raw='0;selected_expanded='0;selected_legal=0;
             selected_idx='0;found=0;selected_pc='0;
             for(int hw=0;hw<REGION_SLOTS;hw++) begin
@@ -112,7 +114,7 @@ module ifu_f0 import o3_types_pkg::*; #(
             if(found) selected_pos=5'(selected_idx);
             edge_inst=edge_start && lane==0;
             if(edge_inst) begin selected_pos=-1;selected_pc=edge_pc;end
-            short_inst=!edge_inst && selected_pos<REGION_SLOTS &&
+            short_inst=!edge_inst && selected_pos<5'(REGION_SLOTS) &&
                 selected_raw[1:0]!=2'b11;
         end
         always_comb begin
@@ -123,8 +125,8 @@ module ifu_f0 import o3_types_pkg::*; #(
             pending_out=pending_in;
             // The next position is selected independently, not recursively.
             if(lane==F0_SLOTS-1) next_pos=end_pos+1;
-            if(!stop_in && selected_pos<REGION_SLOTS) begin
-                if(!current_block.exc_valid && selected_pos==REGION_SLOTS-1 && !short_inst) begin
+            if(!stop_in && selected_pos<5'(REGION_SLOTS)) begin
+                if(!current_block.exc_valid && selected_pos==5'(REGION_SLOTS-1) && !short_inst) begin
                     stop_out=1;pending_out=1;
                 end else begin
                     out_valid_o[lane]=1;
@@ -155,7 +157,7 @@ module ifu_f0 import o3_types_pkg::*; #(
                         out_o[lane].exc_valid=1;out_o[lane].exc_cause=current_block.exc_cause;
                         out_o[lane].exc_tval=edge_inst ? XLEN'(current_block.region_base):XLEN'(out_o[lane].pc);
                     end
-                    stop_out=out_o[lane].exc_valid || end_pos>=REGION_SLOTS-1
+                    stop_out=out_o[lane].exc_valid || end_pos>=5'(REGION_SLOTS-1)
                         || (current_brief.pred.cfi_valid && end_pos>=exit_pos);
                 end
             end
@@ -163,9 +165,9 @@ module ifu_f0 import o3_types_pkg::*; #(
     end
     // Can save the final halfword without using a fifth instruction lane.
     assign save_half=active && !current_block.exc_valid
-        && (decode_lane[F0_SLOTS-1].pending_out || (!decode_lane[F0_SLOTS-1].stop_out && next_pos==REGION_SLOTS-1
+        && (decode_lane[F0_SLOTS-1].pending_out || (!decode_lane[F0_SLOTS-1].stop_out && next_pos==5'(REGION_SLOTS-1)
             && current_block.data[(REGION_SLOTS-1)*16 +: 2]==2'b11));
-    assign finished=decode_lane[F0_SLOTS-1].stop_out || next_pos>=REGION_SLOTS || save_half;
+    assign finished=decode_lane[F0_SLOTS-1].stop_out || next_pos>=5'(REGION_SLOTS) || save_half;
     assign out_last_o=active && finished;
     assign out_edge_pend_o=save_half;
     always_comb begin
