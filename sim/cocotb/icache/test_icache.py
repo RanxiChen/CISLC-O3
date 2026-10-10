@@ -320,6 +320,8 @@ async def prefetch_permission_reserve_and_provenance(dut):
   await Timer(1,unit='ns');ready=int(dut.pf_ready.value)
   assert ready, 'PF input register unexpectedly full'
   await h.tick();dut.pf_valid.value=0
+  await Timer(1,unit='ns')
+  assert not int(dut.pf_resp_valid.value), 'permission stage must use the captured address'
   for _ in range(40):
    await Timer(1,unit='ns')
    if int(dut.pf_resp_valid.value):

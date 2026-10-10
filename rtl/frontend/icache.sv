@@ -166,20 +166,28 @@ module ICache
         .free_count_o(mshr_free),.fill_pf_o(fill_pf),.idle_o(mshr_idle),.perf_o(mshr_perf));
     assign fill_ready=!inv_all_i; // independent SRAM write port
     // A dedicated prefetch register cuts permission/tag/MSHR decisions off
-    // the candidate-ready path. Permission checks end at this register.
-    logic pf_pending_q,pf_bad_q;
+    // the candidate-ready path. A separate permission register operates only
+    // on the captured address; no candidate-valid path feeds wide PMP math.
+    logic pf_pending_q,pf_bad_q,pf_checked_q,pf_context_bad_q;
+    logic [1:0] pf_priv_q;
     pf_req_t pf_pending_req_q;
     logic prefetch_fire,prefetch_hit,pf_process_ready;
     always_ff @(posedge clk) begin : prefetch_request_register
         if(rst || inv_all_i || xlate_kill_i) begin
             pf_pending_q<=0;pf_pending_req_q<='0;pf_bad_q<=0;
+            pf_checked_q<=0;pf_context_bad_q<=0;pf_priv_q<=0;
         end else begin
-            if(prefetch_fire) pf_pending_q<=0;
+            if(prefetch_fire) begin pf_pending_q<=0;pf_checked_q<=0;end
+            if(pf_pending_q && !pf_checked_q) begin
+                pf_checked_q<=1;
+                pf_bad_q<=pf_context_bad_q || pf_pending_req_q.epoch!=csr_i.epoch || pmp_i.update ||
+                    !pma_exec(64'(pf_pending_req_q.line_paddr),ICACHE_LINE_BYTES) ||
+                    !pmp_allow_dec(pmp_i.dec,pf_pending_req_q.line_paddr,ICACHE_LINE_BYTES,pf_priv_q,0,0,1);
+            end
             if(pf_req_valid_i && pf_req_ready_o) begin
                 pf_pending_q<=1;pf_pending_req_q<=pf_req_i;
-                pf_bad_q<=!pf_req_i.paddr_valid || pf_req_i.epoch!=csr_i.epoch ||
-                    !pma_exec(64'(pf_req_i.line_paddr),ICACHE_LINE_BYTES) ||
-                    !pmp_allow_dec(pmp_i.dec,pf_req_i.line_paddr,ICACHE_LINE_BYTES,csr_i.priv,0,0,1);
+                pf_checked_q<=0;pf_priv_q<=csr_i.priv;
+                pf_context_bad_q<=!pf_req_i.paddr_valid || pf_req_i.epoch!=csr_i.epoch;
             end
         end
     end
@@ -262,7 +270,7 @@ module ICache
         pf_req_ready_o=!rst && !inv_all_i && !xlate_kill_i && !pf_pending_q;
         pf_process_ready=prefetch_bad || prefetch_hit || probe_inflight ||
             (!demand_miss_pending && int'(mshr_free)>int'(CFG.prefetch.mshr_reserve) && alloc_ready);
-        prefetch_fire=!rst && !inv_all_i && !xlate_kill_i && pf_pending_q && pf_process_ready;
+        prefetch_fire=!rst && !inv_all_i && !xlate_kill_i && pf_pending_q && pf_checked_q && pf_process_ready;
         if(prefetch_fire && !prefetch_bad && !prefetch_hit && !probe_inflight) alloc_valid=1;
         pf_resp_o='0;pf_resp_o.valid=prefetch_fire;
         pf_resp_o.status=prefetch_bad ? PF_XLATE_FAIL:prefetch_hit ? PF_HIT:probe_inflight ? PF_INFLIGHT:PF_ISSUED;
