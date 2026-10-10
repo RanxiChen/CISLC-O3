@@ -235,6 +235,8 @@ module tage
     base_row_t train_base_old,base_updated,base_qraw,base_traw,wb_base_data_q;
     logic base_wr_q[BASE_ENTRIES];
     logic tvalid_q[TABLES][MAX_ENTRIES];
+    logic train_base_written_q;
+    logic train_row_valid_q[TABLES];
     logic query_base_written_q,query_base_collision_q;
     base_row_t query_base_forward_q;
     function automatic base_row_t reset_base();
@@ -243,17 +245,22 @@ module tage
         return r;
     endfunction
     always_ff @(posedge clk_i) begin
-        if (train_fire) begin
+        if (rst_i) begin
+            train_base_written_q<=0;
+            for(int t=0;t<TABLES;t++) train_row_valid_q[t]<=0;
+        end else if (train_fire) begin
             train_base_idx <= base_index_of(train_i.region_base);
+            train_base_written_q<=base_wr_q[base_index_of(train_i.region_base)];
             for (int t=0; t<TABLES; t++) begin
                 train_idx[t] <= index_of(train_i.region_base,train_i.folds,t);
                 train_tag[t] <= tag_of(train_i.region_base,train_i.folds,t);
+                train_row_valid_q[t]<=tvalid_q[t][index_of(train_i.region_base,train_i.folds,t)];
             end
         end
     end
     assign base_we=!rst_i && t2_valid_q && |t2_packet_q.br_commit_mask;
     assign train_base_old=wb_base_valid_q && wb_base_idx_q==train_base_idx ? wb_base_data_q :
-        (base_wr_q[train_base_idx] ? base_traw : reset_base());
+        (train_base_written_q ? base_traw : reset_base());
     assign s2_base_q=query_base_written_q ? (query_base_collision_q ? query_base_forward_q : base_qraw) : reset_base();
     o3_sram_1r1w #(.DATA_WIDTH($bits(base_row_t)),.ENTRIES(BASE_ENTRIES),.ALLOW_COLLISION(1)) u_base_query(
         .clk_i(clk_i),.read_en_i(!rst_i && !stall_i && !kill_i && s1_valid_q),.read_addr_i(s1_base_idx_q),.read_data_o(base_qraw),
@@ -268,7 +275,9 @@ module tage
         tagged_row_t query_forward_q;
         always_comb begin
             train_old[t]=tagged_row_t'(traw);
-            train_old[t].valid=tvalid_q[t][train_idx[t]];
+            // Validity is sampled by T0 with the synchronous SRAM payload.
+            // A same-edge T2 write is selected by the whole-row bypass below.
+            train_old[t].valid=train_row_valid_q[t];
             if(wb_valid_q[t] && wb_idx_q[t]==train_idx[t]) train_old[t]=wb_row_q[t];
             s2_row_q[t]=query_collision_q ? query_forward_q : tagged_row_t'(qraw);
             s2_row_q[t].valid=query_valid_q;
