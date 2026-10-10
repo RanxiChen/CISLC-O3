@@ -192,30 +192,47 @@ module ICache
     end
     assign demand_miss_pending=v3_q && !stale && !hit && !fault;
     assign alloc_line=demand_miss_pending ? {s3_q.pa[PADDR_W-1:6],6'b0}:pf_pending_req_q.line_paddr;
-    // Balanced oldest-ready tournament. Ties keep the lower slot index,
-    // matching the original strict-age comparison without an eight-way chain.
-    localparam int WA=$clog2(WAITERS), WT=1<<WA;
-    typedef struct packed {logic valid;logic [31:0] age;logic [WAITERS-1:0] select;} waiter_pick_t;
-    logic [WAITERS-1:0] ready_waiter_oh;
-    // Elaborate children before their parent (Vivado 2022.2 requires this
-    // ordering for references to a record in another generated instance).
-    for (genvar n=2*WT-1; n>0; n--) begin : g_waiter_tree
-        waiter_pick_t choice;
-        if (n>=WT) begin : g_leaf
-            if (n-WT<WAITERS) assign choice = '{valid:waiter_valid_q[n-WT] && waiter_ready_q[n-WT],
-                age:waiter_age_q[n-WT],select:WAITERS'(1)<<(n-WT)};
-            else assign choice = '0;
-        end else begin : g_merge
-            waiter_pick_t left, right;
-            assign left = g_waiter_tree[2*n].choice;
-            assign right = g_waiter_tree[2*n+1].choice;
-            assign choice = !left.valid || (right.valid && right.age < left.age)
-                ? right : left;
+    // Capture pairwise age order when a waiter is allocated. Ages remain
+    // constant during its lifetime, so response arbitration only needs a
+    // ready mask and this narrow registered matrix (no age-comparison chain).
+    // Retain the original unsigned 32-bit age/tie rule, including wraparound.
+    logic [WAITERS-1:0] older_q[WAITERS], ready_waiter_oh, waiter_candidates;
+    logic [WAITERS-1:0] incoming_less,incoming_equal;
+    logic waiter_allocate;
+    assign waiter_allocate=v3_q && !stale && !hit && !fault && s3_complete;
+    for(genvar n=0;n<WAITERS;n++) begin : g_waiter_age_order
+        assign waiter_candidates[n]=waiter_valid_q[n] && waiter_ready_q[n];
+        assign incoming_less[n]=age_q<waiter_age_q[n];
+        assign incoming_equal[n]=age_q==waiter_age_q[n];
+        logic [WAITERS-1:0] ready_older;
+        for(genvar k=0;k<WAITERS;k++) begin : g_pair
+            assign ready_older[k]=waiter_candidates[k] && older_q[k][n];
+            if(n==k) assign older_q[n][k]=1'b0;
+            else always_ff @(posedge clk) begin
+                if(rst) older_q[n][k]<=0;
+                else if(waiter_allocate) begin
+                    if(free_waiter==n)
+                        older_q[n][k]<=incoming_less[k] || (incoming_equal[k] && n<k);
+                    else if(free_waiter==k)
+                        older_q[n][k]<=(!incoming_less[n] && !incoming_equal[n]) || (incoming_equal[n] && n<k);
+                end
+            end
         end
+        assign ready_waiter_oh[n]=waiter_candidates[n] && !(|ready_older);
     end
-    waiter_pick_t oldest_ready;
-    assign oldest_ready = g_waiter_tree[1].choice;
-    assign ready_waiter_oh=oldest_ready.select & {WAITERS{oldest_ready.valid}};
+    `ifndef SYNTHESIS
+    // Independent linear age oracle checks the registered order on every
+    // simulation cycle, including simultaneous release/allocation and fills.
+    always_ff @(posedge clk) if(!rst) begin : check_waiter_order
+        integer expected;
+        logic [WAITERS-1:0] expected_oh;
+        expected=-1;expected_oh='0;
+        for(integer n=0;n<WAITERS;n++)
+            if(waiter_candidates[n] && (expected<0 || waiter_age_q[n]<waiter_age_q[expected])) expected=n;
+        if(expected>=0) expected_oh[expected]=1'b1;
+        assert(ready_waiter_oh==expected_oh) else $fatal(1,"ICache age matrix changed oldest-ready arbitration");
+    end
+    `endif
     always_comb begin
         free_waiter=-1;ready_waiter=-1;
         for(int n=0;n<WAITERS;n++) begin
