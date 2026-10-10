@@ -77,6 +77,13 @@ module ifu_f1
         return decoded;
     endfunction
 
+    // Each lane decodes opcode/immediate/target independently. The ordered
+    // scan below only selects the first correction and its surviving prefix.
+    decoded_cfi_t decoded_at[F0_SLOTS];
+    for(genvar lane=0;lane<F0_SLOTS;lane++) begin : g_cfi_decode
+        assign decoded_at[lane]=decode_cfi(in_i[lane]);
+    end
+
     assign in_ready_o = !rst_i && !kill_i.valid && out_ready_i;
     // Do not gate this registered request with kill_i: it is an arbiter input,
     // and that arbiter produces kill_i combinationally (spec 2.5).
@@ -118,7 +125,7 @@ module ifu_f1
         if (!rst_i && !kill_i.valid && in_beat_valid_i) begin
             for (int slot = 0; slot < F0_SLOTS; slot++) begin
                 if (in_valid_i[slot] && count < F1_W && !stop_scan) begin
-                    decoded = decode_cfi(in_i[slot]);
+                    decoded = decoded_at[slot];
                     start_pos=in_i[slot].is_edge ? -1:int'(in_i[slot].slot);
                     end_pos=start_pos+(in_i[slot].inst_len==4 ? 1:0);
                     is_exit = in_brief_i.pred.cfi_valid && start_pos==exit_pos;

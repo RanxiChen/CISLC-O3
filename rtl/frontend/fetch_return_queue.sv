@@ -23,6 +23,12 @@ module fetch_return_queue
     output logic            ftq_brief_rd_valid_o,
     output ftq_id_t         ftq_brief_rd_id_o,
     input  ftq_pred_brief_t ftq_brief_i,
+    // A write to the currently read FTQ row invalidates the output snapshot.
+    // The row remains in this queue until the consumer handshake.
+    input  logic brief_slow_valid_i = 1'b0,
+    input  ftq_id_t brief_slow_id_i = '0,
+    input  logic brief_resolve_valid_i = 1'b0,
+    input  ftq_id_t brief_resolve_id_i = '0,
 
     // 出队给 F0
     output logic            deq_valid_o,
@@ -43,30 +49,53 @@ module fetch_return_queue
     rq_idx_t ord_q[DEPTH],ord_d[DEPTH];
     logic [CW-1:0] count_q,count_d;
     int free_idx;
-    rq_idx_t head_slot;
+    rq_idx_t head_slot, snapshot_slot;
     logic deq_fire, reservation_bad, response_bad, suffix_bad;
+    logic output_valid_q, head_ready, head_refresh, snapshot_refresh;
+    rq_out_t output_data_q;
+    ftq_pred_brief_t output_brief_q;
     always_comb begin
         free_idx=-1;
         for(int n=0;n<DEPTH;n++) if(free_idx<0 && slots_q[n].state==FREE) free_idx=n;
         rsv_ready_o=!rst_i && !kill_i.valid && free_idx>=0;
         rsv_idx_o=free_idx<0 ? '0 : rq_idx_t'(free_idx);
         head_slot=ord_q[0];
-        ftq_brief_rd_valid_o=count_q!=0;
-        ftq_brief_rd_id_o=count_q!=0 ? slots_q[head_slot].item.ftq_id : '0;
-        deq_valid_o=!rst_i && !kill_i.valid && count_q!=0 &&
-            slots_q[head_slot].state==READY && ftq_brief_i.slow_done &&
-            ftq_brief_i.ftq_id==slots_q[head_slot].item.ftq_id;
-        deq_o=count_q!=0 ? slots_q[head_slot].item : '0;
-        deq_brief_o=deq_valid_o ? ftq_brief_i : '0;
+        // While the current output is held, pre-read the following region.
+        // Its snapshot can replace a consumed output on the very same edge.
+        snapshot_slot=output_valid_q && count_q>1 ? ord_q[1]:head_slot;
+        ftq_brief_rd_valid_o=count_q>int'(output_valid_q);
+        ftq_brief_rd_id_o=ftq_brief_rd_valid_o ? slots_q[snapshot_slot].item.ftq_id:'0;
+        head_refresh=(brief_slow_valid_i && brief_slow_id_i==output_data_q.ftq_id) ||
+            (brief_resolve_valid_i && brief_resolve_id_i==output_data_q.ftq_id);
+        snapshot_refresh=(brief_slow_valid_i && brief_slow_id_i==ftq_brief_rd_id_o) ||
+            (brief_resolve_valid_i && brief_resolve_id_i==ftq_brief_rd_id_o);
+        head_ready=ftq_brief_rd_valid_o && slots_q[snapshot_slot].state==READY &&
+            ftq_brief_i.slow_done && ftq_brief_i.ftq_id==slots_q[snapshot_slot].item.ftq_id;
+        deq_valid_o=!rst_i && !kill_i.valid && !head_refresh && output_valid_q;
+        deq_o=output_valid_q ? output_data_q:'0;
+        deq_brief_o=output_valid_q ? output_brief_q:'0;
         perf_o='0;
         if(!rst_i) begin
             perf_o[PE_RQ_HEAD_WAIT_DATA_CYCLE]=PERF_INC_W'(count_q!=0 && slots_q[head_slot].state==PEND);
-            perf_o[PE_RQ_HEAD_WAIT_SLOW_CYCLE]=PERF_INC_W'(count_q!=0 && slots_q[head_slot].state==READY && !ftq_brief_i.slow_done);
+            perf_o[PE_RQ_HEAD_WAIT_SLOW_CYCLE]=PERF_INC_W'(!output_valid_q && count_q!=0 && slots_q[head_slot].state==READY && !ftq_brief_i.slow_done);
             for(int n=0;n<DEPTH;n++) if(slots_q[n].state==ZOMBIE)
                 perf_o[PE_RQ_ZOMBIE]+=PERF_INC_W'(1);
         end
     end
     assign deq_fire=deq_valid_o && deq_ready_i;
+    // Head ownership stays with the queue until dequeue. A boundary kill or
+    // prediction update discards only this snapshot; a surviving head is read
+    // again after the FTQ write, so no stale alloc/slow/fix merge is delivered.
+    always_ff @(posedge clk_i) begin : output_snapshot
+        if(rst_i) begin
+            output_valid_q<=0;output_data_q<='0;output_brief_q<='0;
+        end else if(kill_i.valid || (output_valid_q && head_refresh)) output_valid_q<=0;
+        else if((!output_valid_q || deq_fire) && head_ready && !snapshot_refresh) begin
+            output_valid_q<=1;
+            output_data_q<=slots_q[snapshot_slot].item;
+            output_brief_q<=ftq_brief_i;
+        end else if(deq_fire) output_valid_q<=0;
+    end
     always_comb begin : next_state
         int s, keep;
         logic suffix;

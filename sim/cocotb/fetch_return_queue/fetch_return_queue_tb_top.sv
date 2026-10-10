@@ -17,6 +17,8 @@ module fetch_return_queue_tb_top
     output logic brief_rd_valid_o,
     output logic [$bits(ftq_id_t)-1:0] brief_rd_id_o,
     input logic brief_slow_done_i,
+    input logic brief_slow_valid_i,brief_resolve_valid_i,
+    input ftq_id_t brief_slow_id_i,brief_resolve_id_i,
     input logic [$bits(ftq_id_t)-1:0] brief_ftq_id_i,
     output logic deq_valid_o,
     input logic deq_ready_i,
@@ -61,6 +63,8 @@ module fetch_return_queue_tb_top
         .rsv_fire_i(rsv_fire_i), .rsv_req_i(req),
         .resp_i(resp), .ftq_brief_rd_valid_o(brief_rd_valid_o),
         .ftq_brief_rd_id_o(brief_rd_id_o), .ftq_brief_i(brief),
+        .brief_slow_valid_i(brief_slow_valid_i),.brief_slow_id_i(brief_slow_id_i),
+        .brief_resolve_valid_i(brief_resolve_valid_i),.brief_resolve_id_i(brief_resolve_id_i),
         .deq_valid_o(deq_valid_o), .deq_ready_i(deq_ready_i),
         .deq_o(deq), .deq_brief_o(deq_brief),
         .kill_i(kill), .ftq_head_i(ftq_id_t'(ftq_head_i)), .perf_o()

@@ -1,5 +1,5 @@
 """Independent transaction/order model for L7c RQ, including pending zombies."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 @dataclass(frozen=True)
 class Inputs:
  rst: bool=False
@@ -20,6 +20,10 @@ class Inputs:
  kill_id: int=0
  kill_slot: int=0
  head: int=0
+ slow_update: bool=False
+ slow_id: int=0
+ resolve_update: bool=False
+ resolve_id: int=0
 @dataclass
 class Entry:
  ftq_id: int
@@ -27,19 +31,33 @@ class Entry:
  data: int|None=None
  zombie: bool=False
 class ReturnModel:
- def __init__(self,depth=32):self.depth=depth;self.slots=[None]*8;self.order=[]
+ def __init__(self,depth=32):self.depth=depth;self.slots=[None]*8;self.order=[];self.output=None
  @property
  def entry(self):return self.slots[self.order[0]] if self.order else None
  @property
+ def brief_entry(self):
+  n=1 if self.output is not None else 0
+  return self.slots[self.order[n]] if len(self.order)>n else None
+ def refresh(self,i,e):
+  return e is not None and ((i.slow_update and i.slow_id==e.ftq_id) or
+   (i.resolve_update and i.resolve_id==e.ftq_id))
+ @property
  def free(self):return next((s for s,e in enumerate(self.slots) if e is None),0)
  def visible(self,i):
-  e=self.entry;ready=any(e is None for e in self.slots) and not i.rst and not i.kill
-  brief=e is not None
-  deq=brief and e.data is not None and not(i.rst or i.kill) and i.brief_done and i.brief_id==e.ftq_id
+  e=self.output;ready=any(e is None for e in self.slots) and not i.rst and not i.kill
+  brief=self.brief_entry is not None
+  deq=e is not None and not(i.rst or i.kill or self.refresh(i,e))
   return ready,brief,bool(deq),e
  def tick(self,i):
-  if i.rst:self.slots=[None]*8;self.order=[];return
+  if i.rst:self.slots=[None]*8;self.order=[];self.output=None;return
   ready,_,deq,_=self.visible(i)
+  candidate=self.brief_entry
+  next_output=self.output
+  if i.kill or self.refresh(i,self.output):next_output=None
+  elif (self.output is None or (deq and i.deq_ready)) and candidate is not None and \
+    candidate.data is not None and i.brief_done and i.brief_id==candidate.ftq_id and not self.refresh(i,candidate):
+   next_output=replace(candidate)
+  elif deq and i.deq_ready:next_output=None
   if i.reserve:
    s=self.free if i.reserve_idx is None else i.reserve_idx
    assert ready and self.slots[s] is None
@@ -60,3 +78,4 @@ class ReturnModel:
     else:assert not suffix;kept.append(s)
    self.order=kept
   if deq and i.deq_ready:self.slots[self.order.pop(0)]=None
+  self.output=next_output

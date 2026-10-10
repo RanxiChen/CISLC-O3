@@ -309,10 +309,18 @@ async def platform_sram_fetch_refill_and_cached_hit(d):
 async def prefetch_permission_reserve_and_provenance(dut):
  h=Harness(dut);await h.reset();base=0x80008000;data=bytes(range(64))
  async def pf(addr,epoch=0):
+  # Admission into the PF register and the eventual cache decision are
+  # separate handshakes. Keep all previous permission/provenance assertions.
   dut.pf_addr.value=addr;dut.pf_epoch.value=epoch;dut.pf_valid.value=1
-  await Timer(1,unit='ns');ready=int(dut.pf_ready.value);status=int(dut.pf_status.value)
+  await Timer(1,unit='ns');ready=int(dut.pf_ready.value)
+  assert ready, 'PF input register unexpectedly full'
   await h.tick();dut.pf_valid.value=0
-  return ready,status
+  for _ in range(40):
+   await Timer(1,unit='ns')
+   if int(dut.pf_resp_valid.value):
+    status=int(dut.pf_status.value);await h.tick();return ready,status
+   await h.tick()
+  assert False, 'PF decision timeout'
  # Epoch/PMA/PMP failure consumes even if allocation would be blocked.
  assert await pf(base,1)==(1,3)
  assert await pf(0x02000000)==(1,3)
@@ -345,9 +353,21 @@ async def prefetch_permission_reserve_and_provenance(dut):
   a=base+0x400+64*n
   assert await pf(a)==(1,0)
   await h.accept_l2_request(a)
- assert await pf(base+0x600)==(0,0)
+ # The fourth candidate may enter the register, but cannot consume the
+ # final demand-reserved MSHR. A fifth candidate is backpressured.
+ dut.pf_addr.value=base+0x600;dut.pf_valid.value=1
+ await Timer(1,unit='ns');assert int(dut.pf_ready.value)
+ await h.tick();dut.pf_addr.value=base+0x640
+ for _ in range(6):
+  await Timer(1,unit='ns')
+  assert not int(dut.pf_ready.value) and not int(dut.pf_resp_valid.value)
+  assert not int(dut.l2_req_valid.value)
+  await h.tick()
  assert h.events[0x2d]>=1
- assert await pf(base+0x600,1)==(1,3)
+ dut.pf_valid.value=0
+ await h.refill(data)
+ await h.accept_l2_request(base+0x600)
+ assert await pf(base+0x640,1)==(1,3)
 
 @cocotb.test()
 async def demand_has_priority_over_idle_port_probe(dut):

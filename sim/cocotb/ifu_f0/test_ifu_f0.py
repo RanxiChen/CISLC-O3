@@ -135,3 +135,18 @@ async def mixed_lengths_and_last_half_after_full_beat(d):
     r=await b.step(True,block([0x0013,0,0x0013,0,0x0013,0,CNOP,0x0093]))
     assert len(r['rows'])==4 and r['last'] and r['pending']
     assert not (await b.step())['beat']
+
+
+@cocotb.test()
+async def structural_reference_mixed_stream(d):
+    """The frozen RTL reference checks every public output on each edge."""
+    seed=int(os.getenv('TEST_SEED','1'),0)
+    rng=random.Random(seed);b=Bench(d);await b.reset()
+    for cycle in range(10000):
+        halves=[rng.choice([CNOP,0x0093,rng.getrandbits(16)]) for _ in range(8)]
+        await b.step(valid=rng.random()<.85,data=block(halves),
+            base=BASE+16*cycle,fid=cycle % (1<<len(d.ftq_id_i)),
+            entry=rng.randrange(8),ready=rng.random()<.7,
+            cfi=rng.random()<.4,slot=rng.randrange(8),cfi_edge=rng.random()<.05,
+            exc=rng.random()<.05,kill=rng.random()<.04,sync=rng.random()<.02,
+            trunc=rng.random()<.1,trunc_slot=rng.randrange(8))

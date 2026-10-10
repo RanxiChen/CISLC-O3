@@ -61,6 +61,27 @@ module ifu_f0_tb_top
         .out_o(inst_out), .out_brief_o(brief_out),
         .kill_i(kill), .sync_clear_i(sync_clear_i), .perf_o()
     );
+    logic ref_ready,ref_beat,ref_last,ref_pend;
+    logic [F0_SLOTS-1:0] ref_valid;
+    f0_inst_t ref_inst[F0_SLOTS];
+    ftq_pred_brief_t ref_brief;
+    ifu_f0_reference #(.CFG(O3_CFG.fe)) reference (
+        .clk_i(clk_i),.rst_i(rst_i),.in_valid_i(in_valid_i),.in_ready_o(ref_ready),
+        .in_i(block_in),.in_brief_i(brief_in),.out_valid_o(ref_valid),
+        .out_beat_valid_o(ref_beat),.out_last_o(ref_last),.out_edge_pend_o(ref_pend),
+        .trunc_i(trunc_i),.trunc_slot_i(trunc_slot_i),.ftq_head_i('0),
+        .out_ready_i(out_ready_i),.out_o(ref_inst),.out_brief_o(ref_brief),
+        .kill_i(kill),.sync_clear_i(sync_clear_i),.perf_o()
+    );
+    always @(posedge clk_i) if(!rst_i) begin
+        assert({in_ready_o,out_valid_o,out_beat_valid_o,out_last_o,out_edge_pend_o}==
+               {ref_ready,ref_valid,ref_beat,ref_last,ref_pend})
+            else $fatal(1,"F0 structural reference control mismatch");
+        assert(brief_out==ref_brief) else $fatal(1,"F0 reference brief mismatch");
+        for(int lane=0;lane<F0_SLOTS;lane++)
+            assert(inst_out[lane]==ref_inst[lane])
+                else $fatal(1,"F0 structural reference lane %0d mismatch",lane);
+    end
     for (genvar slot = 0; slot < F0_SLOTS; slot++) begin : flatten
         assign out_edge_o[slot]=inst_out[slot].is_edge;
         assign out_rvc_o[slot]=inst_out[slot].is_rvc;

@@ -13,7 +13,7 @@ module prefetch_tb_top import o3_types_pkg::*; (
  pf_req_t pf;vaddr_t probe_va;
  fetch_prefetcher #(.CFG(o3_cfg_pkg::O3_CFG.fe)) dut(.clk_i(clk_i),.rst_i(rst_i),
  .ftq_pf_valid_i(valid_i),.ftq_pf_ready_o(consumed_o),.ftq_pf_region_base_i(va_i),.ftq_pf_ftq_id_i(id_i),
- .pf_req_valid_o(request_o),.pf_req_ready_i(ready_i),.pf_req_o(pf),.pf_resp_i('{valid:ready_i,status:pf_status_e'(status_i),default:'0}),
+ .pf_req_valid_o(request_o),.pf_req_ready_i(ready_i),.pf_req_o(pf),.pf_resp_i('{valid:ready_i && request_o && consumed_o,status:pf_status_e'(status_i),default:'0}),
  .xprobe_valid_o(probe_o),.xprobe_vaddr_o(probe_va),.xprobe_grant_i(probe_grant_i),
  .xprobe_resp_i('{valid:probe_valid_i,hit:probe_hit_i,ppn:probe_ppn_i,level:probe_level_i,g:probe_g_i}),
  .xlate_fill_i('{valid:fill_valid_i,vpn:fill_vpn_i,ppn:fill_ppn_i,level:fill_level_i,g:fill_g_i,asid:fill_asid_i,epoch:fill_epoch_i}),

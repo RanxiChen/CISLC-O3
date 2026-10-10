@@ -7,7 +7,7 @@ module icache_tb_top
     input logic [127:0] pmpcfg_i,
     input logic [863:0] pmpaddr_i,
     input logic pf_valid,input paddr_t pf_addr,input logic [7:0] pf_epoch,epoch_i,
-    output logic pf_ready,output logic [2:0] pf_status,
+    output logic pf_ready,pf_resp_valid,output logic [2:0] pf_status,
     output fe_perf_t perf_o,
     input logic probe_valid,input vaddr_t probe_va,output logic probe_grant,probe_resp,probe_hit,
     input logic req_valid,
@@ -50,7 +50,7 @@ module icache_tb_top
         end
         pmp.dec=pmp_decode(pmp.entries);
     end
-    assign pf_status=pf_resp.status;assign probe_resp=probe.valid;assign probe_hit=probe.hit;
+    assign pf_resp_valid=pf_resp.valid;assign pf_status=pf_resp.status;assign probe_resp=probe.valid;assign probe_hit=probe.hit;
     assign req = '{region_base:req_pc, ftq_id:req_ftq_id,
                    rq_idx:req_rq_idx, epoch:'0};
     assign l2_resp='{op:COH_READDATA,id:l2_resp_id,data:l2_resp_data,error:l2_resp_error,default:'0};

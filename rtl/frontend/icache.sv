@@ -78,7 +78,10 @@ module ICache
     typedef struct packed {icache_req_t req;paddr_t pa;logic pf,af;logic [31:0] version;} query_t;
     query_t s1_q,s2_q,s3_q;logic v1_q,v2_q,v3_q,s1_ready,s2_ready,s3_ready;
     tag_t tag_read_q[WAYS],tags2_q[WAYS],tags3_q[WAYS];
-    coh_data_t data_read_q[WAYS],data2_q[WAYS],data3_q[WAYS];
+    coh_data_t data_read_q[WAYS];
+    // Select the requested 16B region before S2; later stages carry only
+    // that region per way, rather than registering four complete 64B lines.
+    logic [FETCH_BYTES*8-1:0] data2_q[WAYS],data3_q[WAYS];
     coh_data_t bank_data_read_q[BANKS][WAYS];
     logic data_read_bank_q;
     logic tlb_raw_valid,probe_q,tlb_g,tlb_demand_lookup;
@@ -86,19 +89,30 @@ module ICache
     fe_perf_t tlb_perf,mshr_perf;
     logic xlate_saved_q; paddr_t saved_pa_q;logic saved_pf_q,saved_af_q;
     logic fire;icache_req_t selected_req;logic retry_valid_q;icache_req_t retry_q;
-    // A single retry slot deadlocks when S3 and S1/S2 all need a retry.
-    // External requests stop while retries exist; four slots cover the three
-    // pipeline stages plus the request accepted on the first retry edge.
+    // Every accepted demand owns one replay credit until it exits S3.
+    // Credits cover ingress, query stages and queued replays together. S3 can
+    // always retire into a response, waiter, or reserved replay slot; its
+    // hit/permission/resource decisions never drive external request ready.
     localparam int RETRIES=4;
     icache_req_t retry_fifo_q[RETRIES];
     logic [1:0] retry_head_q,retry_tail_q;
     logic [2:0] retry_count_q;
-    logic retry_push,retry_pop;
+    logic retry_push,retry_pop,s3_complete;
+    localparam int INGRESS=2;
+    icache_req_t ingress_q[INGRESS];
+    logic ingress_head_q,ingress_tail_q;
+    logic [1:0] ingress_count_q;
+    logic ingress_push,ingress_pop;
+    logic [3:0] replay_used;
+    assign replay_used=4'(retry_count_q)+4'(ingress_count_q)+
+        4'(v1_q)+4'(v2_q)+4'(v3_q);
+    assign ingress_push=req_valid_i && req_ready_o;
+    assign ingress_pop=fire && !retry_valid_q;
     assign retry_valid_q=retry_count_q!=0;
     assign retry_q=retry_fifo_q[retry_head_q];
-    assign retry_push=v3_q && stale && s3_ready;
+    assign retry_push=v3_q && !s3_complete && !inv_all_i;
     assign retry_pop=retry_valid_q && fire;
-    logic hit,stale,fault;int hit_way;coh_data_t hit_line;
+    logic hit,stale,fault;int hit_way;logic [FETCH_BYTES*8-1:0] hit_line;
     logic alloc_valid,alloc_ready,alloc_merged,probe_inflight,demand_miss_pending;
     logic [$clog2(CFG.icache.mshrs+1)-1:0] mshr_free;
     logic fill_pf,prefetch_bad;
@@ -143,14 +157,31 @@ module ICache
         .csr_i(csr_i),.sfence_i(sfence_i),.sfence_done_o(sfence_done_o),.perf_o(tlb_perf));
     icache_mshr #(.CFG(CFG)) u_mshr(.clk_i(clk),.rst_i(rst),.alloc_valid_i(alloc_valid),.alloc_ready_o(alloc_ready),
         .alloc_line_paddr_i(alloc_line),.alloc_kind_i(demand_miss_pending ? L2_DEMAND:L2_PREFETCH),.alloc_merged_o(alloc_merged),
-        .probe_line_paddr_i(pf_req_i.line_paddr),.probe_inflight_o(probe_inflight),
+        .probe_line_paddr_i(pf_pending_req_q.line_paddr),.probe_inflight_o(probe_inflight),
         .l2_req_valid_o(l2_req_valid_o),.l2_req_ready_i(l2_req_ready_i),.l2_req_o(l2_req_o),
         .l2_resp_valid_i(l2_resp_valid_i),.l2_resp_i(l2_resp_i),.l2_resp_ready_o(l2_resp_ready_o),
         .fill_wr_valid_o(fill_valid),.fill_wr_ready_i(fill_ready),.fill_wr_line_paddr_o(fill_line),
         .fill_wr_data_o(fill_data),.fill_wr_error_o(fill_error),.fill_done_o(fill_done),.fill_done_line_paddr_o(fill_done_line),
         .free_count_o(mshr_free),.fill_pf_o(fill_pf),.idle_o(mshr_idle),.perf_o(mshr_perf));
     assign fill_ready=!inv_all_i; // independent SRAM write port
-    logic prefetch_fire;logic prefetch_hit;
+    // A dedicated prefetch register cuts permission/tag/MSHR decisions off
+    // the candidate-ready path. Permission checks end at this register.
+    logic pf_pending_q,pf_bad_q;
+    pf_req_t pf_pending_req_q;
+    logic prefetch_fire,prefetch_hit,pf_process_ready;
+    always_ff @(posedge clk) begin : prefetch_request_register
+        if(rst || inv_all_i || xlate_kill_i) begin
+            pf_pending_q<=0;pf_pending_req_q<='0;pf_bad_q<=0;
+        end else begin
+            if(prefetch_fire) pf_pending_q<=0;
+            if(pf_req_valid_i && pf_req_ready_o) begin
+                pf_pending_q<=1;pf_pending_req_q<=pf_req_i;
+                pf_bad_q<=!pf_req_i.paddr_valid || pf_req_i.epoch!=csr_i.epoch ||
+                    !pma_exec(64'(pf_req_i.line_paddr),ICACHE_LINE_BYTES) ||
+                    !pmp_allow_dec(pmp_i.dec,pf_req_i.line_paddr,ICACHE_LINE_BYTES,csr_i.priv,0,0,1);
+            end
+        end
+    end
     always_comb begin
         hit=0;hit_way=0;hit_line='0;
         for(int w=0;w<WAYS;w++) if(tags3_q[w].valid && tags3_q[w].tag==TW'(s3_q.pa>>(7+SW))) begin hit=1;hit_way=w;hit_line=data3_q[w];end
@@ -159,7 +190,7 @@ module ICache
             !pmp_allow_dec(pmp_i.dec,s3_q.pa,FETCH_BYTES,csr_i.priv,1'b0,1'b0,1'b1);
     end
     assign demand_miss_pending=v3_q && !stale && !hit && !fault;
-    assign alloc_line=demand_miss_pending ? {s3_q.pa[PADDR_W-1:6],6'b0}:pf_req_i.line_paddr;
+    assign alloc_line=demand_miss_pending ? {s3_q.pa[PADDR_W-1:6],6'b0}:pf_pending_req_q.line_paddr;
     always_comb begin
         free_waiter=-1;ready_waiter=-1;
         for(int n=0;n<WAITERS;n++) begin
@@ -167,13 +198,15 @@ module ICache
             if(waiter_valid_q[n] && waiter_ready_q[n] &&
                 (ready_waiter<0 || waiter_age_q[n]<waiter_age_q[ready_waiter])) ready_waiter=n;
         end
-        s3_ready=!v3_q || (stale ? int'(retry_count_q)<RETRIES:
-            ((ready_waiter<0 && (hit || fault)) || (!hit && !fault && free_waiter>=0 && alloc_ready)));
-        s2_ready=!v2_q || s3_ready;
+        s3_complete=!stale && ((ready_waiter<0 && (hit || fault)) ||
+            (!hit && !fault && free_waiter>=0 && alloc_ready));
+        s3_ready=1'b1;
+        s2_ready=1'b1;
         s1_ready=!v1_q || (s2_ready && (xlate_saved_q || (tlb_valid && !tlb_miss)));
-        selected_req=retry_valid_q ? retry_q:req_i;
-        req_ready_o=!rst && !inv_all_i && !retry_valid_q && s1_ready && !(fill_valid && fill_line[6]==req_i.region_base[6]);
-        fire=!rst && !inv_all_i && s1_ready && (retry_valid_q || req_valid_i) &&
+        selected_req=retry_valid_q ? retry_q:ingress_q[ingress_head_q];
+        req_ready_o=!rst && !inv_all_i && !retry_valid_q &&
+            ingress_count_q<INGRESS && replay_used<RETRIES;
+        fire=!rst && !inv_all_i && s1_ready && (retry_valid_q || ingress_count_q!=0) &&
             !(fill_valid && fill_line[6]==selected_req.region_base[6]);
 
         fill_bank=int'(fill_line[6]);fill_set=int'(SW'(fill_line>>7));
@@ -182,14 +215,13 @@ module ICache
         for(int w=0;w<WAYS;w++) if(tags_q[fill_bank][fill_set][w].valid && tags_q[fill_bank][fill_set][w].tag==TW'(fill_line>>(7+SW))) fill_way=w;
         alloc_valid=v3_q && !stale && !hit && !fault && free_waiter>=0;
         prefetch_hit=0;
-        for(int w=0;w<WAYS;w++) prefetch_hit|=tags_q[pf_req_i.line_paddr[6]][SW'(pf_req_i.line_paddr>>7)][w].valid &&
-            tags_q[pf_req_i.line_paddr[6]][SW'(pf_req_i.line_paddr>>7)][w].tag==TW'(pf_req_i.line_paddr>>(7+SW));
-        prefetch_bad=!pf_req_i.paddr_valid || pf_req_i.epoch!=csr_i.epoch ||
-            !pma_exec(64'(pf_req_i.line_paddr),ICACHE_LINE_BYTES) ||
-            !pmp_allow_dec(pmp_i.dec,pf_req_i.line_paddr,ICACHE_LINE_BYTES,csr_i.priv,0,0,1);
-        pf_req_ready_o=!rst && !inv_all_i && (prefetch_bad || prefetch_hit || probe_inflight ||
-            (!demand_miss_pending && int'(mshr_free)>int'(CFG.prefetch.mshr_reserve) && alloc_ready));
-        prefetch_fire=pf_req_valid_i && pf_req_ready_o;
+        for(int w=0;w<WAYS;w++) prefetch_hit|=tags_q[pf_pending_req_q.line_paddr[6]][SW'(pf_pending_req_q.line_paddr>>7)][w].valid &&
+            tags_q[pf_pending_req_q.line_paddr[6]][SW'(pf_pending_req_q.line_paddr>>7)][w].tag==TW'(pf_pending_req_q.line_paddr>>(7+SW));
+        prefetch_bad=pf_bad_q || pf_pending_req_q.epoch!=csr_i.epoch || pmp_i.update;
+        pf_req_ready_o=!rst && !inv_all_i && !xlate_kill_i && !pf_pending_q;
+        pf_process_ready=prefetch_bad || prefetch_hit || probe_inflight ||
+            (!demand_miss_pending && int'(mshr_free)>int'(CFG.prefetch.mshr_reserve) && alloc_ready);
+        prefetch_fire=!rst && !inv_all_i && !xlate_kill_i && pf_pending_q && pf_process_ready;
         if(prefetch_fire && !prefetch_bad && !prefetch_hit && !probe_inflight) alloc_valid=1;
         pf_resp_o='0;pf_resp_o.valid=prefetch_fire;
         pf_resp_o.status=prefetch_bad ? PF_XLATE_FAIL:prefetch_hit ? PF_HIT:probe_inflight ? PF_INFLIGHT:PF_ISSUED;
@@ -198,9 +230,9 @@ module ICache
             resp_o.valid=1;resp_o.rq_idx=waiter_req_q[ready_waiter].rq_idx;resp_o.ftq_id=waiter_req_q[ready_waiter].ftq_id;
             resp_o.data=waiter_data_q[ready_waiter][int'(waiter_req_q[ready_waiter].region_base[5:4])*FETCH_BYTES*8+:FETCH_BYTES*8];
             resp_o.exc_valid=waiter_error_q[ready_waiter];resp_o.exc_cause=o3_isa_pkg::EXCEPTION_CAUSE_INST_ACCESS_FAULT;
-        end else if(v3_q && !stale && (hit || fault)) begin
+        end else if(v3_q && s3_complete && (hit || fault)) begin
             resp_o.valid=1;resp_o.rq_idx=s3_q.req.rq_idx;resp_o.ftq_id=s3_q.req.ftq_id;
-            resp_o.data=hit_line[int'(s3_q.req.region_base[5:4])*FETCH_BYTES*8+:FETCH_BYTES*8];
+            resp_o.data=hit_line;
             resp_o.exc_valid=fault;resp_o.exc_cause=s3_q.pf ? EXCEPTION_CAUSE_INST_PAGE_FAULT:EXCEPTION_CAUSE_INST_ACCESS_FAULT;
         end
         if(inv_all_i) resp_o='0;
@@ -208,9 +240,9 @@ module ICache
     always_comb begin
         perf_o=tlb_perf | mshr_perf;
         perf_o[PE_PF_THROTTLED]=PERF_INC_W'(pf_req_valid_i && !pf_req_ready_o && !inv_all_i);
-        perf_o[PE_PF_USEFUL]=PERF_INC_W'(v3_q && !stale && hit && !fault && s3_ready && tags_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)][hit_way].pf);
-        perf_o[PE_PF_UNUSED_EVICT]=PERF_INC_W'(fill_done && !fill_error && tags_q[fill_bank][fill_set][fill_way].valid && tags_q[fill_bank][fill_set][fill_way].pf);perf_o[PE_ICACHE_DEMAND_HIT]=PERF_INC_W'(v3_q && !stale && hit && !fault && s3_ready);
-        perf_o[PE_ICACHE_DEMAND_MISS]=PERF_INC_W'(v3_q && !stale && !hit && !fault && s3_ready);
+        perf_o[PE_PF_USEFUL]=PERF_INC_W'(v3_q && !stale && hit && !fault && s3_complete && tags_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)][hit_way].pf);
+        perf_o[PE_PF_UNUSED_EVICT]=PERF_INC_W'(fill_done && !fill_error && tags_q[fill_bank][fill_set][fill_way].valid && tags_q[fill_bank][fill_set][fill_way].pf);perf_o[PE_ICACHE_DEMAND_HIT]=PERF_INC_W'(v3_q && !stale && hit && !fault && s3_complete);
+        perf_o[PE_ICACHE_DEMAND_MISS]=PERF_INC_W'(v3_q && !stale && !hit && !fault && s3_complete);
     end
     // Each bank/way has one synchronous read and one fill write port. Select
     // the registered bank result with the bank captured at the same S0 edge.
@@ -236,6 +268,7 @@ module ICache
         if(rst) begin
             v1_q<=0;v2_q<=0;v3_q<=0;s1_q<='0;s2_q<='0;s3_q<='0;
             xlate_saved_q<=0;saved_pa_q<=0;saved_pf_q<=0;saved_af_q<=0;retry_head_q<=0;retry_tail_q<=0;retry_count_q<=0;
+            ingress_head_q<=0;ingress_tail_q<=0;ingress_count_q<=0;ingress_q<='{default:'0};
             waiter_valid_q<='{default:0};waiter_ready_q<='{default:0};waiter_error_q<='{default:0};
             waiter_req_q<='{default:'0};waiter_line_q<='{default:'0};waiter_age_q<='{default:0};age_q<=0;
             inv_done_o<=0;pmp_update_done_o<=0;
@@ -251,7 +284,9 @@ module ICache
                 s2_q.pf<=xlate_saved_q ? saved_pf_q:tlb_pf;
                 s2_q.af<=(xlate_saved_q ? saved_af_q:tlb_af) ||
                     ((csr_i.satp_mode!=8 || csr_i.priv==3) && (s1_q.req.region_base>>MEM_PADDR_W)!=0);
-                tags2_q<=tag_read_q;data2_q<=data_read_q;
+                tags2_q<=tag_read_q;
+                for(int w=0;w<WAYS;w++)
+                    data2_q[w]<=data_read_q[w][int'(s1_q.req.region_base[5:4])*FETCH_BYTES*8+:FETCH_BYTES*8];
             end
             if(v1_q && tlb_valid && !tlb_miss && !s2_ready && !xlate_saved_q) begin
                 xlate_saved_q<=1;saved_pa_q<=sv39_pa(tlb_ppn,s1_q.req.region_base,tlb_level);saved_pf_q<=tlb_pf;saved_af_q<=tlb_af;
@@ -265,6 +300,19 @@ module ICache
                     end
                 end
             end
+            if(ingress_push) begin
+                ingress_q[ingress_tail_q]<=req_i;
+                ingress_tail_q<=!ingress_tail_q;
+            end
+            if(ingress_pop) ingress_head_q<=!ingress_head_q;
+            case({ingress_push,ingress_pop})
+                2'b10:ingress_count_q<=ingress_count_q+1'b1;
+                2'b01:ingress_count_q<=ingress_count_q-1'b1;
+                default: ;
+            endcase
+            assert(replay_used<=RETRIES) else $fatal(1,"ICache replay credits overflow");
+            assert(!retry_push || retry_count_q<RETRIES || retry_pop)
+                else $fatal(1,"ICache replay slot was not reserved");
             if(retry_pop) retry_head_q<=retry_head_q+1'b1;
             if(retry_push) begin retry_fifo_q[retry_tail_q]<=s3_q.req;retry_tail_q<=retry_tail_q+1'b1;end
             case({retry_push,retry_pop})
@@ -273,7 +321,7 @@ module ICache
                 default: ;
             endcase
             assert(int'(retry_count_q)<=RETRIES);
-            if(v3_q && !stale && !hit && !fault && s3_ready) begin
+            if(v3_q && !stale && !hit && !fault && s3_complete) begin
                 waiter_valid_q[free_waiter]<=1;waiter_ready_q[free_waiter]<=0;waiter_req_q[free_waiter]<=s3_q.req;
                 waiter_line_q[free_waiter]<={s3_q.pa[PADDR_W-1:6],6'b0};waiter_age_q[free_waiter]<=age_q;age_q<=age_q+1;
                 // A same-cycle fill may complete the merged waiter immediately.
@@ -292,16 +340,16 @@ module ICache
                     version_q[fill_bank][fill_set]<=version_q[fill_bank][fill_set]+1;
                 end
             end
-            if(v3_q && !stale && hit && !fault && s3_ready) tags_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)][hit_way].pf<=0;
-            if(v3_q && !stale && hit && s3_ready) plru_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)]<=
+            if(v3_q && !stale && hit && !fault && s3_complete) tags_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)][hit_way].pf<=0;
+            if(v3_q && !stale && hit && s3_complete) plru_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)]<=
                 touch(plru_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)],hit_way);
             if(inv_all_i) begin
-                assert(mshr_idle);v1_q<=0;v2_q<=0;v3_q<=0;retry_count_q<=0;retry_head_q<=0;retry_tail_q<=0;xlate_saved_q<=0;
+                assert(mshr_idle);v1_q<=0;v2_q<=0;v3_q<=0;retry_count_q<=0;retry_head_q<=0;retry_tail_q<=0;xlate_saved_q<=0;ingress_count_q<=0;ingress_head_q<=0;ingress_tail_q<=0;
                 for(int b=0;b<BANKS;b++) for(int s=0;s<SETS;s++) for(int w=0;w<WAYS;w++) tags_q[b][s][w]<='0;
             end
         end
     end
-    assign idle_o=mshr_idle && !v1_q && !v2_q && !v3_q && !retry_valid_q && !waiters_busy();
+    assign idle_o=mshr_idle && !v1_q && !v2_q && !v3_q && !retry_valid_q && ingress_count_q==0 && !pf_pending_q && !waiters_busy();
     function automatic logic waiters_busy();
         logic busy;busy=0;for(int n=0;n<WAITERS;n++) busy|=waiter_valid_q[n];return busy;
     endfunction

@@ -33,8 +33,7 @@ module fetch_prefetcher import o3_types_pkg::*; #(
     ftq_pf_ready_o=pf_req_ready_i;
     if(pf_req_ready_i) begin
      perf_o[PE_XLATE_REUSE]=PERF_INC_W'(xlate_on);
-     if(pf_resp_i.valid && pf_resp_i.status==PF_ISSUED) perf_o[PE_PF_ISSUED]=1;
-     else perf_o[PE_PF_FILTERED]=1;
+
     end
    end else if(probe_match) begin
     if(xprobe_resp_i.valid) begin
@@ -46,6 +45,12 @@ module fetch_prefetcher import o3_types_pkg::*; #(
     perf_o[PE_PF_XLATE_PROBE]=PERF_INC_W'(xprobe_grant_i);
    end
    if(ftq_pf_ready_o && !csr_i.fe_feat.pf_dis) perf_o[PE_PF_CANDIDATE]=1;
+  end
+  // ICache acknowledges buffer admission first, and reports its eventual
+  // hit/inflight/permission/MSHR decision independently in a later cycle.
+  if(!rst_i && pf_resp_i.valid) begin
+   if(pf_resp_i.status==PF_ISSUED) perf_o[PE_PF_ISSUED]=1;
+   else perf_o[PE_PF_FILTERED]+=PERF_INC_W'(1);
   end
  end
  assign consume=active && ftq_pf_ready_o;
