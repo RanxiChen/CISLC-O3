@@ -156,19 +156,24 @@ module ras
         end
     end
 
-    // 恢复优先。双写同位置只出现在深度为 1 或 pop-push，后写的正确地址胜出。
-    // 下一周期组合读从更新后的寄存器数组取值，覆盖写回后的栈顶无需等待另一拍。
-    always_ff @(posedge clk_i) begin
-        if (rst_i) begin
-            top_idx_q <= RAS_PTR_W'(DEPTH - 1);
-            count_q <= '0;
-            for (int i = 0; i < DEPTH; i++) stack_q[i] <= '0;
-        end else if (recover_valid_i || op_valid_i) begin
-            top_idx_q <= next_idx;
-            count_q <= next_count;
-            if (repair_we) stack_q[base_idx] <= recover_ckpt_i.top_addr;
-            if (push_we) stack_q[push_idx] <= push_addr;
+    // Fixed physical-row drivers. Decode both candidate write positions
+    // before the late action arrives; corrected push wins over top repair.
+    for(genvar row=0;row<DEPTH;row++) begin : g_stack_row
+        logic at_base,at_next,row_push;
+        assign at_base=base_idx==RAS_PTR_W'(row);
+        assign at_next=inc_idx(base_idx)==RAS_PTR_W'(row);
+        assign row_push=(recover_valid_i || op_valid_i)
+            && ((action==RAS_PUSH && at_next) ||
+                (action==RAS_POP_PUSH && (base_count=='0 ? at_next:at_base)));
+        always_ff @(posedge clk_i) begin
+            if(rst_i) stack_q[row]<='0;
+            else if(row_push) stack_q[row]<=push_addr;
+            else if(repair_we && at_base) stack_q[row]<=recover_ckpt_i.top_addr;
         end
+    end
+    always_ff @(posedge clk_i) begin
+        if(rst_i) begin top_idx_q<=RAS_PTR_W'(DEPTH-1);count_q<='0;end
+        else if(recover_valid_i || op_valid_i) begin top_idx_q<=next_idx;count_q<=next_count;end
     end
 
     assign recover_done_o = recover_valid_i && !rst_i;

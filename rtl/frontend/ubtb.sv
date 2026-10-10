@@ -91,58 +91,53 @@ module ubtb
 
     assign train_ready_o = !rst_i;
 
-    // 组合快路径：从实际入口槽向后才允许采用所存的单个目标。
+    // Fully associative tag comparators with a fixed first-hit one-hot select.
+    // Owner eligibility is computed per row before the late tag result arrives.
+    vaddr_t lookup_region;
+    fetch_slot_t lookup_entry;
+    tag_t lookup_tag;
+    logic [ENTRIES-1:0] lookup_hits,lookup_pick,owner_pick;
+    bpu_pred_t owner_payload[ENTRIES],owner_prediction;
+    assign lookup_region=(lookup_pc_i >> REGION_SHIFT) << REGION_SHIFT;
+    assign lookup_entry=fetch_slot_t'(lookup_pc_i[REGION_SHIFT-1:1]);
+    assign lookup_tag=tag_of(lookup_region);
+    for(genvar idx=0;idx<ENTRIES;idx++) begin : g_fast_row
+        assign lookup_hits[idx]=valid_q[idx] && entry_q[idx].tag==lookup_tag;
+        if(idx==0) assign lookup_pick[idx]=lookup_hits[idx];
+        else assign lookup_pick[idx]=lookup_hits[idx] && !(|lookup_hits[idx-1:0]);
+        assign owner_pick[idx]=lookup_pick[idx] && entry_q[idx].owner_valid
+            && entry_q[idx].cfi_slot>=lookup_entry
+            && (entry_q[idx].cfi_type==CFI_JAL || entry_q[idx].cfi_type==CFI_JALR
+                || (entry_q[idx].cfi_type==CFI_BR && entry_q[idx].br_ctr[1]));
+        always_comb begin
+            owner_payload[idx]='0;
+            owner_payload[idx].cfi_valid=1;
+            owner_payload[idx].cfi_slot=entry_q[idx].cfi_slot;
+            owner_payload[idx].cfi_type=entry_q[idx].cfi_type;
+            owner_payload[idx].ras_action=entry_q[idx].ras_action;
+            owner_payload[idx].raw_pred_taken=1;
+            owner_payload[idx].cfi_is_rvc=entry_q[idx].cfi_is_rvc;
+            owner_payload[idx].is_edge=entry_q[idx].is_edge;
+            owner_payload[idx].cfi_target=entry_q[idx].target;
+            owner_payload[idx].next_pc=entry_q[idx].target;
+        end
+    end
     always_comb begin : lookup
-        vaddr_t region_base;
-        fetch_slot_t entry_slot;
-        tag_t lookup_tag;
-        ubtb_entry_t selected;
-        logic selected_valid;
-        logic take_owner;
-
-        region_base = (lookup_pc_i >> REGION_SHIFT) << REGION_SHIFT;
-        entry_slot = fetch_slot_t'(lookup_pc_i[REGION_SHIFT-1:1]);
-        lookup_tag = tag_of(region_base);
-        selected = '0;
-        selected_valid = 1'b0;
-        take_owner = 1'b0;
-        hit_o = 1'b0;
-        pred_o = '0;
-        perf_o = '0;
-
-        if (lookup_valid_i && !stall_i && !rst_i) begin
-            pred_o.region_base = region_base;
-            pred_o.entry_slot = entry_slot;
-            pred_o.next_pc = region_base + vaddr_t'(CFG.fetch.region_bytes);
-            perf_o[PE_UBTB_LOOKUP] = 1;
-
-            for (int idx = 0; idx < ENTRIES; idx++) begin
-                if (!selected_valid && valid_q[idx] && entry_q[idx].tag == lookup_tag) begin
-                    selected = entry_q[idx];
-                    selected_valid = 1'b1;
-                end
+        owner_prediction='0;pred_o='0;perf_o='0;hit_o=0;
+        for(int idx=0;idx<ENTRIES;idx++)
+            owner_prediction |= owner_payload[idx] & {$bits(bpu_pred_t){owner_pick[idx]}};
+        if(lookup_valid_i && !stall_i && !rst_i) begin
+            pred_o=owner_prediction;
+            pred_o.region_base=lookup_region;
+            pred_o.entry_slot=lookup_entry;
+            if(!owner_prediction.cfi_valid) pred_o.next_pc=lookup_region+vaddr_t'(CFG.fetch.region_bytes);
+            for(int idx=0;idx<ENTRIES;idx++) begin
+                pred_o.br_mask |= entry_q[idx].br_mask & {REGION_SLOTS{lookup_pick[idx]}};
+                pred_o.jal_mask |= entry_q[idx].jal_mask & {REGION_SLOTS{lookup_pick[idx]}};
             end
-            hit_o = selected_valid;
-            if (selected_valid) begin
-                perf_o[PE_UBTB_HIT] = 1;
-                pred_o.br_mask = selected.br_mask;
-                pred_o.jal_mask = selected.jal_mask;
-                take_owner = selected.owner_valid && selected.cfi_slot >= entry_slot &&
-                             ((selected.cfi_type == CFI_JAL) ||
-                              (selected.cfi_type == CFI_JALR) ||
-                              ((selected.cfi_type == CFI_BR) && selected.br_ctr[1]));
-                if (take_owner) begin
-                    pred_o.cfi_valid = 1'b1;
-                    pred_o.cfi_slot = selected.cfi_slot;
-                    pred_o.cfi_type = selected.cfi_type;
-                    pred_o.ras_action = selected.ras_action;
-                    pred_o.raw_pred_taken = 1'b1;
-                    pred_o.cfi_is_rvc = selected.cfi_is_rvc;
-                    pred_o.is_edge = selected.is_edge;
-                    pred_o.cfi_target = selected.target;
-                    pred_o.next_pc = selected.target;
-                end
-            end
+            hit_o=|lookup_hits;
+            perf_o[PE_UBTB_LOOKUP]=1;
+            perf_o[PE_UBTB_HIT]=PERF_INC_W'(hit_o);
         end
     end
 

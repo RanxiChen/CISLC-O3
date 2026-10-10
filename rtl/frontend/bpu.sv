@@ -158,12 +158,35 @@ module bpu
         end
     end
 
+    // PC arithmetic is independent of the CAM hit. Compute each physical
+    // slot's branch/return PC from the registered prediction PC, then select.
+    vaddr_t fast_region,fast_branch_pc,fast_push_pc,fast_edge_pc;
+    vaddr_t branch_at[REGION_SLOTS],push_short_at[REGION_SLOTS],push_long_at[REGION_SLOTS];
+    assign fast_region=(pred_pc_q >> $clog2(REGION_BYTES)) << $clog2(REGION_BYTES);
+    assign fast_edge_pc=fast_region-vaddr_t'(2);
+    for(genvar slot=0;slot<REGION_SLOTS;slot++) begin : g_fast_pc
+        assign branch_at[slot]=fast_region+vaddr_t'(2*slot);
+        assign push_short_at[slot]=fast_region+vaddr_t'(2*slot+2);
+        assign push_long_at[slot]=fast_region+vaddr_t'(2*slot+4);
+    end
+    always_comb begin
+        fast_branch_pc='0;fast_push_pc='0;
+        for(int slot=0;slot<REGION_SLOTS;slot++) begin
+            fast_branch_pc |= branch_at[slot] & {VADDR_W{alloc_pred_o.cfi_slot==fetch_slot_t'(slot)}};
+            fast_push_pc |= (alloc_pred_o.cfi_is_rvc ? push_short_at[slot]:push_long_at[slot])
+                & {VADDR_W{alloc_pred_o.cfi_slot==fetch_slot_t'(slot)}};
+        end
+        if(alloc_pred_o.is_edge) begin
+            fast_branch_pc=fast_edge_pc;
+            fast_push_pc=alloc_pred_o.cfi_is_rvc ? fast_region:fast_region+vaddr_t'(2);
+        end
+    end
+
     branch_history #(.CFG(CFG)) u_history (
         .clk_i(clk_i), .rst_i(rst_i),
         .push_valid_i(alloc_fire && alloc_pred_o.cfi_valid &&
                       alloc_pred_o.cfi_type == CFI_BR && !alloc_pred_o.target_missing),
-        .push_branch_pc_i((alloc_pred_o.is_edge ? alloc_pred_o.region_base-vaddr_t'(2)
-            : alloc_pred_o.region_base+vaddr_t'(2*int'(alloc_pred_o.cfi_slot)))),
+        .push_branch_pc_i(fast_branch_pc),
         .push_target_pc_i(alloc_pred_o.cfi_target), .cur_o(alloc_snapshot_o),
         .restore_valid_i(hist_restore_valid_i), .restore_snapshot_i(hist_restore_snapshot_i),
         .restore_inject_i(hist_restore_inject_i),
@@ -174,9 +197,7 @@ module bpu
         .clk_i(clk_i), .rst_i(rst_i),
         .op_valid_i(alloc_fire && alloc_pred_o.cfi_valid && alloc_pred_o.ras_action != RAS_NONE),
         .op_action_i(alloc_pred_o.ras_action),
-        .op_push_addr_i((alloc_pred_o.is_edge ? alloc_pred_o.region_base-vaddr_t'(2)
-            : alloc_pred_o.region_base+vaddr_t'(2*int'(alloc_pred_o.cfi_slot)))
-            +vaddr_t'(alloc_pred_o.cfi_is_rvc ? 2:4)),
+        .op_push_addr_i(fast_push_pc),
         .top_o(ras_top), .top_valid_o(ras_top_valid), .ckpt_o(alloc_ras_ckpt_o),
         .recover_valid_i(ras_recover_valid_i), .recover_id_i(ras_recover_id_i),
         .recover_ckpt_i(ras_recover_ckpt_i), .recover_fix_i(ras_fix_i),

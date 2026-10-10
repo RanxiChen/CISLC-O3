@@ -6,7 +6,7 @@ set -uo pipefail
 mkdir -p "$EVIDENCE_DIR"
 bash scripts/run-frontend-structural-checks.sh
 failed=$?
-names=(fetch_buffer tage bpu bpu_slow_check ftq redirect_arbiter loop_predictor main_btb)
+names=(ubtb ras branch_history fetch_buffer tage bpu bpu_slow_check ftq redirect_arbiter loop_predictor main_btb)
 for name in "${names[@]}"; do
     make -j4 -C "sim/cocotb/$name" sim TEST_SEED="${TEST_SEED:-1}" \
         EXTRA_ARGS='--timing --assert -Wno-fatal' \
@@ -32,7 +32,7 @@ for path in sorted(root.glob("*.xml")):
     results[path.stem]=result
     failed |= not cases or result["failures"]>0 or result["skips"]>0
 required={"ifu_f0", "ifu_f1", "fetch_return_queue", "fetch_prefetcher", "icache",
-          "fetch_buffer", "fetch_buffer_payload", "tage", "bpu", "bpu_slow_check", "ftq", "redirect_arbiter", "loop_predictor", "main_btb"}
+          "ubtb", "ras", "branch_history", "fetch_buffer", "fetch_buffer_payload", "tage", "bpu", "bpu_slow_check", "ftq", "redirect_arbiter", "loop_predictor", "main_btb"}
 missing=required-set(results)
 (root/"test-results.json").write_text(json.dumps({"suites":results,"missing":sorted(missing)},indent=2)+"\n")
 sys.exit(int(failed or bool(missing)))
