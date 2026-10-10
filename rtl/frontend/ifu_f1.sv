@@ -93,139 +93,152 @@ module ifu_f1
     // PE_PREDECODE_REDIRECT belongs to the arbiter's accept edge (U13).
     assign perf_o = '0;
 
-    always_comb begin
-        int unsigned count;
-        int start_pos, end_pos, exit_pos;
-        logic stop_scan;
-        decoded_cfi_t decoded;
-        logic is_exit, covers_exit, earlier, return_target_valid;
-        logic actual_target_valid, fix_valid, fix_taken, fix_hist;
-        vaddr_t actual_target, fix_target;
-        ras_action_e fix_ras;
+    fetch_entry_t lane_data[F0_SLOTS];
+    redirect_req_t lane_req[F0_SLOTS];
+    logic [F0_SLOTS-1:0] lane_stop, emitted, exception_emitted;
+    logic [$clog2(F0_SLOTS+1)-1:0] lane_rank[F0_SLOTS];
+    for (genvar lane=0; lane<F0_SLOTS; lane++) begin : g_predecode_lane
+        always_comb begin
+            int start_pos, end_pos, exit_pos;
+            decoded_cfi_t decoded;
+            logic is_exit, covers_exit, earlier, return_target_valid;
+            logic actual_target_valid, fix_valid, fix_taken, fix_hist;
+            vaddr_t actual_target, fix_target;
+            ras_action_e fix_ras;
+            decoded='0; start_pos=0; end_pos=0;
+            exit_pos=in_brief_i.pred.is_edge ? -1:int'(in_brief_i.pred.cfi_slot);
+            is_exit=0; covers_exit=0; earlier=0; return_target_valid=0;
+            actual_target_valid=0; actual_target='0;
+            fix_valid=0; fix_taken=0; fix_hist=0; fix_target='0; fix_ras=RAS_NONE;
+            lane_data[lane]='0; lane_req[lane]='0; lane_stop[lane]=0;
+            if (!rst_i && !kill_i.valid && in_beat_valid_i && in_valid_i[lane]) begin
+                decoded = decoded_at[lane];
+                start_pos=in_i[lane].is_edge ? -1:int'(in_i[lane].slot);
+                end_pos=start_pos+(in_i[lane].inst_len==4 ? 1:0);
+                is_exit = in_brief_i.pred.cfi_valid && start_pos==exit_pos;
+                covers_exit = in_brief_i.pred.cfi_valid && end_pos>=exit_pos;
+                earlier = !in_brief_i.pred.cfi_valid || start_pos<exit_pos;
+                return_target_valid = decoded.type_id == CFI_JALR
+                    && decoded.ras_action inside {RAS_POP, RAS_POP_PUSH}
+                    && in_brief_i.ras_ckpt.count != '0;
+                actual_target_valid = decoded.type_id == CFI_JAL || return_target_valid;
+                actual_target = return_target_valid ? in_brief_i.ras_ckpt.top_addr
+                                                    : decoded.direct_target;
+                fix_valid = 1'b0;
+                fix_taken = 1'b0;
+                fix_hist = 1'b0;
+                fix_target = in_i[lane].pc + vaddr_t'(in_i[lane].inst_len);
+                fix_ras = RAS_NONE;
 
-        count = 0;
-        start_pos=0;end_pos=0;
-        exit_pos=in_brief_i.pred.is_edge ? -1:int'(in_brief_i.pred.cfi_slot);
-        stop_scan = 1'b0;
-        pd_req = '0;
-        decoded = '0;
-        is_exit = 1'b0;
-        covers_exit = 1'b0;
-        earlier = 1'b0;
-        return_target_valid = 1'b0;
-        actual_target_valid = 1'b0;
-        actual_target = '0;
-        fix_valid = 1'b0;
-        fix_taken = 1'b0;
-        fix_hist = 1'b0;
-        fix_target = '0;
-        fix_ras = RAS_NONE;
-        out_valid_o = '0;
-        for (int lane = 0; lane < F1_W; lane++) out_o[lane] = '0;
-        if (!rst_i && !kill_i.valid && in_beat_valid_i) begin
-            for (int slot = 0; slot < F0_SLOTS; slot++) begin
-                if (in_valid_i[slot] && count < F1_W && !stop_scan) begin
-                    decoded = decoded_at[slot];
-                    start_pos=in_i[slot].is_edge ? -1:int'(in_i[slot].slot);
-                    end_pos=start_pos+(in_i[slot].inst_len==4 ? 1:0);
-                    is_exit = in_brief_i.pred.cfi_valid && start_pos==exit_pos;
-                    covers_exit = in_brief_i.pred.cfi_valid && end_pos>=exit_pos;
-                    earlier = !in_brief_i.pred.cfi_valid || start_pos<exit_pos;
-                    return_target_valid = decoded.type_id == CFI_JALR
-                        && decoded.ras_action inside {RAS_POP, RAS_POP_PUSH}
-                        && in_brief_i.ras_ckpt.count != '0;
-                    actual_target_valid = decoded.type_id == CFI_JAL || return_target_valid;
-                    actual_target = return_target_valid ? in_brief_i.ras_ckpt.top_addr
-                                                        : decoded.direct_target;
-                    fix_valid = 1'b0;
-                    fix_taken = 1'b0;
-                    fix_hist = 1'b0;
-                    fix_target = in_i[slot].pc + vaddr_t'(in_i[slot].inst_len);
-                    fix_ras = RAS_NONE;
-
-                    // Ordered a/b > c > d > e > f (U19). No rule examines an
-                    // exception item, or an item following it (U10/U20).
-                    if (!in_i[slot].exc_valid) begin
-                        if (earlier && actual_target_valid) begin // a / b
-                            fix_valid = 1'b1;
+                // Ordered a/b > c > d > e > f (U19). No rule examines an
+                // exception item, or an item following it (U10/U20).
+                if (!in_i[lane].exc_valid) begin
+                    if (earlier && actual_target_valid) begin // a / b
+                        fix_valid = 1'b1;
+                        fix_taken = 1'b1;
+                        fix_target = actual_target;
+                        fix_ras = decoded.ras_action;
+                    end else if (covers_exit && (!is_exit || decoded.type_id == CFI_NONE)) begin // c
+                        fix_valid = 1'b1;
+                    end else if (is_exit && decoded.type_id != in_brief_i.pred.cfi_type) begin // d
+                        fix_valid = 1'b1;
+                        // A(i) is recomputed without a/b's position condition.
+                        if (actual_target_valid) begin
                             fix_taken = 1'b1;
                             fix_target = actual_target;
                             fix_ras = decoded.ras_action;
-                        end else if (covers_exit && (!is_exit || decoded.type_id == CFI_NONE)) begin // c
-                            fix_valid = 1'b1;
-                        end else if (is_exit && decoded.type_id != in_brief_i.pred.cfi_type) begin // d
-                            fix_valid = 1'b1;
-                            // A(i) is recomputed without a/b's position condition.
-                            if (actual_target_valid) begin
-                                fix_taken = 1'b1;
-                                fix_target = actual_target;
-                                fix_ras = decoded.ras_action;
-                            end
-                        end else if (is_exit && decoded.type_id inside {CFI_BR, CFI_JAL}
-                            && (in_brief_i.pred.cfi_target != decoded.direct_target
-                                || (decoded.type_id == CFI_JAL
-                                    && (in_brief_i.pred.ras_action != decoded.ras_action
-                                        || (decoded.ras_action inside {RAS_PUSH,RAS_POP_PUSH}
-                                            && in_brief_i.pred.cfi_is_rvc != in_i[slot].is_rvc))))) begin // e
-                            fix_valid = 1'b1;
-                            fix_taken = 1'b1;
-                            fix_target = decoded.direct_target;
-                            fix_ras = decoded.ras_action;
-                            fix_hist = decoded.type_id == CFI_BR;
-                        end else if (is_exit && decoded.type_id == CFI_JALR
-                            && (in_brief_i.pred.ras_action != decoded.ras_action
-                                || (decoded.ras_action inside {RAS_PUSH,RAS_POP_PUSH}
-                                    && in_brief_i.pred.cfi_is_rvc != in_i[slot].is_rvc))) begin // f
-                            fix_valid = 1'b1;
-                            fix_taken = 1'b1;
-                            fix_target = return_target_valid ? actual_target : in_brief_i.pred.next_pc;
-                            fix_ras = decoded.ras_action;
                         end
+                    end else if (is_exit && decoded.type_id inside {CFI_BR, CFI_JAL}
+                        && (in_brief_i.pred.cfi_target != decoded.direct_target
+                            || (decoded.type_id == CFI_JAL
+                                && (in_brief_i.pred.ras_action != decoded.ras_action
+                                    || (decoded.ras_action inside {RAS_PUSH,RAS_POP_PUSH}
+                                        && in_brief_i.pred.cfi_is_rvc != in_i[lane].is_rvc))))) begin // e
+                        fix_valid = 1'b1;
+                        fix_taken = 1'b1;
+                        fix_target = decoded.direct_target;
+                        fix_ras = decoded.ras_action;
+                        fix_hist = decoded.type_id == CFI_BR;
+                    end else if (is_exit && decoded.type_id == CFI_JALR
+                        && (in_brief_i.pred.ras_action != decoded.ras_action
+                            || (decoded.ras_action inside {RAS_PUSH,RAS_POP_PUSH}
+                                && in_brief_i.pred.cfi_is_rvc != in_i[lane].is_rvc))) begin // f
+                        fix_valid = 1'b1;
+                        fix_taken = 1'b1;
+                        fix_target = return_target_valid ? actual_target : in_brief_i.pred.next_pc;
+                        fix_ras = decoded.ras_action;
                     end
-
-                    out_o[count].valid = 1'b1;
-                    out_o[count].pc = in_i[slot].pc;
-                    out_o[count].raw_instruction = in_i[slot].raw_instruction;
-                    out_o[count].instruction = in_i[slot].instruction;
-                    out_o[count].inst_len = in_i[slot].inst_len;
-                    out_o[count].is_rvc = in_i[slot].is_rvc;
-                    out_o[count].is_edge = in_i[slot].is_edge;
-                    out_o[count].exception_valid = in_i[slot].exc_valid;
-                    out_o[count].exception_cause = in_i[slot].exc_cause;
-                    out_o[count].exception_tval = in_i[slot].exc_tval;
-                    out_o[count].ftq_id = in_i[slot].ftq_id;
-                    out_o[count].slot = in_i[slot].slot;
-                    out_o[count].pred_taken = fix_valid ? fix_taken : is_exit;
-                    out_o[count].predicted_next_pc = fix_valid ? fix_target
-                        : (is_exit ? in_brief_i.pred.next_pc : in_i[slot].pc + vaddr_t'(in_i[slot].inst_len));
-                    if (fix_valid) begin
-                        pd_req.valid = 1'b1;
-                        pd_req.src = REDIR_PREDECODE;
-                        pd_req.ftq_id = in_i[slot].ftq_id;
-                        pd_req.slot = in_i[slot].slot;
-                        pd_req.kill_self = 1'b0;
-                        pd_req.target_pc = fix_target;
-                        pd_req.hist_inject = fix_hist;
-                        pd_req.hist_branch_pc = in_i[slot].pc;
-                        pd_req.hist_target_pc = fix_target;
-                        pd_req.ras_fix = fix_ras;
-                        pd_req.ras_push_addr = in_i[slot].pc + vaddr_t'(in_i[slot].inst_len);
-                    end
-                    out_valid_o[count] = 1'b1;
-                    count++;
-                    stop_scan = fix_valid || in_i[slot].exc_valid || covers_exit;
                 end
+
+                lane_data[lane].valid = 1'b1;
+                lane_data[lane].pc = in_i[lane].pc;
+                lane_data[lane].raw_instruction = in_i[lane].raw_instruction;
+                lane_data[lane].instruction = in_i[lane].instruction;
+                lane_data[lane].inst_len = in_i[lane].inst_len;
+                lane_data[lane].is_rvc = in_i[lane].is_rvc;
+                lane_data[lane].is_edge = in_i[lane].is_edge;
+                lane_data[lane].exception_valid = in_i[lane].exc_valid;
+                lane_data[lane].exception_cause = in_i[lane].exc_cause;
+                lane_data[lane].exception_tval = in_i[lane].exc_tval;
+                lane_data[lane].ftq_id = in_i[lane].ftq_id;
+                lane_data[lane].slot = in_i[lane].slot;
+                lane_data[lane].pred_taken = fix_valid ? fix_taken : is_exit;
+                lane_data[lane].predicted_next_pc = fix_valid ? fix_target
+                    : (is_exit ? in_brief_i.pred.next_pc : in_i[lane].pc + vaddr_t'(in_i[lane].inst_len));
+                if (fix_valid) begin
+                    lane_req[lane].valid = 1'b1;
+                    lane_req[lane].src = REDIR_PREDECODE;
+                    lane_req[lane].ftq_id = in_i[lane].ftq_id;
+                    lane_req[lane].slot = in_i[lane].slot;
+                    lane_req[lane].kill_self = 1'b0;
+                    lane_req[lane].target_pc = fix_target;
+                    lane_req[lane].hist_inject = fix_hist;
+                    lane_req[lane].hist_branch_pc = in_i[lane].pc;
+                    lane_req[lane].hist_target_pc = fix_target;
+                    lane_req[lane].ras_fix = fix_ras;
+                    lane_req[lane].ras_push_addr = in_i[lane].pc + vaddr_t'(in_i[lane].inst_len);
+                end
+                lane_stop[lane] = fix_valid || in_i[lane].exc_valid || covers_exit;
             end
-            // c-prime can apply to an empty beat; no output instruction is required.
-            if (!pd_req.valid && in_last_i && in_edge_pend_i
-                && in_brief_i.pred.cfi_valid && !in_brief_i.pred.is_edge
-                && in_brief_i.pred.cfi_slot==fetch_slot_t'(REGION_SLOTS-1)
-                && !(count!=0 && out_o[count-1].exception_valid)) begin
-                pd_req.valid=1;pd_req.src=REDIR_PREDECODE;
-                pd_req.ftq_id=in_brief_i.ftq_id;pd_req.slot=fetch_slot_t'(REGION_SLOTS-1);
-                pd_req.target_pc=in_brief_i.pred.region_base+vaddr_t'(REGION_BYTES);
+        end
+        always_comb begin
+            lane_rank[lane]='0;
+            for (int k=0; k<lane; k++) lane_rank[lane] += $clog2(F0_SLOTS+1)'(in_valid_i[k]);
+        end
+        if (lane == 0) assign emitted[lane] = in_valid_i[lane] && !rst_i && !kill_i.valid && in_beat_valid_i;
+        else assign emitted[lane] = in_valid_i[lane] && !(|lane_stop[lane-1:0])
+            && int'(lane_rank[lane]) < F1_W && !rst_i && !kill_i.valid && in_beat_valid_i;
+        assign exception_emitted[lane] = emitted[lane] && in_i[lane].exc_valid;
+    end
+    // Fixed one-hot compaction; no dynamic writes to a wide output array.
+    for (genvar out_lane=0; out_lane<F1_W; out_lane++) begin : g_output_lane
+        logic last_lane;
+        logic [F0_SLOTS-1:0] picks;
+        for (genvar lane=0; lane<F0_SLOTS; lane++)
+            assign picks[lane]=emitted[lane] && int'(lane_rank[lane]) == out_lane;
+        assign out_valid_o[out_lane]=|picks;
+        if (out_lane == F1_W-1) assign last_lane = 1'b1;
+        else assign last_lane = !(|out_valid_o[F1_W-1:out_lane+1]);
+        always_comb begin
+            out_o[out_lane]='0;
+            for (int lane=0; lane<F0_SLOTS; lane++) begin
+                out_o[out_lane] |= lane_data[lane] & {$bits(fetch_entry_t){picks[lane]}};
             end
-            if (count != 0 && (in_last_i || pd_req.valid)) out_o[count-1].ftq_last = 1'b1;
+            out_o[out_lane].ftq_last = out_valid_o[out_lane] && last_lane && (in_last_i || pd_req.valid);
+        end
+    end
+    always_comb begin
+        pd_req='0;
+        for (int lane=0; lane<F0_SLOTS; lane++)
+            pd_req |= lane_req[lane] & {$bits(redirect_req_t){emitted[lane]}};
+        // c-prime applies even to an empty beat, unless an exception terminated it.
+        if (!rst_i && !kill_i.valid && in_beat_valid_i && !pd_req.valid
+            && in_last_i && in_edge_pend_i && in_brief_i.pred.cfi_valid
+            && !in_brief_i.pred.is_edge && in_brief_i.pred.cfi_slot==fetch_slot_t'(REGION_SLOTS-1)
+            && !(|exception_emitted)) begin
+            pd_req.valid=1; pd_req.src=REDIR_PREDECODE;
+            pd_req.ftq_id=in_brief_i.ftq_id; pd_req.slot=fetch_slot_t'(REGION_SLOTS-1);
+            pd_req.target_pc=in_brief_i.pred.region_base+vaddr_t'(REGION_BYTES);
         end
     end
 
