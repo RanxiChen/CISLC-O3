@@ -204,12 +204,16 @@ module ICache
                 age:waiter_age_q[n-WT],select:WAITERS'(1)<<(n-WT)};
             else assign choice = '0;
         end else begin : g_merge
-            assign choice = !g_waiter_tree[2*n].choice.valid ||
-                (g_waiter_tree[2*n+1].choice.valid && g_waiter_tree[2*n+1].choice.age < g_waiter_tree[2*n].choice.age)
-                ? g_waiter_tree[2*n+1].choice : g_waiter_tree[2*n].choice;
+            waiter_pick_t left, right;
+            assign left = g_waiter_tree[2*n].choice;
+            assign right = g_waiter_tree[2*n+1].choice;
+            assign choice = !left.valid || (right.valid && right.age < left.age)
+                ? right : left;
         end
     end
-    assign ready_waiter_oh=g_waiter_tree[1].choice.select & {WAITERS{g_waiter_tree[1].choice.valid}};
+    waiter_pick_t oldest_ready;
+    assign oldest_ready = g_waiter_tree[1].choice;
+    assign ready_waiter_oh=oldest_ready.select & {WAITERS{oldest_ready.valid}};
     always_comb begin
         free_waiter=-1;ready_waiter=-1;
         for(int n=0;n<WAITERS;n++) begin
