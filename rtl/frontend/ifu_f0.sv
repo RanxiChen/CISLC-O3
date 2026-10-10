@@ -34,8 +34,7 @@ module ifu_f0 import o3_types_pkg::*; #(
     ftq_pred_brief_t current_brief;
     fe_kill_t trunc_boundary;
     logic active,edge_start,finished,save_half,fire;
-    int start_pos,next_pos;
-    int exit_pos;
+    logic signed [4:0] start_pos,next_pos,exit_pos;
 
     assign current_block=hold_q.valid ? hold_q.block_data:in_i;
     assign current_brief=hold_q.valid ? hold_q.brief:in_brief_i;
@@ -48,9 +47,9 @@ module ifu_f0 import o3_types_pkg::*; #(
     assign edge_start=!hold_q.valid && pend_q.valid
         && current_block.region_base==pend_q.region_base+vaddr_t'(REGION_BYTES)
         && current_brief.pred.entry_slot==0;
-    assign start_pos=hold_q.valid ? int'(hold_q.pos)
-        : (edge_start ? -1:int'(current_brief.pred.entry_slot));
-    assign exit_pos=current_brief.pred.is_edge ? -1:int'(current_brief.pred.cfi_slot);
+    assign start_pos=hold_q.valid ? 5'(hold_q.pos)
+        : (edge_start ? -1:5'(current_brief.pred.entry_slot));
+    assign exit_pos=current_brief.pred.is_edge ? -1:5'(current_brief.pred.cfi_slot);
 
     // Decode each physical halfword before selecting the compacted lanes.
     // Only the one-bit start network is serial; no lane feeds a wide selector
@@ -58,11 +57,14 @@ module ifu_f0 import o3_types_pkg::*; #(
     logic [REGION_SLOTS-1:0] short_at, start_at;
     logic [31:0] expanded_at[REGION_SLOTS];
     logic legal_at[REGION_SLOTS];
+    vaddr_t pc_at[REGION_SLOTS],edge_pc;
+    assign edge_pc=current_block.region_base-vaddr_t'(2);
     logic [3:0] rank_at[REGION_SLOTS];
-    int first_pos;
+    logic signed [4:0] first_pos;
     assign first_pos=edge_start ? 1:start_pos;
     for(genvar hw=0;hw<REGION_SLOTS;hw++) begin : g_halfword
         wire [15:0] raw=current_block.data[hw*16 +: 16];
+        assign pc_at[hw]=current_block.region_base+vaddr_t'(2*hw);
         assign short_at[hw]=raw[1:0]!=2'b11;
         rvc_expander expand(.in_i(raw),.out_o(expanded_at[hw]),.legal_o(legal_at[hw]));
         if(hw==0) assign start_at[hw]=first_pos==0;
@@ -78,7 +80,8 @@ module ifu_f0 import o3_types_pkg::*; #(
         end
     end
     for(genvar lane=0;lane<F0_SLOTS;lane++) begin : decode_lane
-        int selected_pos;
+        logic signed [4:0] selected_pos;
+        vaddr_t selected_pc;
         logic edge_inst,short_inst;
         logic [31:0] selected_raw, selected_expanded;
         logic selected_legal,stop_out,pending_out,found;
@@ -95,7 +98,7 @@ module ifu_f0 import o3_types_pkg::*; #(
         always_comb begin
             selected_pos=REGION_SLOTS;
             selected_raw='0;selected_expanded='0;selected_legal=0;
-            selected_idx='0;found=0;
+            selected_idx='0;found=0;selected_pc='0;
             for(int hw=0;hw<REGION_SLOTS;hw++) begin
                 logic pick;
                 pick=start_at[hw] && int'(rank_at[hw])==lane+1-int'(edge_start);
@@ -104,15 +107,16 @@ module ifu_f0 import o3_types_pkg::*; #(
                 selected_raw|=32'(current_block.data >> (16*hw)) & {32{pick}};
                 selected_expanded|=expanded_at[hw] & {32{pick}};
                 selected_legal|=legal_at[hw] && pick;
+                selected_pc|=pc_at[hw] & {VADDR_W{pick}};
             end
-            if(found) selected_pos=int'(selected_idx);
+            if(found) selected_pos=5'(selected_idx);
             edge_inst=edge_start && lane==0;
-            if(edge_inst) selected_pos=-1;
+            if(edge_inst) begin selected_pos=-1;selected_pc=edge_pc;end
             short_inst=!edge_inst && selected_pos<REGION_SLOTS &&
                 selected_raw[1:0]!=2'b11;
         end
         always_comb begin
-            int end_pos;
+            logic signed [4:0] end_pos;
             end_pos=edge_inst ? 0:selected_pos+(short_inst ? 0:1);
             out_o[lane]='0;out_valid_o[lane]=0;
             stop_out=stop_in;
@@ -127,7 +131,7 @@ module ifu_f0 import o3_types_pkg::*; #(
                     out_o[lane].ftq_id=current_block.ftq_id;
                     out_o[lane].slot=edge_inst ? '0:fetch_slot_t'(selected_pos);
                     out_o[lane].is_edge=edge_inst;
-                    out_o[lane].pc=current_block.region_base+vaddr_t'(2*selected_pos);
+                    out_o[lane].pc=selected_pc;
                     out_o[lane].is_rvc=short_inst;
                     out_o[lane].inst_len=short_inst ? 3'd2:3'd4;
                     if(edge_inst) begin

@@ -54,6 +54,33 @@ module fetch_buffer
     logic [COUNT_WIDTH-1:0] count_q, count_d, survivors, incoming;
     logic [COUNT_WIDTH-1:0] free_count, deq_count;
     logic deq_fire;
+    logic [COUNT_WIDTH-1:0] free_rank[DEPTH];
+    // Parallel prefix adders: logarithmic depth for both arbitrary survivor
+    // compaction and the physical free-row rank used by all enqueue lanes.
+    localparam int PREFIX_LEVELS=$clog2(DEPTH);
+    for(genvar level=0;level<=PREFIX_LEVELS;level++) begin : g_prefix
+        logic [COUNT_WIDTH-1:0] live[DEPTH],free[DEPTH];
+        for(genvar slot=0;slot<DEPTH;slot++) begin : g_slot
+            if(level==0) begin
+                assign live[slot]=COUNT_WIDTH'(keep[slot]);
+                assign free[slot]=COUNT_WIDTH'(!used_q[slot]);
+            end else if(slot>=(1<<(level-1))) begin
+                assign live[slot]=g_prefix[level-1].live[slot]+g_prefix[level-1].live[slot-(1<<(level-1))];
+                assign free[slot]=g_prefix[level-1].free[slot]+g_prefix[level-1].free[slot-(1<<(level-1))];
+            end else begin
+                assign live[slot]=g_prefix[level-1].live[slot];
+                assign free[slot]=g_prefix[level-1].free[slot];
+            end
+        end
+    end
+    assign survivors=g_prefix[PREFIX_LEVELS].live[DEPTH-1];
+    for(genvar slot=0;slot<DEPTH;slot++) begin : g_rank
+        if(slot==0) begin assign rank[slot]='0;assign free_rank[slot]='0;end
+        else begin
+            assign rank[slot]=g_prefix[PREFIX_LEVELS].live[slot-1];
+            assign free_rank[slot]=g_prefix[PREFIX_LEVELS].free[slot-1];
+        end
+    end
 
     assign free_count = COUNT_WIDTH'(DEPTH) - count_q;
     assign enq_ready_o = !rst_i && !flush_i && !kill_i.valid
@@ -72,36 +99,30 @@ module fetch_buffer
     end
 
     always_comb begin
-        logic [DEPTH-1:0] available;
-        survivors = '0;
         keep = '0;
         for (int src = 0; src < DEPTH; src++) begin
-            rank[src] = survivors;
             keep[src] = src < int'(count_q) &&
                 (kill_i.valid ? !fe_killed_by(kill_i, entry_id_q[order_q[src]],
                                                 entry_slot_q[order_q[src]], ftq_head_i)
                               : !(deq_fire && src < int'(deq_count)));
-            survivors += COUNT_WIDTH'(keep[src]);
         end
-        available = ~used_q;
         incoming = '0;
         append = '0;
         alloc_idx = '{default:'0};
         append_rank = '{default:'0};
         for (int lane = 0; lane < ENQ_WIDTH; lane++) begin
-            logic found;
-            found = 1'b0;
             append_rank[lane] = incoming;
             append[lane] = enq_ready_o && enq_valid_i[lane];
-            incoming += COUNT_WIDTH'(append[lane]);
+            incoming += COUNT_WIDTH'(enq_valid_i[lane]);
+            // The kth valid lane selects the kth already-free physical row.
+            // Allocation depends only on registered occupancy and lane rank;
+            // late ready/kill control gates the write, not a priority chain.
             for (int slot = 0; slot < DEPTH; slot++) begin
-                if (append[lane] && available[slot] && !found) begin
-                    found = 1'b1;
-                    alloc_idx[lane] = index_t'(slot);
-                    available[slot] = 1'b0;
-                end
+                if (!used_q[slot] && free_rank[slot]==append_rank[lane])
+                    alloc_idx[lane] |= index_t'(slot);
             end
         end
+        if(!enq_ready_o) incoming='0;
         count_d = survivors + incoming;
     end
 

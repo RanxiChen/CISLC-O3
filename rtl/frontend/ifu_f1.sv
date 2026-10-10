@@ -99,22 +99,23 @@ module ifu_f1
     logic [$clog2(F0_SLOTS+1)-1:0] lane_rank[F0_SLOTS];
     for (genvar lane=0; lane<F0_SLOTS; lane++) begin : g_predecode_lane
         always_comb begin
-            int start_pos, end_pos, exit_pos;
+            logic [3:0] start_pos, end_pos, exit_pos;
             decoded_cfi_t decoded;
             logic is_exit, covers_exit, earlier, return_target_valid;
             logic actual_target_valid, fix_valid, fix_taken, fix_hist;
             vaddr_t actual_target, fix_target;
             ras_action_e fix_ras;
             decoded='0; start_pos=0; end_pos=0;
-            exit_pos=in_brief_i.pred.is_edge ? -1:int'(in_brief_i.pred.cfi_slot);
+            // Position 0 denotes the edge halfword; physical slot k is k+1.
+            exit_pos=in_brief_i.pred.is_edge ? 4'd0:4'(in_brief_i.pred.cfi_slot)+4'd1;
             is_exit=0; covers_exit=0; earlier=0; return_target_valid=0;
             actual_target_valid=0; actual_target='0;
             fix_valid=0; fix_taken=0; fix_hist=0; fix_target='0; fix_ras=RAS_NONE;
             lane_data[lane]='0; lane_req[lane]='0; lane_stop[lane]=0;
             if (!rst_i && !kill_i.valid && in_beat_valid_i && in_valid_i[lane]) begin
                 decoded = decoded_at[lane];
-                start_pos=in_i[lane].is_edge ? -1:int'(in_i[lane].slot);
-                end_pos=start_pos+(in_i[lane].inst_len==4 ? 1:0);
+                start_pos=in_i[lane].is_edge ? 4'd0:4'(in_i[lane].slot)+4'd1;
+                end_pos=start_pos+4'(in_i[lane].inst_len==4);
                 is_exit = in_brief_i.pred.cfi_valid && start_pos==exit_pos;
                 covers_exit = in_brief_i.pred.cfi_valid && end_pos>=exit_pos;
                 earlier = !in_brief_i.pred.cfi_valid || start_pos<exit_pos;
