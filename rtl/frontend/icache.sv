@@ -197,7 +197,9 @@ module ICache
     localparam int WA=$clog2(WAITERS), WT=1<<WA;
     typedef struct packed {logic valid;logic [31:0] age;logic [WAITERS-1:0] select;} waiter_pick_t;
     logic [WAITERS-1:0] ready_waiter_oh;
-    for (genvar n=1; n<2*WT; n++) begin : g_waiter_tree
+    // Elaborate children before their parent (Vivado 2022.2 requires this
+    // ordering for references to a record in another generated instance).
+    for (genvar n=2*WT-1; n>0; n--) begin : g_waiter_tree
         waiter_pick_t choice;
         if (n>=WT) begin : g_leaf
             if (n-WT<WAITERS) assign choice = '{valid:waiter_valid_q[n-WT] && waiter_ready_q[n-WT],
