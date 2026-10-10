@@ -195,23 +195,27 @@ module tage
     end
     for (genvar slot=0; slot<REGION_SLOTS; slot++) begin : g_direction
         ctr_t provider_ctr;
-        useful_t provider_useful;
-        logic alt_pred, weak_ctr, final_pred;
+        logic [TABLES-1:0] use_alt_by_table;
+        logic alt_pred, final_pred;
+        // Row-local predicates run alongside tag comparison. Once the
+        // provider is selected, only reduce the selected predicate bits.
+        for (genvar t=0; t<TABLES; t++) begin : g_alt_condition
+            assign use_alt_by_table[t] = provider_oh[t]
+                && s2_row_q[t].useful[slot] == '0
+                && (s2_row_q[t].ctr[slot] == ctr_t'((1 << (CTR_BITS-1))-1)
+                    || s2_row_q[t].ctr[slot] == ctr_t'(1 << (CTR_BITS-1)));
+        end
         always_comb begin
             provider_ctr = '0;
-            provider_useful = '0;
             alt_pred = 1'b0;
             for (int t=0; t<TABLES; t++) begin
                 provider_ctr |= s2_row_q[t].ctr[slot] & {CTR_BITS{provider_oh[t]}};
-                provider_useful |= s2_row_q[t].useful[slot] & {USEFUL_BITS{provider_oh[t]}};
                 alt_pred |= s2_row_q[t].ctr[slot][CTR_BITS-1] && alt_oh[t];
             end
             if (!(|provider_oh)) provider_ctr = s2_base_q[slot];
             if (!(|alt_oh)) alt_pred = s2_base_q[slot][CTR_BITS-1];
-            weak_ctr = provider_ctr == ctr_t'((1 << (CTR_BITS-1))-1)
-                    || provider_ctr == ctr_t'(1 << (CTR_BITS-1));
             final_pred = provider_ctr[CTR_BITS-1];
-            if ((|provider_oh) && provider_useful == '0 && weak_ctr) final_pred = alt_pred;
+            if (|use_alt_by_table) final_pred = alt_pred;
         end
         assign resp_o.taken_mask[slot] = s2_valid_q && final_pred;
         assign resp_o.provider_hit_mask[slot] = s2_valid_q && (|provider_oh);

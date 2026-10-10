@@ -32,6 +32,7 @@ module bpu_slow_check
     bpu_pred_t pred;
     slot_mask_t candidates, first_candidate;
     logic found, owner_selected, disagree, use_ras;
+    logic owner_disagree, fallthrough_disagree;
     vaddr_t owner_target, fallthrough_pc, owner_branch_pc, owner_push_pc;
     assign fallthrough_pc = fast_i.region_base + vaddr_t'(CFG.fetch.region_bytes);
     assign use_ras = (btb_i.ras_action == RAS_POP || btb_i.ras_action == RAS_POP_PUSH)
@@ -54,6 +55,18 @@ module bpu_slow_check
     end
     assign found = |candidates;
     assign owner_selected = first_candidate[btb_i.cfi_slot] && btb_i.cfi_type != CFI_NONE;
+    // Compare both destinations before the late direction/owner select.
+    // The direction chooses two bits, rather than a PC mux followed by a
+    // wide equality check on the slow-result critical path.
+    assign owner_disagree = !fast_i.cfi_valid
+        || btb_i.cfi_slot != fast_i.cfi_slot
+        || btb_i.cfi_type != fast_i.cfi_type
+        || btb_i.ras_action != fast_i.ras_action
+        || btb_i.cfi_is_rvc != fast_i.cfi_is_rvc
+        || btb_i.is_edge != fast_i.is_edge
+        || owner_target != fast_i.next_pc;
+    assign fallthrough_disagree = fast_i.cfi_valid
+        || fallthrough_pc != fast_i.next_pc;
     always_comb begin
         pred = '0;
         pred.region_base = fast_i.region_base;
@@ -77,12 +90,7 @@ module bpu_slow_check
             pred.cfi_target = owner_target;
             pred.next_pc = owner_target;
         end
-        disagree = (pred.cfi_valid != fast_i.cfi_valid)
-                 || (pred.cfi_valid && (pred.cfi_slot != fast_i.cfi_slot
-                     || pred.cfi_type != fast_i.cfi_type || pred.ras_action != fast_i.ras_action
-                     || pred.cfi_is_rvc != fast_i.cfi_is_rvc || pred.is_edge != fast_i.is_edge
-                     || pred.next_pc != fast_i.next_pc))
-                 || (!pred.cfi_valid && pred.next_pc != fast_i.next_pc);
+        disagree = owner_selected ? owner_disagree : fallthrough_disagree;
         slow_o = '0;
         override_o = '0;
         perf_o = '0;
