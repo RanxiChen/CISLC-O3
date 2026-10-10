@@ -155,16 +155,21 @@ async def banked_refill_hit_under_miss_and_random_hits(dut):
     dut.req_ftq_id.value = 4
     dut.req_rq_idx.value = 4
     obs = await h.tick()
-    assert obs["req_ready"] == 0, f"same-bank refill was not backpressured: {obs}"
+    # Ingress accepts this request while the internal SRAM launch avoids
+    # the fill bank. The following request has its own identity.
+    assert obs["req_ready"] == 1, f"same-bank request was not buffered: {obs}"
     dut.req_pc.value = base1 + 32
+    dut.req_ftq_id.value = 5
+    dut.req_rq_idx.value = 5
     obs = await h.tick()
     assert obs["req_ready"] == 1, f"other bank did not progress: {obs}"
     dut.req_valid.value = 0
-    await h.expect_count(4)
+    await h.expect_count(5)
     by_id = {row[1]: row for row in h.responses}
     assert by_id[2][2:] == (2, model.region(base0), 0)
     assert by_id[3][2:] == (3, model.region(base1 + 16), 0)
-    assert by_id[4][2:] == (4, model.region(base1 + 32), 0)
+    assert by_id[4][2:] == (4, model.region(base0 + 16), 0)
+    assert by_id[5][2:] == (5, model.region(base1 + 32), 0)
 
     start = len(h.responses)
     for idx in range(4):
@@ -173,7 +178,7 @@ async def banked_refill_hit_under_miss_and_random_hits(dut):
     same_bank = h.responses[start:start+4]
     assert [row[0] for row in same_bank] == list(range(same_bank[0][0], same_bank[0][0]+4))
     assert [row[3] for row in same_bank] == [model.region(base0 + 16*idx) for idx in range(4)]
-    assert [resp[0] - accept[0] for resp, accept in zip(same_bank, h.accepted[-4:])] == [3]*4
+    assert [resp[0] - accept[0] for resp, accept in zip(same_bank, h.accepted[-4:])] == [4]*4
 
     start = len(h.responses)
     expected = {}
@@ -376,5 +381,37 @@ async def demand_has_priority_over_idle_port_probe(dut):
  await Timer(1,unit='ns');assert int(dut.probe_grant.value)
  await h.tick();assert int(dut.probe_resp.value) and int(dut.probe_hit.value)
  dut.req_valid.value=1;dut.req_pc.value=0x80000000
+ # Input-buffer admission does not use the ITLB port; the queued demand
+ # owns it on the following cycle when the internal query launches.
+ await Timer(1,unit='ns');assert int(dut.probe_grant.value)
+ await h.tick();dut.req_valid.value=0
  await Timer(1,unit='ns');assert not int(dut.probe_grant.value)
- await h.tick();dut.req_valid.value=0;dut.probe_valid.value=0
+ await h.tick();dut.probe_valid.value=0
+
+
+@cocotb.test()
+async def full_mshrs_replay_then_complete_without_loss(dut):
+ h=Harness(dut);await h.reset()
+ warm=0x80030000;payload=bytes((11*n+9)&255 for n in range(64))
+ await h.request(warm,1,0);await h.accept_l2_request(warm)
+ await h.refill(payload);await h.expect_count(1)
+ misses=[0x80040000+64*n for n in range(5)];ids=[]
+ for n,line in enumerate(misses[:4]):
+  await h.request(line,10+n,n);await h.accept_l2_request(line);ids.append(h.pending_id)
+ # S3 cannot allocate the fifth miss. It must replay without blocking
+ # requests already admitted behind it, including a cached hit.
+ assert await h.request(misses[4],14,4)==0
+ assert await h.request(warm+16,15,5)==0
+ for _ in range(18):
+  obs=await h.tick();assert not obs['l2_req_valid']
+ assert any(row[1:]==(15,5,int.from_bytes(payload[16:32],'little'),0) for row in h.responses)
+ for id_ in reversed(ids):
+  h.pending_id=id_;await h.refill(payload);await h.tick()
+ await h.accept_l2_request(misses[4]);await h.refill(payload)
+ await h.expect_count(7)
+ actual={row[1]:(row[2],row[3],row[4]) for row in h.responses}
+ assert set(actual)=={1,10,11,12,13,14,15}
+ for n in range(5):assert actual[10+n]==(n,int.from_bytes(payload[:16],'little'),0)
+ assert len(h.responses)==7
+ for _ in range(12):await h.tick()
+ assert int(dut.idle.value) and len(h.responses)==7

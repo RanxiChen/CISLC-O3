@@ -33,7 +33,6 @@ module fetch_prefetcher import o3_types_pkg::*; #(
     ftq_pf_ready_o=pf_req_ready_i;
     if(pf_req_ready_i) begin
      perf_o[PE_XLATE_REUSE]=PERF_INC_W'(xlate_on);
-
     end
    end else if(probe_match) begin
     if(xprobe_resp_i.valid) begin

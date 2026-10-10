@@ -93,10 +93,10 @@ module ICache
     // Credits cover ingress, query stages and queued replays together. S3 can
     // always retire into a response, waiter, or reserved replay slot; its
     // hit/permission/resource decisions never drive external request ready.
-    localparam int RETRIES=4;
+    localparam int RETRIES=8, RPW=$clog2(RETRIES), RCW=$clog2(RETRIES+1);
     icache_req_t retry_fifo_q[RETRIES];
-    logic [1:0] retry_head_q,retry_tail_q;
-    logic [2:0] retry_count_q;
+    logic [RPW-1:0] retry_head_q,retry_tail_q;
+    logic [RCW-1:0] retry_count_q;
     logic retry_push,retry_pop,s3_complete;
     localparam int INGRESS=2;
     icache_req_t ingress_q[INGRESS];
@@ -205,7 +205,7 @@ module ICache
         s1_ready=!v1_q || (s2_ready && (xlate_saved_q || (tlb_valid && !tlb_miss)));
         selected_req=retry_valid_q ? retry_q:ingress_q[ingress_head_q];
         req_ready_o=!rst && !inv_all_i && !retry_valid_q &&
-            ingress_count_q<INGRESS && replay_used<RETRIES;
+            ingress_count_q<2'(INGRESS) && replay_used<4'(RETRIES);
         fire=!rst && !inv_all_i && s1_ready && (retry_valid_q || ingress_count_q!=0) &&
             !(fill_valid && fill_line[6]==selected_req.region_base[6]);
 
@@ -235,7 +235,7 @@ module ICache
             resp_o.data=hit_line;
             resp_o.exc_valid=fault;resp_o.exc_cause=s3_q.pf ? EXCEPTION_CAUSE_INST_PAGE_FAULT:EXCEPTION_CAUSE_INST_ACCESS_FAULT;
         end
-        if(inv_all_i) resp_o='0;
+        if(rst || inv_all_i) resp_o='0;
     end
     always_comb begin
         perf_o=tlb_perf | mshr_perf;
@@ -310,8 +310,8 @@ module ICache
                 2'b01:ingress_count_q<=ingress_count_q-1'b1;
                 default: ;
             endcase
-            assert(replay_used<=RETRIES) else $fatal(1,"ICache replay credits overflow");
-            assert(!retry_push || retry_count_q<RETRIES || retry_pop)
+            assert(replay_used<=4'(RETRIES)) else $fatal(1,"ICache replay credits overflow");
+            assert(!retry_push || retry_count_q<RCW'(RETRIES) || retry_pop)
                 else $fatal(1,"ICache replay slot was not reserved");
             if(retry_pop) retry_head_q<=retry_head_q+1'b1;
             if(retry_push) begin retry_fifo_q[retry_tail_q]<=s3_q.req;retry_tail_q<=retry_tail_q+1'b1;end

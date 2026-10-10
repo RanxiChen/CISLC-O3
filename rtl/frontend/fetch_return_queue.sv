@@ -63,7 +63,7 @@ module fetch_return_queue
         // While the current output is held, pre-read the following region.
         // Its snapshot can replace a consumed output on the very same edge.
         snapshot_slot=output_valid_q && count_q>1 ? ord_q[1]:head_slot;
-        ftq_brief_rd_valid_o=count_q>int'(output_valid_q);
+        ftq_brief_rd_valid_o=count_q>CW'(output_valid_q);
         ftq_brief_rd_id_o=ftq_brief_rd_valid_o ? slots_q[snapshot_slot].item.ftq_id:'0;
         head_refresh=(brief_slow_valid_i && brief_slow_id_i==output_data_q.ftq_id) ||
             (brief_resolve_valid_i && brief_resolve_id_i==output_data_q.ftq_id);
@@ -144,6 +144,8 @@ module fetch_return_queue
             count_q<=0;
             for(int n=0;n<DEPTH;n++) begin slots_q[n]<='0;ord_q[n]<='0;end
         end else begin
+            assert(!output_valid_q || (count_q!=0 && output_data_q.ftq_id==slots_q[head_slot].item.ftq_id))
+                else $fatal(1,"RQ output snapshot lost head ownership");
             assert(!reservation_bad) else $fatal(1,"RQ reservation is not FREE");
             assert(!response_bad) else $fatal(1,"RQ response identity/state mismatch");
             assert(!suffix_bad) else $fatal(1,"RQ kill must be a suffix");
