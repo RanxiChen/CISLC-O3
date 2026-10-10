@@ -26,7 +26,7 @@ module ifu_f0 import o3_types_pkg::*; #(
         logic valid;
         logic [15:0] halfword;
         ftq_id_t ftq_id;
-        vaddr_t region_base;
+        vaddr_t next_region_base;
     } pend_t;
     hold_t hold_q,hold_d;
     pend_t pend_q,pend_d;
@@ -45,7 +45,7 @@ module ifu_f0 import o3_types_pkg::*; #(
     assign fire=active && out_ready_i;
     assign perf_o='0;
     assign edge_start=!hold_q.valid && pend_q.valid
-        && current_block.region_base==pend_q.region_base+vaddr_t'(REGION_BYTES)
+        && current_block.region_base==pend_q.next_region_base
         && current_brief.pred.entry_slot==0;
     assign start_pos=hold_q.valid ? 5'(hold_q.pos)
         : (edge_start ? -1:5'(current_brief.pred.entry_slot));
@@ -182,11 +182,13 @@ module ifu_f0 import o3_types_pkg::*; #(
                 hold_d.pos=fetch_slot_t'(next_pos);
             end
             if(save_half) pend_d='{valid:1'b1,halfword:current_block.data[REGION_BYTES*8-16 +: 16],
-                ftq_id:current_block.ftq_id,region_base:current_block.region_base};
+                ftq_id:current_block.ftq_id,next_region_base:current_block.region_base+vaddr_t'(REGION_BYTES)};
             if(current_block.exc_valid) pend_d.valid=0;
         end
         if(hold_d.valid && (fe_killed_by(kill_i,hold_d.block_data.ftq_id,hold_d.pos,ftq_head_i)
-            || fe_killed_by(trunc_boundary,hold_d.block_data.ftq_id,hold_d.pos,ftq_head_i))) hold_d.valid=0;
+            // The held remainder is always part of current_block. F1's
+            // same-beat truncation needs only a slot comparison, not age math.
+            || (trunc_i && hold_d.pos>trunc_slot_i))) hold_d.valid=0;
         if(pend_d.valid && (fe_killed_by(kill_i,pend_d.ftq_id,fetch_slot_t'(REGION_SLOTS-1),ftq_head_i)
             || fe_killed_by(trunc_boundary,pend_d.ftq_id,fetch_slot_t'(REGION_SLOTS-1),ftq_head_i))) pend_d.valid=0;
         if(sync_clear_i) begin hold_d='0;pend_d='0;end
