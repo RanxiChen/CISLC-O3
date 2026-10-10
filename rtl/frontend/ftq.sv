@@ -1,50 +1,30 @@
 /**
- * Fetch Target Queue —— 动态取指描述、游标与生命周期
+ * FTQ: single-writer payload memories and an ordered ring controller.
  *
- * 作用（目标，第 7 节）：
- * - 每个 entry 是一次动态进入 16B 区域的取指描述：身份、地址范围、快/慢预测、状态、
- *   恢复引用、训练上下文。不存 cache 返回的指令数据。
- * - 独立推进分配、demand 发射、prefetch、提交回收等逻辑位置；cache 接受请求只推进
- *   发射位置，不代表 entry 可释放（第 7.2 节）。
- * - 区域有效指令全部提交后先完成训练信息交接，再回收；不等整个 ROB 清空（第 16.2 节）。
+ * Storage / write-port ownership:
+ *   alloc_mem    <- BPU allocation: fast prediction and entry RAS checkpoint
+ *   slow_mem     <- slow prediction: complete prediction and TAGE/loop metadata
+ *   fix_pred_mem <- boundary correction: CFI patch for the retained region
+ *   fix_next_mem <- redirect winner: final next PC used by commit statistics
+ *   res_mem      <- taken execution resolution: actual CFI information
+ * Each memory has one synchronous write address and asynchronous read taps.
+ * Read-port replication is left to distributed-RAM inference; no address banks.
+ * Payload memories are never reset or cleared on squash. Narrow per-row flags
+ * select visible payloads and prevent a reused slot from exposing old contents.
  *
- * 需要补充实现的机制（基线已定）：
- * 1) 动态身份 ftq_id_t = idx + 代际；同一区域多次进入是不同身份（第 3.1 节）。
- *    head_id_o 作为 D24 年龄比较参照。
- * 2) entry 字段（逻辑内容，可拆为 PC RAM / 预测 metadata RAM / 状态寄存器）：
- *    region_base、入口槽位、mask、快预测 next_pc、慢预测结果与 slow_done、fetch issued、
- *    killed、RAS 入口 ras_before={top_idx,count,top_addr}（D29，每项约 4+5+V bit）、
- *    TAGE 训练元数据、执行实际结果；
- *    D23 入口快照存于 history_snapshot_store，以 ftq_id 引用。
- * 3) demand 游标：FTQ 主动给出 valid 与请求，ICache 给 ready；只有 valid&&ready 且已
- *    获得返回队列槽（rq_rsv_*）才发射并推进；等待时请求与身份稳定（第 7.3 节）。
- * 4) prefetch 游标：走在 demand 之前，交给 fetch_prefetcher（D18）；领先距离待定。
- * 5) 慢预测写回 slow_i：更新预测元数据与有效范围，置 slow_done（第 6.3 节）。
- * 6) 返回队列出队时按 ftq_id 读最终预测摘要（brief_*）。
- * 7) 执行解析 resolve_i：记录实际结果（正确解析也记录），供提交训练。
- * 8) kill_i（D24 赢家边界）：使比边界年轻的 entry 失效，分配位置回到边界之后；
- *    出错区域自身保留并修正有效范围。
- * 9) 提交 commit_i：region_last 的区域读出训练上下文（含快照训练读口）形成 bpu_train_t，
- *    训练请求被接受后才回收。D29 取消 undo log，回收时不再有 RAS 释放动作。
- *    训练排队时必须先保住原查询元数据（第 16.2 节）。
+ * Controller: head + occupancy, committed-prefix length, demand/prefetch progress.
+ * Allocation and each issuer handle one region/cycle; commit accepts COMMIT_W
+ * notifications. A closed region is released only after training acceptance.
+ * Kill uses the full boundary identity and ring distance, preserves the closed
+ * prefix, and clamps issuer progress to the surviving tail. No age-ordered table
+ * search or per-row commit_last/demand_issued/pf_issued state is needed.
  *
- * 细节待定：FTQ 深度、代际位宽与回绕安全条件、分区存储、训练 metadata 生存期、
- * 块内多分支训练排程与提交带宽（第 6.1 节、第 13 节第 3 条）。
- *
- * 当前实现：动态身份、四个独立游标、慢预测/解析写回、D24 边界清除、RAS 检查点读、
- * 快照训练握手和训练接受后释放。旧端口保留但隔离为常量，供仍引用 ftq_pkg 的旧 BPU
- * 在后续迁移；不能将旧接口当作本模块的可用数据路径。
- * 当前未实现：预解码纠错的完整预测字段写回（kill_i 只有边界，没有修正元数据）、
- * 跨块辅助请求、代际回绕生命周期证明、存储分区/物理端口优化。
- *
- * 目标周期行为：
- * - 周期 N 组合：alloc_ready_o 反映容量；demand_valid_o 在 demand 游标项有效、
- *   未 killed、rq_rsv_ready_i 且 !hold_i 时为 1；brief/ras 读口校验完整动态身份。
- * - 周期 N 上升沿：alloc/demand/prefetch 握手各自推进；slow/resolve/commit 更新原项；
- *   kill 优先于同拍分配和发射，并把游标回到存活项；训练被 BPU 接受才释放队头。
- * - 周期 N+1：可见新身份、游标和容量；已提交项依次等待读快照及 BPU 训练握手。
- * 本轮增加独立单模块测试；未做整机仿真、综合或 FPGA 时序。
- *
+ * Read composition is field-specific: fast/slow prediction, optional CFI patch,
+ * and narrow masks/validity. The winner's final next PC is a separate value;
+ * it must not replace the prediction's next_pc indiscriminately.
+ * Priority: release -> slow/winner/resolve -> commit -> kill; allocation/issue
+ * occur only without kill. Interface latency and history-store handoff remain.
+ * This structural refactor has not established simulation equivalence or PPA.
  */
 
 // 旧合同类型包：固定 32B 块与 16 项深度，不符合 D03/参数化要求，迁移后删除。
@@ -199,105 +179,530 @@ module ftq
     localparam int COUNT_W = $clog2(DEPTH + 1);
     typedef logic [FTQ_IDX_W-1:0] idx_t;
     typedef logic [COUNT_W-1:0] count_t;
+    // External identities retain the global width; RAM addresses use only the
+    // local depth's decoder bits, after the full identity/range check.
+    localparam int MEM_IDX_W = DEPTH > 1 ? $clog2(DEPTH) : 1;
+    typedef logic [MEM_IDX_W-1:0] mem_idx_t;
 
-    typedef struct packed {
-        logic valid;
-        ftq_id_t id;
-        bpu_pred_t final_pred;
-        vaddr_t final_next_pc;
-        logic slow_done, demand_issued, pf_issued, commit_last;
-        slot_mask_t resolved_br, resolved_taken, committed_br, committed_taken;
-        logic actual_cfi_valid, mispredicted;
-        slot_mask_t mispred_mask;
-        logic actual_cfi_is_rvc, actual_cfi_is_edge;
-        fetch_slot_t actual_cfi_slot;
-        cfi_type_e actual_cfi_type;
-        ras_action_e actual_ras_action;
-        vaddr_t actual_cfi_target;
-    } entry_t;
+    // Ring arithmetic describes bounded add/subtract hardware only.
+    function automatic idx_t ring_next(input idx_t idx);
+        return idx == idx_t'(DEPTH - 1) ? '0 : idx + 1'b1;
+    endfunction
+
+    function automatic idx_t ring_add(input idx_t idx, input count_t offset);
+        logic [COUNT_W:0] sum, wrapped;
+        sum = (COUNT_W+1)'(idx) + (COUNT_W+1)'(offset);
+        wrapped = sum >= (COUNT_W+1)'(DEPTH) ? sum - (COUNT_W+1)'(DEPTH) : sum;
+        return idx_t'(wrapped);
+    endfunction
+
+    function automatic count_t ring_distance(input idx_t idx, input idx_t origin);
+        return idx >= origin ? count_t'(idx) - count_t'(origin)
+                             : count_t'(DEPTH) - count_t'(origin) + count_t'(idx);
+    endfunction
 
     typedef struct packed {
         bpu_pred_t pred;
         ras_ckpt_t ras_ckpt;
     } alloc_payload_t;
     typedef struct packed {
-        loop_meta_t loop_meta;
+        bpu_pred_t pred;
         tage_meta_t tage_meta;
-        vaddr_t next_pc;
+        loop_meta_t loop_meta;
     } slow_payload_t;
-    // Single-write memories for immutable allocation and slow-result payloads.
-    // Status/validity remains in flops; invalid or not-yet-slow entries read as
-    // zero without resetting or clearing these wide memories.
+    typedef struct packed {
+        vaddr_t next_pc;
+        vaddr_t target;
+        fetch_slot_t slot;
+        cfi_type_e cfi_type;
+        ras_action_e ras_action;
+        logic taken;
+    } fix_payload_t;
+    typedef struct packed {
+        vaddr_t target;
+        fetch_slot_t slot;
+        cfi_type_e cfi_type;
+        ras_action_e ras_action;
+        logic is_rvc, is_edge;
+    } res_payload_t;
+    typedef struct packed {
+        logic slow_done, cfi_fixed, next_fixed, res_written;
+        logic pred_valid, actual_valid;
+        fetch_slot_t pred_slot, actual_slot;
+        slot_mask_t br_mask, jal_mask;
+        slot_mask_t resolved_br, resolved_taken;
+        slot_mask_t committed_br, committed_taken, mispred_mask;
+    } row_state_t;
+
+    // Five payload arrays, five independent single-write ports. The correction
+    // driver has two field stores because winner and boundary identities can
+    // differ; merging them would implicitly introduce a second write address.
     (* ram_style = "distributed" *) logic [$bits(alloc_payload_t)-1:0] alloc_mem [DEPTH];
     (* ram_style = "distributed" *) logic [$bits(slow_payload_t)-1:0] slow_mem [DEPTH];
-    alloc_payload_t head_alloc, brief_alloc, ras_alloc;
-    slow_payload_t head_slow, ras_slow;
-    bpu_pred_t demand_pred, pf_pred, resolve_pred;
+    (* ram_style = "distributed" *) logic [$bits(fix_payload_t)-1:0] fix_pred_mem [DEPTH];
+    (* ram_style = "distributed" *) vaddr_t fix_next_mem [DEPTH];
+    (* ram_style = "distributed" *) logic [$bits(res_payload_t)-1:0] res_mem [DEPTH];
+    row_state_t state_q [DEPTH];
+    logic [FTQ_GEN_W-1:0] gen_q [DEPTH];
+    logic [DEPTH-1:0] live_q;
 
-    entry_t entries_q [DEPTH], entries_d [DEPTH];
-    logic [FTQ_GEN_W-1:0] gen_q [DEPTH], gen_d [DEPTH];
-    idx_t alloc_q, alloc_d, demand_q, demand_d, pf_q, pf_d, head_q, head_d;
+    idx_t head_q, head_d, alloc_q, demand_q, pf_q;
     count_t count_q, count_d;
+    // Progress values include the end position DEPTH, distinguishing a full
+    // ring's exhausted issuer from its head despite equal physical indices.
+    count_t closed_count_q, closed_count_d;
+    count_t demand_pos_q, demand_pos_d, pf_pos_q, pf_pos_d;
+    logic alloc_fire, demand_fire, pf_fire, train_fire;
+    logic demand_hold_q;
+    icache_req_t demand_hold_req_q;
     logic ho_busy_q;
     ftq_id_t ho_id_q;
     idx_t ho_sel;
-    logic demand_hold_q, demand_hold_d;
-    icache_req_t demand_hold_req_q, demand_hold_req_d;
-    logic alloc_fire, demand_fire, pf_fire, train_fire;
 
-    always_comb begin
-        head_alloc = entries_q[head_q].valid ? alloc_payload_t'(alloc_mem[head_q]) : alloc_payload_t'(0);
-        head_slow = entries_q[head_q].valid && entries_q[head_q].slow_done
-                  ? slow_payload_t'(slow_mem[head_q]) : slow_payload_t'(0);
-        brief_alloc = alloc_payload_t'(alloc_mem[brief_rd_id_i.idx]);
-        ras_alloc = alloc_payload_t'(alloc_mem[ras_ckpt_rd_id_i.idx]);
-        ras_slow = entries_q[ras_ckpt_rd_id_i.idx].slow_done
-                 ? slow_payload_t'(slow_mem[ras_ckpt_rd_id_i.idx]) : slow_payload_t'(0);
-        demand_pred = entries_q[demand_q].valid
-                    ? bpu_pred_t'(alloc_mem[demand_q] >> $bits(ras_ckpt_t)) : bpu_pred_t'(0);
-        pf_pred = entries_q[pf_q].valid
-                ? bpu_pred_t'(alloc_mem[pf_q] >> $bits(ras_ckpt_t)) : bpu_pred_t'(0);
-        resolve_pred = bpu_pred_t'(alloc_mem[resolve_i.ftq_id.idx] >> $bits(ras_ckpt_t));
-    end
+    // Post-release controller wires. Commit and kill compare against this head,
+    // matching the same-edge release priority without rotating a state array.
+    idx_t work_head;
+    count_t work_count, work_closed, work_demand, work_pf;
+    count_t commit_age [COMMIT_W];
+    logic [COMMIT_W-1:0] commit_accept;
+    count_t kill_age, keep_count;
+    logic kill_owner_live, boundary_cut;
+    slot_mask_t cut_mask;
 
-    always_ff @(posedge clk_i) begin
-        if (!rst_i) begin
-            if (alloc_fire && !kill_i.valid)
-                alloc_mem[alloc_q] <= alloc_payload_t'{pred:alloc_pred_i, ras_ckpt:alloc_ras_ckpt_i};
-            // Release precedes slow writeback in the next-state priority.
-            if (slow_i.valid && int'(slow_i.ftq_id.idx) < DEPTH
-                && entries_q[slow_i.ftq_id.idx].valid && entries_q[slow_i.ftq_id.idx].id == slow_i.ftq_id
-                && !(train_fire && head_q == slow_i.ftq_id.idx))
-                slow_mem[slow_i.ftq_id.idx] <= slow_payload_t'{loop_meta:slow_i.loop_meta,
-                    tage_meta:slow_i.tage_meta, next_pc:slow_i.pred.next_pc};
-        end
-    end
-
-    function automatic idx_t advance(input idx_t idx);
-        return (idx == idx_t'(DEPTH - 1)) ? '0 : idx + 1'b1;
-    endfunction
-
-    function automatic idx_t add_idx(input idx_t idx, input int unsigned offset);
-        int unsigned sum;
-        sum = int'(idx) + offset;
-        return idx_t'((sum >= DEPTH) ? sum - DEPTH : sum);
-    endfunction
-
-    function automatic ftq_id_t new_id(input idx_t idx,
-                                       input logic [FTQ_GEN_W-1:0] old_gen);
-        ftq_id_t id;
-        id.idx = idx;
-        id.gen = old_gen + 1'b1;
-        return id;
-    endfunction
+    logic slow_write, resolve_write, winner_write, fix_write;
+    alloc_payload_t alloc_write_data, head_alloc, demand_alloc, pf_alloc, brief_alloc, ras_alloc;
+    slow_payload_t slow_write_data, head_slow, brief_slow, ras_slow;
+    fix_payload_t fix_write_data, brief_fix;
+    res_payload_t resolve_write_data, head_res;
+    bpu_pred_t brief_pred;
+    vaddr_t head_final_next;
+    logic brief_live, ras_live, demand_live, pf_live;
+    vaddr_t resolve_region;
 
     initial begin
         assert (DEPTH > 0 && DEPTH <= (1 << FTQ_IDX_W))
             else $fatal(1, "FTQ depth exceeds ftq_id_t index width");
     end
 
-    // Legacy BPU/IFU ports are retained for the historical FTQ interface.
-    // They never own target-FTQ state; the target frontend leaves them open.
+    // ------------------------------------------------------------
+    // Ring controller: cursors, commit frontier, squash boundary
+    // ------------------------------------------------------------
+    assign alloc_q = ring_add(head_q, count_q);
+    assign demand_q = ring_add(head_q, demand_pos_q);
+    assign pf_q = ring_add(head_q, pf_pos_q);
+    assign alloc_ftq_id_o = '{gen:gen_q[mem_idx_t'(alloc_q)] + 1'b1, idx:alloc_q};
+    assign alloc_ready_o = !rst_i && !kill_i.valid && count_q < count_t'(DEPTH);
+    assign alloc_fire = alloc_valid_i && alloc_ready_o;
+    assign head_id_o = count_q != 0 ? ftq_id_t'{gen:gen_q[mem_idx_t'(head_q)], idx:head_q} : ftq_id_t'(0);
+
+    assign work_head = train_fire ? ring_next(head_q) : head_q;
+    assign work_count = count_q - count_t'(train_fire);
+    assign work_demand = demand_pos_q - count_t'(train_fire && demand_pos_q != 0);
+    assign work_pf = pf_pos_q - count_t'(train_fire && pf_pos_q != 0);
+    for (genvar lane = 0; lane < COMMIT_W; lane++) begin : g_commit_port
+        assign commit_age[lane] = ring_distance(commit_i[lane].ftq_id.idx, work_head);
+        assign commit_accept[lane] = !rst_i && commit_i[lane].valid &&
+            int'(commit_i[lane].ftq_id.idx) < DEPTH &&
+            commit_age[lane] < work_count &&
+            gen_q[mem_idx_t'(commit_i[lane].ftq_id.idx)] == commit_i[lane].ftq_id.gen &&
+            int'(commit_i[lane].slot) < REGION_SLOTS;
+    end
+    always_comb begin : commit_frontier
+        count_t lane_closed;
+        work_closed = closed_count_q - count_t'(train_fire && closed_count_q != 0);
+        lane_closed = '0;
+        for (int lane = 0; lane < COMMIT_W; lane++) begin
+            lane_closed = commit_age[lane] + count_t'(commit_i[lane].region_last);
+            if (commit_accept[lane] && lane_closed > work_closed)
+                work_closed = lane_closed;
+        end
+    end
+
+    assign kill_age = ring_distance(kill_i.ftq_id.idx, work_head);
+    assign kill_owner_live = int'(kill_i.ftq_id.idx) < DEPTH &&
+        kill_age < work_count && gen_q[mem_idx_t'(kill_i.ftq_id.idx)] == kill_i.ftq_id.gen;
+    always_comb begin : squash_boundary
+        keep_count = work_count;
+        if (kill_i.valid) begin
+            if (kill_i.all) keep_count = work_closed;
+            else if (kill_owner_live) keep_count = kill_age + count_t'(!kill_i.kill_self);
+            if (keep_count < work_closed) keep_count = work_closed;
+        end
+    end
+    assign boundary_cut = !rst_i && kill_i.valid && !kill_i.all &&
+        !kill_i.kill_self && kill_owner_live && kill_age < keep_count;
+    for (genvar slot = 0; slot < REGION_SLOTS; slot++) begin : g_cut_mask
+        assign cut_mask[slot] = slot <= int'(kill_i.slot);
+    end
+
+    always_comb begin : cursor_control
+        head_d = work_head;
+        count_d = work_count;
+        closed_count_d = work_closed;
+        demand_pos_d = work_demand;
+        pf_pos_d = work_pf;
+        if (kill_i.valid) begin
+            count_d = keep_count;
+            if (demand_pos_d > keep_count) demand_pos_d = keep_count;
+            if (pf_pos_d > keep_count) pf_pos_d = keep_count;
+        end else begin
+            if (alloc_fire) count_d = count_d + 1'b1;
+            if (demand_fire) demand_pos_d = demand_pos_d + 1'b1;
+            if (pf_fire) pf_pos_d = pf_pos_d + 1'b1;
+        end
+        // Prefetch skips regions whose demand request has already been issued.
+        if (pf_pos_d < demand_pos_d) pf_pos_d = demand_pos_d;
+    end
+
+    always_ff @(posedge clk_i) begin : cursor_registers
+        if (rst_i) begin
+            head_q <= '0;
+            count_q <= '0;
+            closed_count_q <= '0;
+            demand_pos_q <= '0;
+            pf_pos_q <= '0;
+        end else begin
+            head_q <= head_d;
+            count_q <= count_d;
+            closed_count_q <= closed_count_d;
+            demand_pos_q <= demand_pos_d;
+            pf_pos_q <= pf_pos_d;
+        end
+    end
+
+    // ------------------------------------------------------------
+    // Single-writer payload drivers; data memories have no reset port
+    // ------------------------------------------------------------
+    assign alloc_write_data = '{pred:alloc_pred_i, ras_ckpt:alloc_ras_ckpt_i};
+    assign slow_write_data = '{pred:slow_i.pred, tage_meta:slow_i.tage_meta, loop_meta:slow_i.loop_meta};
+    assign slow_write = !rst_i && slow_i.valid && int'(slow_i.ftq_id.idx) < DEPTH &&
+        live_q[mem_idx_t'(slow_i.ftq_id.idx)] && gen_q[mem_idx_t'(slow_i.ftq_id.idx)] == slow_i.ftq_id.gen &&
+        !(train_fire && head_q == slow_i.ftq_id.idx);
+    assign resolve_write = !rst_i && resolve_i.valid && int'(resolve_i.ftq_id.idx) < DEPTH &&
+        live_q[mem_idx_t'(resolve_i.ftq_id.idx)] && gen_q[mem_idx_t'(resolve_i.ftq_id.idx)] == resolve_i.ftq_id.gen &&
+        !(train_fire && head_q == resolve_i.ftq_id.idx) && int'(resolve_i.slot) < REGION_SLOTS;
+    assign winner_write = !rst_i && kill_i.valid && winner_i.valid && !winner_i.kill_self &&
+        int'(winner_i.ftq_id.idx) < DEPTH && live_q[mem_idx_t'(winner_i.ftq_id.idx)] &&
+        gen_q[mem_idx_t'(winner_i.ftq_id.idx)] == winner_i.ftq_id.gen &&
+        !(train_fire && head_q == winner_i.ftq_id.idx);
+    assign fix_write = boundary_cut && resolve_i.valid &&
+        resolve_i.ftq_id == kill_i.ftq_id && resolve_i.mispredict;
+    assign fix_write_data = '{next_pc:resolve_i.redirect_pc, target:resolve_i.actual_target,
+        slot:resolve_i.slot, cfi_type:resolve_i.cfi_type, ras_action:resolve_i.ras_action,
+        taken:resolve_i.actual_taken};
+    always_comb begin : resolution_payload
+        alloc_payload_t original;
+        original = '0;
+        if (resolve_write) original = alloc_payload_t'(alloc_mem[mem_idx_t'(resolve_i.ftq_id.idx)]);
+        resolve_region = original.pred.region_base;
+        resolve_write_data = '{target:resolve_i.actual_target, slot:resolve_i.slot,
+            cfi_type:resolve_i.cfi_type, ras_action:resolve_i.ras_action,
+            is_rvc:(resolve_i.inst_len == 2),
+            is_edge:(resolve_i.branch_pc == resolve_region - vaddr_t'(2))};
+    end
+    always_ff @(posedge clk_i) begin : allocation_memory_driver
+        if (alloc_fire) alloc_mem[mem_idx_t'(alloc_q)] <= alloc_write_data;
+    end
+    always_ff @(posedge clk_i) begin : slow_memory_driver
+        if (slow_write) slow_mem[mem_idx_t'(slow_i.ftq_id.idx)] <= slow_write_data;
+    end
+    always_ff @(posedge clk_i) begin : correction_memory_driver
+        if (fix_write) fix_pred_mem[mem_idx_t'(kill_i.ftq_id.idx)] <= fix_write_data;
+        if (winner_write) fix_next_mem[mem_idx_t'(winner_i.ftq_id.idx)] <= winner_i.target_pc;
+    end
+    always_ff @(posedge clk_i) begin : resolution_memory_driver
+        if (resolve_write && resolve_i.actual_taken)
+            res_mem[mem_idx_t'(resolve_i.ftq_id.idx)] <= resolve_write_data;
+    end
+
+    // ------------------------------------------------------------
+    // Narrow per-row registers: fixed row enables, no wide entry feedback
+    // ------------------------------------------------------------
+    for (genvar row = 0; row < DEPTH; row++) begin : g_row_state
+        localparam idx_t ROW = idx_t'(row);
+        count_t age_q, age_work;
+        logic release_row, drop_row, alloc_row, slow_row, winner_row, resolve_row, cut_row;
+        row_state_t next_state;
+        assign age_q = ring_distance(ROW, head_q);
+        assign age_work = ring_distance(ROW, work_head);
+        assign live_q[row] = age_q < count_q;
+        assign release_row = train_fire && head_q == ROW;
+        assign drop_row = kill_i.valid && age_work < work_count && age_work >= keep_count;
+        assign alloc_row = alloc_fire && alloc_q == ROW;
+        assign slow_row = slow_write && slow_i.ftq_id.idx == ROW;
+        assign winner_row = winner_write && winner_i.ftq_id.idx == ROW;
+        assign resolve_row = resolve_write && resolve_i.ftq_id.idx == ROW;
+        assign cut_row = boundary_cut && kill_i.ftq_id.idx == ROW;
+
+        always_comb begin : row_control
+            next_state = state_q[row];
+            if (slow_row) begin
+                next_state.slow_done = 1'b1;
+                next_state.cfi_fixed = 1'b0;
+                next_state.next_fixed = 1'b0;
+                next_state.pred_valid = slow_i.pred.cfi_valid;
+                next_state.pred_slot = slow_i.pred.cfi_slot;
+                next_state.br_mask = slow_i.pred.br_mask;
+                next_state.jal_mask = slow_i.pred.jal_mask;
+            end
+            if (winner_row) next_state.next_fixed = 1'b1;
+            if (resolve_row) begin
+                if (resolve_i.cfi_type == CFI_BR) begin
+                    next_state.resolved_br[resolve_i.slot] = 1'b1;
+                    next_state.resolved_taken[resolve_i.slot] = resolve_i.actual_taken;
+                end
+                if (resolve_i.actual_taken) begin
+                    next_state.res_written = 1'b1;
+                    next_state.actual_valid = 1'b1;
+                    next_state.actual_slot = resolve_i.slot;
+                end
+                if (resolve_i.mispredict) next_state.mispred_mask[resolve_i.slot] = 1'b1;
+            end
+            // At most four narrow commit updates to this physical row. A
+            // same-edge resolution is visible, as in the original contract.
+            for (int lane = 0; lane < COMMIT_W; lane++) begin
+                if (commit_accept[lane] && commit_i[lane].ftq_id.idx == ROW &&
+                    next_state.resolved_br[commit_i[lane].slot]) begin
+                    next_state.committed_br[commit_i[lane].slot] = 1'b1;
+                    next_state.committed_taken[commit_i[lane].slot] =
+                        next_state.resolved_taken[commit_i[lane].slot];
+                end
+            end
+            if (cut_row) begin
+                next_state.resolved_br &= cut_mask;
+                next_state.resolved_taken &= cut_mask;
+                next_state.mispred_mask &= cut_mask;
+                next_state.br_mask &= cut_mask;
+                next_state.jal_mask &= cut_mask;
+                if (next_state.pred_slot > kill_i.slot) next_state.pred_valid = 1'b0;
+                if (next_state.actual_slot > kill_i.slot) next_state.actual_valid = 1'b0;
+                if (fix_write) begin
+                    next_state.cfi_fixed = 1'b1;
+                    next_state.pred_valid = resolve_i.actual_taken;
+                    next_state.pred_slot = resolve_i.slot;
+                end
+            end
+            if (release_row || drop_row) next_state = '0;
+            if (alloc_row) begin
+                next_state = '0;
+                next_state.pred_valid = alloc_pred_i.cfi_valid;
+                next_state.pred_slot = alloc_pred_i.cfi_slot;
+                next_state.br_mask = alloc_pred_i.br_mask;
+                next_state.jal_mask = alloc_pred_i.jal_mask;
+            end
+        end
+        always_ff @(posedge clk_i) begin : status_registers
+            if (rst_i) state_q[row] <= '0;
+            else state_q[row] <= next_state;
+        end
+        always_ff @(posedge clk_i) begin : generation_register
+            if (rst_i) gen_q[row] <= '0;
+            else if (alloc_row) gen_q[row] <= gen_q[row] + 1'b1;
+        end
+    end
+
+    // ------------------------------------------------------------
+    // Named asynchronous read taps, gated by live identity / payload flags
+    // ------------------------------------------------------------
+    assign demand_live = count_q != 0 && live_q[mem_idx_t'(demand_q)];
+    assign pf_live = count_q != 0 && live_q[mem_idx_t'(pf_q)];
+    assign brief_live = brief_rd_valid_i && int'(brief_rd_id_i.idx) < DEPTH &&
+        live_q[mem_idx_t'(brief_rd_id_i.idx)] && gen_q[mem_idx_t'(brief_rd_id_i.idx)] == brief_rd_id_i.gen;
+    assign ras_live = int'(ras_ckpt_rd_id_i.idx) < DEPTH &&
+        live_q[mem_idx_t'(ras_ckpt_rd_id_i.idx)] && gen_q[mem_idx_t'(ras_ckpt_rd_id_i.idx)] == ras_ckpt_rd_id_i.gen;
+    always_comb begin : payload_read_taps
+        head_alloc = '0;
+        head_slow = '0;
+        head_res = '0;
+        head_final_next = '0;
+        demand_alloc = '0;
+        pf_alloc = '0;
+        brief_alloc = '0;
+        brief_slow = '0;
+        brief_fix = '0;
+        ras_alloc = '0;
+        ras_slow = '0;
+        if (count_q != 0) begin
+            head_alloc = alloc_payload_t'(alloc_mem[mem_idx_t'(head_q)]);
+            head_final_next = head_alloc.pred.next_pc;
+            if (state_q[mem_idx_t'(head_q)].slow_done) begin
+                head_slow = slow_payload_t'(slow_mem[mem_idx_t'(head_q)]);
+                head_final_next = head_slow.pred.next_pc;
+            end
+            if (state_q[mem_idx_t'(head_q)].next_fixed) head_final_next = fix_next_mem[mem_idx_t'(head_q)];
+            if (state_q[mem_idx_t'(head_q)].res_written) head_res = res_payload_t'(res_mem[mem_idx_t'(head_q)]);
+        end
+        if (demand_live) demand_alloc = alloc_payload_t'(alloc_mem[mem_idx_t'(demand_q)]);
+        if (pf_live) pf_alloc = alloc_payload_t'(alloc_mem[mem_idx_t'(pf_q)]);
+        if (brief_live) begin
+            brief_alloc = alloc_payload_t'(alloc_mem[mem_idx_t'(brief_rd_id_i.idx)]);
+            if (state_q[mem_idx_t'(brief_rd_id_i.idx)].slow_done)
+                brief_slow = slow_payload_t'(slow_mem[mem_idx_t'(brief_rd_id_i.idx)]);
+            if (state_q[mem_idx_t'(brief_rd_id_i.idx)].cfi_fixed)
+                brief_fix = fix_payload_t'(fix_pred_mem[mem_idx_t'(brief_rd_id_i.idx)]);
+        end
+        if (ras_live) begin
+            ras_alloc = alloc_payload_t'(alloc_mem[mem_idx_t'(ras_ckpt_rd_id_i.idx)]);
+            if (state_q[mem_idx_t'(ras_ckpt_rd_id_i.idx)].slow_done)
+                ras_slow = slow_payload_t'(slow_mem[mem_idx_t'(ras_ckpt_rd_id_i.idx)]);
+        end
+    end
+
+    always_comb begin : prediction_read_merge
+        brief_pred = '0;
+        brief_o = '0;
+        if (brief_live) begin
+            brief_pred = state_q[mem_idx_t'(brief_rd_id_i.idx)].slow_done ? brief_slow.pred : brief_alloc.pred;
+            if (state_q[mem_idx_t'(brief_rd_id_i.idx)].cfi_fixed) begin
+                brief_pred.next_pc = brief_fix.next_pc;
+                brief_pred.cfi_target = brief_fix.target;
+                brief_pred.cfi_slot = brief_fix.slot;
+                brief_pred.cfi_type = brief_fix.cfi_type;
+                brief_pred.ras_action = brief_fix.ras_action;
+                brief_pred.raw_pred_taken = brief_fix.taken;
+                brief_pred.target_missing = 1'b0;
+            end
+            brief_pred.cfi_valid = state_q[mem_idx_t'(brief_rd_id_i.idx)].pred_valid;
+            brief_pred.br_mask = state_q[mem_idx_t'(brief_rd_id_i.idx)].br_mask;
+            brief_pred.jal_mask = state_q[mem_idx_t'(brief_rd_id_i.idx)].jal_mask;
+            brief_o.ftq_id = brief_rd_id_i;
+            brief_o.slow_done = state_q[mem_idx_t'(brief_rd_id_i.idx)].slow_done;
+            brief_o.pred = brief_pred;
+            brief_o.ras_ckpt = brief_alloc.ras_ckpt;
+        end
+    end
+    always_comb begin : recovery_read_merge
+        ras_ckpt_rd_o = '0;
+        loop_meta_rd_o = '0;
+        if (ras_live) begin
+            ras_ckpt_rd_o = ras_alloc.ras_ckpt;
+            loop_meta_rd_o = ras_slow.loop_meta;
+            // Same-edge slow metadata is forwarded before the RAM write.
+            if (slow_i.valid && slow_i.ftq_id == ras_ckpt_rd_id_i)
+                loop_meta_rd_o = slow_i.loop_meta;
+        end
+    end
+
+    // ------------------------------------------------------------
+    // Demand / prefetch interfaces and stable stalled request register
+    // ------------------------------------------------------------
+    assign demand_valid_o = !rst_i && !hold_i && !kill_i.valid && rq_rsv_ready_i &&
+        demand_pos_q < count_q;
+    always_comb begin : demand_request
+        demand_o = '0;
+        if (demand_hold_q) demand_o = demand_hold_req_q;
+        else if (count_q != 0) begin
+            demand_o.region_base = demand_alloc.pred.region_base;
+            demand_o.ftq_id = demand_live ? ftq_id_t'{gen:gen_q[mem_idx_t'(demand_q)], idx:demand_q} : ftq_id_t'(0);
+            demand_o.rq_idx = rq_rsv_idx_i;
+            demand_o.epoch = epoch_i;
+        end
+    end
+    assign demand_fire = demand_valid_o && demand_ready_i;
+    always_ff @(posedge clk_i) begin : stalled_demand_register
+        if (rst_i || kill_i.valid) begin
+            demand_hold_q <= 1'b0;
+            demand_hold_req_q <= '0;
+        end else if (demand_fire) demand_hold_q <= 1'b0;
+        else if (demand_valid_o && !demand_ready_i && !demand_hold_q) begin
+            demand_hold_q <= 1'b1;
+            demand_hold_req_q <= demand_o;
+        end
+    end
+    assign pf_valid_o = !rst_i && !hold_i && !kill_i.valid && pf_pos_q < count_q &&
+        state_q[mem_idx_t'(pf_q)].slow_done;
+    assign pf_region_base_o = pf_alloc.pred.region_base;
+    assign pf_ftq_id_o = pf_live ? ftq_id_t'{gen:gen_q[mem_idx_t'(pf_q)], idx:pf_q} : ftq_id_t'(0);
+    assign pf_fire = pf_valid_o && pf_ready_i;
+
+    // ------------------------------------------------------------
+    // H0 snapshot request / H1 training handoff; acceptance releases head
+    // ------------------------------------------------------------
+    assign ho_sel = ring_add(head_q, count_t'(ho_busy_q));
+    assign snap_train_rd_req_o = !rst_i && count_q > count_t'(ho_busy_q) &&
+        closed_count_q > count_t'(ho_busy_q) && int'(train_free_i) > int'(ho_busy_q);
+    assign snap_train_rd_id_o = live_q[mem_idx_t'(ho_sel)] ? ftq_id_t'{gen:gen_q[mem_idx_t'(ho_sel)], idx:ho_sel} : ftq_id_t'(0);
+    assign bpu_train_valid_o = !rst_i && ho_busy_q;
+    assign train_fire = bpu_train_valid_o && bpu_train_ready_i;
+    always_comb begin : training_read_merge
+        bpu_train_o = '0;
+        bpu_train_o.region_base = head_alloc.pred.region_base;
+        bpu_train_o.folds = snap_train_i.folds;
+        bpu_train_o.loop_train = head_slow.loop_meta.train;
+        bpu_train_o.tage_meta = head_slow.tage_meta;
+        bpu_train_o.br_commit_mask = state_q[mem_idx_t'(head_q)].committed_br;
+        bpu_train_o.br_taken_mask = state_q[mem_idx_t'(head_q)].committed_taken;
+        bpu_train_o.cfi_valid = state_q[mem_idx_t'(head_q)].actual_valid;
+        bpu_train_o.cfi_slot = head_res.slot;
+        bpu_train_o.cfi_type = head_res.cfi_type;
+        bpu_train_o.ras_action = head_res.ras_action;
+        bpu_train_o.cfi_target = head_res.target;
+        bpu_train_o.cfi_is_rvc = head_res.is_rvc;
+        bpu_train_o.is_edge = head_res.is_edge;
+        bpu_train_o.mispredicted = |state_q[mem_idx_t'(head_q)].mispred_mask;
+    end
+    always_ff @(posedge clk_i) begin : training_handoff_register
+        if (rst_i) begin
+            ho_busy_q <= 1'b0;
+            ho_id_q <= '0;
+        end else begin
+            ho_busy_q <= snap_train_rd_req_o;
+            if (snap_train_rd_req_o) ho_id_q <= snap_train_rd_id_o;
+            if (ho_busy_q)
+                assert (snap_train_resp_valid_i && snap_train_resp_id_i == ho_id_q &&
+                    head_id_o == ho_id_q && bpu_train_ready_i)
+                    else $fatal(1, "FTQ H1 identity or reserved training credit lost");
+        end
+    end
+
+    // ------------------------------------------------------------
+    // Performance observations use the same read taps as functional consumers
+    // ------------------------------------------------------------
+    always_comb begin : performance_events
+        perf_o = '0;
+        if (!rst_i) begin
+            perf_o[PE_TRAIN_STALL_CYCLE] = PERF_INC_W'(count_q > count_t'(ho_busy_q) &&
+                closed_count_q > count_t'(ho_busy_q) && int'(train_free_i) <= int'(ho_busy_q));
+            perf_o[PE_RQ_FULL_CYCLE] = PERF_INC_W'(!hold_i && !kill_i.valid &&
+                demand_pos_q < count_q && !rq_rsv_ready_i);
+            perf_o[PE_FTQ_FULL_CYCLE] = PERF_INC_W'(alloc_valid_i && !alloc_ready_o);
+            if (train_fire) begin
+                perf_o[PE_CMT_REGION] = 1;
+                perf_o[PE_CMT_LOOP_USED] = PERF_INC_W'(head_slow.loop_meta.train.used &&
+                    state_q[mem_idx_t'(head_q)].committed_br[head_slow.loop_meta.train.slot]);
+                perf_o[PE_CMT_LOOP_WRONG] = PERF_INC_W'(head_slow.loop_meta.train.used &&
+                    state_q[mem_idx_t'(head_q)].committed_br[head_slow.loop_meta.train.slot] &&
+                    head_slow.loop_meta.train.pred != state_q[mem_idx_t'(head_q)].committed_taken[head_slow.loop_meta.train.slot]);
+                perf_o[PE_CMT_COND_BR] = PERF_INC_W'($countones(state_q[mem_idx_t'(head_q)].committed_br));
+                perf_o[PE_CMT_COND_MISPRED] = PERF_INC_W'($countones(state_q[mem_idx_t'(head_q)].committed_br & state_q[mem_idx_t'(head_q)].mispred_mask));
+                for (int slot = 0; slot < REGION_SLOTS; slot++) begin
+                    if (state_q[mem_idx_t'(head_q)].committed_br[slot] &&
+                        tage_final(head_slow.tage_meta, slot) != state_q[mem_idx_t'(head_q)].committed_taken[slot])
+                        perf_o[PE_CMT_COND_TAGE_WRONG] += PERF_INC_W'(1);
+                end
+                if (state_q[mem_idx_t'(head_q)].actual_valid && head_res.cfi_type == CFI_JALR) begin
+                    if (head_res.ras_action inside {RAS_POP, RAS_POP_PUSH}) begin
+                        perf_o[PE_CMT_RET] = 1;
+                        perf_o[PE_CMT_RET_MISPRED] = PERF_INC_W'(state_q[mem_idx_t'(head_q)].mispred_mask[head_res.slot]);
+                    end else begin
+                        perf_o[PE_CMT_JALR] = 1;
+                        perf_o[PE_CMT_JALR_MISPRED] = PERF_INC_W'(state_q[mem_idx_t'(head_q)].mispred_mask[head_res.slot]);
+                    end
+                end
+                case ({head_alloc.pred.next_pc == head_final_next,
+                       head_slow.pred.next_pc == head_final_next})
+                    2'b11: perf_o[PE_CMT_FAST_OK_SLOW_OK] = 1;
+                    2'b10: perf_o[PE_CMT_FAST_OK_SLOW_BAD] = 1;
+                    2'b01: perf_o[PE_CMT_FAST_BAD_SLOW_OK] = 1;
+                    2'b00: perf_o[PE_CMT_FAST_BAD_SLOW_BAD] = 1;
+                endcase
+                perf_o[PE_CMT_MISPRED_REGION] = PERF_INC_W'(|state_q[mem_idx_t'(head_q)].mispred_mask);
+            end
+            perf_o[PE_FTQ_EMPTY_CYCLE] = PERF_INC_W'(count_q == 0);
+        end
+    end
+
+    // Historical interface remains isolated; it never drives target state.
     assign bpu_ready_o = 1'b0;
     assign ifu_valid_o = 1'b0;
     assign ifu_entry_o = '0;
@@ -305,390 +710,6 @@ module ftq
     assign train_valid_o = '0;
     for (genvar lane = 0; lane < RELEASE_WIDTH; lane++) begin : old_train_tieoff
         assign train_entry_o[lane] = '0;
-    end
-
-    // The caller captures alloc_ftq_id_o only on alloc_valid && alloc_ready.
-    // Reusing a killed slot increments its own generation, so stale responses
-    // from the previous occupant fail the full-ID comparison.
-    assign alloc_ftq_id_o = new_id(alloc_q, gen_q[alloc_q]);
-    assign alloc_ready_o = !rst_i && !kill_i.valid && (count_q < count_t'(DEPTH));
-    assign alloc_fire = alloc_valid_i && alloc_ready_o;
-    assign head_id_o = (count_q != '0) ? entries_q[head_q].id : '0;
-
-    // Demand requires an available return slot. Its index and epoch must stay
-    // stable while an accepted valid request waits for ICache ready; the RQ
-    // allocates that slot only on the same demand handshake.
-    assign demand_valid_o = !rst_i && !hold_i && !kill_i.valid && rq_rsv_ready_i &&
-                            (count_q != '0) && entries_q[demand_q].valid &&
-                            !entries_q[demand_q].demand_issued;
-    always_comb begin
-        demand_o = '0;
-        if (demand_hold_q) demand_o = demand_hold_req_q;
-        else if (count_q != '0) begin
-            demand_o.region_base = demand_pred.region_base;
-            demand_o.ftq_id = entries_q[demand_q].id;
-            demand_o.rq_idx = rq_rsv_idx_i;
-            demand_o.epoch = epoch_i;
-        end
-    end
-    assign demand_fire = demand_valid_o && demand_ready_i;
-
-    assign pf_valid_o = !rst_i && !hold_i && !kill_i.valid &&
-                        (count_q != '0) && entries_q[pf_q].valid && entries_q[pf_q].slow_done &&
-                        !entries_q[pf_q].demand_issued && !entries_q[pf_q].pf_issued;
-    assign pf_region_base_o = (count_q != '0) ? pf_pred.region_base : '0;
-    assign pf_ftq_id_o = (count_q != '0) ? entries_q[pf_q].id : '0;
-    assign pf_fire = pf_valid_o && pf_ready_i;
-
-    // Both side reads validate the full dynamic identity. An old return or
-    // recovery read cannot observe the new occupant of a reused ring slot.
-    always_comb begin
-        brief_o = '0;
-        if (brief_rd_valid_i && int'(brief_rd_id_i.idx) < DEPTH &&
-            entries_q[brief_rd_id_i.idx].valid &&
-            entries_q[brief_rd_id_i.idx].id == brief_rd_id_i) begin
-            brief_o.ftq_id = brief_rd_id_i;
-            brief_o.slow_done = entries_q[brief_rd_id_i.idx].slow_done;
-            brief_o.pred = entries_q[brief_rd_id_i.idx].final_pred;
-            brief_o.ras_ckpt = brief_alloc.ras_ckpt;
-        end
-        loop_meta_rd_o='0;
-        ras_ckpt_rd_o = '0;
-        if (int'(ras_ckpt_rd_id_i.idx) < DEPTH &&
-            entries_q[ras_ckpt_rd_id_i.idx].valid &&
-            entries_q[ras_ckpt_rd_id_i.idx].id == ras_ckpt_rd_id_i)
-            begin ras_ckpt_rd_o = ras_alloc.ras_ckpt;
-            loop_meta_rd_o=ras_slow.loop_meta;
-            // A winning slow override writes metadata and requests recovery
-            // on the same edge. Capture its pre-update checkpoint directly.
-            if(slow_i.valid && slow_i.ftq_id==ras_ckpt_rd_id_i)
-                loop_meta_rd_o=slow_i.loop_meta;
-            end
-    end
-
-    assign ho_sel=add_idx(head_q,int'(ho_busy_q));
-    assign snap_train_rd_req_o=!rst_i && int'(count_q)>int'(ho_busy_q) &&
-        entries_q[ho_sel].valid && entries_q[ho_sel].commit_last && int'(train_free_i)>int'(ho_busy_q);
-    assign snap_train_rd_id_o=entries_q[ho_sel].id;
-    assign bpu_train_valid_o=!rst_i && ho_busy_q;
-    assign train_fire=bpu_train_valid_o && bpu_train_ready_i;
-    always_comb begin
-        bpu_train_o='0;
-        bpu_train_o.region_base=head_alloc.pred.region_base;
-        bpu_train_o.folds=snap_train_i.folds;
-        bpu_train_o.loop_train=head_slow.loop_meta.train;
-        bpu_train_o.tage_meta=head_slow.tage_meta;
-        bpu_train_o.br_commit_mask=entries_q[head_q].committed_br;
-        bpu_train_o.br_taken_mask=entries_q[head_q].committed_taken;
-        bpu_train_o.cfi_valid=entries_q[head_q].actual_cfi_valid;
-        bpu_train_o.cfi_slot=entries_q[head_q].actual_cfi_slot;
-        bpu_train_o.cfi_type=entries_q[head_q].actual_cfi_type;
-        bpu_train_o.ras_action=entries_q[head_q].actual_ras_action;
-        bpu_train_o.cfi_target=entries_q[head_q].actual_cfi_target;
-        bpu_train_o.cfi_is_rvc=entries_q[head_q].actual_cfi_is_rvc;
-        bpu_train_o.is_edge=entries_q[head_q].actual_cfi_is_edge;
-        bpu_train_o.mispredicted=|entries_q[head_q].mispred_mask;
-    end
-
-    always_comb begin : next_state
-        int unsigned keep_count, protected_count;
-        int boundary_pos;
-        logic prefix_open, found_demand, found_pf;
-        idx_t slot_idx, old_head;
-        slot_mask_t keep_mask;
-        keep_count=0;protected_count=0;boundary_pos=-1;prefix_open=0;
-        found_demand=0;found_pf=0;slot_idx='0;old_head='0;keep_mask='0;
-
-        for (int n = 0; n < DEPTH; n++) begin
-            entries_d[n] = entries_q[n];
-            gen_d[n] = gen_q[n];
-        end
-        alloc_d = alloc_q;
-        demand_d = demand_q;
-        pf_d = pf_q;
-        head_d = head_q;
-        count_d = count_q;
-        demand_hold_d = demand_hold_q;
-        demand_hold_req_d = demand_hold_req_q;
-
-        // Training acceptance is the only release event. Other committed
-        // regions remain live and keep their snapshots until their turn.
-        if (train_fire) begin
-            old_head = head_d;
-            for (int n = 0; n < DEPTH; n++)
-                if (old_head == idx_t'(n)) entries_d[n] = '0;
-            head_d = advance(old_head);
-            count_d = count_d - 1'b1;
-            // Issuer may equal a released head after a full-ring wrap.
-            // It then denotes the next allocation, so release must not move it.
-
-        end
-
-        // Fixed-address entry updates avoid wide dynamic write crossbars.
-        for (int n = 0; n < DEPTH; n++) begin
-            if (slow_i.valid && slow_i.ftq_id.idx == idx_t'(n) &&
-                entries_d[n].valid &&
-                entries_d[n].id == slow_i.ftq_id) begin
-                entries_d[n].final_pred = slow_i.pred;
-                entries_d[n].final_next_pc = slow_i.pred.next_pc;
-                entries_d[n].slow_done = 1'b1;
-            end
-
-            if (kill_i.valid && winner_i.valid && !winner_i.kill_self
-                && winner_i.ftq_id.idx == idx_t'(n)
-                && entries_d[n].valid
-                && entries_d[n].id == winner_i.ftq_id)
-                entries_d[n].final_next_pc = winner_i.target_pc;
-
-            if (resolve_i.valid && resolve_i.ftq_id.idx == idx_t'(n) &&
-                entries_d[n].valid &&
-                entries_d[n].id == resolve_i.ftq_id &&
-                int'(resolve_i.slot) < REGION_SLOTS) begin
-                if (resolve_i.cfi_type == CFI_BR) begin
-                    entries_d[n].resolved_br[resolve_i.slot] = 1'b1;
-                    entries_d[n].resolved_taken[resolve_i.slot] =
-                        resolve_i.actual_taken;
-                end
-                if (resolve_i.actual_taken) begin
-                    entries_d[n].actual_cfi_valid = 1'b1;
-                    entries_d[n].actual_cfi_slot = resolve_i.slot;
-                    entries_d[n].actual_cfi_type = resolve_i.cfi_type;
-                    entries_d[n].actual_ras_action = resolve_i.ras_action;
-                    entries_d[n].actual_cfi_target = resolve_i.actual_target;
-                    entries_d[n].actual_cfi_is_rvc = resolve_i.inst_len==2;
-                    entries_d[n].actual_cfi_is_edge = resolve_i.branch_pc
-                        ==resolve_pred.region_base-vaddr_t'(2);
-                end
-                entries_d[n].mispredicted |= resolve_i.mispredict;
-                if(resolve_i.mispredict) entries_d[n].mispred_mask[resolve_i.slot]=1;
-            end
-        end
-
-        // All commit lanes can mark distinct regions in one edge. A region's
-        // last committed instruction closes its training record, never frees
-        // the slot directly. A same-edge resolve is visible to this marking.
-        for (int lane = 0; lane < COMMIT_W; lane++) begin
-            if (commit_i[lane].valid && int'(commit_i[lane].ftq_id.idx) < DEPTH
-                && entries_d[commit_i[lane].ftq_id.idx].valid
-                && entries_d[commit_i[lane].ftq_id.idx].id == commit_i[lane].ftq_id
-                && int'(commit_i[lane].slot) < REGION_SLOTS) begin
-                for (int n = 0; n < DEPTH; n++) begin
-                    if (commit_i[lane].ftq_id.idx == idx_t'(n)) begin
-                        if (entries_d[n].resolved_br[commit_i[lane].slot]) begin
-                            entries_d[n].committed_br[commit_i[lane].slot] = 1'b1;
-                            entries_d[n].committed_taken[commit_i[lane].slot] =
-                                entries_d[n].resolved_taken[commit_i[lane].slot];
-                        end
-                        if (commit_i[lane].region_last) entries_d[n].commit_last = 1'b1;
-                    end
-                    // Program-order retirement closes older, possibly empty regions.
-                    if (((n + DEPTH - int'(head_d)) % DEPTH) < int'(count_d)
-                        && entries_d[n].valid
-                        && ((n + DEPTH - int'(head_d)) % DEPTH) * REGION_SLOTS
-                           < fe_age(commit_i[lane].ftq_id, '0, entries_d[head_d].id))
-                        entries_d[n].commit_last = 1'b1;
-                end
-            end
-        end
-
-        if (kill_i.valid) begin
-            // D24's already-selected winner is authoritative. Preserve the
-            // committed prefix even for kill-all so its training cannot be
-            // dropped. Ignore a stale partial boundary with no live owner.
-            protected_count = 0;
-            prefix_open = 1'b1;
-            boundary_pos = -1;
-            for (int age = 0; age < DEPTH; age++) begin
-                slot_idx = add_idx(head_d, age);
-                if (age < int'(count_d)) begin
-                    if (prefix_open && entries_d[slot_idx].commit_last)
-                        protected_count++;
-                    else prefix_open = 1'b0;
-                    if (entries_d[slot_idx].valid && entries_d[slot_idx].id == kill_i.ftq_id)
-                        boundary_pos = age;
-                end
-            end
-            keep_count = int'(count_d);
-            if (kill_i.all) keep_count = protected_count;
-            else if (boundary_pos >= 0) begin
-                keep_count = 0;
-                for (int age = 0; age < DEPTH; age++) begin
-                    if (age < int'(count_d)) begin
-                        slot_idx = add_idx(head_d, age);
-                        if (!fe_killed_by(kill_i, entries_d[slot_idx].id,
-                                         (entries_d[slot_idx].id == kill_i.ftq_id ? kill_i.slot : fetch_slot_t'(0)),
-                                         entries_d[head_d].id))
-                            keep_count++;
-                    end
-                end
-                if (keep_count < protected_count) keep_count = protected_count;
-            end
-            for (int n = 0; n < DEPTH; n++) begin
-                if (((n + DEPTH - int'(head_d)) % DEPTH) >= keep_count
-                    && ((n + DEPTH - int'(head_d)) % DEPTH) < int'(count_d))
-                    entries_d[n] = '0;
-            end
-            count_d = count_t'(keep_count);
-            alloc_d = add_idx(head_d, keep_count);
-
-            if (!kill_i.all && !kill_i.kill_self && boundary_pos >= 0 &&
-                boundary_pos < keep_count) begin
-                slot_idx = add_idx(head_d, boundary_pos);
-                keep_mask = '0;
-                for (int s = 0; s < REGION_SLOTS; s++)
-                    if (s <= int'(kill_i.slot)) keep_mask[s] = 1'b1;
-                for (int n = 0; n < DEPTH; n++) begin
-                    if (slot_idx == idx_t'(n)) begin
-                        entries_d[n].resolved_br &= keep_mask;
-                        entries_d[n].resolved_taken &= keep_mask;
-                        entries_d[n].mispred_mask &= keep_mask;
-                        entries_d[n].mispredicted=|entries_d[n].mispred_mask;
-                        if(entries_d[n].actual_cfi_valid && entries_d[n].actual_cfi_slot>kill_i.slot)
-                            entries_d[n].actual_cfi_valid=0;
-                        entries_d[n].final_pred.br_mask &= keep_mask;
-                        entries_d[n].final_pred.jal_mask &= keep_mask;
-                        if (entries_d[n].final_pred.cfi_valid &&
-                            entries_d[n].final_pred.cfi_slot > kill_i.slot)
-                            entries_d[n].final_pred.cfi_valid = 1'b0;
-                        if (resolve_i.valid && resolve_i.ftq_id == kill_i.ftq_id &&
-                            resolve_i.mispredict) begin
-                            entries_d[n].final_pred.next_pc = resolve_i.redirect_pc;
-                            entries_d[n].final_pred.cfi_target = resolve_i.actual_target;
-                            entries_d[n].final_pred.cfi_slot = resolve_i.slot;
-                            entries_d[n].final_pred.cfi_type = resolve_i.cfi_type;
-                            entries_d[n].final_pred.ras_action = resolve_i.ras_action;
-                            entries_d[n].final_pred.raw_pred_taken = resolve_i.actual_taken;
-                            entries_d[n].final_pred.target_missing = 1'b0;
-                            entries_d[n].final_pred.cfi_valid = resolve_i.actual_taken;
-                        end
-                    end
-                end
-            end
-
-            // Rewind each issuer to its first surviving, not-yet-issued
-            // entry. Already accepted wrong-path requests finish elsewhere.
-            demand_d = alloc_d;
-            pf_d = alloc_d;
-            found_demand = 1'b0;
-            found_pf = 1'b0;
-            for (int age = 0; age < DEPTH; age++) begin
-                if (age < keep_count) begin
-                    slot_idx = add_idx(head_d, age);
-                    if (!found_demand && !entries_d[slot_idx].demand_issued) begin
-                        demand_d = slot_idx;
-                        found_demand = 1'b1;
-                    end
-                    if (!found_pf && !entries_d[slot_idx].pf_issued) begin
-                        pf_d = slot_idx;
-                        found_pf = 1'b1;
-                    end
-                end
-            end
-            demand_hold_d = 1'b0;
-        end else begin
-            if (alloc_fire) begin
-                for (int n = 0; n < DEPTH; n++) begin
-                    if (alloc_q == idx_t'(n)) begin
-                        entries_d[n] = '0;
-                        entries_d[n].valid = 1'b1;
-                        entries_d[n].id = alloc_ftq_id_o;
-                        entries_d[n].final_pred = alloc_pred_i;
-                        entries_d[n].final_next_pc = alloc_pred_i.next_pc;
-                        gen_d[n] = alloc_ftq_id_o.gen;
-                    end
-                end
-                alloc_d = advance(alloc_q);
-                count_d = count_d + 1'b1;
-            end
-            if (demand_fire) begin
-                for (int n = 0; n < DEPTH; n++)
-                    if (demand_q == idx_t'(n)) entries_d[n].demand_issued = 1'b1;
-                demand_d = advance(demand_q);
-                demand_hold_d = 1'b0;
-            end else if (demand_valid_o && !demand_ready_i && !demand_hold_q) begin
-                demand_hold_d = 1'b1;
-                demand_hold_req_d = demand_o;
-            end
-            if (pf_fire) begin
-                for (int n = 0; n < DEPTH; n++)
-                    if (pf_q == idx_t'(n)) entries_d[n].pf_issued = 1'b1;
-                pf_d = advance(pf_q);
-            end
-        end
-        if(((int'(pf_d)+DEPTH-int'(head_d))%DEPTH)<((int'(demand_d)+DEPTH-int'(head_d))%DEPTH))
-            pf_d=demand_d;
-    end
-
-    always_ff @(posedge clk_i) begin
-        if (rst_i) begin
-            for (int n = 0; n < DEPTH; n++) begin
-                entries_q[n] <= '0;
-                gen_q[n] <= '0;
-            end
-            alloc_q <= '0;
-            demand_q <= '0;
-            pf_q <= '0;
-            head_q <= '0;
-            count_q <= '0;
-            ho_busy_q<=0;ho_id_q<='0;
-            demand_hold_q <= 1'b0;
-            demand_hold_req_q <= '0;
-        end else begin
-            for (int n = 0; n < DEPTH; n++) begin
-                entries_q[n] <= entries_d[n];
-                gen_q[n] <= gen_d[n];
-            end
-            alloc_q <= alloc_d;
-            demand_q <= demand_d;
-            pf_q <= pf_d;
-            head_q <= head_d;
-            count_q <= count_d;
-            ho_busy_q<=snap_train_rd_req_o;
-            if(snap_train_rd_req_o) ho_id_q<=snap_train_rd_id_o;
-            if(ho_busy_q) begin
-                assert(snap_train_resp_valid_i && snap_train_resp_id_i==ho_id_q && entries_q[head_q].id==ho_id_q && bpu_train_ready_i)
-                    else $fatal(1,"FTQ H1 identity or reserved training credit lost");
-            end
-            demand_hold_q <= demand_hold_d;
-            demand_hold_req_q <= demand_hold_req_d;
-        end
-    end
-
-    always_comb begin
-        perf_o = '0;
-        if (!rst_i) begin
-            perf_o[PE_TRAIN_STALL_CYCLE]=PERF_INC_W'(int'(count_q)>int'(ho_busy_q) && entries_q[ho_sel].valid && entries_q[ho_sel].commit_last && int'(train_free_i)<=int'(ho_busy_q));
-            perf_o[PE_RQ_FULL_CYCLE]=PERF_INC_W'(!hold_i && !kill_i.valid && count_q!=0 && entries_q[demand_q].valid && !entries_q[demand_q].demand_issued && !rq_rsv_ready_i);
-            perf_o[PE_FTQ_FULL_CYCLE] = PERF_INC_W'(alloc_valid_i && !alloc_ready_o);
-            if (train_fire) begin
-                perf_o[PE_CMT_REGION] = 1;
-                perf_o[PE_CMT_LOOP_USED]=PERF_INC_W'(head_slow.loop_meta.train.used && entries_q[head_q].committed_br[head_slow.loop_meta.train.slot]);
-                perf_o[PE_CMT_LOOP_WRONG]=PERF_INC_W'(head_slow.loop_meta.train.used && entries_q[head_q].committed_br[head_slow.loop_meta.train.slot] && head_slow.loop_meta.train.pred!=entries_q[head_q].committed_taken[head_slow.loop_meta.train.slot]);
-                perf_o[PE_CMT_COND_BR]=PERF_INC_W'($countones(entries_q[head_q].committed_br));
-                perf_o[PE_CMT_COND_MISPRED]=PERF_INC_W'($countones(entries_q[head_q].committed_br & entries_q[head_q].mispred_mask));
-                for(int slot=0;slot<REGION_SLOTS;slot++)
-                    if(entries_q[head_q].committed_br[slot] && tage_final(head_slow.tage_meta,slot)!=entries_q[head_q].committed_taken[slot])
-                        perf_o[PE_CMT_COND_TAGE_WRONG]+=PERF_INC_W'(1);
-                if(entries_q[head_q].actual_cfi_valid && entries_q[head_q].actual_cfi_type==CFI_JALR) begin
-                    if(entries_q[head_q].actual_ras_action inside {RAS_POP,RAS_POP_PUSH}) begin
-                        perf_o[PE_CMT_RET]=1;
-                        perf_o[PE_CMT_RET_MISPRED]=PERF_INC_W'(entries_q[head_q].mispred_mask[entries_q[head_q].actual_cfi_slot]);
-                    end else begin
-                        perf_o[PE_CMT_JALR]=1;
-                        perf_o[PE_CMT_JALR_MISPRED]=PERF_INC_W'(entries_q[head_q].mispred_mask[entries_q[head_q].actual_cfi_slot]);
-                    end
-                end
-                case ({head_alloc.pred.next_pc == entries_q[head_q].final_next_pc,
-                       head_slow.next_pc == entries_q[head_q].final_next_pc})
-                    2'b11: perf_o[PE_CMT_FAST_OK_SLOW_OK] = 1;
-                    2'b10: perf_o[PE_CMT_FAST_OK_SLOW_BAD] = 1;
-                    2'b01: perf_o[PE_CMT_FAST_BAD_SLOW_OK] = 1;
-                    2'b00: perf_o[PE_CMT_FAST_BAD_SLOW_BAD] = 1;
-                endcase
-                perf_o[PE_CMT_MISPRED_REGION] = PERF_INC_W'(entries_q[head_q].mispredicted);
-            end
-            perf_o[PE_FTQ_EMPTY_CYCLE] = PERF_INC_W'(count_q == '0);
-        end
     end
 
     `ifdef O3_FRONTEND_DEBUG
@@ -699,5 +720,4 @@ module ftq
     assign dbg_release_head_o = head_q;
     assign dbg_allocated_count_o = count_q;
     `endif
-
 endmodule
