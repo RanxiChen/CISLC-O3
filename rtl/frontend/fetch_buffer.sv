@@ -38,41 +38,22 @@ module fetch_buffer
 
     localparam int PTR_WIDTH = (DEPTH > 1) ? $clog2(DEPTH) : 1;
     localparam int COUNT_WIDTH = $clog2(DEPTH + 1);
+    localparam int DATA_WIDTH = $bits(fetch_entry_t);
+    typedef logic [PTR_WIDTH-1:0] index_t;
 
+    // Keep wide payload stationary. Selective recovery compacts only slot
+    // indices, so arbitrary surviving holes still have exactly the old order.
     fetch_entry_t entries_q [DEPTH];
-    logic [PTR_WIDTH-1:0]   head_q;
-    logic [PTR_WIDTH-1:0]   tail_q;
-    logic [COUNT_WIDTH-1:0] count_q;
-
-    logic [COUNT_WIDTH-1:0] free_count;
-    logic [COUNT_WIDTH-1:0] enq_count;
-    logic [COUNT_WIDTH-1:0] deq_count;
-    logic                   enq_fire;
-    logic                   deq_fire;
-
-    function automatic logic [PTR_WIDTH-1:0] ptr_add(
-        input logic [PTR_WIDTH-1:0] ptr,
-        input int unsigned          offset
-    );
-        int unsigned next_ptr;
-        begin
-            if (DEPTH == 1) begin
-                ptr_add = '0;
-            end else begin
-                next_ptr = int'(ptr) + offset;
-                ptr_add = PTR_WIDTH'(next_ptr % DEPTH);
-            end
-        end
-    endfunction
-
-    always_comb begin
-        enq_count = '0;
-        for (int lane = 0; lane < ENQ_WIDTH; lane++) begin
-            if (enq_valid_i[lane]) begin
-                enq_count = enq_count + COUNT_WIDTH'(1);
-            end
-        end
-    end
+    ftq_id_t entry_id_q [DEPTH];
+    fetch_slot_t entry_slot_q [DEPTH];
+    index_t order_q [DEPTH], order_d [DEPTH];
+    index_t alloc_idx [ENQ_WIDTH];
+    logic [DEPTH-1:0] used_q, used_d, keep;
+    logic [ENQ_WIDTH-1:0] append;
+    logic [COUNT_WIDTH-1:0] rank [DEPTH], append_rank [ENQ_WIDTH];
+    logic [COUNT_WIDTH-1:0] count_q, count_d, survivors, incoming;
+    logic [COUNT_WIDTH-1:0] free_count, deq_count;
+    logic deq_fire;
 
     assign free_count = COUNT_WIDTH'(DEPTH) - count_q;
     assign enq_ready_o = !rst_i && !flush_i && !kill_i.valid
@@ -81,60 +62,96 @@ module fetch_buffer
     assign deq_valid_o = !rst_i && !flush_i && !kill_i.valid && count_q != '0;
     assign perf_o = '0;
     assign deq_count = (count_q >= COUNT_WIDTH'(DEQ_WIDTH))
-                     ? COUNT_WIDTH'(DEQ_WIDTH)
-                     : count_q;
-    assign enq_fire = (enq_count != '0) && enq_ready_o;
+                     ? COUNT_WIDTH'(DEQ_WIDTH) : count_q;
     assign deq_fire = deq_valid_o && deq_ready_i;
 
     always_comb begin
-        for (int lane = 0; lane < DEQ_WIDTH; lane++) begin
-            if (COUNT_WIDTH'(lane) < deq_count) begin
-                deq_entry_o[lane] = entries_q[ptr_add(head_q, lane)];
-            end else begin
-                deq_entry_o[lane] = '0;
+        for (int lane = 0; lane < DEQ_WIDTH; lane++)
+            deq_entry_o[lane] = COUNT_WIDTH'(lane) < deq_count
+                ? entries_q[order_q[lane]] : fetch_entry_t'(0);
+    end
+
+    always_comb begin
+        logic [DEPTH-1:0] available;
+        survivors = '0;
+        keep = '0;
+        for (int src = 0; src < DEPTH; src++) begin
+            rank[src] = survivors;
+            keep[src] = src < int'(count_q) &&
+                (kill_i.valid ? !fe_killed_by(kill_i, entry_id_q[order_q[src]],
+                                                entry_slot_q[order_q[src]], ftq_head_i)
+                              : !(deq_fire && src < int'(deq_count)));
+            survivors += COUNT_WIDTH'(keep[src]);
+        end
+        available = ~used_q;
+        incoming = '0;
+        append = '0;
+        alloc_idx = '{default:'0};
+        append_rank = '{default:'0};
+        for (int lane = 0; lane < ENQ_WIDTH; lane++) begin
+            logic found;
+            found = 1'b0;
+            append_rank[lane] = incoming;
+            append[lane] = enq_ready_o && enq_valid_i[lane];
+            incoming += COUNT_WIDTH'(append[lane]);
+            for (int slot = 0; slot < DEPTH; slot++) begin
+                if (append[lane] && available[slot] && !found) begin
+                    found = 1'b1;
+                    alloc_idx[lane] = index_t'(slot);
+                    available[slot] = 1'b0;
+                end
+            end
+        end
+        count_d = survivors + incoming;
+    end
+
+    always_comb begin
+        order_d = '{default:'0};
+        used_d = '0;
+        for (int src = 0; src < DEPTH; src++)
+            if (keep[src]) used_d[order_q[src]] = 1'b1;
+        for (int lane = 0; lane < ENQ_WIDTH; lane++)
+            if (append[lane]) used_d[alloc_idx[lane]] = 1'b1;
+        for (int dst = 0; dst < DEPTH; dst++) begin
+            for (int src = 0; src < DEPTH; src++)
+                order_d[dst] |= order_q[src] &
+                    {PTR_WIDTH{keep[src] && rank[src] == COUNT_WIDTH'(dst)}};
+            for (int lane = 0; lane < ENQ_WIDTH; lane++)
+                order_d[dst] |= alloc_idx[lane] &
+                    {PTR_WIDTH{append[lane] && survivors + append_rank[lane] == COUNT_WIDTH'(dst)}};
+        end
+    end
+
+    for (genvar slot = 0; slot < DEPTH; slot++) begin : g_payload
+        fetch_entry_t write_data;
+        logic write_valid;
+        always_comb begin
+            write_data = '0;
+            write_valid = 1'b0;
+            for (int lane = 0; lane < ENQ_WIDTH; lane++) begin
+                write_data |= fetch_entry_t'(DATA_WIDTH'(enq_entry_i[lane]) &
+                    {DATA_WIDTH{append[lane] && alloc_idx[lane] == index_t'(slot)}});
+                write_valid |= append[lane] && alloc_idx[lane] == index_t'(slot);
+            end
+        end
+        always_ff @(posedge clk_i) begin
+            if (!rst_i && !flush_i && write_valid) begin
+                entries_q[slot] <= write_data;
+                entry_id_q[slot] <= write_data.ftq_id;
+                entry_slot_q[slot] <= write_data.slot;
             end
         end
     end
 
     always_ff @(posedge clk_i) begin
         if (rst_i || flush_i) begin
-            head_q  <= '0;
-            tail_q  <= '0;
+            order_q <= '{default:'0};
+            used_q <= '0;
             count_q <= '0;
-        end else if (kill_i.valid) begin
-            int unsigned kept;
-            kept = 0;
-            // Compact survivors in program order; no enqueue/dequeue on kill.
-            for (int offset = 0; offset < DEPTH; offset++) begin
-                if (offset < int'(count_q)
-                    && !fe_killed_by(kill_i, entries_q[ptr_add(head_q, offset)].ftq_id,
-                                    entries_q[ptr_add(head_q, offset)].slot, ftq_head_i)) begin
-                    entries_q[ptr_add(head_q, kept)] <= entries_q[ptr_add(head_q, offset)];
-                    kept++;
-                end
-            end
-            tail_q <= ptr_add(head_q, kept);
-            count_q <= COUNT_WIDTH'(kept);
         end else begin
-            if (enq_fire) begin
-                int unsigned write_idx;
-                write_idx = 0;
-                for (int lane = 0; lane < ENQ_WIDTH; lane++) begin
-                    if (enq_valid_i[lane]) begin
-                        entries_q[ptr_add(tail_q, write_idx)] <= enq_entry_i[lane];
-                        write_idx = write_idx + 1;
-                    end
-                end
-                tail_q <= ptr_add(tail_q, int'(enq_count));
-            end
-
-            if (deq_fire) begin
-                head_q <= ptr_add(head_q, int'(deq_count));
-            end
-
-            count_q <= count_q
-                     + (enq_fire ? enq_count : '0)
-                     - (deq_fire ? deq_count : '0);
+            order_q <= order_d;
+            used_q <= used_d;
+            count_q <= count_d;
         end
     end
 

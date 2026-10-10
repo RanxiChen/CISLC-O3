@@ -89,10 +89,14 @@ module store_queue
     o3_types_pkg::sq_kind_e kind_q[DEPTH];logic heu_complete_q[DEPTH];
     logic heu_release;
     always_comb begin
+        int selected;
+        selected = -1;
         heu_valid_o=0;heu_entry_o='0;heu_kind_o=o3_types_pkg::SQ_NORMAL;heu_release=0;
         for(int n=0;n<DEPTH;n++) if(valid_q[n] && rob_idx_q[n]==rob_head_i &&
-            kind_q[n]!=o3_types_pkg::SQ_NORMAL && sta_q[n].uop.valid && !heu_complete_q[n]) begin
-            heu_valid_o=1;heu_entry_o=sta_q[n];heu_kind_o=kind_q[n];
+            kind_q[n]!=o3_types_pkg::SQ_NORMAL && sta_q[n].uop.valid && !heu_complete_q[n])
+            selected = n;
+        if (selected >= 0) begin
+            heu_valid_o=1;heu_entry_o=sta_q[selected];heu_kind_o=kind_q[selected];
         end
         for(int p=0;p<COMMIT_WIDTH;p++) heu_release|=commit_valid_i[p] && commit_idx_i[p]==head_q && kind_q[head_q]!=o3_types_pkg::SQ_NORMAL;
     end
@@ -127,9 +131,13 @@ module store_queue
             for(int p=0;p<P;p++) if(p<CFG.lsu.mem_pipes && pick<0 && replay_idx[p]<0) pick=p;
             if(pick>=0 && valid_q[n] && sta_ready_q[n] && !committed_q[n] && !flush_all_i &&
                 !(resolution_valid_i && resolution_mispredict_i && branch_mask_q[n][resolution_tag_i])) begin
-                replay_idx[pick]=n;replay_valid_o[pick]=1;replay_o[pick]=sta_q[n];
-                replay_o[pick].uop.branch_mask=branch_mask_q[n];
+                replay_idx[pick]=n;replay_valid_o[pick]=1;
             end
+        end
+        // The age scan chooses narrow indices; each port reads its payload once.
+        for (int p = 0; p < P; p++) if (replay_valid_o[p]) begin
+            replay_o[p] = sta_q[replay_idx[p]];
+            replay_o[p].uop.branch_mask = branch_mask_q[replay_idx[p]];
         end
     end
     always_ff @(posedge clk) begin
@@ -178,9 +186,10 @@ module store_queue
                 if(t_dc_resp_i.reason==o3_types_pkg::LDW_MSHR_FULL && dc_wake_i.mshr_free) dc_wait_q<=0;
                 if(t_dc_resp_i.reason==o3_types_pkg::LDW_WB_LINE && dc_wake_i.wb_free) dc_wait_q<=0;
             end
-            if(alloc_fire_i) for(int l=0;l<RENAME_WIDTH;l++) if(alloc_req_i[l]) begin
-                sta_q[alloc_idx_o[l]]<='0;sta_ready_q[alloc_idx_o[l]]<=0;sta_wait_q[alloc_idx_o[l]]<=0;
-            end
+            if (alloc_fire_i) for (int n = 0; n < DEPTH; n++)
+                for (int l = 0; l < RENAME_WIDTH; l++) if (alloc_req_i[l] && alloc_idx_o[l] == IDX_WIDTH'(n)) begin
+                    sta_q[n] <= '0; sta_ready_q[n] <= 0; sta_wait_q[n] <= 0;
+                end
         end
     end
 
@@ -243,66 +252,73 @@ module store_queue
         end
     end
 
-    // 按 SQ 程序顺序从老到年轻扫描。更年轻的完整覆盖写会取代先前的
-    // 部分覆盖或数据未就绪项；地址未知的旧写入按 B32 始终阻塞。
-    // 周期 N 组合阶段只产生查询结果，SQ 状态不变；load 在握手后使用
-    // 同一拍的判定，周期 N+1 可重新查询刚在上升沿写入的 store 地址。
-    always_comb begin
-        for(int p=0;p<P;p++) begin
-        logic unknown_addr_block;
-        logic covered_data_block;
-        query_block_o[p] = 1'b0;
-        query_forward_valid_o[p] = 1'b0;
-        query_forward_data_o[p] = '0;
-        unknown_addr_block = 1'b0;
-        covered_data_block = 1'b0;
-        for (int offset = 0; offset < DEPTH; offset++) begin
-            logic [IDX_WIDTH-1:0] idx;
-            logic older;
-            logic overlap;
-            logic full_cover;
-            logic [7:0] covered_bytes;
-            int unsigned shift_bytes;
-            idx = add_idx(head_q, offset);
-            older = committed_q[idx]
-                 || (rob_distance(rob_idx_q[idx], rob_head_i)
-                     < rob_distance(query_rob_idx_i[p], rob_head_i));
-            covered_bytes = '0;
-            shift_bytes = 0;
-            for (int load_byte = 0; load_byte < 8; load_byte++) begin
-                for (int store_byte = 0; store_byte < 8; store_byte++) begin
-                    if (mask_q[idx][store_byte]
-                     && (addr_q[idx] + XLEN'(store_byte)
-                         == query_addr_i[p] + XLEN'(load_byte))) begin
-                        covered_bytes[load_byte] = 1'b1;
-                    end
-                end
-            end
-            overlap = |(covered_bytes & query_mask_i[p]);
-            full_cover = ((covered_bytes & query_mask_i[p]) == query_mask_i[p]);
+    // Compare each physical entry once; only narrow age/index records enter
+    // the selection tree. Rotating every wide address/data row by head_q
+    // before comparing creates a DEPTH-by-DEPTH crossbar.
+    localparam int QUERY_LEAVES = 1 << $clog2(DEPTH);
+    typedef struct packed {
+        logic valid;
+        logic [IDX_WIDTH-1:0] age, idx;
+    } query_choice_t;
+    function automatic query_choice_t younger_choice(input query_choice_t a, b);
+        return b.valid && (!a.valid || b.age > a.age) ? b : a;
+    endfunction
 
-            if (query_valid_i[p] && valid_q[idx] && older && kind_q[idx]!=o3_types_pkg::SQ_MMIO && !heu_complete_q[idx]) begin
-                if (!addr_valid_q[idx] || kind_q[idx] inside {o3_types_pkg::SQ_ATOMIC,o3_types_pkg::SQ_SPLIT}) begin
-                    unknown_addr_block = 1'b1;
-                end else if (overlap) begin
-                    // A later full-cover store supplies every byte and makes
-                    // older known-address overlap irrelevant. A partial
-                    // overlap cannot be assembled from multiple SQ entries
-                    // in this first version.
-                    if (full_cover && data_valid_q[idx]) begin
-                        shift_bytes = int'(query_addr_i[p] - addr_q[idx]);
-                        query_forward_valid_o[p] = 1'b1;
-                        query_forward_data_o[p] = data_q[idx] >> (8 * shift_bytes);
-                        covered_data_block = 1'b0;
-                    end else begin
-                        query_forward_valid_o[p] = 1'b0;
-                        covered_data_block = 1'b1;
-                    end
-                end
+    for (genvar p = 0; p < P; p++) begin : g_query
+        logic [DEPTH-1:0] unknown_addr, overlaps, full_ready, nonnegative;
+        logic [2:0] byte_offset [DEPTH];
+        query_choice_t overlap_tree [2*QUERY_LEAVES];
+        query_choice_t full_tree [2*QUERY_LEAVES];
+        assign overlap_tree[0] = '0;
+        assign full_tree[0] = '0;
+        for (genvar idx = 0; idx < DEPTH; idx++) begin : g_compare
+            logic active, address_known;
+            logic [XLEN-1:0] byte_delta;
+            logic [7:0] covered_bytes;
+            logic [IDX_WIDTH-1:0] age;
+            assign age = IDX_WIDTH'((idx + DEPTH - int'(head_q)) % DEPTH);
+            assign active = query_valid_i[p] && valid_q[idx]
+                && (committed_q[idx] || rob_distance(rob_idx_q[idx], rob_head_i)
+                    < rob_distance(query_rob_idx_i[p], rob_head_i))
+                && kind_q[idx] != o3_types_pkg::SQ_MMIO && !heu_complete_q[idx];
+            assign address_known = addr_valid_q[idx]
+                && !(kind_q[idx] inside {o3_types_pkg::SQ_ATOMIC, o3_types_pkg::SQ_SPLIT});
+            assign byte_delta = query_addr_i[p] - addr_q[idx];
+            assign nonnegative[idx] = byte_delta[XLEN-1:3] == '0;
+            assign byte_offset[idx] = byte_delta[2:0];
+            always_comb begin
+                covered_bytes = '0;
+                if (nonnegative[idx]) covered_bytes = mask_q[idx] >> byte_delta[2:0];
+                else if (byte_delta[XLEN-1:3] == '1 && byte_delta[2:0] != '0)
+                    covered_bytes = mask_q[idx] << (3'(-byte_delta[2:0]));
             end
+            assign unknown_addr[idx] = active && !address_known;
+            assign overlaps[idx] = active && address_known && |(covered_bytes & query_mask_i[p]);
+            assign full_ready[idx] = overlaps[idx] && data_valid_q[idx]
+                && (covered_bytes & query_mask_i[p]) == query_mask_i[p];
+            assign overlap_tree[QUERY_LEAVES+idx] =
+                '{valid:overlaps[idx], age:age, idx:IDX_WIDTH'(idx)};
+            assign full_tree[QUERY_LEAVES+idx] =
+                '{valid:full_ready[idx], age:age, idx:IDX_WIDTH'(idx)};
         end
-        query_block_o[p] = unknown_addr_block || covered_data_block;
-        if (query_block_o[p]) query_forward_valid_o[p] = 1'b0;
+        for (genvar pad = DEPTH; pad < QUERY_LEAVES; pad++) begin : g_pad
+            assign overlap_tree[QUERY_LEAVES+pad] = '0;
+            assign full_tree[QUERY_LEAVES+pad] = '0;
+        end
+        for (genvar node = 1; node < QUERY_LEAVES; node++) begin : g_select
+            assign overlap_tree[node] = younger_choice(overlap_tree[2*node], overlap_tree[2*node+1]);
+            assign full_tree[node] = younger_choice(full_tree[2*node], full_tree[2*node+1]);
+        end
+        always_comb begin
+            query_block_o[p] = |unknown_addr
+                || (overlap_tree[1].valid && !full_ready[overlap_tree[1].idx]);
+            query_forward_valid_o[p] = full_tree[1].valid && !query_block_o[p];
+            // Preserve data even when a younger partial/unknown store blocks
+            // the load: the old scan retained the youngest full-cover value.
+            query_forward_data_o[p] = '0;
+            if (full_tree[1].valid && nonnegative[full_tree[1].idx])
+                query_forward_data_o[p] = data_q[full_tree[1].idx]
+                    >> {byte_offset[full_tree[1].idx], 3'b000};
         end
     end
 

@@ -203,11 +203,8 @@ module ftq
     typedef struct packed {
         logic valid;
         ftq_id_t id;
-        bpu_pred_t fast_pred, final_pred;
-        ras_ckpt_t ras_ckpt;
-        loop_meta_t loop_meta;
-        vaddr_t slow_next_pc, final_next_pc;
-        tage_meta_t tage_meta;
+        bpu_pred_t final_pred;
+        vaddr_t final_next_pc;
         logic slow_done, demand_issued, pf_issued, commit_last;
         slot_mask_t resolved_br, resolved_taken, committed_br, committed_taken;
         logic actual_cfi_valid, mispredicted;
@@ -219,6 +216,24 @@ module ftq
         vaddr_t actual_cfi_target;
     } entry_t;
 
+    typedef struct packed {
+        bpu_pred_t pred;
+        ras_ckpt_t ras_ckpt;
+    } alloc_payload_t;
+    typedef struct packed {
+        loop_meta_t loop_meta;
+        tage_meta_t tage_meta;
+        vaddr_t next_pc;
+    } slow_payload_t;
+    // Single-write memories for immutable allocation and slow-result payloads.
+    // Status/validity remains in flops; invalid or not-yet-slow entries read as
+    // zero without resetting or clearing these wide memories.
+    (* ram_style = "distributed" *) logic [$bits(alloc_payload_t)-1:0] alloc_mem [DEPTH];
+    (* ram_style = "distributed" *) logic [$bits(slow_payload_t)-1:0] slow_mem [DEPTH];
+    alloc_payload_t head_alloc, brief_alloc, ras_alloc;
+    slow_payload_t head_slow, ras_slow;
+    bpu_pred_t demand_pred, pf_pred, resolve_pred;
+
     entry_t entries_q [DEPTH], entries_d [DEPTH];
     logic [FTQ_GEN_W-1:0] gen_q [DEPTH], gen_d [DEPTH];
     idx_t alloc_q, alloc_d, demand_q, demand_d, pf_q, pf_d, head_q, head_d;
@@ -229,6 +244,34 @@ module ftq
     logic demand_hold_q, demand_hold_d;
     icache_req_t demand_hold_req_q, demand_hold_req_d;
     logic alloc_fire, demand_fire, pf_fire, train_fire;
+
+    always_comb begin
+        head_alloc = entries_q[head_q].valid ? alloc_payload_t'(alloc_mem[head_q]) : alloc_payload_t'(0);
+        head_slow = entries_q[head_q].valid && entries_q[head_q].slow_done
+                  ? slow_payload_t'(slow_mem[head_q]) : slow_payload_t'(0);
+        brief_alloc = alloc_payload_t'(alloc_mem[brief_rd_id_i.idx]);
+        ras_alloc = alloc_payload_t'(alloc_mem[ras_ckpt_rd_id_i.idx]);
+        ras_slow = entries_q[ras_ckpt_rd_id_i.idx].slow_done
+                 ? slow_payload_t'(slow_mem[ras_ckpt_rd_id_i.idx]) : slow_payload_t'(0);
+        demand_pred = entries_q[demand_q].valid
+                    ? bpu_pred_t'(alloc_mem[demand_q] >> $bits(ras_ckpt_t)) : bpu_pred_t'(0);
+        pf_pred = entries_q[pf_q].valid
+                ? bpu_pred_t'(alloc_mem[pf_q] >> $bits(ras_ckpt_t)) : bpu_pred_t'(0);
+        resolve_pred = bpu_pred_t'(alloc_mem[resolve_i.ftq_id.idx] >> $bits(ras_ckpt_t));
+    end
+
+    always_ff @(posedge clk_i) begin
+        if (!rst_i) begin
+            if (alloc_fire && !kill_i.valid)
+                alloc_mem[alloc_q] <= alloc_payload_t'{pred:alloc_pred_i, ras_ckpt:alloc_ras_ckpt_i};
+            // Release precedes slow writeback in the next-state priority.
+            if (slow_i.valid && int'(slow_i.ftq_id.idx) < DEPTH
+                && entries_q[slow_i.ftq_id.idx].valid && entries_q[slow_i.ftq_id.idx].id == slow_i.ftq_id
+                && !(train_fire && head_q == slow_i.ftq_id.idx))
+                slow_mem[slow_i.ftq_id.idx] <= slow_payload_t'{loop_meta:slow_i.loop_meta,
+                    tage_meta:slow_i.tage_meta, next_pc:slow_i.pred.next_pc};
+        end
+    end
 
     function automatic idx_t advance(input idx_t idx);
         return (idx == idx_t'(DEPTH - 1)) ? '0 : idx + 1'b1;
@@ -282,7 +325,7 @@ module ftq
         demand_o = '0;
         if (demand_hold_q) demand_o = demand_hold_req_q;
         else if (count_q != '0) begin
-            demand_o.region_base = entries_q[demand_q].fast_pred.region_base;
+            demand_o.region_base = demand_pred.region_base;
             demand_o.ftq_id = entries_q[demand_q].id;
             demand_o.rq_idx = rq_rsv_idx_i;
             demand_o.epoch = epoch_i;
@@ -293,7 +336,7 @@ module ftq
     assign pf_valid_o = !rst_i && !hold_i && !kill_i.valid &&
                         (count_q != '0) && entries_q[pf_q].valid && entries_q[pf_q].slow_done &&
                         !entries_q[pf_q].demand_issued && !entries_q[pf_q].pf_issued;
-    assign pf_region_base_o = (count_q != '0) ? entries_q[pf_q].fast_pred.region_base : '0;
+    assign pf_region_base_o = (count_q != '0) ? pf_pred.region_base : '0;
     assign pf_ftq_id_o = (count_q != '0) ? entries_q[pf_q].id : '0;
     assign pf_fire = pf_valid_o && pf_ready_i;
 
@@ -307,15 +350,15 @@ module ftq
             brief_o.ftq_id = brief_rd_id_i;
             brief_o.slow_done = entries_q[brief_rd_id_i.idx].slow_done;
             brief_o.pred = entries_q[brief_rd_id_i.idx].final_pred;
-            brief_o.ras_ckpt = entries_q[brief_rd_id_i.idx].ras_ckpt;
+            brief_o.ras_ckpt = brief_alloc.ras_ckpt;
         end
         loop_meta_rd_o='0;
         ras_ckpt_rd_o = '0;
         if (int'(ras_ckpt_rd_id_i.idx) < DEPTH &&
             entries_q[ras_ckpt_rd_id_i.idx].valid &&
             entries_q[ras_ckpt_rd_id_i.idx].id == ras_ckpt_rd_id_i)
-            begin ras_ckpt_rd_o = entries_q[ras_ckpt_rd_id_i.idx].ras_ckpt;
-            loop_meta_rd_o=entries_q[ras_ckpt_rd_id_i.idx].loop_meta;
+            begin ras_ckpt_rd_o = ras_alloc.ras_ckpt;
+            loop_meta_rd_o=ras_slow.loop_meta;
             // A winning slow override writes metadata and requests recovery
             // on the same edge. Capture its pre-update checkpoint directly.
             if(slow_i.valid && slow_i.ftq_id==ras_ckpt_rd_id_i)
@@ -331,10 +374,10 @@ module ftq
     assign train_fire=bpu_train_valid_o && bpu_train_ready_i;
     always_comb begin
         bpu_train_o='0;
-        bpu_train_o.region_base=entries_q[head_q].fast_pred.region_base;
+        bpu_train_o.region_base=head_alloc.pred.region_base;
         bpu_train_o.folds=snap_train_i.folds;
-        bpu_train_o.loop_train=entries_q[head_q].loop_meta.train;
-        bpu_train_o.tage_meta=entries_q[head_q].tage_meta;
+        bpu_train_o.loop_train=head_slow.loop_meta.train;
+        bpu_train_o.tage_meta=head_slow.tage_meta;
         bpu_train_o.br_commit_mask=entries_q[head_q].committed_br;
         bpu_train_o.br_taken_mask=entries_q[head_q].committed_taken;
         bpu_train_o.cfi_valid=entries_q[head_q].actual_cfi_valid;
@@ -372,7 +415,8 @@ module ftq
         // regions remain live and keep their snapshots until their turn.
         if (train_fire) begin
             old_head = head_d;
-            entries_d[old_head] = '0;
+            for (int n = 0; n < DEPTH; n++)
+                if (old_head == idx_t'(n)) entries_d[n] = '0;
             head_d = advance(old_head);
             count_d = count_d - 1'b1;
             // Issuer may equal a released head after a full-ring wrap.
@@ -380,67 +424,70 @@ module ftq
 
         end
 
-        if (slow_i.valid && int'(slow_i.ftq_id.idx) < DEPTH &&
-            entries_d[slow_i.ftq_id.idx].valid &&
-            entries_d[slow_i.ftq_id.idx].id == slow_i.ftq_id) begin
-            entries_d[slow_i.ftq_id.idx].final_pred = slow_i.pred;
-            entries_d[slow_i.ftq_id.idx].slow_next_pc = slow_i.pred.next_pc;
-            entries_d[slow_i.ftq_id.idx].final_next_pc = slow_i.pred.next_pc;
-            entries_d[slow_i.ftq_id.idx].loop_meta=slow_i.loop_meta;
-            entries_d[slow_i.ftq_id.idx].tage_meta = slow_i.tage_meta;
-            entries_d[slow_i.ftq_id.idx].slow_done = 1'b1;
-        end
-
-        if (kill_i.valid && winner_i.valid && !winner_i.kill_self
-            && int'(winner_i.ftq_id.idx) < DEPTH
-            && entries_d[winner_i.ftq_id.idx].valid
-            && entries_d[winner_i.ftq_id.idx].id == winner_i.ftq_id)
-            entries_d[winner_i.ftq_id.idx].final_next_pc = winner_i.target_pc;
-
-        if (resolve_i.valid && int'(resolve_i.ftq_id.idx) < DEPTH &&
-            entries_d[resolve_i.ftq_id.idx].valid &&
-            entries_d[resolve_i.ftq_id.idx].id == resolve_i.ftq_id &&
-            int'(resolve_i.slot) < REGION_SLOTS) begin
-            if (resolve_i.cfi_type == CFI_BR) begin
-                entries_d[resolve_i.ftq_id.idx].resolved_br[resolve_i.slot] = 1'b1;
-                entries_d[resolve_i.ftq_id.idx].resolved_taken[resolve_i.slot] =
-                    resolve_i.actual_taken;
+        // Fixed-address entry updates avoid wide dynamic write crossbars.
+        for (int n = 0; n < DEPTH; n++) begin
+            if (slow_i.valid && slow_i.ftq_id.idx == idx_t'(n) &&
+                entries_d[n].valid &&
+                entries_d[n].id == slow_i.ftq_id) begin
+                entries_d[n].final_pred = slow_i.pred;
+                entries_d[n].final_next_pc = slow_i.pred.next_pc;
+                entries_d[n].slow_done = 1'b1;
             end
-            if (resolve_i.actual_taken) begin
-                entries_d[resolve_i.ftq_id.idx].actual_cfi_valid = 1'b1;
-                entries_d[resolve_i.ftq_id.idx].actual_cfi_slot = resolve_i.slot;
-                entries_d[resolve_i.ftq_id.idx].actual_cfi_type = resolve_i.cfi_type;
-                entries_d[resolve_i.ftq_id.idx].actual_ras_action = resolve_i.ras_action;
-                entries_d[resolve_i.ftq_id.idx].actual_cfi_target = resolve_i.actual_target;
-                entries_d[resolve_i.ftq_id.idx].actual_cfi_is_rvc = resolve_i.inst_len==2;
-                entries_d[resolve_i.ftq_id.idx].actual_cfi_is_edge = resolve_i.branch_pc
-                    ==entries_d[resolve_i.ftq_id.idx].fast_pred.region_base-vaddr_t'(2);
+
+            if (kill_i.valid && winner_i.valid && !winner_i.kill_self
+                && winner_i.ftq_id.idx == idx_t'(n)
+                && entries_d[n].valid
+                && entries_d[n].id == winner_i.ftq_id)
+                entries_d[n].final_next_pc = winner_i.target_pc;
+
+            if (resolve_i.valid && resolve_i.ftq_id.idx == idx_t'(n) &&
+                entries_d[n].valid &&
+                entries_d[n].id == resolve_i.ftq_id &&
+                int'(resolve_i.slot) < REGION_SLOTS) begin
+                if (resolve_i.cfi_type == CFI_BR) begin
+                    entries_d[n].resolved_br[resolve_i.slot] = 1'b1;
+                    entries_d[n].resolved_taken[resolve_i.slot] =
+                        resolve_i.actual_taken;
+                end
+                if (resolve_i.actual_taken) begin
+                    entries_d[n].actual_cfi_valid = 1'b1;
+                    entries_d[n].actual_cfi_slot = resolve_i.slot;
+                    entries_d[n].actual_cfi_type = resolve_i.cfi_type;
+                    entries_d[n].actual_ras_action = resolve_i.ras_action;
+                    entries_d[n].actual_cfi_target = resolve_i.actual_target;
+                    entries_d[n].actual_cfi_is_rvc = resolve_i.inst_len==2;
+                    entries_d[n].actual_cfi_is_edge = resolve_i.branch_pc
+                        ==resolve_pred.region_base-vaddr_t'(2);
+                end
+                entries_d[n].mispredicted |= resolve_i.mispredict;
+                if(resolve_i.mispredict) entries_d[n].mispred_mask[resolve_i.slot]=1;
             end
-            entries_d[resolve_i.ftq_id.idx].mispredicted |= resolve_i.mispredict;
-            if(resolve_i.mispredict) entries_d[resolve_i.ftq_id.idx].mispred_mask[resolve_i.slot]=1;
         end
 
         // All commit lanes can mark distinct regions in one edge. A region's
         // last committed instruction closes its training record, never frees
         // the slot directly. A same-edge resolve is visible to this marking.
         for (int lane = 0; lane < COMMIT_W; lane++) begin
-            if (commit_i[lane].valid && int'(commit_i[lane].ftq_id.idx) < DEPTH &&
-                entries_d[commit_i[lane].ftq_id.idx].valid &&
-                entries_d[commit_i[lane].ftq_id.idx].id == commit_i[lane].ftq_id &&
-                int'(commit_i[lane].slot) < REGION_SLOTS) begin
-                if (entries_d[commit_i[lane].ftq_id.idx].resolved_br[commit_i[lane].slot]) begin
-                    entries_d[commit_i[lane].ftq_id.idx].committed_br[commit_i[lane].slot] = 1'b1;
-                    entries_d[commit_i[lane].ftq_id.idx].committed_taken[commit_i[lane].slot] =
-                        entries_d[commit_i[lane].ftq_id.idx].resolved_taken[commit_i[lane].slot];
+            if (commit_i[lane].valid && int'(commit_i[lane].ftq_id.idx) < DEPTH
+                && entries_d[commit_i[lane].ftq_id.idx].valid
+                && entries_d[commit_i[lane].ftq_id.idx].id == commit_i[lane].ftq_id
+                && int'(commit_i[lane].slot) < REGION_SLOTS) begin
+                for (int n = 0; n < DEPTH; n++) begin
+                    if (commit_i[lane].ftq_id.idx == idx_t'(n)) begin
+                        if (entries_d[n].resolved_br[commit_i[lane].slot]) begin
+                            entries_d[n].committed_br[commit_i[lane].slot] = 1'b1;
+                            entries_d[n].committed_taken[commit_i[lane].slot] =
+                                entries_d[n].resolved_taken[commit_i[lane].slot];
+                        end
+                        if (commit_i[lane].region_last) entries_d[n].commit_last = 1'b1;
+                    end
+                    // Program-order retirement closes older, possibly empty regions.
+                    if (((n + DEPTH - int'(head_d)) % DEPTH) < int'(count_d)
+                        && entries_d[n].valid
+                        && ((n + DEPTH - int'(head_d)) % DEPTH) * REGION_SLOTS
+                           < fe_age(commit_i[lane].ftq_id, '0, entries_d[head_d].id))
+                        entries_d[n].commit_last = 1'b1;
                 end
-                // Program-order retirement closes every older (possibly empty) region.
-                for(int age=0;age<DEPTH;age++) begin
-                    if(age<int'(count_d) && entries_d[add_idx(head_d,age)].valid
-                        && age*REGION_SLOTS<fe_age(commit_i[lane].ftq_id,'0,entries_d[head_d].id))
-                        entries_d[add_idx(head_d,age)].commit_last=1;
-                end
-                if (commit_i[lane].region_last)
-                    entries_d[commit_i[lane].ftq_id.idx].commit_last = 1'b1;
             end
         end
 
@@ -476,11 +523,10 @@ module ftq
                 end
                 if (keep_count < protected_count) keep_count = protected_count;
             end
-            for (int age = 0; age < DEPTH; age++) begin
-                if (age >= keep_count && age < int'(count_d)) begin
-                    slot_idx = add_idx(head_d, age);
-                    entries_d[slot_idx] = '0;
-                end
+            for (int n = 0; n < DEPTH; n++) begin
+                if (((n + DEPTH - int'(head_d)) % DEPTH) >= keep_count
+                    && ((n + DEPTH - int'(head_d)) % DEPTH) < int'(count_d))
+                    entries_d[n] = '0;
             end
             count_d = count_t'(keep_count);
             alloc_d = add_idx(head_d, keep_count);
@@ -491,27 +537,31 @@ module ftq
                 keep_mask = '0;
                 for (int s = 0; s < REGION_SLOTS; s++)
                     if (s <= int'(kill_i.slot)) keep_mask[s] = 1'b1;
-                entries_d[slot_idx].resolved_br &= keep_mask;
-                entries_d[slot_idx].resolved_taken &= keep_mask;
-                entries_d[slot_idx].mispred_mask &= keep_mask;
-                entries_d[slot_idx].mispredicted=|entries_d[slot_idx].mispred_mask;
-                if(entries_d[slot_idx].actual_cfi_valid && entries_d[slot_idx].actual_cfi_slot>kill_i.slot)
-                    entries_d[slot_idx].actual_cfi_valid=0;
-                entries_d[slot_idx].final_pred.br_mask &= keep_mask;
-                entries_d[slot_idx].final_pred.jal_mask &= keep_mask;
-                if (entries_d[slot_idx].final_pred.cfi_valid &&
-                    entries_d[slot_idx].final_pred.cfi_slot > kill_i.slot)
-                    entries_d[slot_idx].final_pred.cfi_valid = 1'b0;
-                if (resolve_i.valid && resolve_i.ftq_id == kill_i.ftq_id &&
-                    resolve_i.mispredict) begin
-                    entries_d[slot_idx].final_pred.next_pc = resolve_i.redirect_pc;
-                    entries_d[slot_idx].final_pred.cfi_target = resolve_i.actual_target;
-                    entries_d[slot_idx].final_pred.cfi_slot = resolve_i.slot;
-                    entries_d[slot_idx].final_pred.cfi_type = resolve_i.cfi_type;
-                    entries_d[slot_idx].final_pred.ras_action = resolve_i.ras_action;
-                    entries_d[slot_idx].final_pred.raw_pred_taken = resolve_i.actual_taken;
-                    entries_d[slot_idx].final_pred.target_missing = 1'b0;
-                    entries_d[slot_idx].final_pred.cfi_valid = resolve_i.actual_taken;
+                for (int n = 0; n < DEPTH; n++) begin
+                    if (slot_idx == idx_t'(n)) begin
+                        entries_d[n].resolved_br &= keep_mask;
+                        entries_d[n].resolved_taken &= keep_mask;
+                        entries_d[n].mispred_mask &= keep_mask;
+                        entries_d[n].mispredicted=|entries_d[n].mispred_mask;
+                        if(entries_d[n].actual_cfi_valid && entries_d[n].actual_cfi_slot>kill_i.slot)
+                            entries_d[n].actual_cfi_valid=0;
+                        entries_d[n].final_pred.br_mask &= keep_mask;
+                        entries_d[n].final_pred.jal_mask &= keep_mask;
+                        if (entries_d[n].final_pred.cfi_valid &&
+                            entries_d[n].final_pred.cfi_slot > kill_i.slot)
+                            entries_d[n].final_pred.cfi_valid = 1'b0;
+                        if (resolve_i.valid && resolve_i.ftq_id == kill_i.ftq_id &&
+                            resolve_i.mispredict) begin
+                            entries_d[n].final_pred.next_pc = resolve_i.redirect_pc;
+                            entries_d[n].final_pred.cfi_target = resolve_i.actual_target;
+                            entries_d[n].final_pred.cfi_slot = resolve_i.slot;
+                            entries_d[n].final_pred.cfi_type = resolve_i.cfi_type;
+                            entries_d[n].final_pred.ras_action = resolve_i.ras_action;
+                            entries_d[n].final_pred.raw_pred_taken = resolve_i.actual_taken;
+                            entries_d[n].final_pred.target_missing = 1'b0;
+                            entries_d[n].final_pred.cfi_valid = resolve_i.actual_taken;
+                        end
+                    end
                 end
             end
 
@@ -537,19 +587,22 @@ module ftq
             demand_hold_d = 1'b0;
         end else begin
             if (alloc_fire) begin
-                entries_d[alloc_q] = '0;
-                entries_d[alloc_q].valid = 1'b1;
-                entries_d[alloc_q].id = alloc_ftq_id_o;
-                entries_d[alloc_q].fast_pred = alloc_pred_i;
-                entries_d[alloc_q].final_pred = alloc_pred_i;
-                entries_d[alloc_q].final_next_pc = alloc_pred_i.next_pc;
-                entries_d[alloc_q].ras_ckpt = alloc_ras_ckpt_i;
-                gen_d[alloc_q] = alloc_ftq_id_o.gen;
+                for (int n = 0; n < DEPTH; n++) begin
+                    if (alloc_q == idx_t'(n)) begin
+                        entries_d[n] = '0;
+                        entries_d[n].valid = 1'b1;
+                        entries_d[n].id = alloc_ftq_id_o;
+                        entries_d[n].final_pred = alloc_pred_i;
+                        entries_d[n].final_next_pc = alloc_pred_i.next_pc;
+                        gen_d[n] = alloc_ftq_id_o.gen;
+                    end
+                end
                 alloc_d = advance(alloc_q);
                 count_d = count_d + 1'b1;
             end
             if (demand_fire) begin
-                entries_d[demand_q].demand_issued = 1'b1;
+                for (int n = 0; n < DEPTH; n++)
+                    if (demand_q == idx_t'(n)) entries_d[n].demand_issued = 1'b1;
                 demand_d = advance(demand_q);
                 demand_hold_d = 1'b0;
             end else if (demand_valid_o && !demand_ready_i && !demand_hold_q) begin
@@ -557,7 +610,8 @@ module ftq
                 demand_hold_req_d = demand_o;
             end
             if (pf_fire) begin
-                entries_d[pf_q].pf_issued = 1'b1;
+                for (int n = 0; n < DEPTH; n++)
+                    if (pf_q == idx_t'(n)) entries_d[n].pf_issued = 1'b1;
                 pf_d = advance(pf_q);
             end
         end
@@ -608,12 +662,12 @@ module ftq
             perf_o[PE_FTQ_FULL_CYCLE] = PERF_INC_W'(alloc_valid_i && !alloc_ready_o);
             if (train_fire) begin
                 perf_o[PE_CMT_REGION] = 1;
-                perf_o[PE_CMT_LOOP_USED]=PERF_INC_W'(entries_q[head_q].loop_meta.train.used && entries_q[head_q].committed_br[entries_q[head_q].loop_meta.train.slot]);
-                perf_o[PE_CMT_LOOP_WRONG]=PERF_INC_W'(entries_q[head_q].loop_meta.train.used && entries_q[head_q].committed_br[entries_q[head_q].loop_meta.train.slot] && entries_q[head_q].loop_meta.train.pred!=entries_q[head_q].committed_taken[entries_q[head_q].loop_meta.train.slot]);
+                perf_o[PE_CMT_LOOP_USED]=PERF_INC_W'(head_slow.loop_meta.train.used && entries_q[head_q].committed_br[head_slow.loop_meta.train.slot]);
+                perf_o[PE_CMT_LOOP_WRONG]=PERF_INC_W'(head_slow.loop_meta.train.used && entries_q[head_q].committed_br[head_slow.loop_meta.train.slot] && head_slow.loop_meta.train.pred!=entries_q[head_q].committed_taken[head_slow.loop_meta.train.slot]);
                 perf_o[PE_CMT_COND_BR]=PERF_INC_W'($countones(entries_q[head_q].committed_br));
                 perf_o[PE_CMT_COND_MISPRED]=PERF_INC_W'($countones(entries_q[head_q].committed_br & entries_q[head_q].mispred_mask));
                 for(int slot=0;slot<REGION_SLOTS;slot++)
-                    if(entries_q[head_q].committed_br[slot] && tage_final(entries_q[head_q].tage_meta,slot)!=entries_q[head_q].committed_taken[slot])
+                    if(entries_q[head_q].committed_br[slot] && tage_final(head_slow.tage_meta,slot)!=entries_q[head_q].committed_taken[slot])
                         perf_o[PE_CMT_COND_TAGE_WRONG]+=PERF_INC_W'(1);
                 if(entries_q[head_q].actual_cfi_valid && entries_q[head_q].actual_cfi_type==CFI_JALR) begin
                     if(entries_q[head_q].actual_ras_action inside {RAS_POP,RAS_POP_PUSH}) begin
@@ -624,8 +678,8 @@ module ftq
                         perf_o[PE_CMT_JALR_MISPRED]=PERF_INC_W'(entries_q[head_q].mispred_mask[entries_q[head_q].actual_cfi_slot]);
                     end
                 end
-                case ({entries_q[head_q].fast_pred.next_pc == entries_q[head_q].final_next_pc,
-                       entries_q[head_q].slow_next_pc == entries_q[head_q].final_next_pc})
+                case ({head_alloc.pred.next_pc == entries_q[head_q].final_next_pc,
+                       head_slow.next_pc == entries_q[head_q].final_next_pc})
                     2'b11: perf_o[PE_CMT_FAST_OK_SLOW_OK] = 1;
                     2'b10: perf_o[PE_CMT_FAST_OK_SLOW_BAD] = 1;
                     2'b01: perf_o[PE_CMT_FAST_BAD_SLOW_OK] = 1;

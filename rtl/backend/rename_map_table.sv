@@ -122,59 +122,71 @@ module rename_map_table
         end
     end
 
-    always_ff @(posedge clk) begin
-        if (rst) begin
-            for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
-                speculative_map_q[arch] <= PREG_IDX_WIDTH'(arch);
-                committed_map_q[arch] <= PREG_IDX_WIDTH'(arch);
+    // Compute each lane's architectural snapshot once, then route it to
+    // a fixed checkpoint row. Recovery and same-boundary commit keep their
+    // original priorities, including the flush path's unqualified x0 update.
+    localparam int LANE_WIDTH = (MACHINE_WIDTH > 1) ? $clog2(MACHINE_WIDTH) : 1;
+    logic [PREG_IDX_WIDTH-1:0] committed_next [NUM_ARCH_REGS];
+    logic [PREG_IDX_WIDTH-1:0] flush_map [NUM_ARCH_REGS];
+    logic [PREG_IDX_WIDTH-1:0] renamed_map [NUM_ARCH_REGS];
+    logic map_write [NUM_ARCH_REGS];
+    logic [PREG_IDX_WIDTH-1:0] snapshot [MACHINE_WIDTH][NUM_ARCH_REGS];
+    logic snapshot_write [NUM_CHECKPOINTS];
+    logic [LANE_WIDTH-1:0] snapshot_lane [NUM_CHECKPOINTS];
+    always_comb begin
+        for (int arch=0;arch<NUM_ARCH_REGS;arch++) begin
+            logic [PREG_IDX_WIDTH-1:0] after_lane;
+            committed_next[arch]=committed_map_q[arch];
+            flush_map[arch]=committed_map_q[arch];
+            map_write[arch]=0;
+            after_lane=speculative_map_q[arch];
+            for (int port=0;port<COMMIT_WIDTH;port++)
+                if (commit_valid_i[port] && commit_rd_write_en_i[port]
+                    && commit_rd_i[port]==ARCH_IDX_WIDTH'(arch)) begin
+                    flush_map[arch]=commit_new_preg_i[port];
+                    if (!HAS_ZERO_REG || commit_rd_i[port]!='0)
+                        committed_next[arch]=commit_new_preg_i[port];
+                end
+            for (int lane=0;lane<MACHINE_WIDTH;lane++) begin
+                if (lane_valid_i[lane] && rd_write_en_i[lane]
+                    && rd_addr_i[lane]==ARCH_IDX_WIDTH'(arch)
+                    && (!HAS_ZERO_REG || rd_addr_i[lane]!='0)) begin
+                    after_lane=new_dst_preg_i[lane];
+                    map_write[arch]=1;
+                end
+                snapshot[lane][arch]=after_lane;
             end
-            for (int checkpoint = 0; checkpoint < NUM_CHECKPOINTS; checkpoint++) begin
-                for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
-                    checkpoint_map_q[checkpoint][arch] <= '0;
+            renamed_map[arch]=after_lane;
+        end
+        for (int cp=0;cp<NUM_CHECKPOINTS;cp++) begin
+            snapshot_write[cp]=0;
+            snapshot_lane[cp]='0;
+            for (int lane=0;lane<MACHINE_WIDTH;lane++)
+                if (checkpoint_create_i[lane] && checkpoint_create_tag_i[lane]==branch_tag_t'(cp)) begin
+                    snapshot_write[cp]=1;
+                    snapshot_lane[cp]=LANE_WIDTH'(lane);
                 end
+        end
+    end
+    for (genvar arch=0;arch<NUM_ARCH_REGS;arch++) begin : g_map_row
+        always_ff @(posedge clk) begin
+            if (rst) begin
+                speculative_map_q[arch]<=PREG_IDX_WIDTH'(arch);
+                committed_map_q[arch]<=PREG_IDX_WIDTH'(arch);
+            end else begin
+                committed_map_q[arch]<=committed_next[arch];
+                if (flush_all_i) speculative_map_q[arch]<=flush_map[arch];
+                else if (resolution_valid_i && resolution_mispredict_i)
+                    speculative_map_q[arch]<=checkpoint_map_q[resolution_tag_i][arch];
+                else if (rename_fire_i && map_write[arch]) speculative_map_q[arch]<=renamed_map[arch];
             end
-        end else begin
-            // Committed map与推测恢复正交；只接受ROB顺序退休提供的新映射。
-            for (int port = 0; port < COMMIT_WIDTH; port++) begin
-                if (commit_valid_i[port] && commit_rd_write_en_i[port] && (!HAS_ZERO_REG || commit_rd_i[port] != '0)) begin
-                    committed_map_q[commit_rd_i[port]] <= commit_new_preg_i[port];
-                end
-            end
-
-            if (flush_all_i) begin
-                // Include MRET/other actual retirement on this same boundary.
-                for (int arch=0;arch<NUM_ARCH_REGS;arch++) begin
-                    speculative_map_q[arch] <= committed_map_q[arch];
-                    for (int lane=0;lane<COMMIT_WIDTH;lane++)
-                        if (commit_valid_i[lane] && commit_rd_write_en_i[lane] && commit_rd_i[lane]==ARCH_IDX_WIDTH'(arch))
-                            speculative_map_q[arch] <= commit_new_preg_i[lane];
-                end
-            end else if (resolution_valid_i && resolution_mispredict_i) begin
-                for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
-                    speculative_map_q[arch] <= checkpoint_map_q[resolution_tag_i][arch];
-                end
-            end else if (rename_fire_i) begin
-                for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
-                    if (lane_valid_i[lane] && rd_write_en_i[lane] && (!HAS_ZERO_REG || rd_addr_i[lane] != '0)) begin
-                        speculative_map_q[rd_addr_i[lane]] <= new_dst_preg_i[lane];
-                    end
-                end
-
-                for (int cp_lane = 0; cp_lane < MACHINE_WIDTH; cp_lane++) begin
-                    if (checkpoint_create_i[cp_lane]) begin
-                        for (int arch = 0; arch < NUM_ARCH_REGS; arch++) begin
-                            checkpoint_map_q[checkpoint_create_tag_i[cp_lane]][arch] <= speculative_map_q[arch];
-                            for (int older_or_self = 0; older_or_self <= cp_lane; older_or_self++) begin
-                                if (lane_valid_i[older_or_self] && rd_write_en_i[older_or_self]
-                                 && (rd_addr_i[older_or_self] == ARCH_IDX_WIDTH'(arch))
-                                 && (!HAS_ZERO_REG || rd_addr_i[older_or_self] != '0)) begin
-                                    checkpoint_map_q[checkpoint_create_tag_i[cp_lane]][arch]
-                                        <= new_dst_preg_i[older_or_self];
-                                end
-                            end
-                        end
-                    end
-                end
+        end
+        for (genvar cp=0;cp<NUM_CHECKPOINTS;cp++) begin : g_checkpoint
+            always_ff @(posedge clk) begin
+                if (rst) checkpoint_map_q[cp][arch]<='0;
+                else if (!flush_all_i && !(resolution_valid_i && resolution_mispredict_i)
+                         && rename_fire_i && snapshot_write[cp])
+                    checkpoint_map_q[cp][arch]<=snapshot[snapshot_lane[cp]][arch];
             end
         end
     end

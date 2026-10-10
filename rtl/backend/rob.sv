@@ -171,27 +171,34 @@ module rob #(
     // 当前 ROB 存储体保存异常位、被覆盖的旧目的物理寄存器和完成位。
     logic                     entry_valid_q     [NUM_ROB_ENTRIES-1:0];
     logic                     entry_exception_q [NUM_ROB_ENTRIES-1:0];
-    logic [o3_pkg::PREG_IDX_WIDTH-1:0] entry_old_dst_preg_q [NUM_ROB_ENTRIES-1:0];
-    logic [o3_pkg::PREG_IDX_WIDTH-1:0] entry_new_dst_preg_q [NUM_ROB_ENTRIES-1:0];
-    logic [o3_pkg::REG_ADDR_WIDTH-1:0] entry_rd_q [NUM_ROB_ENTRIES-1:0];
-    logic entry_rd_write_en_q [NUM_ROB_ENTRIES-1:0];
-    logic entry_is_load_q [NUM_ROB_ENTRIES-1:0];
-    logic entry_is_store_q [NUM_ROB_ENTRIES-1:0];
-    logic [o3_pkg::LQ_IDX_WIDTH-1:0] entry_lq_idx_q [NUM_ROB_ENTRIES-1:0];
-    logic [o3_pkg::SQ_IDX_WIDTH-1:0] entry_sq_idx_q [NUM_ROB_ENTRIES-1:0];
     o3_pkg::branch_mask_t entry_branch_mask_q [NUM_ROB_ENTRIES-1:0];
-    o3_types_pkg::ftq_id_t entry_ftq_idx_q [NUM_ROB_ENTRIES-1:0];
-    o3_types_pkg::fetch_slot_t entry_ftq_slot_q [NUM_ROB_ENTRIES-1:0];
     logic entry_ftq_last_q [NUM_ROB_ENTRIES-1:0];
     logic                      entry_complete_q  [NUM_ROB_ENTRIES-1:0];
-    logic [INST_ID_WIDTH_LOCAL-1:0]  entry_instruction_id_q [NUM_ROB_ENTRIES-1:0];
 `ifdef ENABLE_RETIRE_INFO
     logic [o3_pkg::PC_WIDTH-1:0]         entry_pc_q          [NUM_ROB_ENTRIES-1:0];
     logic [o3_pkg::ILEN-1:0]             entry_instruction_q [NUM_ROB_ENTRIES-1:0];
     logic [o3_pkg::XLEN-1:0]             entry_rd_wdata_q    [NUM_ROB_ENTRIES-1:0];
 `endif
 
-    o3_types_pkg::rob_commit_t meta_q [NUM_ROB_ENTRIES];
+    typedef struct packed {
+        logic [o3_pkg::PREG_IDX_WIDTH-1:0] old_dst_preg, new_dst_preg;
+        logic [o3_pkg::REG_ADDR_WIDTH-1:0] rd;
+        logic rd_write_en, is_load, is_store;
+        logic [o3_pkg::LQ_IDX_WIDTH-1:0] lq_idx;
+        logic [o3_pkg::SQ_IDX_WIDTH-1:0] sq_idx;
+        o3_types_pkg::ftq_id_t ftq_idx;
+        o3_types_pkg::fetch_slot_t ftq_slot;
+        logic [INST_ID_WIDTH_LOCAL-1:0] instruction_id;
+    } entry_payload_t;
+    entry_payload_t entry_read [RETIRE_WIDTH], entry_alloc [MACHINE_WIDTH];
+    logic entry_written_q [NUM_ROB_ENTRIES];
+
+    o3_types_pkg::rob_commit_t meta_read [RETIRE_WIDTH];
+    o3_types_pkg::rob_commit_t alloc_meta [MACHINE_WIDTH];
+    o3_types_pkg::exc_info_t meta_exc_q [NUM_ROB_ENTRIES];
+    o3_types_pkg::vaddr_t meta_succ_q [NUM_ROB_ENTRIES];
+    logic [o3_isa_pkg::FFLAGS_W-1:0] meta_fflags_q [NUM_ROB_ENTRIES];
+    logic meta_needs_d_q [NUM_ROB_ENTRIES], meta_written_q [NUM_ROB_ENTRIES];
 
     function automatic logic [ROB_IDX_WIDTH-1:0] wrap_idx(
         input logic [ROB_IDX_WIDTH-1:0] base,
@@ -249,28 +256,28 @@ module rob #(
 
             assign retire_idx = wrap_idx(head_q, ridx);
             assign retire_idx_o[ridx] = retire_idx;
-            assign retire_old_dst_preg_o[ridx] = entry_old_dst_preg_q[retire_idx];
-            assign retire_new_dst_preg_o[ridx] = entry_new_dst_preg_q[retire_idx];
-            assign retire_rd_o[ridx] = entry_rd_q[retire_idx];
-            assign retire_rd_write_en_o[ridx] = entry_rd_write_en_q[retire_idx];
-            assign retire_is_load_o[ridx] = entry_is_load_q[retire_idx];
-            assign retire_is_store_o[ridx] = entry_is_store_q[retire_idx];
-            assign retire_lq_idx_o[ridx] = entry_lq_idx_q[retire_idx];
-            assign retire_sq_idx_o[ridx] = entry_sq_idx_q[retire_idx];
-            assign retire_instruction_id_o[ridx] = entry_instruction_id_q[retire_idx];
-            assign retire_ftq_idx_o[ridx] = entry_ftq_idx_q[retire_idx];
-            assign retire_ftq_slot_o[ridx] = entry_ftq_slot_q[retire_idx];
+            assign retire_old_dst_preg_o[ridx] = entry_read[ridx].old_dst_preg;
+            assign retire_new_dst_preg_o[ridx] = entry_read[ridx].new_dst_preg;
+            assign retire_rd_o[ridx] = entry_read[ridx].rd;
+            assign retire_rd_write_en_o[ridx] = entry_read[ridx].rd_write_en;
+            assign retire_is_load_o[ridx] = entry_read[ridx].is_load;
+            assign retire_is_store_o[ridx] = entry_read[ridx].is_store;
+            assign retire_lq_idx_o[ridx] = entry_read[ridx].lq_idx;
+            assign retire_sq_idx_o[ridx] = entry_read[ridx].sq_idx;
+            assign retire_instruction_id_o[ridx] = entry_read[ridx].instruction_id;
+            assign retire_ftq_idx_o[ridx] = entry_read[ridx].ftq_idx;
+            assign retire_ftq_slot_o[ridx] = entry_read[ridx].ftq_slot;
             assign retire_ftq_last_o[ridx] = entry_ftq_last_q[retire_idx];
 `ifdef ENABLE_RETIRE_INFO
             always_comb begin
                 retire_info_o[ridx] = '0;
                 retire_info_o[ridx].valid          = retire_valid_o[ridx];
                 retire_info_o[ridx].rob_idx        = o3_pkg::ROB_IDX_WIDTH'(retire_idx);
-                retire_info_o[ridx].instruction_id = entry_instruction_id_q[retire_idx];
+                retire_info_o[ridx].instruction_id = entry_read[ridx].instruction_id;
                 retire_info_o[ridx].pc             = entry_pc_q[retire_idx];
                 retire_info_o[ridx].instruction    = entry_instruction_q[retire_idx];
-                retire_info_o[ridx].rd             = entry_rd_q[retire_idx];
-                retire_info_o[ridx].rd_write_en    = entry_rd_write_en_q[retire_idx] && meta_q[retire_idx].rd_dom!=o3_types_pkg::RD_FP;
+                retire_info_o[ridx].rd             = entry_read[ridx].rd;
+                retire_info_o[ridx].rd_write_en    = entry_read[ridx].rd_write_en && meta_read[ridx].rd_dom!=o3_types_pkg::RD_FP;
                 retire_info_o[ridx].rd_wdata       = entry_rd_wdata_q[retire_idx];
             end
 `endif
@@ -284,8 +291,8 @@ module rob #(
                     prior_idx = wrap_idx(head_q, prior);
                     if (!(entry_valid_q[prior_idx]
                        && entry_complete_q[prior_idx]
-                       && !entry_exception_q[prior_idx] && !meta_q[prior_idx].needs_d && !t_order_flush_i[prior_idx]
-                       && (!meta_q[prior_idx].ext.serialize || (prior_idx==head_q && t_head_serial_done_i)))) begin
+                       && !entry_exception_q[prior_idx] && !meta_read[prior].needs_d && !t_order_flush_i[prior_idx]
+                       && (!meta_read[prior].ext.serialize || (prior_idx==head_q && t_head_serial_done_i)))) begin
                         retire_prefix_valid = 1'b0;
                     end
                 end
@@ -306,36 +313,144 @@ module rob #(
 
     always_comb begin
         t_head_valid_o=entry_valid_q[head_q];
-        t_head_o=meta_q[head_q];
+        t_head_o=meta_read[0];
         t_head_o.valid=t_head_valid_o;
         t_head_o.complete=entry_complete_q[head_q];
         t_head_o.exc.valid=entry_exception_q[head_q];
         for (int lane=0;lane<RETIRE_WIDTH;lane++) begin
-            t_commit_o[lane]=meta_q[retire_idx_o[lane]];
+            t_commit_o[lane]=meta_read[lane];
             t_commit_o[lane].valid=retire_valid_o[lane];
             t_commit_o[lane].region_last=entry_ftq_last_q[retire_idx_o[lane]];
         end
     end
-    always_ff @(posedge clk) begin
-        if (rst) meta_q <= '{default:'0};
-        else begin
-            for (int port=0;port<COMPLETE_WIDTH;port++)
-                if (!t_flush_all_i && complete_valid_i[port] && t_fflags_valid_i[port] && entry_valid_q[complete_idx_i[port]])
-                    meta_q[complete_idx_i[port]].fflags <= t_fflags_i[port];
-            if (alloc_fire) for (int lane=0;lane<MACHINE_WIDTH;lane++) if (alloc_req_i[lane]) begin
-                meta_q[alloc_idx_o[lane]] <= '{valid:1'b1,rob_idx:o3_types_pkg::rob_idx_t'(alloc_idx_o[lane]),
-                    pc:t_alloc_pc_i[lane],inst_len:t_alloc_inst_len_i[lane],ftq_id:alloc_ftq_idx_i[lane],slot:alloc_ftq_slot_i[lane],
-                    region_last:alloc_ftq_last_i[lane],rd_dom:t_alloc_ext_i[lane].rd_dom,rd:alloc_rd_i[lane],
-                    rd_write_en:alloc_rd_write_en_i[lane],new_preg:alloc_new_dst_preg_i[lane],old_preg:alloc_old_dst_preg_i[lane],
-                    is_load:alloc_is_load_i[lane],is_store:alloc_is_store_i[lane],lq_idx:alloc_lq_idx_i[lane],sq_idx:alloc_sq_idx_i[lane],
-                    sys_op:t_alloc_ext_i[lane].sys_op,ext:t_alloc_ext_i[lane],exc:t_alloc_exc_i[lane],
-                    instruction:t_alloc_instruction_i[lane],src1_preg:t_alloc_src1_i[lane],src2_preg:t_alloc_src2_i[lane],rs1:t_alloc_rs1_i[lane],
-                    succ_pc:t_alloc_pc_i[lane]+o3_types_pkg::vaddr_t'(t_alloc_inst_len_i[lane]),fuse_role:o3_types_pkg::FUSE_NONE,default:'0};
+    // Consecutive allocation/retirement positions use separate banks. Keep
+    // allocation-only metadata in single-write, asynchronous-read LUTRAM;
+    // mutable exception, successor, fflags and needs-D fields stay in flops.
+    // A per-row written bit preserves the original zero payload after reset,
+    // including invalid public outputs, without resetting the RAM itself.
+    localparam int META_BITS = $bits(o3_types_pkg::rob_commit_t);
+    localparam int META_LANES = MACHINE_WIDTH > RETIRE_WIDTH ? MACHINE_WIDTH : RETIRE_WIDTH;
+    localparam int META_BANKS = NUM_ROB_ENTRIES >= META_LANES && NUM_ROB_ENTRIES % META_LANES == 0
+                              ? META_LANES : NUM_ROB_ENTRIES;
+    localparam int META_ROWS = NUM_ROB_ENTRIES / META_BANKS;
+    localparam int META_ROW_W = META_ROWS > 1 ? $clog2(META_ROWS) : 1;
+    logic [META_BITS-1:0] meta_bank_read [META_BANKS];
+    localparam int ENTRY_BITS = $bits(entry_payload_t);
+    logic [ENTRY_BITS-1:0] entry_bank_read [META_BANKS];
+
+    always_comb begin
+        for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
+            entry_alloc[lane] = '{old_dst_preg:alloc_old_dst_preg_i[lane],new_dst_preg:alloc_new_dst_preg_i[lane],
+                rd:alloc_rd_i[lane],rd_write_en:alloc_rd_write_en_i[lane],is_load:alloc_is_load_i[lane],is_store:alloc_is_store_i[lane],
+                lq_idx:alloc_lq_idx_i[lane],sq_idx:alloc_sq_idx_i[lane],ftq_idx:alloc_ftq_idx_i[lane],ftq_slot:alloc_ftq_slot_i[lane],
+                instruction_id:alloc_instruction_id_i[lane]};
+            alloc_meta[lane] = '{valid:1'b1,rob_idx:o3_types_pkg::rob_idx_t'(alloc_idx_o[lane]),
+                pc:t_alloc_pc_i[lane],inst_len:t_alloc_inst_len_i[lane],ftq_id:alloc_ftq_idx_i[lane],slot:alloc_ftq_slot_i[lane],
+                region_last:alloc_ftq_last_i[lane],rd_dom:t_alloc_ext_i[lane].rd_dom,rd:alloc_rd_i[lane],
+                rd_write_en:alloc_rd_write_en_i[lane],new_preg:alloc_new_dst_preg_i[lane],old_preg:alloc_old_dst_preg_i[lane],
+                is_load:alloc_is_load_i[lane],is_store:alloc_is_store_i[lane],lq_idx:alloc_lq_idx_i[lane],sq_idx:alloc_sq_idx_i[lane],
+                sys_op:t_alloc_ext_i[lane].sys_op,ext:t_alloc_ext_i[lane],
+                instruction:t_alloc_instruction_i[lane],src1_preg:t_alloc_src1_i[lane],src2_preg:t_alloc_src2_i[lane],rs1:t_alloc_rs1_i[lane],
+                fuse_role:o3_types_pkg::FUSE_NONE,default:'0};
+        end
+    end
+
+    for (genvar bank = 0; bank < META_BANKS; bank++) begin : g_meta_bank
+        (* ram_style = "distributed" *) logic [META_BITS-1:0] mem [META_ROWS];
+        (* ram_style = "distributed" *) logic [ENTRY_BITS-1:0] entry_mem [META_ROWS];
+        logic [ENTRY_BITS-1:0] entry_write_data;
+        logic [META_ROW_W-1:0] read_row, write_row;
+        logic [META_BITS-1:0] write_data;
+        logic write_valid;
+        always_comb begin
+            read_row = '0;
+            write_row = '0;
+            write_data = '0;
+            entry_write_data = '0;
+            write_valid = 1'b0;
+            for (int lane = 0; lane < RETIRE_WIDTH; lane++)
+                if (int'(retire_idx_o[lane]) % META_BANKS == bank)
+                    read_row = META_ROW_W'(int'(retire_idx_o[lane]) / META_BANKS);
+            for (int lane = 0; lane < MACHINE_WIDTH; lane++)
+                if (alloc_fire && alloc_req_i[lane] && int'(alloc_idx_o[lane]) % META_BANKS == bank) begin
+                    write_row = META_ROW_W'(int'(alloc_idx_o[lane]) / META_BANKS);
+                    write_data |= META_BITS'(alloc_meta[lane]);
+                    entry_write_data |= ENTRY_BITS'(entry_alloc[lane]);
+                    write_valid = 1'b1;
+                end
+        end
+        always_ff @(posedge clk)
+            if (!rst && write_valid) mem[write_row] <= write_data;
+        always_ff @(posedge clk)
+            if (!rst && !t_flush_all_i && !(resolution_valid_i && resolution_mispredict_i) && write_valid)
+                entry_mem[write_row] <= entry_write_data;
+        assign meta_bank_read[bank] = mem[read_row];
+        assign entry_bank_read[bank] = entry_mem[read_row];
+    end
+
+    always_comb begin
+        for (int lane = 0; lane < RETIRE_WIDTH; lane++) begin
+            meta_read[lane] = '0;
+            entry_read[lane] = '0;
+            for (int bank = 0; bank < META_BANKS; bank++)
+                if (meta_written_q[retire_idx_o[lane]] && int'(retire_idx_o[lane]) % META_BANKS == bank)
+                    meta_read[lane] |= o3_types_pkg::rob_commit_t'(meta_bank_read[bank]);
+            for (int bank = 0; bank < META_BANKS; bank++)
+                if (entry_written_q[retire_idx_o[lane]] && int'(retire_idx_o[lane]) % META_BANKS == bank)
+                    entry_read[lane] |= entry_payload_t'(entry_bank_read[bank]);
+            meta_read[lane].exc = meta_exc_q[retire_idx_o[lane]];
+            meta_read[lane].succ_pc = meta_succ_q[retire_idx_o[lane]];
+            meta_read[lane].fflags = meta_fflags_q[retire_idx_o[lane]];
+            meta_read[lane].needs_d = meta_needs_d_q[retire_idx_o[lane]];
+        end
+    end
+
+    for (genvar slot = 0; slot < NUM_ROB_ENTRIES; slot++) begin : g_meta_state
+        logic write_valid;
+        o3_types_pkg::exc_info_t write_exc;
+        o3_types_pkg::vaddr_t write_succ;
+        always_comb begin
+            write_valid = 1'b0;
+            write_exc = '0;
+            write_succ = '0;
+            for (int lane = 0; lane < MACHINE_WIDTH; lane++)
+                if (alloc_fire && alloc_req_i[lane] && alloc_idx_o[lane] == ROB_IDX_WIDTH'(slot)) begin
+                    write_valid = 1'b1;
+                    write_exc |= t_alloc_exc_i[lane];
+                    write_succ |= t_alloc_pc_i[lane] + o3_types_pkg::vaddr_t'(t_alloc_inst_len_i[lane]);
+                end
+        end
+        always_ff @(posedge clk) begin
+            if (rst) begin
+                meta_exc_q[slot] <= '0;
+                meta_succ_q[slot] <= '0;
+                meta_fflags_q[slot] <= '0;
+                meta_needs_d_q[slot] <= 1'b0;
+                meta_written_q[slot] <= 1'b0;
+                entry_written_q[slot] <= 1'b0;
+            end else begin
+                for (int port = 0; port < COMPLETE_WIDTH; port++)
+                    if (!t_flush_all_i && complete_valid_i[port] && t_fflags_valid_i[port]
+                        && complete_idx_i[port] == ROB_IDX_WIDTH'(slot) && entry_valid_q[slot])
+                        meta_fflags_q[slot] <= t_fflags_i[port];
+                if (write_valid && !t_flush_all_i && !(resolution_valid_i && resolution_mispredict_i))
+                    entry_written_q[slot] <= 1'b1;
+                if (write_valid) begin
+                    meta_written_q[slot] <= 1'b1;
+                    meta_exc_q[slot] <= write_exc;
+                    meta_succ_q[slot] <= write_succ;
+                    meta_fflags_q[slot] <= '0;
+                    meta_needs_d_q[slot] <= 1'b0;
+                end
+                if (t_d_mark_valid_i && t_d_idx_i == o3_types_pkg::rob_idx_t'(slot))
+                    meta_needs_d_q[slot] <= 1'b1;
+                if (t_d_clear_valid_i && t_d_idx_i == o3_types_pkg::rob_idx_t'(slot))
+                    meta_needs_d_q[slot] <= 1'b0;
+                if (t_exc_valid_i && t_exc_idx_i == ROB_IDX_WIDTH'(slot))
+                    meta_exc_q[slot] <= t_exc_i;
+                if (t_succ_valid_i && resolution_rob_idx_i == ROB_IDX_WIDTH'(slot))
+                    meta_succ_q[slot] <= t_succ_pc_i;
             end
-            if(t_d_mark_valid_i) meta_q[t_d_idx_i].needs_d<=1;
-            if(t_d_clear_valid_i) meta_q[t_d_idx_i].needs_d<=0;
-            if (t_exc_valid_i) meta_q[t_exc_idx_i].exc <= t_exc_i;
-            if (t_succ_valid_i) meta_q[resolution_rob_idx_i].succ_pc <= t_succ_pc_i;
         end
     end
 
@@ -347,20 +462,9 @@ module rob #(
             for (int entry = 0; entry < NUM_ROB_ENTRIES; entry++) begin
                 entry_valid_q[entry]     <= 1'b0;
                 entry_exception_q[entry] <= 1'b0;
-                entry_old_dst_preg_q[entry] <= '0;
-                entry_new_dst_preg_q[entry] <= '0;
-                entry_rd_q[entry] <= '0;
-                entry_rd_write_en_q[entry] <= 1'b0;
-                entry_is_load_q[entry] <= 1'b0;
-                entry_is_store_q[entry] <= 1'b0;
-                entry_lq_idx_q[entry] <= '0;
-                entry_sq_idx_q[entry] <= '0;
                 entry_branch_mask_q[entry] <= '0;
-                entry_ftq_idx_q[entry] <= '0;
-                entry_ftq_slot_q[entry] <= '0;
                 entry_ftq_last_q[entry] <= 1'b0;
                 entry_complete_q[entry]  <= 1'b0;
-                entry_instruction_id_q[entry] <= '0;
 `ifdef ENABLE_RETIRE_INFO
                 entry_pc_q[entry]          <= '0;
                 entry_instruction_q[entry] <= '0;
@@ -418,18 +522,8 @@ module rob #(
                 if (alloc_fire && alloc_req_i[lane]) begin
                     entry_valid_q[alloc_idx_o[lane]]     <= 1'b1;
                     entry_exception_q[alloc_idx_o[lane]] <= alloc_exception_i[lane];
-                    entry_old_dst_preg_q[alloc_idx_o[lane]] <= alloc_old_dst_preg_i[lane];
-                    entry_new_dst_preg_q[alloc_idx_o[lane]] <= alloc_new_dst_preg_i[lane];
-                    entry_rd_q[alloc_idx_o[lane]] <= alloc_rd_i[lane];
-                    entry_rd_write_en_q[alloc_idx_o[lane]] <= alloc_rd_write_en_i[lane];
-                    entry_is_load_q[alloc_idx_o[lane]] <= alloc_is_load_i[lane];
-                    entry_is_store_q[alloc_idx_o[lane]] <= alloc_is_store_i[lane];
-                    entry_lq_idx_q[alloc_idx_o[lane]] <= alloc_lq_idx_i[lane];
-                    entry_sq_idx_q[alloc_idx_o[lane]] <= alloc_sq_idx_i[lane];
                     entry_branch_mask_q[alloc_idx_o[lane]] <= alloc_branch_mask_i[lane];
                     if (resolution_valid_i) entry_branch_mask_q[alloc_idx_o[lane]][resolution_tag_i] <= 1'b0;
-                    entry_ftq_idx_q[alloc_idx_o[lane]] <= alloc_ftq_idx_i[lane];
-                    entry_ftq_slot_q[alloc_idx_o[lane]] <= alloc_ftq_slot_i[lane];
                     entry_ftq_last_q[alloc_idx_o[lane]] <= alloc_ftq_last_i[lane];
                     // Decode faults and non-CSR serial operations have no execution unit.
                     // They are ready for head trap/serial control on allocation;
@@ -437,7 +531,6 @@ module rob #(
                     entry_complete_q[alloc_idx_o[lane]] <= alloc_exception_i[lane]
                         || (t_alloc_ext_i[lane].serialize
                             && t_alloc_ext_i[lane].csr_op==o3_types_pkg::CSROP_NONE);
-                    entry_instruction_id_q[alloc_idx_o[lane]] <= alloc_instruction_id_i[lane];
 `ifdef ENABLE_RETIRE_INFO
                     entry_pc_q[alloc_idx_o[lane]]          <= alloc_pc_i[lane];
                     entry_instruction_q[alloc_idx_o[lane]] <= alloc_instruction_i[lane];

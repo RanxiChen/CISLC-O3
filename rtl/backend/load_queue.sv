@@ -28,14 +28,29 @@ module load_queue import o3_pkg::*; #(
     logic head_done_q[DEPTH];
     logic valid_q[DEPTH],ready_q[DEPTH],executed_q[DEPTH];
     logic [o3_types_pkg::LQ_GEN_W-1:0] gen_q[DEPTH];lq_replay_t entry_q[DEPTH];
-    int head_q,tail_q,count_q;int replay_idx[P];
+    logic [IW-1:0] head_q,tail_q;
+    // The next count is rebuilt from at most DEPTH survivors and RENAME_WIDTH
+    // allocations, minus a bounded release count. Keep the sign so the original
+    // negative/overflow occupancy assertion remains effective.
+    localparam int COUNT_BITS = $clog2(DEPTH+RENAME_WIDTH+1)+1;
+    logic signed [COUNT_BITS-1:0] count_q;
+    int replay_idx[P];
+    localparam int REPLAY_LEAVES = 1 << $clog2(DEPTH);
+    typedef struct packed {
+        logic valid;
+        int unsigned age;
+        logic [IW-1:0] index;
+    } replay_pick_t;
     function automatic logic order_hit(input o3_types_pkg::paddr_t pa);
         return CFG.lsu.order_flush_enable &&
             ((dma_invalidate_i && o3_types_pkg::coh_addr_t'(pa>>6)==dma_line_i) ||
              (pte_a_write_i && o3_types_pkg::coh_addr_t'(pa>>6)==pte_a_line_i));
     endfunction
     always_comb begin
-        int before_lane;before_lane=0;order_flush_o=0;rob_order_flush_o='0;heu_valid_o=0;heu_entry_o='0;
+        int before_lane,heu_idx;
+        replay_pick_t tree [P][2*REPLAY_LEAVES];
+        before_lane=0;heu_idx=-1;order_flush_o=0;rob_order_flush_o='0;heu_valid_o=0;heu_entry_o='0;
+        tree='{default:'{default:'0}};
         for(int n=0;n<DEPTH;n++) if(valid_q[n] &&
             !(resolution_valid_i && resolution_mispredict_i && entry_q[n].uop.branch_mask[resolution_tag_i]))
             rob_order_flush_o[entry_q[n].uop.rob_idx]=order_q[n] ||
@@ -43,24 +58,37 @@ module load_queue import o3_pkg::*; #(
         for(int n=0;n<DEPTH;n++) if(valid_q[n] && entry_q[n].uop.rob_idx==rob_head_i &&
             !(resolution_valid_i && resolution_mispredict_i && entry_q[n].uop.branch_mask[resolution_tag_i])) begin
             order_flush_o=order_q[n] || (order_hit(pa_q[n]) && executed_q[n] && !entry_q[n].exc.valid && !head_done_q[n]);
-            if(entry_q[n].wait_reason==o3_types_pkg::LDW_HEAD && !executed_q[n] && entry_q[n].uop.valid) begin heu_valid_o=1;heu_entry_o=entry_q[n];end
+            if(entry_q[n].wait_reason==o3_types_pkg::LDW_HEAD && !executed_q[n] && entry_q[n].uop.valid) heu_idx=n;
         end
-        for(int l=0;l<RENAME_WIDTH;l++) begin alloc_idx_o[l]=IW'((tail_q+before_lane)%DEPTH);before_lane+=int'(alloc_req_i[l]);end
+        if(heu_idx>=0) begin heu_valid_o=1;heu_entry_o=entry_q[heu_idx];end
+        for(int l=0;l<RENAME_WIDTH;l++) begin alloc_idx_o[l]=IW'((int'(tail_q)+before_lane)%DEPTH);before_lane+=int'(alloc_req_i[l]);end
         free_count_o=$clog2(DEPTH+1)'(DEPTH-count_q);tail_o=IW'(tail_q);
         for(int p=0;p<P;p++) begin
             capture_tag_o[p]='{idx:o3_types_pkg::lq_idx_t'(capture_i[p].uop.lq_idx),gen:gen_q[capture_i[p].uop.lq_idx]};
             replay_idx[p]=-1;replay_valid_o[p]=0;replay_o[p]='0;
         end
-        for(int d=0;d<DEPTH;d++) begin
-            int idx,slot;logic selected;idx=(head_q+d)%DEPTH;slot=-1;selected=0;
-            for(int p=0;p<P;p++) begin
-                selected|=replay_idx[p]==idx;
-                if(p<CFG.lsu.mem_pipes && slot<0 && replay_idx[p]<0) slot=p;
+        // Select physical indices by circular age. Wide replay records do
+        // not rotate with head or pass through each priority-scan stage.
+        for(int p=0;p<P;p++) begin
+            for(int n=0;n<DEPTH;n++) begin
+                tree[p][REPLAY_LEAVES+n].valid=p<CFG.lsu.mem_pipes && valid_q[n] && ready_q[n]
+                    && !(flush_i || (resolution_valid_i && resolution_mispredict_i
+                                      && entry_q[n].uop.branch_mask[resolution_tag_i]));
+                tree[p][REPLAY_LEAVES+n].age=(n+DEPTH-int'(head_q))%DEPTH;
+                tree[p][REPLAY_LEAVES+n].index=IW'(n);
+                for(int prior=0;prior<p;prior++)
+                    if(tree[prior][1].valid && tree[prior][1].index==IW'(n))
+                        tree[p][REPLAY_LEAVES+n].valid=0;
             end
-            if(slot>=0 && valid_q[idx] && ready_q[idx] && !selected &&
-                !(flush_i || (resolution_valid_i && resolution_mispredict_i && entry_q[idx].uop.branch_mask[resolution_tag_i]))) begin
-                replay_idx[slot]=idx;replay_valid_o[slot]=1;replay_o[slot]=entry_q[idx];
-                replay_o[slot].tag='{idx:o3_types_pkg::lq_idx_t'(idx),gen:gen_q[idx]};
+            for(int node=REPLAY_LEAVES-1;node>0;node--)
+                tree[p][node]=tree[p][2*node+1].valid
+                    && (!tree[p][2*node].valid || tree[p][2*node+1].age<tree[p][2*node].age)
+                    ? tree[p][2*node+1]:tree[p][2*node];
+            if(tree[p][1].valid) begin
+                replay_idx[p]=int'(tree[p][1].index);
+                replay_valid_o[p]=1;
+                replay_o[p]=entry_q[tree[p][1].index];
+                replay_o[p].tag='{idx:o3_types_pkg::lq_idx_t'(tree[p][1].index),gen:gen_q[tree[p][1].index]};
             end
         end
     end
@@ -120,7 +148,7 @@ module load_queue import o3_pkg::*; #(
                 end
             end
             for(int l=0;l<RENAME_WIDTH;l++) if(l<int'(release_count_i)) begin
-                valid_q[(head_q+l)%DEPTH]<=0;ready_q[(head_q+l)%DEPTH]<=0;
+                valid_q[(int'(head_q)+l)%DEPTH]<=0;ready_q[(int'(head_q)+l)%DEPTH]<=0;
             end
             if(alloc_fire_i && !flush_i && !(resolution_valid_i && resolution_mispredict_i)) begin
                 for(int l=0;l<RENAME_WIDTH;l++) if(alloc_req_i[l]) begin
@@ -129,10 +157,10 @@ module load_queue import o3_pkg::*; #(
                     entry_q[idx].uop.rob_idx<=alloc_rob_idx_i[l];entry_q[idx].uop.branch_mask<=alloc_branch_mask_i[l];
                 end
             end
-            head_q<=flush_i ? 0:(head_q+int'(release_count_i))%DEPTH;
-            tail_q<=flush_i ? 0:(resolution_valid_i && resolution_mispredict_i) ? int'(restore_tail_i):(tail_q+allocated)%DEPTH;
-            count_q<=flush_i ? 0:kept+allocated-int'(release_count_i);
-            assert(count_q>=0 && count_q<=DEPTH);
+            head_q<=flush_i ? '0:IW'((int'(head_q)+int'(release_count_i))%DEPTH);
+            tail_q<=flush_i ? '0:(resolution_valid_i && resolution_mispredict_i) ? restore_tail_i:IW'((int'(tail_q)+allocated)%DEPTH);
+            count_q<=flush_i ? '0:COUNT_BITS'(kept+allocated-int'(release_count_i));
+            assert(int'(count_q)>=0 && int'(count_q)<=DEPTH);
         end
     end
 endmodule

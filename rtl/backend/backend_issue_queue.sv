@@ -15,7 +15,7 @@
  * B33 FP early wakeup is deferred to performance work; actual PRF writes wake FP sources.
  * 当前实现状态：闭环简化（L9）；MEM 保留上述 L3 简化。
  * N: select stored-ready candidates and form next queue. N edge: delete accepted candidates,
- * update source readiness, compact survivors and append dispatch lanes. N+1: new candidates.
+ * update source readiness, compact narrow slot indices and append dispatch lanes. N+1: new candidates.
  * 测试：sim/cocotb/backend_issue_queue/（MEM load 顺序、store bypass、replay 门控）。
  */
 module backend_issue_queue
@@ -59,18 +59,69 @@ module backend_issue_queue
 );
     localparam int COUNT_WIDTH = $clog2(DEPTH + 1);
 
-    renamed_uop_t queue_q [DEPTH-1:0];
-    logic src1_ready_q [DEPTH-1:0];
-    logic src2_ready_q [DEPTH-1:0];
-    logic src3_ready_q [DEPTH-1:0];
-    renamed_uop_t queue_next [DEPTH-1:0];
-    logic src1_ready_next [DEPTH-1:0];
-    logic src2_ready_next [DEPTH-1:0];
-    logic src3_ready_next [DEPTH-1:0];
-    logic [COUNT_WIDTH-1:0] count_q, count_next;
-    logic [DEPTH-1:0] remove_mask;
+    localparam int INDEX_WIDTH = (DEPTH > 1) ? $clog2(DEPTH) : 1;
+    localparam int UOP_BITS = $bits(renamed_uop_t);
+    typedef logic [INDEX_WIDTH-1:0] index_t;
+    typedef struct packed {
+        o3_types_pkg::fu_class_e fu_class;
+        o3_types_pkg::reg_domain_e rs1_dom, rs2_dom, rs3_dom;
+        logic rs3_read_en;
+    } sched_ext_t;
+    typedef struct packed { logic [PREG_IDX_WIDTH-1:0] src3_preg; } sched_rext_t;
+    typedef struct packed { branch_mask_t br_mask; } sched_tag_t;
+    typedef struct packed { logic valid; sched_tag_t lo_tag; } sched_fuse_t;
+    typedef struct packed {
+        logic valid, rs1_read_en, rs2_read_en;
+        logic [PREG_IDX_WIDTH-1:0] src1_preg, src2_preg;
+        sched_ext_t ext;
+        sched_rext_t rext;
+        sched_fuse_t mdu_fuse;
+        branch_mask_t branch_mask;
+    } sched_t;
+
+    // Scheduling and wakeup inspect only this narrow record. The full uop
+    // stays at a fixed physical slot until issue; recovery moves slot indices.
+    renamed_uop_t payload_q [DEPTH];
+    sched_t sched_q [DEPTH];
+    sched_t queue_q [DEPTH];
+    index_t order_q [DEPTH], order_next [DEPTH], alloc_index [ENQ_WIDTH];
+    logic [DEPTH-1:0] used_q, used_next, keep, remove_mask;
+    logic [ENQ_WIDTH-1:0] append;
+    logic [COUNT_WIDTH-1:0] rank [DEPTH], append_rank [ENQ_WIDTH];
+    logic [COUNT_WIDTH-1:0] count_q, count_next, survivors, incoming;
+    logic ready1_q [DEPTH], ready2_q [DEPTH], ready3_q [DEPTH];
+    logic src1_ready_q [DEPTH], src2_ready_q [DEPTH], src3_ready_q [DEPTH];
     logic issue_selected_valid [ISSUE_WIDTH-1:0];
-    logic [$clog2(DEPTH)-1:0] issue_selected_idx [ISSUE_WIDTH-1:0];
+    index_t issue_selected_idx [ISSUE_WIDTH-1:0];
+
+    function automatic sched_t scheduling_info(input renamed_uop_t uop);
+        sched_t info;
+        info = '0;
+        info.valid = uop.valid;
+        info.rs1_read_en = uop.rs1_read_en;
+        info.rs2_read_en = uop.rs2_read_en;
+        info.src1_preg = uop.src1_preg;
+        info.src2_preg = uop.src2_preg;
+        info.ext.fu_class = uop.ext.fu_class;
+        info.ext.rs1_dom = uop.ext.rs1_dom;
+        info.ext.rs2_dom = uop.ext.rs2_dom;
+        info.ext.rs3_dom = uop.ext.rs3_dom;
+        info.ext.rs3_read_en = uop.ext.rs3_read_en;
+        info.rext.src3_preg = uop.rext.src3_preg;
+        info.mdu_fuse.valid = uop.mdu_fuse.valid;
+        info.mdu_fuse.lo_tag.br_mask = uop.mdu_fuse.lo_tag.br_mask;
+        info.branch_mask = uop.branch_mask;
+        return info;
+    endfunction
+
+    always_comb begin
+        for (int idx = 0; idx < DEPTH; idx++) begin
+            queue_q[idx] = idx < int'(count_q) ? sched_q[order_q[idx]] : sched_t'(0);
+            src1_ready_q[idx] = ready1_q[order_q[idx]];
+            src2_ready_q[idx] = ready2_q[order_q[idx]];
+            src3_ready_q[idx] = ready3_q[order_q[idx]];
+        end
+    end
 
     function automatic logic source_ready(input o3_types_pkg::reg_domain_e dom,
         input logic [PREG_IDX_WIDTH-1:0] preg);
@@ -146,14 +197,16 @@ module backend_issue_queue
                 end
                 if(queue_q[chosen].ext.fu_class==o3_types_pkg::FU_MUL) picked_mul=1;
                 if(queue_q[chosen].ext.fu_class==o3_types_pkg::FU_DIV) picked_div=1;
-                issue_uop_o[port] = queue_q[chosen];
+                issue_uop_o[port] = payload_q[order_q[chosen]];
+                issue_uop_o[port].branch_mask = queue_q[chosen].branch_mask;
+                issue_uop_o[port].mdu_fuse.lo_tag.br_mask = queue_q[chosen].mdu_fuse.lo_tag.br_mask;
                 if (resolution_valid_i) begin
                     issue_uop_o[port].branch_mask[resolution_tag_i] = 1'b0;
                     issue_uop_o[port].mdu_fuse.lo_tag.br_mask[resolution_tag_i] = 1'b0;
                 end
                 issue_valid_o[port] = 1'b1;
                 issue_selected_valid[port] = 1'b1;
-                issue_selected_idx[port] = $clog2(DEPTH)'(chosen);
+                issue_selected_idx[port] = index_t'(chosen);
             end
         end
     end
@@ -170,75 +223,114 @@ module backend_issue_queue
     end
 
     always_comb begin
-        int unsigned write_idx;
-
-        queue_next = '{default: '0};
-        src1_ready_next = '{default: 1'b0};
-        src2_ready_next = '{default: 1'b0};
-        src3_ready_next = '{default: 1'b0};
-        write_idx = 0;
-
-        // 先保留未发射、未被错误分支杀死的旧项，并清理正确解析的branch bit。
+        logic [DEPTH-1:0] available;
+        keep = '0;
+        survivors = '0;
         for (int idx = 0; idx < DEPTH; idx++) begin
-            logic killed;
-            killed = resolution_valid_i && resolution_mispredict_i
-                  && queue_q[idx].branch_mask[resolution_tag_i];
-            if (queue_q[idx].valid && !remove_mask[idx] && !killed) begin
-                queue_next[write_idx] = queue_q[idx];
-                if (resolution_valid_i) begin
-                    queue_next[write_idx].branch_mask[resolution_tag_i] = 1'b0;
-                    queue_next[write_idx].mdu_fuse.lo_tag.br_mask[resolution_tag_i] = 1'b0;
+            rank[idx] = survivors;
+            keep[idx] = idx < int'(count_q) && queue_q[idx].valid && !remove_mask[idx]
+                && !(resolution_valid_i && resolution_mispredict_i
+                     && queue_q[idx].branch_mask[resolution_tag_i]);
+            survivors += COUNT_WIDTH'(keep[idx]);
+        end
+        available = ~used_q;
+        incoming = '0;
+        append = '0;
+        alloc_index = '{default:'0};
+        append_rank = '{default:'0};
+        for (int lane = 0; lane < ENQ_WIDTH; lane++) begin
+            logic found;
+            found = 1'b0;
+            append_rank[lane] = incoming;
+            append[lane] = enq_fire_i && enq_uop_i[lane].valid
+                && !(resolution_valid_i && resolution_mispredict_i);
+            incoming += COUNT_WIDTH'(append[lane]);
+            for (int slot = 0; slot < DEPTH; slot++) begin
+                if (append[lane] && available[slot] && !found) begin
+                    found = 1'b1;
+                    alloc_index[lane] = index_t'(slot);
+                    available[slot] = 1'b0;
                 end
-                src1_ready_next[write_idx] = !queue_q[idx].rs1_read_en
-                                           || src1_ready_q[idx]
-                                           || source_ready(queue_q[idx].ext.rs1_dom, queue_q[idx].src1_preg);
-                // use_imm只描述执行单元的立即数输入，不能代替真实rs2依赖。
-                // Branch同时使用B型立即数和rs2；只看use_imm会让Load->Branch
-                // 在Load写回前错误发射。
-                src2_ready_next[write_idx] = !queue_q[idx].rs2_read_en
-                                           || src2_ready_q[idx]
-                                           || source_ready(queue_q[idx].ext.rs2_dom, queue_q[idx].src2_preg);
-
-                src3_ready_next[write_idx] = !queue_q[idx].ext.rs3_read_en || src3_ready_q[idx] || source_ready(queue_q[idx].ext.rs3_dom, queue_q[idx].rext.src3_preg);
-                write_idx++;
             end
         end
+        count_next = survivors + incoming;
+    end
 
-        // 恢复拍禁止Dispatch，因此只有正常拍会追加新项。
-        if (enq_fire_i && !(resolution_valid_i && resolution_mispredict_i)) begin
+    always_comb begin
+        order_next = '{default:'0};
+        used_next = '0;
+        for (int src = 0; src < DEPTH; src++)
+            if (keep[src]) used_next[order_q[src]] = 1'b1;
+        for (int lane = 0; lane < ENQ_WIDTH; lane++)
+            if (append[lane]) used_next[alloc_index[lane]] = 1'b1;
+        for (int dst = 0; dst < DEPTH; dst++) begin
+            for (int src = 0; src < DEPTH; src++)
+                order_next[dst] |= order_q[src] &
+                    {INDEX_WIDTH{keep[src] && rank[src] == COUNT_WIDTH'(dst)}};
+            for (int lane = 0; lane < ENQ_WIDTH; lane++)
+                order_next[dst] |= alloc_index[lane] &
+                    {INDEX_WIDTH{append[lane] && survivors + append_rank[lane] == COUNT_WIDTH'(dst)}};
+        end
+    end
+
+    for (genvar slot = 0; slot < DEPTH; slot++) begin : g_payload
+        renamed_uop_t write_data;
+        sched_t write_info;
+        logic write_valid;
+        always_comb begin
+            write_data = '0;
+            write_valid = 1'b0;
             for (int lane = 0; lane < ENQ_WIDTH; lane++) begin
-                if (enq_uop_i[lane].valid) begin
-                    queue_next[write_idx] = enq_uop_i[lane];
-                    if (resolution_valid_i) begin
-                        queue_next[write_idx].branch_mask[resolution_tag_i] = 1'b0;
-                        queue_next[write_idx].mdu_fuse.lo_tag.br_mask[resolution_tag_i] = 1'b0;
-                    end
-                    src1_ready_next[write_idx] = !enq_uop_i[lane].rs1_read_en
-                                               || source_ready(enq_uop_i[lane].ext.rs1_dom, enq_uop_i[lane].src1_preg);
-                    src2_ready_next[write_idx] = !enq_uop_i[lane].rs2_read_en
-                                               || source_ready(enq_uop_i[lane].ext.rs2_dom, enq_uop_i[lane].src2_preg);
-
-                    src3_ready_next[write_idx] = !enq_uop_i[lane].ext.rs3_read_en || source_ready(enq_uop_i[lane].ext.rs3_dom, enq_uop_i[lane].rext.src3_preg);
-                    write_idx++;
-                end
+                write_data |= renamed_uop_t'(UOP_BITS'(enq_uop_i[lane]) &
+                    {UOP_BITS{append[lane] && alloc_index[lane] == index_t'(slot)}});
+                write_valid |= append[lane] && alloc_index[lane] == index_t'(slot);
+            end
+            write_info = scheduling_info(write_data);
+            if (resolution_valid_i) begin
+                write_info.branch_mask[resolution_tag_i] = 1'b0;
+                write_info.mdu_fuse.lo_tag.br_mask[resolution_tag_i] = 1'b0;
             end
         end
-
-        count_next = COUNT_WIDTH'(write_idx);
+        always_ff @(posedge clk) begin
+            if (rst) begin
+                sched_q[slot] <= '0;
+                ready1_q[slot] <= 1'b0;
+                ready2_q[slot] <= 1'b0;
+                ready3_q[slot] <= 1'b0;
+            end else if (write_valid) begin
+                payload_q[slot] <= write_data;
+                payload_q[slot].branch_mask <= '0;
+                payload_q[slot].mdu_fuse.lo_tag.br_mask <= '0;
+                sched_q[slot] <= write_info;
+                ready1_q[slot] <= !write_info.rs1_read_en
+                    || source_ready(write_info.ext.rs1_dom, write_info.src1_preg);
+                ready2_q[slot] <= !write_info.rs2_read_en
+                    || source_ready(write_info.ext.rs2_dom, write_info.src2_preg);
+                ready3_q[slot] <= !write_info.ext.rs3_read_en
+                    || source_ready(write_info.ext.rs3_dom, write_info.rext.src3_preg);
+            end else if (used_q[slot]) begin
+                if (resolution_valid_i) begin
+                    sched_q[slot].branch_mask[resolution_tag_i] <= 1'b0;
+                    sched_q[slot].mdu_fuse.lo_tag.br_mask[resolution_tag_i] <= 1'b0;
+                end
+                ready1_q[slot] <= !sched_q[slot].rs1_read_en || ready1_q[slot]
+                    || source_ready(sched_q[slot].ext.rs1_dom, sched_q[slot].src1_preg);
+                ready2_q[slot] <= !sched_q[slot].rs2_read_en || ready2_q[slot]
+                    || source_ready(sched_q[slot].ext.rs2_dom, sched_q[slot].src2_preg);
+                ready3_q[slot] <= !sched_q[slot].ext.rs3_read_en || ready3_q[slot]
+                    || source_ready(sched_q[slot].ext.rs3_dom, sched_q[slot].rext.src3_preg);
+            end
+        end
     end
 
     always_ff @(posedge clk) begin
         if (rst) begin
-            queue_q <= '{default: '0};
-            src1_ready_q <= '{default: 1'b0};
-            src2_ready_q <= '{default: 1'b0};
-            src3_ready_q <= '{default: 1'b0};
+            order_q <= '{default:'0};
+            used_q <= '0;
             count_q <= '0;
         end else begin
-            queue_q <= queue_next;
-            src1_ready_q <= src1_ready_next;
-            src2_ready_q <= src2_ready_next;
-            src3_ready_q <= src3_ready_next;
+            order_q <= order_next;
+            used_q <= used_next;
             count_q <= count_next;
         end
     end

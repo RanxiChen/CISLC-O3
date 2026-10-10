@@ -55,6 +55,9 @@ module writeback_arbiter
     logic [PREG_IDX_WIDTH-1:0] candidate_dst [NUM_SOURCES-1:0];
     logic [XLEN-1:0] candidate_data [NUM_SOURCES-1:0];
     logic selected [NUM_SOURCES-1:0];
+    localparam int LEAVES = 1 << $clog2(NUM_SOURCES);
+    localparam int RANK_W = $clog2(NUM_SOURCES+1);
+    logic grant_by_port [PRF_WRITE_PORTS][NUM_SOURCES];
 
     function automatic int unsigned rob_distance(input logic [ROB_IDX_WIDTH-1:0] idx);
         rob_distance = (int'(idx) + NUM_ROB_ENTRIES - int'(rob_head_i)) % NUM_ROB_ENTRIES;
@@ -69,13 +72,6 @@ module writeback_arbiter
         candidate_rob = '{default: '0};
         candidate_dst = '{default: '0};
         candidate_data = '{default: '0};
-        selected = '{default: 1'b0};
-        prf_wr_en_o = '{default: 1'b0};
-        prf_wr_addr_o = '{default: '0};
-        prf_wr_data_o = '{default: '0};
-        complete_valid_o = '{default: 1'b0};
-        complete_idx_o = '{default: '0};
-        complete_data_o = '{default: '0};
 
         for (int alu = 0; alu < NUM_ALUS; alu++) begin
             candidate_valid[alu] = alu_result_i[alu].valid
@@ -106,23 +102,44 @@ module writeback_arbiter
             candidate_dst[NUM_ALUS+P+1+e]=extra_src_i[e].tag.dst_preg;
             candidate_data[NUM_ALUS+P+1+e]=extra_src_i[e].data;
         end
+    end
+
+    // Rank all eligible sources in parallel. The rank counts older live
+    // sources, with source order breaking equal-age ties. Every write port
+    // decodes its rank directly; no port waits for a previous winner.
+    always_comb begin
+        int unsigned ages [NUM_SOURCES];
+        logic [RANK_W-1:0] counts [NUM_SOURCES][2*LEAVES];
+        counts = '{default:'{default:'0}};
+        for (int src=0;src<NUM_SOURCES;src++) ages[src]=rob_distance(candidate_rob[src]);
+        for (int src=0;src<NUM_SOURCES;src++) begin
+            for (int other=0;other<NUM_SOURCES;other++)
+                counts[src][LEAVES+other] = RANK_W'(candidate_valid[other]
+                    && (ages[other]<ages[src] || (ages[other]==ages[src] && other<src)));
+            for (int node=LEAVES-1;node>0;node--)
+                counts[src][node]=counts[src][2*node]+counts[src][2*node+1];
+            for (int port=0;port<PRF_WRITE_PORTS;port++)
+                grant_by_port[port][src]=candidate_valid[src] && port<NUM_SOURCES
+                    && counts[src][1]==RANK_W'(port);
+        end
+    end
+
+    always_comb begin
+        selected = '{default: 1'b0};
+        prf_wr_en_o = '{default: 1'b0};
+        prf_wr_addr_o = '{default: '0};
+        prf_wr_data_o = '{default: '0};
+        complete_valid_o = '{default: 1'b0};
+        complete_idx_o = '{default: '0};
+        complete_data_o = '{default: '0};
         for (int port = 0; port < PRF_WRITE_PORTS; port++) begin
-            int chosen;
-            int unsigned chosen_age;
-            chosen = -1;
-            chosen_age = NUM_ROB_ENTRIES;
             for (int src = 0; src < NUM_SOURCES; src++) begin
-                if (candidate_valid[src] && !selected[src]
-                 && ((chosen < 0) || (rob_distance(candidate_rob[src]) < chosen_age))) begin
-                    chosen = src;
-                    chosen_age = rob_distance(candidate_rob[src]);
-                end
-            end
-            if (chosen >= 0) begin
-                selected[chosen] = 1'b1;
-                prf_wr_en_o[port] = 1'b1;
-                prf_wr_addr_o[port] = candidate_dst[chosen];
-                prf_wr_data_o[port] = candidate_data[chosen];
+                logic grant;
+                grant = grant_by_port[port][src];
+                selected[src] |= grant;
+                prf_wr_en_o[port] |= grant;
+                prf_wr_addr_o[port] |= candidate_dst[src] & {PREG_IDX_WIDTH{grant}};
+                prf_wr_data_o[port] |= candidate_data[src] & {XLEN{grant}};
             end
         end
 

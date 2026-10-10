@@ -69,7 +69,9 @@ module uop_queue
     localparam int LANE_COUNT_WIDTH = $clog2(DEQ_WIDTH + 1);
     localparam int ROWS_PER_BANK = DEPTH / NUM_BANKS;
 
-    decoded_uop_t bank_mem [NUM_BANKS-1:0][ROWS_PER_BANK-1:0];
+    localparam int UOP_BITS = $bits(decoded_uop_t);
+    localparam int ROW_WIDTH = (ROWS_PER_BANK > 1) ? $clog2(ROWS_PER_BANK) : 1;
+    logic [UOP_BITS-1:0] bank_read [NUM_BANKS];
     logic [PTR_WIDTH-1:0]   head_q;
     logic [PTR_WIDTH-1:0]   tail_q;
     logic [COUNT_WIDTH-1:0] count_q;
@@ -110,17 +112,50 @@ module uop_queue
     assign deq_count_o = LANE_COUNT_WIDTH'(visible_count);
     assign accepted_count = COUNT_WIDTH'(deq_accept_count_i);
 
+    // Consecutive lanes occupy different physical banks. Express that fact
+    // structurally: one packed memory, one write port and one read per bank.
+    // A dynamically indexed two-dimensional struct array obscures this
+    // mutual exclusion and can turn four writes into per-bit priority muxes.
+    for (genvar bank = 0; bank < NUM_BANKS; bank++) begin : g_bank
+        (* ram_style = "distributed" *) logic [UOP_BITS-1:0] mem [ROWS_PER_BANK];
+        logic [ROW_WIDTH-1:0] write_row, read_row;
+        logic write_valid;
+        logic [UOP_BITS-1:0] write_data;
+        always_comb begin
+            write_valid = 1'b0;
+            write_row = '0;
+            read_row = '0;
+            write_data = '0;
+            for (int lane = 0; lane < ENQ_WIDTH; lane++) begin
+                int unsigned pos;
+                pos = (int'(tail_q) + lane) % DEPTH;
+                if (COUNT_WIDTH'(lane) < enq_count && pos % NUM_BANKS == bank) begin
+                    write_valid = 1'b1;
+                    write_row = ROW_WIDTH'(pos / NUM_BANKS);
+                    write_data |= UOP_BITS'(enq_uop_i[lane]);
+                end
+            end
+            for (int lane = 0; lane < DEQ_WIDTH; lane++) begin
+                int unsigned pos;
+                pos = (int'(head_q) + lane) % DEPTH;
+                if (pos % NUM_BANKS == bank) read_row = ROW_WIDTH'(pos / NUM_BANKS);
+            end
+        end
+        always_ff @(posedge clk) begin
+            if (!rst && !flush_i && enq_fire && write_valid)
+                mem[write_row] <= write_data;
+        end
+        assign bank_read[bank] = mem[read_row];
+    end
+
     always_comb begin
         deq_uop_o = '0;
         for (int lane = 0; lane < DEQ_WIDTH; lane++) begin
-            int unsigned logical_pos;
-            int unsigned bank_idx;
-            int unsigned row_idx;
-            logical_pos = (int'(head_q) + lane) % DEPTH;
-            bank_idx = logical_pos % NUM_BANKS;
-            row_idx = logical_pos / NUM_BANKS;
-            if (COUNT_WIDTH'(lane) < visible_count) begin
-                deq_uop_o[lane] = bank_mem[bank_idx][row_idx];
+            int unsigned pos;
+            pos = (int'(head_q) + lane) % DEPTH;
+            for (int bank = 0; bank < NUM_BANKS; bank++) begin
+                if (COUNT_WIDTH'(lane) < visible_count && pos % NUM_BANKS == bank)
+                    deq_uop_o[lane] |= decoded_uop_t'(bank_read[bank]);
             end
         end
     end
@@ -132,17 +167,6 @@ module uop_queue
             count_q <= '0;
         end else begin
             if (enq_fire) begin
-                for (int lane = 0; lane < ENQ_WIDTH; lane++) begin
-                    if (COUNT_WIDTH'(lane) < enq_count) begin
-                        int unsigned logical_pos;
-                        int unsigned bank_idx;
-                        int unsigned row_idx;
-                        logical_pos = (int'(tail_q) + lane) % DEPTH;
-                        bank_idx = logical_pos % NUM_BANKS;
-                        row_idx = logical_pos / NUM_BANKS;
-                        bank_mem[bank_idx][row_idx] <= enq_uop_i[lane];
-                    end
-                end
                 tail_q <= ptr_add(tail_q, int'(enq_count));
             end
 

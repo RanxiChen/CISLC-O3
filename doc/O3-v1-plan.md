@@ -49,6 +49,10 @@ L0～L4 及 L3 的已有证据见 `LOOP.md`。v1 从 L3 收尾开始。
 
 **2026-10-08 顺序调整：L11 先于 L8c。** L8a、L8b 完成后先做 L11（拆为 L11a LiteX 接入与首次上板 → L11b SD 与 Linux → L11c FASE/perf/优化，见 `spec/l11a-litex-soc-spec.md` 第 13 节），L8c（访存依赖推测、stride 预取、地址预测，纯性能）排在 L11 之后。目的是先在 FPGA 上跑通 Linux。
 
+**2026-10-09 首版完整 SoC**：用户决定 SD 卡与一致性 DMA 随首版 SoC 一起实现，不再分两次搭硬件；先实现代码，再补充测试。沿用 LiteX/LiteDRAM/LiteSDCard，Breeze 代码直接复制或手工翻译，O3 构建独立于 Breeze 仓库。后续在同一 SoC 上验证 BIOS/DDR/中断/SD，再推进 OpenSBI/Linux。
+
+**2026-10-08 插入 L7c：前端重构先于 L11a。** 用户决定在 SoC 之前把前端补到常规乱序核水平：8 项返回队列、FTQ 早释放与训练流水、预测表 BRAM 化、FDIP 预取、loop predictor、特性开关与性能事件补全（前端基线 D36～D40，规格 `spec/l7c-frontend-throughput-spec.md`）。顺序：PMP 范围预解码任务 → L7c → L11a。
+
 **2026-10-06 验收调整：完整一致性测试推迟到 FPGA。** L7～L10 表中“验收”列的 ACT4（RV64IMC/RV64GC）、特权测试、riscv-tests p/v、litmus、随机程序及新增 Spike 比对不再作为级门禁，统一推迟到 L11 后在 FPGA 上运行（bootrom 测试程序 + ILA 调试）。现有 Spike 逐条比对与 ACT4 回归也不再运行。各级只要求：手写的本级机制简单定向 testbench 通过；未通过项记为已知问题后继续推进。`sim/cocotb/` 中已有的非访存模块 testbench 可在改动对应模块时顺带运行；访存类（`dcache`、`l2_cache`、`load_queue`、`store_queue`、`load_store_unit`、`load_store_unit_l5`）在 L8 前不运行。
 
 | 级 | 内容 | 主要决策 | 验收 |
@@ -85,4 +89,4 @@ Breeze 仓库：`/home/chen/leisure/flow`。
 
 ## 5. 不在 v1
 
-多核、V 扩展（在 Breeze 上另做）、值预测、Debug Mode、L2 预取以外的新预测机制。（Sstc 已于 2026-10-07 按 B49 移入 v1。）
+多核、V 扩展（在 Breeze 上另做）、值预测、Debug Mode、L2 预取以外的新预测机制。（例外：2026-10-08 用户决定加入 loop predictor，前端 D39。）（Sstc 已于 2026-10-07 按 B49 移入 v1。）

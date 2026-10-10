@@ -35,9 +35,22 @@ module rename_dispatch_queue
 );
     localparam int COUNT_WIDTH = $clog2(DEPTH + 1);
     localparam int DEQ_COUNT_WIDTH = $clog2(DEQ_WIDTH + 1);
-    renamed_uop_t queue_q [DEPTH-1:0];
-    renamed_uop_t queue_next [DEPTH-1:0];
+    localparam int INDEX_WIDTH = (DEPTH > 1) ? $clog2(DEPTH) : 1;
+    typedef logic [INDEX_WIDTH-1:0] index_t;
+    // Payload stays in its allocated slot. Only these narrow indices move
+    // when consuming or selectively deleting instructions.
+    renamed_uop_t payload_q [DEPTH];
+    branch_mask_t mask_q [DEPTH];
+    logic payload_valid_q [DEPTH];
+    index_t order_q [DEPTH], order_next [DEPTH];
+    logic [DEPTH-1:0] used_q, used_next;
+    index_t alloc_index [ENQ_WIDTH];
+    logic [ENQ_WIDTH-1:0] append;
     logic [COUNT_WIDTH-1:0] count_q, count_next;
+    logic [DEPTH-1:0] keep;
+    logic [COUNT_WIDTH-1:0] survivor_rank [DEPTH];
+    logic [COUNT_WIDTH-1:0] survivor_count;
+    localparam int UOP_BITS = $bits(renamed_uop_t);
 
     assign free_count_o = COUNT_WIDTH'(DEPTH) - count_q;
     assign deq_count_o = (count_q >= COUNT_WIDTH'(DEQ_WIDTH))
@@ -47,52 +60,103 @@ module rename_dispatch_queue
     always_comb begin
         deq_uop_o = '{default: '0};
         for (int lane = 0; lane < DEQ_WIDTH; lane++) begin
-            if (lane < int'(deq_count_o)) deq_uop_o[lane] = queue_q[lane];
+            if (lane < int'(deq_count_o)) begin
+                deq_uop_o[lane] = payload_q[order_q[lane]];
+                deq_uop_o[lane].branch_mask = mask_q[order_q[lane]];
+            end
         end
     end
 
     always_comb begin
-        int unsigned write_idx;
-        queue_next = '{default: '0};
-        write_idx = 0;
+        survivor_count = '0;
+        keep = '0;
+        for (int src = 0; src < DEPTH; src++) begin
+            survivor_rank[src] = survivor_count;
+            keep[src] = src < int'(count_q) && payload_valid_q[order_q[src]] &&
+                ((resolution_valid_i && resolution_mispredict_i)
+                 ? !mask_q[order_q[src]][resolution_tag_i]
+                 : src >= int'(deq_accept_count_i));
+            survivor_count += COUNT_WIDTH'(keep[src]);
+        end
+        count_next = survivor_count;
+        if (enq_fire_i && !(resolution_valid_i && resolution_mispredict_i))
+            for (int lane = 0; lane < ENQ_WIDTH; lane++)
+                if (lane < int'(enq_count_i)) count_next += COUNT_WIDTH'(1);
+    end
 
-        if (resolution_valid_i && resolution_mispredict_i) begin
-            for (int idx = 0; idx < DEPTH; idx++) begin
-                if (queue_q[idx].valid && !queue_q[idx].branch_mask[resolution_tag_i]) begin
-                    queue_next[write_idx] = queue_q[idx];
-                    queue_next[write_idx].branch_mask[resolution_tag_i] = 1'b0;
-                    write_idx++;
-                end
-            end
-        end else begin
-            for (int idx = 0; idx < DEPTH; idx++) begin
-                if ((idx >= int'(deq_accept_count_i)) && queue_q[idx].valid) begin
-                    queue_next[write_idx] = queue_q[idx];
-                    if (resolution_valid_i) queue_next[write_idx].branch_mask[resolution_tag_i] = 1'b0;
-                    write_idx++;
-                end
-            end
-
-            if (enq_fire_i) begin
-                for (int lane = 0; lane < ENQ_WIDTH; lane++) begin
-                    if (lane < int'(enq_count_i)) begin
-                        queue_next[write_idx] = enq_uop_i[lane];
-                        if (resolution_valid_i) queue_next[write_idx].branch_mask[resolution_tag_i] = 1'b0;
-                        write_idx++;
-                    end
+    always_comb begin
+        logic [DEPTH-1:0] available;
+        available = ~used_q;
+        append = '0;
+        alloc_index = '{default:'0};
+        for (int lane = 0; lane < ENQ_WIDTH; lane++) begin
+            logic found;
+            found = 1'b0;
+            append[lane] = enq_fire_i && !(resolution_valid_i && resolution_mispredict_i)
+                && lane < int'(enq_count_i);
+            for (int slot = 0; slot < DEPTH; slot++) begin
+                if (append[lane] && available[slot] && !found) begin
+                    found = 1'b1;
+                    alloc_index[lane] = index_t'(slot);
+                    available[slot] = 1'b0;
                 end
             end
         end
+    end
 
-        count_next = COUNT_WIDTH'(write_idx);
+    always_comb begin
+        order_next = '{default:'0};
+        used_next = '0;
+        for (int src = 0; src < DEPTH; src++)
+            if (keep[src]) used_next[order_q[src]] = 1'b1;
+        for (int lane = 0; lane < ENQ_WIDTH; lane++)
+            if (append[lane]) used_next[alloc_index[lane]] = 1'b1;
+        for (int dst = 0; dst < DEPTH; dst++) begin
+            for (int src = 0; src < DEPTH; src++)
+                order_next[dst] |= order_q[src] &
+                    {INDEX_WIDTH{keep[src] && survivor_rank[src] == COUNT_WIDTH'(dst)}};
+            for (int lane = 0; lane < ENQ_WIDTH; lane++)
+                order_next[dst] |= alloc_index[lane] &
+                    {INDEX_WIDTH{append[lane] && int'(survivor_count) + lane == dst}};
+        end
+    end
+
+    for (genvar slot = 0; slot < DEPTH; slot++) begin : g_payload
+        renamed_uop_t write_data;
+        logic write_valid;
+        always_comb begin
+            write_data = '0;
+            write_valid = 1'b0;
+            for (int lane = 0; lane < ENQ_WIDTH; lane++) begin
+                write_data |= renamed_uop_t'(UOP_BITS'(enq_uop_i[lane]) &
+                    {UOP_BITS{append[lane] && alloc_index[lane] == index_t'(slot)}});
+                write_valid |= append[lane] && alloc_index[lane] == index_t'(slot);
+            end
+        end
+        always_ff @(posedge clk) begin
+            if (!rst) begin
+                if (resolution_valid_i) mask_q[slot][resolution_tag_i] <= 1'b0;
+                if (write_valid) begin
+                    payload_q[slot] <= write_data;
+                    // Store the changing branch mask separately from payload.
+                    payload_q[slot].branch_mask <= '0;
+                    payload_valid_q[slot] <= write_data.valid;
+                    mask_q[slot] <= resolution_valid_i
+                        ? write_data.branch_mask & ~(branch_mask_t'(1) << resolution_tag_i)
+                        : write_data.branch_mask;
+                end
+            end
+        end
     end
 
     always_ff @(posedge clk) begin
         if (rst) begin
-            queue_q <= '{default: '0};
+            order_q <= '{default:'0};
+            used_q <= '0;
             count_q <= '0;
         end else begin
-            queue_q <= queue_next;
+            order_q <= order_next;
+            used_q <= used_next;
             count_q <= count_next;
         end
     end

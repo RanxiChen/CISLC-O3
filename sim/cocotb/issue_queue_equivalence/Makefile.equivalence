@@ -1,0 +1,18 @@
+SIM ?= verilator
+TOPLEVEL_LANG := verilog
+COCOTB_TOPLEVEL := issue_queue_equivalence_tb_top
+COCOTB_TEST_MODULES := test_equivalence
+REPO_ROOT := $(abspath ../../..)
+KIND ?= 0
+TEST_SEED ?= 1
+export TEST_SEED
+ifndef REFERENCE_SOURCE
+$(error REFERENCE_SOURCE must name the frozen baseline module renamed backend_issue_queue_reference)
+endif
+VERILOG_SOURCES := $(REPO_ROOT)/rtl/common/o3_isa_pkg.sv \
+  $(REPO_ROOT)/rtl/common/o3_platform_pkg.sv $(REPO_ROOT)/rtl/common/o3_cfg_pkg.sv \
+  $(REPO_ROOT)/rtl/common/o3_types_pkg.sv $(REPO_ROOT)/rtl/common/o3_pkg.sv \
+  $(REFERENCE_SOURCE) $(REPO_ROOT)/rtl/backend/backend_issue_queue.sv \
+  $(CURDIR)/issue_queue_equivalence_tb_top.sv
+EXTRA_ARGS += --timing --assert -Wno-fatal -GKIND=$(KIND)
+include $(shell cocotb-config --makefiles)/Makefile.sim

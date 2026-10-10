@@ -1,0 +1,19 @@
+SIM ?= verilator
+TOPLEVEL_LANG := verilog
+COCOTB_TOPLEVEL := wb_equivalence_tb_top
+COCOTB_TEST_MODULES := test_equivalence
+REPO_ROOT := $(abspath ../../..)
+TEST_SEED ?= 1
+export TEST_SEED
+ifndef MITER_DIR
+$(error MITER_DIR must name generated frozen-reference comparison files)
+endif
+ifndef CANDIDATE_SOURCE
+$(error CANDIDATE_SOURCE must name the candidate arbiter RTL)
+endif
+VERILOG_SOURCES := $(REPO_ROOT)/rtl/common/o3_isa_pkg.sv \
+ $(REPO_ROOT)/rtl/common/o3_platform_pkg.sv $(REPO_ROOT)/rtl/common/o3_cfg_pkg.sv \
+ $(REPO_ROOT)/rtl/common/o3_types_pkg.sv $(REPO_ROOT)/rtl/common/o3_pkg.sv \
+ $(CANDIDATE_SOURCE) $(MITER_DIR)/reference.sv $(MITER_DIR)/tb.sv
+EXTRA_ARGS += --timing --assert -Wno-fatal
+include $(shell cocotb-config --makefiles)/Makefile.sim

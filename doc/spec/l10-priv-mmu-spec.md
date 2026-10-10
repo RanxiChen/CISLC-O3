@@ -289,7 +289,14 @@
 - 条目数 `pmp_entries`：见 X11。CSR `pmpcfg0`、`pmpcfg2` 与 `pmpaddr0～15` 均可访问；超出条目数的部分读 0、写忽略。
 - **粒度 G=2（16 字节，Q6）**：与取指区域（16B 对齐）相同，取指按整个区域检查即与按实际指令字节检查等价，不需逐指令保护信息。支持 OFF/TOR/NAPOT；NA4 不可选（写 A=NA4 时 A 字段保持旧值）。`pmpaddr` 54 位全部可存；读出时 NAPOT 模式 `pmpaddr[0]` 读 1，OFF/TOR 模式 `pmpaddr[1:0]` 读 0（底层存储值不变，规范 G≥2 规则）。OpenSBI 启动时探测粒度，不依赖 G=0；cfg 的 [6:5] 写 0；`W=1,R=0` 写为 `W=0`（同 Breeze）；L 位锁定 cfg 与 addr（TOR 时下一项的 L 也锁本项 addr）。
 - 检查：编号最小的匹配项决定结果，访问字节须全部落在该项内，否则失败；无匹配时 M 允许、S/U 拒绝；M 模式仅在匹配项 L=1 时受限。
-- 三处使用：取指（ICache S2/S3，eff=priv，X）、数据（LSU，eff 按 MPRV，R/W，访问字节数）、PTW 读（S 模式、8 字节、R）。
+- 三处使用：取指（ICache S2/S3，eff=priv，X）、数据（LSU，eff 按 MPRV，R/W，访问字节数）、PTW 读（S 模式、8 字节、R）。另有同一函数的派生调用：PTE A/D 条件写（S、8 字节、R+W，第 8.2 节 Q3）与 DCache 内部请求入口（`dcache.sv` PTW/PTE_AD/store drain 的权限重算；store drain 复用 STA 结果）。
+- **范围预解码（2026-10-08 增补，落实前端基线 D28 与第 8 节"PMP 预解码/配置派生状态可在 CSR 修改时更新"）**：L1D OOC 综合（Alan，100 MHz，综合后估计）显示 DCache 内部请求 PMP→`pmp_ok` 路径 −0.073 ns、30 级逻辑，根因是每次检查都在组合路径上从原始 `pmpcfg/pmpaddr` 重新计算 NAPOT 末尾连 1 计数、掩码与 TOR 上下界，再串行优先级选择。改为：
+  1. `csr_file` 在写入 `pmp_q` 的**同一上升沿**，由 `pmp_next` 计算每项的派生状态并寄存：`en`（A≠OFF）、57 位 `lo`/`hi`（与现有 `pmp_lower/pmp_upper` 逐值相同，含 TOR 用前一项 addr、NAPOT 覆盖整个 PA 空间时 `hi=1<<56`）、`r/w/x/l`。派生状态因此仍在周期 N+1 生效，**不改变 csr_file"周期 N+1 派生状态反映新值"的合同与 D28 同步序列**。
+  2. `pmp_state_t` 增加该派生数组；ICache、LSU 数据检查、PTW 两处、`dc_permissions`/DCache 内部请求及其断言全部只读派生数组，不再在检查路径上调用 `pmp_lower/pmp_upper`。
+  3. 检查函数：先并行求每项 `match`（与该项区间有交）与 `inside`（完全落在区间内），再按编号最小优先选择；语义与本节"检查"条完全相同。
+  4. 原 `pmp_lower/pmp_upper/pmp_allow` 保留为参考模型，仅用于 CSR 内的派生计算对照断言与测试；可综合的检查路径不得调用。
+  - NAPOT 掩码可用 `e ^ (e+1)`（54 位回绕加法）求低位连 1，替代逐位循环；须与参考模型逐值等价（含末尾 53、54 个 1）。
+  - 代价：16 项 × 约 119 位 ≈ 1.9k FF；只在 CSR 写时变化。不缓存访问结果，TLB 仍不保存 PMP 结果。
 
 ### 9.2 PMA（`pma_checker.sv`，X12）
 

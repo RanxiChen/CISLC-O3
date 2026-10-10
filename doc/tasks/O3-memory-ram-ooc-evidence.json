@@ -1,0 +1,1050 @@
+{
+  "final_rtl_sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+  "memory_validation_sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+  "component_identity": [
+    {
+      "file": "rtl/lsu/dcache.sv",
+      "sha256": "6ed08f26691c54fcd6c5b9d20da0e68b9d03fa68389a13216ffa7f02cd0b8001",
+      "identical_in": [
+        "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+        "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+        "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b"
+      ]
+    },
+    {
+      "file": "rtl/memory/l2_home.sv",
+      "sha256": "57f17ea0d5bfa8cecbc0eef56d0ef4d3300c38e1d735d556e0ad1d8883e43c02",
+      "identical_in": [
+        "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+        "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+        "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b"
+      ]
+    },
+    {
+      "file": "rtl/memory/l2_mem_engine.sv",
+      "sha256": "c4f47cb0b480ecf9c8b0bc0dfba6901d44324ddae60f094baff02d3eca4bc461",
+      "identical_in": [
+        "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+        "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+        "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b"
+      ]
+    },
+    {
+      "file": "rtl/memory/l2_slots.sv",
+      "sha256": "5d22d2ce3edb17ba868256dadcba59f167fd01d3fbe2fc821940591e5a70bead",
+      "identical_in": [
+        "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+        "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+        "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b"
+      ]
+    },
+    {
+      "file": "rtl/frontend/tage.sv",
+      "sha256": "792491ab3ec52bc42a3a6e207da231b1d98982de8d9e887481762d157c77a7b4",
+      "identical_in": [
+        "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+        "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+        "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b"
+      ]
+    },
+    {
+      "file": "sim/cocotb/dcache/test_dcache.py",
+      "sha256": "0ebc1f058c803c6c3124151984f0e28d62595139546e5f1103b545fc66589454",
+      "identical_in": [
+        "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+        "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+        "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b"
+      ]
+    },
+    {
+      "file": "sim/cocotb/tage/test_tage.py",
+      "sha256": "86ce78c4036d146ffec5a4da9fdac254843599bfc1b82e2fa8372a3f20c767ea",
+      "identical_in": [
+        "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+        "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+        "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b"
+      ]
+    },
+    {
+      "file": "scripts/vivado/mem_preview.tcl",
+      "sha256": "452c11f0d62212d2a971b810c0f122de553fcc5b5b2d6bb600484b1ec11b1594",
+      "identical_in": [
+        "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+        "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+        "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b"
+      ]
+    },
+    {
+      "file": "scripts/vivado/mem_preview.xdc",
+      "sha256": "7533967627f0eea8a01b5ae6217706fbcc461d9217a771e60c5e352202cd3aa9",
+      "identical_in": [
+        "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+        "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+        "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b"
+      ]
+    }
+  ],
+  "cvfpu_sha": "1b220f3bc89df99e246b72e3574a3a533cf87653",
+  "common_cells_sha": "6aeee85d0a34fedc06c14f04fd6363c9f7b4eeea",
+  "records": [
+    {
+      "sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-94ec4e27",
+      "command": "make -j4 -C sim/cocotb/dcache MSHRS=1 SIM_BUILD=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/dcache-m1/build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/dcache-m1/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 13.2,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/dcache-m1",
+      "tests": 26,
+      "failures": 0,
+      "skips": 0,
+      "job": "dcache-m1"
+    },
+    {
+      "sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-94ec4e27",
+      "command": "make -j4 -C sim/cocotb/dcache MSHRS=4 COCOTB_TEST_MODULES=test_dcache,test_l8a_dcache,test_l8a_probe_ps,test_l8a_internal_pmp,test_l8b_dcache SIM_BUILD=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/dcache-m4/build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/dcache-m4/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 15.1,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/dcache-m4",
+      "tests": 49,
+      "failures": 0,
+      "skips": 0,
+      "job": "dcache-m4"
+    },
+    {
+      "sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-94ec4e27",
+      "command": "make -j4 -C sim/cocotb/dcache MSHRS=1 COCOTB_TEST_MODULES=test_l8b_dcache COCOTB_TESTCASE= SIM_BUILD=/home/cloud_chen/work/20261008-o3-ram-fix-94ec4e27/shared-n2-m1 COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/dcache-n2-m1/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 14.0,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/dcache-n2-m1",
+      "tests": 20,
+      "failures": 0,
+      "skips": 0,
+      "job": "dcache-n2-m1"
+    },
+    {
+      "sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-94ec4e27",
+      "command": "make -j4 -C sim/cocotb/l2_home SIM_BUILD=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/l2-home/build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/l2-home/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 32.1,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/l2-home",
+      "tests": 12,
+      "failures": 0,
+      "skips": 0,
+      "job": "l2-home"
+    },
+    {
+      "sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-94ec4e27",
+      "command": "bash scripts/lint.sh",
+      "exit": 0,
+      "elapsed_seconds": 13.6,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/lint",
+      "job": "lint"
+    },
+    {
+      "sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-94ec4e27",
+      "command": "make -j4 -C sim/cocotb/memsys GEOMETRY=default MSHRS=4 SIM_BUILD=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/memsys-default-m4/build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/memsys-default-m4/results.xml",
+      "exit": 0,
+      "tests": 5,
+      "failures": 0,
+      "skips": 0,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/memsys-default-m4",
+      "note": "Remote leaf completed after scheduler core handoff; raw XML and status retrieved",
+      "job": "memsys-default-m4"
+    },
+    {
+      "sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-94ec4e27",
+      "command": "make -j4 -C sim/cocotb/memsys GEOMETRY=pressure MSHRS=4 SIM_BUILD=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/memsys-pressure-m4/build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/memsys-pressure-m4/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 48.5,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/memsys-pressure-m4",
+      "tests": 5,
+      "failures": 0,
+      "skips": 0,
+      "job": "memsys-pressure-m4"
+    },
+    {
+      "sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-94ec4e27",
+      "command": "make -j4 -C sim/cocotb/tage TEST_SEED=1",
+      "exit": 0,
+      "elapsed_seconds": 3.6,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/tage-s1",
+      "job": "tage-s1"
+    },
+    {
+      "sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-94ec4e27",
+      "command": "make -j4 -C sim/cocotb/tage TEST_SEED=29",
+      "exit": 0,
+      "elapsed_seconds": 2.3,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/tage-s29",
+      "job": "tage-s29"
+    },
+    {
+      "sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-94ec4e27",
+      "command": "make -j4 -C sim/cocotb/tage TEST_SEED=7",
+      "exit": 0,
+      "elapsed_seconds": 2.1,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/tage-s7",
+      "job": "tage-s7"
+    },
+    {
+      "sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-94ec4e27",
+      "command": "make -j4 -C sim/cocotb/memsys GEOMETRY=default MSHRS=1 RFO=1 COCOTB_TEST_MODULES=test_l8b_memsys,test_l8b_y11_repro SIM_BUILD=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/n3-default-m1/build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/n3-default-m1/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 676.6,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/n3-default-m1",
+      "tests": 3,
+      "failures": 0,
+      "skips": 0,
+      "job": "n3-default-m1"
+    },
+    {
+      "sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-94ec4e27",
+      "command": "make -j4 -C sim/cocotb/memsys GEOMETRY=default MSHRS=4 RFO=1 COCOTB_TEST_MODULES=test_l8b_memsys,test_l8b_y11_repro SIM_BUILD=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/n3-default-m4/build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/n3-default-m4/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 688.2,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/n3-default-m4",
+      "tests": 3,
+      "failures": 0,
+      "skips": 0,
+      "job": "n3-default-m4"
+    },
+    {
+      "sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-94ec4e27",
+      "command": "make -j4 -C sim/cocotb/memsys GEOMETRY=pressure MSHRS=1 RFO=1 COCOTB_TEST_MODULES=test_l8b_memsys,test_l8b_y11_repro SIM_BUILD=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/n3-pressure-m1/build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/n3-pressure-m1/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 81.8,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/n3-pressure-m1",
+      "tests": 3,
+      "failures": 0,
+      "skips": 0,
+      "job": "n3-pressure-m1"
+    },
+    {
+      "sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-94ec4e27",
+      "command": "make -j4 -C sim/cocotb/memsys GEOMETRY=pressure MSHRS=4 RFO=1 COCOTB_TEST_MODULES=test_l8b_memsys,test_l8b_y11_repro SIM_BUILD=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/n3-pressure-m4/build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/n3-pressure-m4/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 82.5,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/n3-pressure-m4",
+      "tests": 3,
+      "failures": 0,
+      "skips": 0,
+      "job": "n3-pressure-m4"
+    },
+    {
+      "sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+      "host": "chen@localhost",
+      "cwd": "/home/chen/FUN/20261008-o3-ram-fix-94ec4e27",
+      "command": "timeout --signal=TERM --kill-after=30s 2700s vivado -mode batch -source scripts/vivado/mem_preview.tcl -log /home/chen/FUN/CISLC-O3-runs/o3-ram-fix/94ec4e27/dcache/vivado.log -journal /home/chen/FUN/CISLC-O3-runs/o3-ram-fix/94ec4e27/dcache/vivado.jou -tclargs /home/chen/FUN/CISLC-O3-runs/o3-ram-fix/94ec4e27/dcache dcache 0",
+      "exit": 0,
+      "evidence": "/home/chen/FUN/CISLC-O3-runs/o3-ram-fix/94ec4e27/dcache",
+      "lut": 32600.0,
+      "ff": 19635.0,
+      "bram_tiles": 64.0,
+      "ramb36": 64.0,
+      "ramb18": 0.0,
+      "wns": -0.073,
+      "tns": -0.073,
+      "whs": -0.143,
+      "hold_failing_endpoints": 4116,
+      "synth_seconds": 325.768,
+      "job": "dcache"
+    },
+    {
+      "sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+      "host": "chen@localhost",
+      "cwd": "/home/chen/FUN/20261008-o3-ram-fix-94ec4e27",
+      "command": "timeout --signal=TERM --kill-after=30s 2700s vivado -mode batch -source scripts/vivado/mem_preview.tcl -log /home/chen/FUN/CISLC-O3-runs/o3-ram-fix/94ec4e27/l2_home/vivado.log -journal /home/chen/FUN/CISLC-O3-runs/o3-ram-fix/94ec4e27/l2_home/vivado.jou -tclargs /home/chen/FUN/CISLC-O3-runs/o3-ram-fix/94ec4e27/l2_home l2_home 0",
+      "exit": 0,
+      "evidence": "/home/chen/FUN/CISLC-O3-runs/o3-ram-fix/94ec4e27/l2_home",
+      "lut": 24002.0,
+      "ff": 34264.0,
+      "bram_tiles": 61.0,
+      "ramb36": 57.0,
+      "ramb18": 8.0,
+      "wns": 1.709,
+      "tns": 0.0,
+      "whs": -0.143,
+      "hold_failing_endpoints": 2516,
+      "synth_seconds": 178.116,
+      "job": "l2_home"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 build VERILATOR='verilator -j 4' BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 158.7,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-build",
+      "job": "core-build"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-dcache-data BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 0.7,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/run-dcache-data",
+      "job": "run-dcache-data"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-dcache-replay BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 0.6,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/run-dcache-replay",
+      "job": "run-dcache-replay"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l10-priv BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 0.8,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/run-l10-priv",
+      "job": "run-l10-priv"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l10-vm BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 1.8,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/run-l10-vm",
+      "job": "run-l10-vm"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l3-branch-dense BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 0.8,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/run-l3-branch-dense",
+      "job": "run-l3-branch-dense"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l7-predict BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 3.7,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/run-l7-predict",
+      "job": "run-l7-predict"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l8a-mem BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 7.4,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/run-l8a-mem",
+      "job": "run-l8a-mem"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l8b-amo BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 2.0,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/run-l8b-amo",
+      "job": "run-l8b-amo"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l8b-dma BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 1.0,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/run-l8b-dma",
+      "job": "run-l8b-dma"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l8b-misalign BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 1.9,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/run-l8b-misalign",
+      "job": "run-l8b-misalign"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l8b-mmio BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 0.7,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/run-l8b-mmio",
+      "job": "run-l8b-mmio"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l9-fp BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 0.7,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/run-l9-fp",
+      "job": "run-l9-fp"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-smoke BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 0.6,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/run-smoke",
+      "job": "run-smoke"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 build VERILATOR='verilator -j 4' BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 156.9,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-p1-build",
+      "job": "core-p1-build"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-dcache-data BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 0.6,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/p1-run-dcache-data",
+      "job": "p1-run-dcache-data"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-dcache-replay BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 0.6,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/p1-run-dcache-replay",
+      "job": "p1-run-dcache-replay"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l10-priv BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 0.8,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/p1-run-l10-priv",
+      "job": "p1-run-l10-priv"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l10-vm BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 1.7,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/p1-run-l10-vm",
+      "job": "p1-run-l10-vm"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l3-branch-dense BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 0.7,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/p1-run-l3-branch-dense",
+      "job": "p1-run-l3-branch-dense"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l7-predict BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 3.8,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/p1-run-l7-predict",
+      "job": "p1-run-l7-predict"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l8b-amo BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 1.9,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/p1-run-l8b-amo",
+      "job": "p1-run-l8b-amo"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l8b-dma BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 1.1,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/p1-run-l8b-dma",
+      "job": "p1-run-l8b-dma"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l8b-misalign BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 1.8,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/p1-run-l8b-misalign",
+      "job": "p1-run-l8b-misalign"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l8b-mmio BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 0.8,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/p1-run-l8b-mmio",
+      "job": "p1-run-l8b-mmio"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-l9-fp BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 0.8,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/p1-run-l9-fp",
+      "job": "p1-run-l9-fp"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -C sim/o3 run-smoke BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 0.6,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/p1-run-smoke",
+      "job": "p1-run-smoke"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -j4 -C sim/cocotb/fpu_fu TEST_SEED=1 SIM_BUILD=/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4/fpu-build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/fpu-s1/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 13.3,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/fpu-s1",
+      "tests": 2,
+      "failures": 0,
+      "skips": 0,
+      "job": "fpu-s1"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -j4 -C sim/cocotb/fpu_fu TEST_SEED=29 SIM_BUILD=/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4/fpu-build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/fpu-s29/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 1.3,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/fpu-s29",
+      "tests": 2,
+      "failures": 0,
+      "skips": 0,
+      "job": "fpu-s29"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -j4 -C sim/cocotb/fpu_fu TEST_SEED=7 SIM_BUILD=/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4/fpu-build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/fpu-s7/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 1.3,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/fpu-s7",
+      "tests": 2,
+      "failures": 0,
+      "skips": 0,
+      "job": "fpu-s7"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "bash scripts/lint.sh",
+      "exit": 0,
+      "elapsed_seconds": 15.5,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/lint",
+      "job": "lint"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -j4 -C sim/cocotb/tage sim TEST_SEED=1 EXTRA_ARGS='--timing -Wno-fatal --assert' SIM_BUILD=/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4/tage-final-build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/tage-assert-s1/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 3.8,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/tage-assert-s1",
+      "tests": 3,
+      "failures": 0,
+      "skips": 0,
+      "job": "tage-assert-s1"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -j4 -C sim/cocotb/tage sim TEST_SEED=29 EXTRA_ARGS='--timing -Wno-fatal --assert' SIM_BUILD=/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4/tage-final-build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/tage-assert-s29/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 1.8,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/tage-assert-s29",
+      "tests": 3,
+      "failures": 0,
+      "skips": 0,
+      "job": "tage-assert-s29"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4",
+      "command": "make -j4 -C sim/cocotb/tage sim TEST_SEED=7 EXTRA_ARGS='--timing -Wno-fatal --assert' SIM_BUILD=/home/cloud_chen/work/20261008-o3-ram-fix-499a8fb4/tage-final-build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/tage-assert-s7/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 1.8,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/499a8fb4/tage-assert-s7",
+      "tests": 3,
+      "failures": 0,
+      "skips": 0,
+      "job": "tage-assert-s7"
+    },
+    {
+      "sha": "59938310e8f09b270cc7e046d59307f13c522430",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-59938310",
+      "command": "make -C sim/o3 build VERILATOR='verilator -j 4' BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/59938310/baseline-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 130.9,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/59938310/baseline-p1-build",
+      "job": "baseline-p1-build"
+    },
+    {
+      "sha": "59938310e8f09b270cc7e046d59307f13c522430",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-59938310",
+      "command": "make -C sim/o3 run-l8a-mem BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/59938310/baseline-p1-build/build MEM_PIPES=1",
+      "exit": 2,
+      "elapsed_seconds": 3.4,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/59938310/run-l8a-mem",
+      "job": "run-l8a-mem"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -j4 -C sim/cocotb/frontend_sync_ctrl sim SIM_BUILD=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/frontend-sync/build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/frontend-sync/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 2.5,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/frontend-sync",
+      "tests": 3,
+      "failures": 0,
+      "skips": 0,
+      "job": "frontend-sync"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -j4 -C sim/cocotb/icache sim TEST_SEED=1 SIM_BUILD=/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf/icache-final-build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/icache-s1/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 10.8,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/icache-s1",
+      "tests": 4,
+      "failures": 0,
+      "skips": 0,
+      "job": "icache-s1"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -j4 -C sim/cocotb/icache sim TEST_SEED=29 SIM_BUILD=/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf/icache-final-build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/icache-s29/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 1.4,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/icache-s29",
+      "tests": 4,
+      "failures": 0,
+      "skips": 0,
+      "job": "icache-s29"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -j4 -C sim/cocotb/icache sim TEST_SEED=7 SIM_BUILD=/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf/icache-final-build COCOTB_RESULTS_FILE=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/icache-s7/results.xml",
+      "exit": 0,
+      "elapsed_seconds": 1.3,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/icache-s7",
+      "tests": 4,
+      "failures": 0,
+      "skips": 0,
+      "job": "icache-s7"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "bash scripts/lint.sh",
+      "exit": 0,
+      "elapsed_seconds": 14.3,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/lint",
+      "job": "lint"
+    },
+    {
+      "sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+      "host": "chen@localhost",
+      "cwd": "/home/chen/FUN/20261008-o3-ram-fix-499a8fb4",
+      "command": "timeout --signal=TERM --kill-after=30s 5400s vivado -mode batch -source scripts/vivado/mem_preview.tcl -log /home/chen/FUN/CISLC-O3-runs/o3-ram-fix/499a8fb4/core/vivado.log -journal /home/chen/FUN/CISLC-O3-runs/o3-ram-fix/499a8fb4/core/vivado.jou -tclargs /home/chen/FUN/CISLC-O3-runs/o3-ram-fix/499a8fb4/core core 0",
+      "exit": 143,
+      "elapsed_seconds": 917.7,
+      "evidence": "/home/chen/FUN/CISLC-O3-runs/o3-ram-fix/499a8fb4/core",
+      "job": "core",
+      "disposition": "Cancelled after ICache register expansion was diagnosed; superseded by 2e2b0fcf"
+    },
+    {
+      "sha": "94ec4e27717b636a864f0b64cb3e3a881f1597fd",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-94ec4e27",
+      "command": "make -C sim/o3 run-l8a-mem BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/core-p1-build/build MEM_PIPES=1",
+      "exit": 2,
+      "elapsed_seconds": 3.4,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/94ec4e27/p1-run-l8a-mem",
+      "job": "p1-run-l8a-mem",
+      "disposition": "Extra M6 workload on MEM_PIPES=1; same deadlock confirmed on unmodified baseline"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 build VERILATOR='verilator -j 4' BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 207.7,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-build",
+      "job": "core-build"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-dcache-data BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 0.6,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/run-dcache-data",
+      "job": "run-dcache-data"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-dcache-replay BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 0.6,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/run-dcache-replay",
+      "job": "run-dcache-replay"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l10-priv BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 0.7,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/run-l10-priv",
+      "job": "run-l10-priv"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l10-vm BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 1.7,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/run-l10-vm",
+      "job": "run-l10-vm"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l3-branch-dense BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 0.8,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/run-l3-branch-dense",
+      "job": "run-l3-branch-dense"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l7-predict BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 3.9,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/run-l7-predict",
+      "job": "run-l7-predict"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l8a-mem BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 7.5,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/run-l8a-mem",
+      "job": "run-l8a-mem"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l8b-amo BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 2.0,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/run-l8b-amo",
+      "job": "run-l8b-amo"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l8b-dma BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 1.1,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/run-l8b-dma",
+      "job": "run-l8b-dma"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l8b-misalign BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 1.7,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/run-l8b-misalign",
+      "job": "run-l8b-misalign"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l8b-mmio BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 0.8,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/run-l8b-mmio",
+      "job": "run-l8b-mmio"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l9-fp BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 0.7,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/run-l9-fp",
+      "job": "run-l9-fp"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-smoke BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-build/build",
+      "exit": 0,
+      "elapsed_seconds": 0.7,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/run-smoke",
+      "job": "run-smoke"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 build VERILATOR='verilator -j 4' BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 208.0,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-p1-build",
+      "job": "core-p1-build"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-dcache-data BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 0.7,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/p1-run-dcache-data",
+      "job": "p1-run-dcache-data"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-dcache-replay BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 0.6,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/p1-run-dcache-replay",
+      "job": "p1-run-dcache-replay"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l10-priv BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 0.7,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/p1-run-l10-priv",
+      "job": "p1-run-l10-priv"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l10-vm BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 1.6,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/p1-run-l10-vm",
+      "job": "p1-run-l10-vm"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l3-branch-dense BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 0.9,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/p1-run-l3-branch-dense",
+      "job": "p1-run-l3-branch-dense"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l7-predict BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 4.0,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/p1-run-l7-predict",
+      "job": "p1-run-l7-predict"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l8b-amo BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 2.0,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/p1-run-l8b-amo",
+      "job": "p1-run-l8b-amo"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l8b-dma BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 1.0,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/p1-run-l8b-dma",
+      "job": "p1-run-l8b-dma"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l8b-misalign BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 2.0,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/p1-run-l8b-misalign",
+      "job": "p1-run-l8b-misalign"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l8b-mmio BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 0.8,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/p1-run-l8b-mmio",
+      "job": "p1-run-l8b-mmio"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-l9-fp BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 0.8,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/p1-run-l9-fp",
+      "job": "p1-run-l9-fp"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "cloud_chen@47.96.71.231",
+      "cwd": "/home/cloud_chen/work/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "make -C sim/o3 run-smoke BUILD_DIR=/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/core-p1-build/build MEM_PIPES=1",
+      "exit": 0,
+      "elapsed_seconds": 0.6,
+      "evidence": "/home/cloud_chen/evidence/o3-ram-fix/2e2b0fcf/p1-run-smoke",
+      "job": "p1-run-smoke"
+    },
+    {
+      "sha": "2e2b0fcf3e3a4906094f724157d9ef5ce20e666b",
+      "host": "chen@localhost",
+      "cwd": "/home/chen/FUN/20261008-o3-ram-fix-2e2b0fcf",
+      "command": "timeout --signal=TERM --kill-after=30s 5400s vivado -mode batch -source scripts/vivado/mem_preview.tcl -log /home/chen/FUN/CISLC-O3-runs/o3-ram-fix/2e2b0fcf/core/vivado.log -journal /home/chen/FUN/CISLC-O3-runs/o3-ram-fix/2e2b0fcf/core/vivado.jou -tclargs /home/chen/FUN/CISLC-O3-runs/o3-ram-fix/2e2b0fcf/core core 0",
+      "exit": 143,
+      "elapsed_seconds": 796.7,
+      "evidence": "/home/chen/FUN/CISLC-O3-runs/o3-ram-fix/2e2b0fcf/core",
+      "job": "core",
+      "disposition": "Cancelled at explicit user stop request; no complete synthesis/timing result"
+    }
+  ],
+  "scope": "Synthesis estimates and targeted RTL/integration regressions; no place/route, SoC, FPGA, Spike or ACT4 claim.",
+  "previous_functional_sha": "499a8fb45034e8dcdf58cf69a334008c60a04fcf",
+  "archives": {
+    "/tmp/o3-ram-fix/source-2e2b0fcf.tar.gz": "ef44147e50f0995887d26284430cb71a03f000f72b96d3e6b0cac398bd0baa9d",
+    "/tmp/o3-ram-fix/cvfpu.tar.gz": "c765d1fc1e86edc20b8cc83bda945eb48df8b5883dcad6712d27aa81b033a286"
+  },
+  "icache_rtl_sha256": "0c95264ec4270f2d091fe89f5f114af26edfcc9b9eddf84f77d2d2c7da82f4c2",
+  "status": "paused at user request; module timing summary complete; whole-core timing unmeasured"
+}

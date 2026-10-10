@@ -55,41 +55,88 @@ module free_list
     logic [NUM_PHYS_REGS-1:0] allocation_mask_q [NUM_CHECKPOINTS-1:0];
     logic [NUM_PHYS_REGS-1:0] candidate_bitmap_after_alloc;
 
+    // Balanced encoders choose the lowest free index. Each lane excludes
+    // only earlier accepted candidates; sparse requests keep their lane order.
+    // Counting is a separate balanced reduction instead of a serial accumulator.
+    localparam int LEAVES = 1 << $clog2(NUM_PHYS_REGS);
+    localparam int RANK_WIDTH = $clog2(MACHINE_WIDTH+1);
+    typedef struct packed {
+        logic valid;
+        logic [PREG_IDX_WIDTH-1:0] index;
+    } candidate_t;
     always_comb begin
-        logic [NUM_PHYS_REGS-1:0] candidate_bitmap;
-        int unsigned request_count;
-        int unsigned selected_count;
-
-        candidate_bitmap = free_bitmap_q;
-        request_count = 0;
-        selected_count = 0;
-        alloc_preg_o = '{default: '0};
-
+        logic [COUNT_WIDTH-1:0] count_tree [2*LEAVES];
+        candidate_t tree [MACHINE_WIDTH][2*LEAVES];
+        candidate_t winner [MACHINE_WIDTH];
+        logic [RANK_WIDTH-1:0] request_count;
+        count_tree = '{default:'0};
+        tree = '{default:'{default:'0}};
+        winner = '{default:'0};
+        request_count = '0;
+        alloc_preg_o = '{default:'0};
+        for (int preg = int'(HAS_ZERO_REG); preg < NUM_PHYS_REGS; preg++)
+            count_tree[LEAVES+preg] = COUNT_WIDTH'(free_bitmap_q[preg]);
+        for (int node = LEAVES-1; node > 0; node--)
+            count_tree[node] = count_tree[2*node] + count_tree[2*node+1];
         for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
-            int chosen_preg;
-            chosen_preg = -1;
-            if (alloc_req_i[lane]) begin
-                request_count++;
-                for (int preg = int'(HAS_ZERO_REG); preg < NUM_PHYS_REGS; preg++) begin
-                    if ((chosen_preg < 0) && candidate_bitmap[preg]) begin
-                        chosen_preg = preg;
-                    end
-                end
-                if (chosen_preg >= 0) begin
-                    alloc_preg_o[lane] = PREG_IDX_WIDTH'(chosen_preg);
-                    candidate_bitmap[chosen_preg] = 1'b0;
-                    selected_count++;
-                end
+            for (int preg = int'(HAS_ZERO_REG); preg < NUM_PHYS_REGS; preg++) begin
+                tree[lane][LEAVES+preg].valid = free_bitmap_q[preg];
+                tree[lane][LEAVES+preg].index = PREG_IDX_WIDTH'(preg);
+                for (int prior = 0; prior < lane; prior++)
+                    if (winner[prior].valid && winner[prior].index == PREG_IDX_WIDTH'(preg))
+                        tree[lane][LEAVES+preg].valid = 0;
             end
+            for (int node = LEAVES-1; node > 0; node--)
+                tree[lane][node] = tree[lane][2*node].valid ? tree[lane][2*node] : tree[lane][2*node+1];
+            winner[lane] = tree[lane][1];
+            winner[lane].valid &= alloc_req_i[lane];
+            if (winner[lane].valid) alloc_preg_o[lane] = winner[lane].index;
+            request_count += RANK_WIDTH'(alloc_req_i[lane]);
         end
+        for (int preg = 0; preg < NUM_PHYS_REGS; preg++) begin
+            logic taken;
+            taken = 0;
+            for (int lane = 0; lane < MACHINE_WIDTH; lane++)
+                taken |= winner[lane].valid && winner[lane].index == PREG_IDX_WIDTH'(preg);
+            candidate_bitmap_after_alloc[preg] = free_bitmap_q[preg] && !taken;
+        end
+        alloc_available_o = count_tree[1] >= COUNT_WIDTH'(request_count);
+        free_count_o = count_tree[1];
+    end
 
-        candidate_bitmap_after_alloc = candidate_bitmap;
-        alloc_available_o = (selected_count == request_count);
+    // Shared one-hot destination decode. Checkpoint rows reuse these wires
+    // instead of repeating the preg equality comparison for every branch tag.
+    logic [NUM_PHYS_REGS-1:0] alloc_dest_mask [MACHINE_WIDTH];
+    always_comb begin
+        for (int lane=0;lane<MACHINE_WIDTH;lane++)
+            for (int preg=0;preg<NUM_PHYS_REGS;preg++)
+                alloc_dest_mask[lane][preg]=alloc_req_i[lane]
+                    && alloc_preg_o[lane]==PREG_IDX_WIDTH'(preg);
+    end
 
-        free_count_o = '0;
-        for (int preg = int'(HAS_ZERO_REG); preg < NUM_PHYS_REGS; preg++) begin
-            if (free_bitmap_q[preg]) begin
-                free_count_o = free_count_o + COUNT_WIDTH'(1);
+    // One state update per checkpoint bit. Creation clears the old row before
+    // dependent allocations; correct/mispredict resolution clears the row last.
+    for (genvar cp=0;cp<NUM_CHECKPOINTS;cp++) begin : g_checkpoint
+        logic created;
+        always_comb begin
+            created=0;
+            for (int lane=0;lane<MACHINE_WIDTH;lane++)
+                created |= checkpoint_create_i[lane] && checkpoint_create_tag_i[lane]==branch_tag_t'(cp);
+        end
+        for (genvar preg=0;preg<NUM_PHYS_REGS;preg++) begin : g_preg
+            logic allocated;
+            always_comb begin
+                allocated=0;
+                for (int lane=0;lane<MACHINE_WIDTH;lane++)
+                    allocated |= alloc_dest_mask[lane][preg] && alloc_branch_mask_i[lane][cp];
+            end
+            always_ff @(posedge clk) begin
+                if (rst || flush_all_i || (resolution_valid_i && resolution_tag_i==branch_tag_t'(cp)))
+                    allocation_mask_q[cp][preg]<=0;
+                else if (!(resolution_valid_i && resolution_mispredict_i) && alloc_fire_i) begin
+                    if (allocated) allocation_mask_q[cp][preg]<=1;
+                    else if (created) allocation_mask_q[cp][preg]<=0;
+                end
             end
         end
     end
@@ -100,69 +147,37 @@ module free_list
             for (int preg = NUM_ARCH_REGS; preg < NUM_PHYS_REGS; preg++) begin
                 free_bitmap_q[preg] <= 1'b1;
             end
-            allocation_mask_q <= '{default: '0};
             committed_free_q <= {NUM_PHYS_REGS{1'b1}} << NUM_ARCH_REGS;
         end else begin
             logic [NUM_PHYS_REGS-1:0] free_next;
-            logic [NUM_PHYS_REGS-1:0] allocation_next [NUM_CHECKPOINTS-1:0];
 
-            logic [NUM_PHYS_REGS-1:0] committed_next;
+            logic [NUM_PHYS_REGS-1:0] committed_next, released_bitmap;
             committed_next=committed_free_q;
+            released_bitmap='0;
+            // Retain the original packed-bit commit updates verbatim. These
+            // inputs have shared INT/FP preg width, including out-of-range
+            // encodings; the rewrite must not change their legacy behavior.
             for (int lane=0;lane<RELEASE_WIDTH;lane++) if (commit_write_i[lane]) begin
                 committed_next[release_preg_i[lane]]=1;
                 committed_next[commit_new_preg_i[lane]]=0;
             end
+            for (int preg=0;preg<NUM_PHYS_REGS;preg++)
+                for (int lane=0;lane<RELEASE_WIDTH;lane++)
+                    released_bitmap[preg] |= release_valid_i[lane]
+                        && (!HAS_ZERO_REG || release_preg_i[lane]!='0)
+                        && (release_preg_i[lane]<PREG_IDX_WIDTH'(NUM_PHYS_REGS))
+                        && release_preg_i[lane]==PREG_IDX_WIDTH'(preg);
             if (HAS_ZERO_REG) committed_next[0]=0;
             committed_free_q<=committed_next;
             free_next = free_bitmap_q;
-            allocation_next = allocation_mask_q;
-
-            for (int port = 0; port < RELEASE_WIDTH; port++) begin
-                if (release_valid_i[port]
-                 && (!HAS_ZERO_REG || release_preg_i[port] != '0)
-                 && (release_preg_i[port] < PREG_IDX_WIDTH'(NUM_PHYS_REGS))) begin
-                    free_next[release_preg_i[port]] = 1'b1;
-                end
-            end
-
-            if (resolution_valid_i && resolution_mispredict_i) begin
+            if (resolution_valid_i && resolution_mispredict_i)
                 free_next |= allocation_mask_q[resolution_tag_i];
-            end else if (alloc_fire_i) begin
+            else if (alloc_fire_i)
                 free_next = candidate_bitmap_after_alloc;
+            free_next |= released_bitmap;
 
-                // 候选位图从拍初状态产生，因此需要重新合入本拍commit释放。
-                for (int port = 0; port < RELEASE_WIDTH; port++) begin
-                    if (release_valid_i[port]
-                     && (!HAS_ZERO_REG || release_preg_i[port] != '0)
-                     && (release_preg_i[port] < PREG_IDX_WIDTH'(NUM_PHYS_REGS))) begin
-                        free_next[release_preg_i[port]] = 1'b1;
-                    end
-                end
-
-                for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
-                    if (checkpoint_create_i[lane]) begin
-                        allocation_next[checkpoint_create_tag_i[lane]] = '0;
-                    end
-                end
-
-                for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
-                    if (alloc_req_i[lane]) begin
-                        for (int cp = 0; cp < NUM_CHECKPOINTS; cp++) begin
-                            if (alloc_branch_mask_i[lane][cp]) begin
-                                allocation_next[cp][alloc_preg_o[lane]] = 1'b1;
-                            end
-                        end
-                    end
-                end
-            end
-
-            if (resolution_valid_i) begin
-                allocation_next[resolution_tag_i] = '0;
-            end
-
-            if (flush_all_i) begin free_next=committed_next; allocation_next='{default:'0}; end
+            if (flush_all_i) free_next=committed_next;
             free_bitmap_q <= free_next;
-            allocation_mask_q <= allocation_next;
         end
     end
 

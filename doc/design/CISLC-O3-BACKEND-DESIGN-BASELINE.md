@@ -923,6 +923,8 @@ litmus 与完整一致性测试按 2026-10-06 策略推迟到 FPGA。按 B47，�
 
 ## 41. B52：L11 SoC 改用 LiteX，核与 SoC 之间只用 AXI（2026-10-08，用户确认）
 
+> 2026-10-09 用户修订：第一版完整 SoC 包含 LiteSDCard 与一致性 DMA，先写代码后补测试。Breeze 组件复制/手工翻译到 O3，不 fork、不加子模块、不在构建时跨仓库引用；具体接口与适配见 L11a spec 第 15 节。
+
 - **取代**：B28 的“不采用 LiteX、Vivado IP + 自写 SoC”；B44 的 SD 控制器选型前提；计划中 L11 的“Vivado MIG”。B28/B29 的平台范围、CLINT/PLIC 语义复用、定时器与 Sstc 路线不变。
 - **理由**：B28 拒绝 LiteX 的顾虑是 Wishbone 桥的性能损失。Breeze 已在同一块 KCU105 上实现 SOC-axi 接法（`/home/chen/leisure/flow` `docs/cluster-soc-rtl-spec.md`、`fpga/kcu105/target.py`）：核内存口 AXI4 经 SoC 侧路由器直连 LiteDRAM 的 AXI 端口，可缓存通路不经过 Wishbone；只有 boot ROM/SRAM 与 AXI-Lite MMIO 经 LiteX 自带桥进入主总线，均为低带宽或阻塞单字访问。采用 LiteX 可复用 Breeze 的 KCU105 target、AXI 路由（R/B 按 AR/AW 顺序）、BIOS 冒烟、LiteDRAM 仿真模型，以及 LiteX 的 SD 加载、设备树生成与 Linux 主线驱动。
 - **边界**：O3 核对 SoC 只暴露 AXI4 内存口与 AXI4-Lite MMIO 口（L8a/L8b 已有）。不修改核内 L1D/L2/后端行为来适配 SoC；SoC 侧不得吞响应或改顺序（同 Breeze C1/C2）。
