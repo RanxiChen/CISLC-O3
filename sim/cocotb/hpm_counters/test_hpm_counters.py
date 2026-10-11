@@ -202,9 +202,9 @@ async def varying_increment_accumulates(d):
 
 @cocotb.test()
 async def disabled_and_unknown_events_do_not_count(d):
-    """Event 0, FE numbering holes (0x16..0x1F), beyond-last numbers, unknown sources."""
+    """Event 0, remaining FE holes (0x1C..0x1F), beyond-last numbers, unknown sources."""
     tb = await setup(d)
-    sel = [0x0000, 0x0100, 0x0116, 0x011F, 0x0100 | tb.fenum, 0x0200 | tb.benum, 0x0301, 0x0001]
+    sel = [0x0000, 0x0100, 0x011C, 0x011F, 0x0100 | tb.fenum, 0x0200 | tb.benum, 0x0301, 0x0001]
     for i, s in enumerate(sel):
         await tb.access(hpme(3 + i), RW, s)
     await clear_counters(tb)

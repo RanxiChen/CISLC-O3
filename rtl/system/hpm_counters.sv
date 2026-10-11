@@ -56,7 +56,7 @@ module hpm_counters
         increment = '0;
         case (selector[15:8])
             8'h01: if ((int'(selector[7:0]) >= int'(PE_UBTB_LOOKUP)
-                       && int'(selector[7:0]) <= int'(PE_FTQ_FULL_CYCLE))
+                       && int'(selector[7:0]) <= int'(PE_F0_REMAINDER_BEAT))
                       || (int'(selector[7:0]) >= int'(PE_TAGE_COND_PRED)
                           && int'(selector[7:0]) < int'(PE_NUM)))
                 increment = 64'(fe_perf_i[selector[7:0]]);
