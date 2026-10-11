@@ -79,6 +79,7 @@ rtl/frontend/tage.sv
 rtl/frontend/bpu_slow_check.sv
 rtl/frontend/loop_predictor.sv
 rtl/frontend/bpu.sv
+rtl/frontend/fetch_buffer_banked.sv
 rtl/frontend/fetch_buffer.sv
 rtl/frontend/fetch_return_queue.sv
 rtl/frontend/icache_mshr.sv

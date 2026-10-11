@@ -69,7 +69,7 @@ module ifu_bandwidth_tb_top import o3_types_pkg::*; (
         .in_edge_pend_i(f1_edge_pend),.in_ready_o(f1_ready),.in_i(f1_data),.in_brief_i(f1_brief),
         .out_o(result),.out_valid_o(f1_mask_o),.out_ready_i(buffer_ready),.predecode_o(correction),
         .trunc_o(),.trunc_slot_o(),.kill_i(kill),.perf_o());
-    fetch_buffer #(.CFG(o3_cfg_pkg::O3_CFG.fe),.PREFIX_ENQUEUE(1'b1)) u_buffer(
+    fetch_buffer #(.CFG(o3_cfg_pkg::O3_CFG.fe),.PREFIX_ENQUEUE(1'b1),.ORDERED_FIFO(1'b1)) u_buffer(
         .clk_i(clk_i),.rst_i(rst_i),.flush_i(clear_i),.enq_entry_i(result),.enq_valid_i(f1_mask_o),
         .enq_ready_o(buffer_ready),.deq_entry_o(delivered),.deq_valid_o(buffer_valid),.deq_ready_i(out_ready_i),
         .icache_req_allowed_o(),.kill_i(kill),.ftq_head_i(head_id_i),.perf_o());

@@ -1,0 +1,4 @@
+override SIM_BUILD := $(CURDIR)/sim_build/fifo
+COMPILE_ARGS += -GPREFIX_ENQUEUE=1 -GORDERED_FIFO=1
+override COCOTB_TEST_MODULES := test_fifo_payload
+include Makefile.payload

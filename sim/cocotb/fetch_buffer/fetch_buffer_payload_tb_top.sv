@@ -2,6 +2,7 @@ module fetch_buffer_payload_tb_top
     import o3_cfg_pkg::*;
     import o3_types_pkg::*;
 #(parameter bit PREFIX_ENQUEUE=1'b0,
+  parameter bit ORDERED_FIFO=1'b0,
   localparam int EW = O3_CFG.fe.fetch.f1_width,
   localparam int DW = O3_CFG.fe.fetch.deliver_width,
   localparam int BITS = $bits(fetch_entry_t)) (
@@ -37,7 +38,7 @@ module fetch_buffer_payload_tb_top
         assign enq[lane] = fetch_entry_t'(enq_payload_i[lane]);
     for (genvar lane = 0; lane < DW; lane++)
         assign deq_payload_o[lane] = deq[lane];
-    fetch_buffer #(.CFG(O3_CFG.fe),.PREFIX_ENQUEUE(PREFIX_ENQUEUE)) dut (
+    fetch_buffer #(.CFG(O3_CFG.fe),.PREFIX_ENQUEUE(PREFIX_ENQUEUE),.ORDERED_FIFO(ORDERED_FIFO)) dut (
         .clk_i, .rst_i, .flush_i, .enq_entry_i(enq), .enq_valid_i,
         .enq_ready_o, .deq_entry_o(deq), .deq_valid_o, .deq_ready_i,
         .icache_req_allowed_o(), .kill_i(kill), .ftq_head_i(head_id_i), .perf_o()

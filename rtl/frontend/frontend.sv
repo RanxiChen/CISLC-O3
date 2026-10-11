@@ -504,7 +504,7 @@ module frontend
         .perf_o      (perf_f1)
     );
 
-    fetch_buffer #(.CFG(CFG),.PREFIX_ENQUEUE(1'b1)) u_fetch_buffer (
+    fetch_buffer #(.CFG(CFG),.PREFIX_ENQUEUE(1'b1),.ORDERED_FIFO(1'b1)) u_fetch_buffer (
         .clk_i               (clk_i),
         .rst_i               (rst_i),
         // Redirect kill selectively retains entries at or before its boundary.
