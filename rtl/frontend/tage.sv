@@ -497,7 +497,9 @@ module tage_update_slice
                 else assign useful_provider[k] = useful_before[k];
             end
             assign eligible[t] = (!provider_is_table || train_provider < META_PROVIDER_BITS'(t))
-                && (!rows_i[t].valid || row_matches[t] || claimed_before || useful_provider == '0);
+                // Updates require provider==t; eligibility requires provider<t
+                // or no provider. Therefore this uses the pre-update value.
+                && (!rows_i[t].valid || row_matches[t] || claimed_before || useful_before == '0);
             if (t == 0) assign allocate[t] = active && wrong && eligible[t];
             else assign allocate[t] = active && wrong && eligible[t] && !(|eligible[t-1:0]);
             if (t == 0) assign decay[t] = active && wrong && !(|eligible) && !provider_is_table;

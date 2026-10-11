@@ -487,7 +487,7 @@ module frontend
         .boundary_wait_o(alignment_wait),.kill_i(fe_kill),.ftq_head_i(ftq_head_id)
     );
 
-    ifu_f1 #(.CFG(CFG)) u_ifu_f1 (
+    ifu_f1 #(.CFG(CFG),.PREFIX_INPUT(1'b1)) u_ifu_f1 (
         .clk_i       (clk_i),
         .rst_i       (rst_i),
         .in_valid_i  (f1_input_valid),

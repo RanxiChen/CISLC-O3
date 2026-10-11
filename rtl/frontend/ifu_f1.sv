@@ -10,6 +10,7 @@ module ifu_f1
     import o3_types_pkg::*;
 #(
     parameter o3_cfg_pkg::frontend_cfg_t CFG,
+    parameter bit PREFIX_INPUT=1'b0,
     localparam int F0_SLOTS=CFG.fetch.f0_slots,
     localparam int F1_W=CFG.fetch.f1_width
 ) (
@@ -114,7 +115,9 @@ module ifu_f1
             actual_target_valid=0; actual_target='0;
             fix_valid=0; fix_taken=0; fix_hist=0; fix_target='0; fix_ras=RAS_NONE;
             lane_data[lane]='0; lane_req[lane]='0; lane_stop[lane]=0;
-            if (!rst_i && !kill_i.valid && in_beat_valid_i && in_valid_i[lane]) begin
+            // Prefix payload does not depend on late beat-valid/kill. Only
+            // publication and state updates use those controls.
+            if (PREFIX_INPUT || (!rst_i && !kill_i.valid && in_beat_valid_i && in_valid_i[lane])) begin
                 decoded = decoded_at[lane];
                 start_pos=in_i[lane].is_edge ? 4'd0:4'(in_i[lane].slot)+4'd1;
                 end_pos=start_pos+4'(in_i[lane].inst_len==4);
@@ -205,8 +208,9 @@ module ifu_f1
             end
         end
         always_comb begin
-            lane_rank[lane]='0;
-            for (int k=0; k<lane; k++) lane_rank[lane] += $clog2(F0_SLOTS+1)'(in_valid_i[k]);
+            lane_rank[lane]=PREFIX_INPUT ? $clog2(F0_SLOTS+1)'(lane):'0;
+            if(!PREFIX_INPUT)
+                for (int k=0; k<lane; k++) lane_rank[lane] += $clog2(F0_SLOTS+1)'(in_valid_i[k]);
         end
         if (lane == 0) assign emitted[lane] = in_valid_i[lane] && !rst_i && !kill_i.valid && in_beat_valid_i;
         else assign emitted[lane] = in_valid_i[lane] && !(|lane_stop[lane-1:0])
@@ -224,9 +228,14 @@ module ifu_f1
         else assign last_lane = !(|out_valid_o[F1_W-1:out_lane+1]);
         always_comb begin
             out_o[out_lane]='0;
-            for (int lane=0; lane<F0_SLOTS; lane++) begin
-                out_o[out_lane] |= lane_data[lane] & {$bits(fetch_entry_t){picks[lane]}};
-            end
+            if(PREFIX_INPUT) begin
+                // Truncation controls validity, never the wide data selection.
+                out_o[out_lane]=lane_data[out_lane];
+                out_o[out_lane].valid=out_valid_o[out_lane];
+            end else
+                for (int lane=0; lane<F0_SLOTS; lane++) begin
+                    out_o[out_lane] |= lane_data[lane] & {$bits(fetch_entry_t){picks[lane]}};
+                end
             out_o[out_lane].ftq_last = out_valid_o[out_lane] && last_lane && (in_last_i || pd_req.valid);
         end
     end
@@ -248,10 +257,15 @@ module ifu_f1
     // N+1 requests are consumed once, independently of the next block's
     // backpressure. A killed block cannot handshake or create a request.
     always_ff @(posedge clk_i) begin
+        if(!rst_i && in_beat_valid_i && PREFIX_INPUT)
+            for(int lane=1;lane<F0_SLOTS;lane++)
+                assert(!in_valid_i[lane] || in_valid_i[lane-1])
+                    else $fatal(1,"F0 beat must be a prefix");
         if (rst_i) pd_req_q <= '0;
         else begin
             pd_req_q <= '0;
             if (in_ready_o && in_beat_valid_i && pd_req.valid) pd_req_q <= pd_req;
         end
     end
+    initial assert(!PREFIX_INPUT || F1_W==F0_SLOTS);
 endmodule

@@ -1,0 +1,3 @@
+override SIM_BUILD := $(CURDIR)/sim_build/wide
+COMPILE_ARGS += -GTEST_WIDTH=8 -GPREFIX_INPUT=1
+include Makefile

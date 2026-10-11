@@ -64,7 +64,7 @@ module ifu_bandwidth_tb_top import o3_types_pkg::*; (
         .out_beat_valid_o(f1_beat),.out_ready_i(f1_ready),.out_valid_o(f1_mask),.out_o(f1_data),.out_brief_o(f1_brief),
         .out_last_o(f1_last),.out_edge_pend_o(f1_edge_pend),.boundary_wait_o(boundary_wait_o),
         .kill_i(kill),.ftq_head_i(head_id_i));
-    ifu_f1 #(.CFG(o3_cfg_pkg::O3_CFG.fe)) u_f1(
+    ifu_f1 #(.CFG(o3_cfg_pkg::O3_CFG.fe),.PREFIX_INPUT(1'b1)) u_f1(
         .clk_i(clk_i),.rst_i(rst_i),.in_valid_i(f1_mask),.in_beat_valid_i(f1_beat),.in_last_i(f1_last),
         .in_edge_pend_i(f1_edge_pend),.in_ready_o(f1_ready),.in_i(f1_data),.in_brief_i(f1_brief),
         .out_o(result),.out_valid_o(f1_mask_o),.out_ready_i(buffer_ready),.predecode_o(correction),
