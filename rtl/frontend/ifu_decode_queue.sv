@@ -3,7 +3,8 @@
  * supplies F0 ready, while pop/push can sustain one beat/cycle. Empty beats
  * retain their brief/last/edge-pending metadata for c-prime correction.
  * Kill blocks both handshakes, masks surviving instructions, and compacts
- * surviving beats; clear_i discards all state for frontend synchronization.
+ * surviving order; payload stays in two physical rows. clear_i invalidates
+ * both rows for frontend synchronization.
  */
 module ifu_decode_queue import o3_types_pkg::*; #(
     parameter o3_cfg_pkg::frontend_cfg_t CFG,
@@ -29,7 +30,17 @@ module ifu_decode_queue import o3_types_pkg::*; #(
         ftq_pred_brief_t brief;
         logic last,edge_pend;
     } beat_t;
-    beat_t beat_q[2],beat_d[2],input_beat,survivor[2],output_beat;
+    typedef struct packed {
+        logic [F0_SLOTS-1:0][$bits(f0_inst_t)-1:0] lanes;
+        ftq_pred_brief_t brief;
+    } payload_t;
+    // One local enqueue enable per stationary wide row. Pop and kill never
+    // copy, clear, or select a new value for this payload storage.
+    payload_t payload_q[2],input_payload;
+    logic [F0_SLOTS-1:0] mask_q[2];
+    logic last_q[2],edge_pend_q[2];
+    beat_t output_beat;
+    logic head_q,head_d,tail;
     logic [1:0] count_q,count_d;
     logic [1:0] keep;
     logic push,pop;
@@ -52,55 +63,70 @@ module ifu_decode_queue import o3_types_pkg::*; #(
     assign out_beat_valid_o=!rst_i && !clear_i && !kill_i.valid && count_q!=0;
     assign push=in_beat_valid_i && in_ready_o;
     assign pop=out_beat_valid_o && out_ready_i;
-    assign output_beat=count_q!=0 ? beat_q[0]:beat_t'('0);
+    assign tail=head_q ^ count_q[0];
+    always_comb begin
+        output_beat='0;
+        if(count_q!=0) begin
+            output_beat.mask=mask_q[head_q];
+            output_beat.lanes=payload_q[head_q].lanes;
+            output_beat.brief=payload_q[head_q].brief;
+            output_beat.last=last_q[head_q];
+            output_beat.edge_pend=edge_pend_q[head_q];
+        end
+    end
     assign out_valid_o=output_beat.mask;
     assign out_brief_o=output_beat.brief;
     assign out_last_o=output_beat.last;
     assign out_edge_pend_o=output_beat.edge_pend;
     for(genvar lane=0;lane<F0_SLOTS;lane++) begin : g_ports
-        assign input_beat.lanes[lane]=in_i[lane];
+        assign input_payload.lanes[lane]=in_i[lane];
         assign out_o[lane]=f0_inst_t'(output_beat.lanes[lane]);
     end
-    assign input_beat.mask=in_valid_i;
-    assign input_beat.brief=in_brief_i;
-    assign input_beat.last=in_last_i;
-    assign input_beat.edge_pend=in_edge_pend_i;
-    for(genvar row=0;row<2;row++) begin : g_boundary
+    assign input_payload.brief=in_brief_i;
+    for(genvar row=0;row<2;row++) begin : g_storage
         logic [F0_SLOTS-1:0] live_mask;
-        logic pending_killed;
+        logic occupied,pending_killed,write_row;
+        assign occupied=count_q!=0 && (count_q==2 || head_q==1'(row));
+        assign write_row=push && tail==1'(row);
         for(genvar lane=0;lane<F0_SLOTS;lane++) begin : g_lane
             f0_inst_t inst;
-            assign inst=f0_inst_t'(beat_q[row].lanes[lane]);
-            assign live_mask[lane]=beat_q[row].mask[lane]
+            assign inst=f0_inst_t'(payload_q[row].lanes[lane]);
+            assign live_mask[lane]=mask_q[row][lane]
                 && !fe_killed_by(kill_i,inst.ftq_id,inst.slot,ftq_head_i);
         end
-        assign pending_killed=fe_killed_by(kill_i,beat_q[row].brief.ftq_id,
+        assign pending_killed=fe_killed_by(kill_i,payload_q[row].brief.ftq_id,
             fetch_slot_t'(REGION_SLOTS-1),ftq_head_i);
-        assign keep[row]=row<int'(count_q) && ((|live_mask) || (beat_q[row].mask=='0 && !pending_killed));
-        always_comb begin
-            survivor[row]=beat_q[row];
-            survivor[row].mask=live_mask;
-            survivor[row].last=beat_q[row].last || live_mask!=beat_q[row].mask;
-            survivor[row].edge_pend=beat_q[row].edge_pend && !pending_killed;
+        assign keep[row]=occupied && ((|live_mask) || (mask_q[row]=='0 && !pending_killed));
+        always_ff @(posedge clk_i) begin : payload_write
+            if(write_row) payload_q[row]<=input_payload;
+        end
+        always_ff @(posedge clk_i) begin : metadata_write
+            if(rst_i || clear_i) begin
+                mask_q[row]<='0;last_q[row]<=0;edge_pend_q[row]<=0;
+            end else if(kill_i.valid && occupied) begin
+                mask_q[row]<=live_mask;
+                last_q[row]<=last_q[row] || live_mask!=mask_q[row];
+                edge_pend_q[row]<=edge_pend_q[row] && !pending_killed;
+            end else if(write_row) begin
+                mask_q[row]<=in_valid_i;
+                last_q[row]<=in_last_i;
+                edge_pend_q[row]<=in_edge_pend_i;
+            end
         end
     end
     always_comb begin
-        beat_d=beat_q;count_d=count_q;
-        if(pop) begin beat_d[0]=beat_q[1];beat_d[1]='0;count_d=count_q-1'b1;end
-        if(push) begin
-            if(count_d==0) beat_d[0]=input_beat;
-            else beat_d[1]=input_beat;
-            count_d=count_d+1'b1;
-        end
+        count_d=count_q+2'(push)-2'(pop);
+        head_d=pop ? ~head_q:head_q;
         if(kill_i.valid) begin
-            beat_d[0]=keep[0] ? survivor[0]:keep[1] ? survivor[1]:beat_t'('0);
-            beat_d[1]=keep[0] && keep[1] ? survivor[1]:beat_t'('0);
             count_d=2'(keep[0])+2'(keep[1]);
+            // Arbitrary identities can kill the older physical row while the
+            // second survives. Compact only the one-bit order, not payload.
+            if(count_q==2 && !keep[head_q] && keep[~head_q]) head_d=~head_q;
         end
-        if(rst_i || clear_i) begin beat_d='{default:'0};count_d=0;end
+        if(rst_i || clear_i) begin count_d=0;head_d=0;end
     end
     always_ff @(posedge clk_i) begin
-        beat_q<=beat_d;count_q<=count_d;
+        head_q<=head_d;count_q<=count_d;
         if(!rst_i) assert(count_q<=2) else $fatal(1,"IFU beat queue overflow");
     end
 endmodule
