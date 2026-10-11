@@ -90,3 +90,52 @@ async def age_cursor_survives_empty_retirement_and_wrap(d):
   for _ in range(8):await edge(d)
  await Timer(1,unit='ns')
  assert int(d.occupancy_o.value)==0 and int(d.age_head_idx_o.value)==3
+
+
+@cocotb.test()
+async def squashed_row_reuse_discards_stale_status_and_old_identity(d):
+ await init(d);d.train_free_i.value=0
+ for n in range(35):
+  old_pc=0x80020000+32*n;new_pc=old_pc+16
+  d.alloc_valid_i.value=1;d.alloc_pc_i.value=old_pc
+  await Timer(1,unit='ns');old=int(d.alloc_id_o.value)
+  await edge(d);d.alloc_valid_i.value=0
+  # Seed slow, resolved, committed-taken and misprediction state in a row
+  # whose region remains open. Resolve-to-commit forwarding is intentional.
+  d.slow_valid_i.value=1;d.slow_id_i.value=old;d.slow_pc_i.value=old_pc
+  d.resolve_valid_i.value=1;d.resolve_id_i.value=old;d.resolve_slot_i.value=6
+  d.resolve_taken_i.value=1;d.resolve_wrong_i.value=1
+  d.commit_valid_i.value=1;d.commit_ids_i.value=old;d.commit_slots_i.value=6
+  d.commit_last_i.value=0
+  await edge(d)
+  d.slow_valid_i.value=0;d.resolve_valid_i.value=0;d.commit_valid_i.value=0
+  await Timer(1,unit='ns');assert int(d.train_mask_o.value)==1<<6
+  d.kill_valid_i.value=1;d.kill_id_i.value=old;d.kill_self_i.value=1;d.kill_slot_i.value=0
+  await edge(d);d.kill_valid_i.value=0;d.kill_self_i.value=0
+  await Timer(1,unit='ns')
+  assert int(d.occupancy_o.value)==0 and not int(d.train_mask_o.value) and not int(d.train_cfi_valid_o.value)
+  # Allocation reuses exactly the squashed physical row with a new generation.
+  d.alloc_valid_i.value=1;d.alloc_pc_i.value=new_pc
+  await Timer(1,unit='ns');fresh=int(d.alloc_id_o.value)
+  assert fresh!=old and (fresh&31)==(old&31)
+  await edge(d);d.alloc_valid_i.value=0
+  # Late old callbacks must not set slow_done or branch/training state.
+  d.slow_valid_i.value=1;d.resolve_valid_i.value=1
+  d.commit_valid_i.value=1;d.commit_ids_i.value=old;d.commit_last_i.value=1
+  await edge(d)
+  d.slow_valid_i.value=0;d.resolve_valid_i.value=0;d.commit_valid_i.value=0
+  await Timer(1,unit='ns')
+  assert int(d.occupancy_o.value)==1 and not int(d.pf_valid_o.value)
+  assert not int(d.train_valid_o.value) and not int(d.train_mask_o.value) and not int(d.train_cfi_valid_o.value)
+  d.commit_valid_i.value=1;d.commit_ids_i.value=fresh;d.commit_slots_i.value=0
+  await edge(d);d.commit_valid_i.value=0;d.commit_last_i.value=0
+  d.train_free_i.value=4;d.train_ready_i.value=0
+  for _ in range(8):
+   await Timer(1,unit='ns')
+   if int(d.train_valid_o.value):break
+   await edge(d)
+  else:raise AssertionError('fresh region did not reach training')
+  assert int(d.train_pc_o.value)==new_pc and not int(d.train_mask_o.value) and not int(d.train_cfi_valid_o.value)
+  d.train_ready_i.value=1;await edge(d);d.train_free_i.value=0
+  for _ in range(3):await edge(d)
+  assert int(d.occupancy_o.value)==0 and int(d.age_head_idx_o.value)==(n+1)%32

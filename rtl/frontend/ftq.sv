@@ -245,7 +245,7 @@ module ftq
     (* ram_style = "distributed" *) logic [$bits(fix_payload_t)-1:0] fix_pred_mem [DEPTH];
     (* ram_style = "distributed" *) vaddr_t fix_next_mem [DEPTH];
     (* ram_style = "distributed" *) logic [$bits(res_payload_t)-1:0] res_mem [DEPTH];
-    row_state_t state_q [DEPTH];
+    row_state_t state_q [DEPTH], head_state;
     logic [FTQ_GEN_W-1:0] gen_q [DEPTH];
     logic [DEPTH-1:0] live_q;
 
@@ -334,7 +334,14 @@ module ftq
         end
     end
     assign boundary_cut = !rst_i && kill_i.valid && !kill_i.all &&
-        !kill_i.kill_self && kill_owner_live && kill_age < keep_count;
+        !kill_i.kill_self && kill_owner_live;
+    // A surviving live boundary sets keep_count >= kill_age+1. Avoid
+    // feeding the late commit-frontier/max chain back into per-row cuts.
+    `ifndef SYNTHESIS
+    always_ff @(posedge clk_i)
+        if(boundary_cut) assert(kill_age < keep_count)
+            else $fatal(1, "live retained FTQ boundary must precede keep_count");
+    `endif
     for (genvar slot = 0; slot < REGION_SLOTS; slot++) begin : g_cut_mask
         assign cut_mask[slot] = slot <= int'(kill_i.slot);
     end
@@ -424,14 +431,12 @@ module ftq
     // ------------------------------------------------------------
     for (genvar row = 0; row < DEPTH; row++) begin : g_row_state
         localparam idx_t ROW = idx_t'(row);
-        count_t age_q, age_work;
-        logic release_row, drop_row, alloc_row, slow_row, winner_row, resolve_row, cut_row;
+        count_t age_q;
+        logic release_row, alloc_row, slow_row, winner_row, resolve_row, cut_row;
         row_state_t next_state;
         assign age_q = ring_distance(ROW, head_q);
-        assign age_work = ring_distance(ROW, work_head);
         assign live_q[row] = age_q < count_q;
         assign release_row = train_fire && head_q == ROW;
-        assign drop_row = kill_i.valid && age_work < work_count && age_work >= keep_count;
         assign alloc_row = alloc_fire && alloc_q == ROW;
         assign slow_row = slow_write && slow_i.ftq_id.idx == ROW;
         assign winner_row = winner_write && winner_i.ftq_id.idx == ROW;
@@ -486,7 +491,10 @@ module ftq
                     next_state.pred_slot = resolve_i.slot;
                 end
             end
-            if (release_row || drop_row) next_state = '0;
+            // Squash invalidates the suffix through count_d. Dead rows are
+            // never read as live and allocation initializes their full state;
+            // global kill therefore does not drive every row's data reset.
+            if (release_row) next_state = '0;
             if (alloc_row) begin
                 next_state = '0;
                 next_state.pred_valid = alloc_pred_i.cfi_valid;
@@ -628,22 +636,25 @@ module ftq
     assign snap_train_rd_id_o = live_q[mem_idx_t'(ho_sel)] ? ftq_id_t'{gen:gen_q[mem_idx_t'(ho_sel)], idx:ho_sel} : ftq_id_t'(0);
     assign bpu_train_valid_o = !rst_i && ho_busy_q;
     assign train_fire = bpu_train_valid_o && bpu_train_ready_i;
+    // Retain zero metadata on the public empty-head training tap, while
+    // allowing dead physical rows to retain unobservable status bits.
+    assign head_state = count_q != 0 ? state_q[mem_idx_t'(head_q)] : row_state_t'(0);
     always_comb begin : training_read_merge
         bpu_train_o = '0;
         bpu_train_o.region_base = head_alloc.pred.region_base;
         bpu_train_o.folds = snap_train_i.folds;
         bpu_train_o.loop_train = head_slow.loop_meta.train;
         bpu_train_o.tage_meta = head_slow.tage_meta;
-        bpu_train_o.br_commit_mask = state_q[mem_idx_t'(head_q)].committed_br;
-        bpu_train_o.br_taken_mask = state_q[mem_idx_t'(head_q)].committed_taken;
-        bpu_train_o.cfi_valid = state_q[mem_idx_t'(head_q)].actual_valid;
+        bpu_train_o.br_commit_mask = head_state.committed_br;
+        bpu_train_o.br_taken_mask = head_state.committed_taken;
+        bpu_train_o.cfi_valid = head_state.actual_valid;
         bpu_train_o.cfi_slot = head_res.slot;
         bpu_train_o.cfi_type = head_res.cfi_type;
         bpu_train_o.ras_action = head_res.ras_action;
         bpu_train_o.cfi_target = head_res.target;
         bpu_train_o.cfi_is_rvc = head_res.is_rvc;
         bpu_train_o.is_edge = head_res.is_edge;
-        bpu_train_o.mispredicted = |state_q[mem_idx_t'(head_q)].mispred_mask;
+        bpu_train_o.mispredicted = |head_state.mispred_mask;
     end
     always_ff @(posedge clk_i) begin : training_handoff_register
         if (rst_i) begin
