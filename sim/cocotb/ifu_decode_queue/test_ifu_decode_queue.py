@@ -90,7 +90,7 @@ async def registered_ownership_and_one_beat_per_cycle(d):
     await b.step(ready=True);await b.step(ready=True)
     previous=None
     for n in range(64):
-        p=b.packet(n%(1<<b.idbits),mask=n%16,last=n%3==0,edge=n%7==0)
+        p=b.packet(n%(1<<b.idbits),mask=n%(1<<b.lanes),last=n%3==0,edge=n%7==0)
         old,_=await b.step(p,ready=True)
         assert old['ready']
         if previous is not None:assert old['valid'] and old['beat']==previous
@@ -129,7 +129,7 @@ async def seeded_full_payload_sparse_masks_and_kill_holes(d):
         head=r.getrandbits(b.idbits)
         kill=None
         if r.randrange(7)==0:kill=dict(id=r.getrandbits(b.idbits),slot=r.randrange(b.slots),self=bool(r.getrandbits(1)),all=r.randrange(5)==0)
-        p=b.packet(r.getrandbits(b.idbits),r.randrange(16),bool(r.getrandbits(1)),bool(r.getrandbits(1))) if r.random()<.8 else None
+        p=b.packet(r.getrandbits(b.idbits),r.randrange(1<<b.lanes),bool(r.getrandbits(1)),bool(r.getrandbits(1))) if r.random()<.8 else None
         await b.step(p,ready=r.random()<.65,kill=kill,head=head,clear=n%97==0,rst=n%251==0)
     for _ in range(3):await b.step(ready=True)
     assert not b.queue
