@@ -9,8 +9,10 @@
 - 每个在途请求携带一位 set 回填失效标记；覆盖 S1 停留及 S1→S2、S2→S3 的同拍回填。模拟中保留独立版本号断言对照，硬件不保存每 set 的 32 位版本计数。
 - S2 MSHR 匹配在 S3 用当前有效状态及上一沿新分配旁路修正；当拍回填仍可直接完成新 waiter。不得用失效的 MSHR 槽位作分配依据。
 - 权限判断跨拍发生 PMP 更新或权限上下文改变时重放；不复用过期许可。
+- FTQ kill 通过占用范围失效被丢弃项，不为失效项广播状态清零；新分配初始化全项状态，旧身份迟到回写仍由代际和存活判断拒绝。空队头的公开训练元数据保持为零。存活且不杀自身的边界必有 keep_count >= kill_age+1，边界截断不再等待这一冗余比较；模拟保留旧条件的断言对照。
 - 空闲 waiter one-hot 指针提前寄存，每项在本地生成写使能。保持 oldest-ready 响应顺序、错误响应、demand 优先及预取保留额度。
-- F1 到 buffer 不新增寄存级。默认路径按有效前缀固定分配物理行，迟到的截断只影响生效和顺序状态；通用 buffer 保留稀疏入队能力。
+- F0→F1 的已有双项队列使用固定的两项 payload 存储、队头位和占用计数；出队/kill 仅修改顺序与 mask/last/edge 元数据，空 beat 的 brief 和 pending ownership barrier 保持原行为。不增加队列级数，完整 payload 与任意稀疏 mask/kill 的对照测试保留。
+- F1 到 buffer 不新增寄存级。默认路径按有效前缀写入八 bank 的 32 项环形 FIFO：每个 bank 一写一读，按地址低位交叠，队头/队尾/占用计数控制顺序，kill 必须保留程序顺序前缀并由断言检查；宽 payload 不随出队或 kill 搬动。迟到的截断只控制有效性与计数，bank 数据选择使用寄存的尾指针。通用 buffer 仍保留任意稀疏入队和 kill 空洞的独立回归。
 - 翻译复用缓存的 demand/probe 输入各寄存一拍；同拍 demand 优先，安装期间不重复发起 probe；epoch、SFENCE 仍阻止过期翻译安装。
 - TAGE 查询、训练流水、同行冲突策略和不丢训练规则均不变。分配 eligibility 用 provider 更新前的 usefulness：provider 更新要求 `provider==t`，分配候选要求 `provider<t` 或无 provider，两条件互斥，因此可去掉更新→候选的组合依赖，保持更新结果完全相同。本轮不做 32B 取指。
 
