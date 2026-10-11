@@ -26,6 +26,8 @@ async def sv39_probe_hit_miss_and_discard(d):
  await edge(d);d.probe_grant_i.value=0;assert not v(d,'probe_o')
  d.probe_valid_i.value=1;d.probe_hit_i.value=1;d.probe_ppn_i.value=0x80002
  await edge(d);d.probe_valid_i.value=0;await settle()
+ assert not v(d,'request_o'), 'probe translation must pass the new fill register'
+ await edge(d);await settle()
  assert v(d,'request_o') and v(d,'pa_o')==0x80002000 and event(d,0x29)==1
  await edge(d);d.va_i.value=0x500000;d.id_i.value=2;d.probe_grant_i.value=1;await edge(d)
  d.probe_grant_i.value=0;d.probe_valid_i.value=1;d.probe_hit_i.value=0;await settle();assert v(d,'consumed_o') and event(d,0x42)==1
@@ -39,7 +41,7 @@ async def superpage_context_and_sfence_ranges(d):
    for asid_all in (0,1):
     await reset(d);d.mode_i.value=8;d.priv_i.value=1;d.asid_i.value=7
     d.fill_valid_i.value=1;d.fill_vpn_i.value=0x400;d.fill_ppn_i.value=0x80200;d.fill_level_i.value=1;d.fill_g_i.value=global_;d.fill_asid_i.value=7
-    await edge(d);d.fill_valid_i.value=0;d.valid_i.value=1;d.va_i.value=0x401fc0
+    await edge(d);d.fill_valid_i.value=0;await edge(d);d.valid_i.value=1;d.va_i.value=0x401fc0
     await settle();assert v(d,'request_o') and v(d,'pa_o')==0x80201fc0
     d.valid_i.value=0;d.sf_i.value=1;d.rs1_x0_i.value=va_all;d.rs2_x0_i.value=asid_all;d.sf_va_i.value=0x401000;d.sf_asid_i.value=7
     await edge(d);d.sf_i.value=0;d.valid_i.value=1;await settle()

@@ -504,7 +504,7 @@ module frontend
         .perf_o      (perf_f1)
     );
 
-    fetch_buffer #(.CFG(CFG)) u_fetch_buffer (
+    fetch_buffer #(.CFG(CFG),.PREFIX_ENQUEUE(1'b1)) u_fetch_buffer (
         .clk_i               (clk_i),
         .rst_i               (rst_i),
         // Redirect kill selectively retains entries at or before its boundary.
@@ -560,6 +560,9 @@ module frontend
                     + perf_ibuf[evt] + perf_icache[evt] + perf_pf[evt];
             perf_sum[PE_DELIVER_LT4_BACKEND_READY_CYCLE]=PERF_INC_W'(deliver_ready_i && $countones(deliver_valid_mask_o)<DELIVER_W);
             perf_sum[PE_BACKEND_BACKPRESSURE_CYCLE]=PERF_INC_W'(deliver_valid_o && !deliver_ready_i);
+            for(int n=0;n<=DELIVER_W;n++)
+                perf_sum[int'(PE_DELIVER_0_READY_CYCLE)+n]=PERF_INC_W'(
+                    deliver_ready_i && $countones(deliver_valid_mask_o)==n);
         end
     end
     assign fe_perf_o = perf_sum;

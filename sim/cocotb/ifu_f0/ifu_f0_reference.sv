@@ -5,7 +5,8 @@
  * boundary as a normal kill, including slot-7 preservation of pend_q.
  */
 module ifu_f0_reference import o3_types_pkg::*; #(
-    parameter o3_cfg_pkg::frontend_cfg_t CFG
+    parameter o3_cfg_pkg::frontend_cfg_t CFG,
+    localparam int F0_SLOTS=CFG.fetch.f0_slots
 )(
     input logic clk_i,rst_i,
     input logic in_valid_i,output logic in_ready_o,

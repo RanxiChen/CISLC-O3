@@ -295,9 +295,9 @@ package o3_cfg_pkg;
                 region_bytes:            16,
                 deliver_width:           4,
                 return_queue_depth:      8,
-                f0_slots:                4,
-                f1_width:                4,
-                ibuf_depth:              16,
+                f0_slots:                8,
+                f1_width:                8,
+                ibuf_depth:              32,
                 ibuf_req_free_threshold: 8
             },
             ftq: '{

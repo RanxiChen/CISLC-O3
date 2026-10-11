@@ -11,6 +11,7 @@ module fetch_buffer
     import o3_types_pkg::*;
 #(
     parameter  o3_cfg_pkg::frontend_cfg_t CFG,
+    parameter bit PREFIX_ENQUEUE=1'b0,
     localparam int ENQ_WIDTH = CFG.fetch.f1_width,
     localparam int DEQ_WIDTH = CFG.fetch.deliver_width,
     localparam int DEPTH = CFG.fetch.ibuf_depth,
@@ -111,7 +112,9 @@ module fetch_buffer
         alloc_idx = '{default:'0};
         append_rank = '{default:'0};
         for (int lane = 0; lane < ENQ_WIDTH; lane++) begin
-            append_rank[lane] = incoming;
+            // F1 emits a prefix: the lane's row is known before its late valid.
+            // Generic users retain sparse-lane compaction.
+            append_rank[lane] = PREFIX_ENQUEUE ? COUNT_WIDTH'(lane):incoming;
             append[lane] = enq_ready_o && enq_valid_i[lane];
             incoming += COUNT_WIDTH'(enq_valid_i[lane]);
             // The kth valid lane selects the kth already-free physical row.
@@ -151,7 +154,7 @@ module fetch_buffer
             write_valid = 1'b0;
             for (int lane = 0; lane < ENQ_WIDTH; lane++) begin
                 write_data |= fetch_entry_t'(DATA_WIDTH'(enq_entry_i[lane]) &
-                    {DATA_WIDTH{append[lane] && alloc_idx[lane] == index_t'(slot)}});
+                    {DATA_WIDTH{(PREFIX_ENQUEUE || append[lane]) && alloc_idx[lane] == index_t'(slot)}});
                 write_valid |= append[lane] && alloc_idx[lane] == index_t'(slot);
             end
         end
@@ -165,6 +168,10 @@ module fetch_buffer
     end
 
     always_ff @(posedge clk_i) begin
+        if(!rst_i && enq_ready_o && PREFIX_ENQUEUE)
+            for(int lane=1;lane<ENQ_WIDTH;lane++)
+                assert(!enq_valid_i[lane] || enq_valid_i[lane-1])
+                    else $fatal(1,"F1 enqueue mask must be a prefix");
         if (rst_i || flush_i) begin
             order_q <= '{default:'0};
             used_q <= '0;

@@ -6,7 +6,7 @@ REPO_ROOT := $(abspath ../../..)
 VERILOG_SOURCES := \
   $(REPO_ROOT)/rtl/common/o3_isa_pkg.sv \
   $(REPO_ROOT)/rtl/common/o3_platform_pkg.sv $(REPO_ROOT)/rtl/common/o3_cfg_pkg.sv \
-  $(REPO_ROOT)/rtl/common/o3_types_pkg.sv \
+  $(REPO_ROOT)/rtl/common/o3_types_pkg.sv $(REPO_ROOT)/sim/rtl/ifu_test_cfg_pkg.sv \
   $(REPO_ROOT)/rtl/frontend/ifu_f1.sv \
   $(CURDIR)/ifu_f1_tb_top.sv
 SIM_BUILD := $(CURDIR)/sim_build/$(if $(filter 1,$(WAVES)),waves,plain)

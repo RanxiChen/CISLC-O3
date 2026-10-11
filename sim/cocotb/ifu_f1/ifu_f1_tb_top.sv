@@ -2,6 +2,10 @@
 module ifu_f1_tb_top
     import o3_cfg_pkg::*;
     import o3_types_pkg::*;
+#(parameter int TEST_WIDTH=4,
+  localparam int F0_SLOTS=TEST_WIDTH,
+  localparam int F1_W=TEST_WIDTH,
+  localparam frontend_cfg_t TEST_CFG=ifu_test_cfg_pkg::with_width(TEST_WIDTH))
 (
     input logic clk_i, rst_i,
     input logic beat_valid_i,last_i,edge_pend_i,
@@ -89,7 +93,7 @@ module ifu_f1_tb_top
           end
         end
     end
-    ifu_f1 #(.CFG(O3_CFG.fe)) dut (
+    ifu_f1 #(.CFG(TEST_CFG)) dut (
         .clk_i(clk_i), .rst_i(rst_i),
         .in_valid_i(compact_valid),.in_beat_valid_i(beat_valid_i),.in_last_i(last_i),.in_edge_pend_i(edge_pend_i), .in_ready_o(in_ready_o),
         .in_i(in_inst), .in_brief_i(brief),
@@ -122,5 +126,5 @@ module ifu_f1_tb_top
     assign pd_hist_branch_o = predecode.hist_branch_pc;
     assign pd_hist_target_o = predecode.hist_target_pc;
     assign pd_push_addr_o = predecode.ras_push_addr;
-    assign cfg_f1_width_o = O3_CFG.fe.fetch.f1_width;
+    assign cfg_f1_width_o = TEST_CFG.fetch.f1_width;
 endmodule

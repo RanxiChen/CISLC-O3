@@ -825,6 +825,14 @@ package o3_types_pkg;
         PE_CMT_FAST_BAD_SLOW_BAD = 'h13,
         PE_CMT_MISPRED_REGION = 'h14,
         PE_FTQ_FULL_CYCLE = 'h15,
+        // Use previously unassigned IDs; existing PMU numbers and PE_NUM stay stable.
+        // Histogram counts accepted instructions when the backend is ready.
+        PE_DELIVER_0_READY_CYCLE = 'h16,
+        PE_DELIVER_1_READY_CYCLE = 'h17,
+        PE_DELIVER_2_READY_CYCLE = 'h18,
+        PE_DELIVER_3_READY_CYCLE = 'h19,
+        PE_DELIVER_4_READY_CYCLE = 'h1a,
+        PE_F0_REMAINDER_BEAT = 'h1b,
         PE_TAGE_COND_PRED = 'h20,
         PE_FTQ_EMPTY_CYCLE = 'h21,
         PE_ICACHE_DEMAND_HIT = 'h22,

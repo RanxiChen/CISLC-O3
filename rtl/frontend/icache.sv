@@ -74,14 +74,19 @@ module ICache
         SW=$clog2(SETS),TW=MEM_PADDR_W-7-SW,WAITERS=CFG.fetch.return_queue_depth;
     typedef struct packed {logic valid,pf;logic [TW-1:0] tag;} tag_t;
     tag_t tags_q[BANKS][SETS][WAYS];
-    logic [WAYS-2:0] plru_q[BANKS][SETS];logic [31:0] version_q[BANKS][SETS];
-    typedef struct packed {icache_req_t req;paddr_t pa;logic pf,af;logic [31:0] version;} query_t;
+    logic [WAYS-2:0] plru_q[BANKS][SETS];
+    typedef struct packed {icache_req_t req;paddr_t pa;logic pf,af,stale;} query_t;
     query_t s1_q,s2_q,s3_q;logic v1_q,v2_q,v3_q,s1_ready,s2_ready,s3_ready;
-    tag_t tag_read_q[WAYS],tags2_q[WAYS],tags3_q[WAYS];
+    tag_t tag_read_q[WAYS],tags2_q[WAYS];
     coh_data_t data_read_q[WAYS];
     // Select the requested 16B region before S2; later stages carry only
     // that region per way, rather than registering four complete 64B lines.
-    logic [FETCH_BYTES*8-1:0] data2_q[WAYS],data3_q[WAYS];
+    logic [FETCH_BYTES*8-1:0] data2_q[WAYS];
+    logic s2_hit,s2_fault,s3_hit_q,s3_fault_q,pmp_update_q;
+    int s2_hit_way,s3_hit_way_q;
+    logic [1:0] s3_priv_q;
+    logic [FETCH_BYTES*8-1:0] s2_hit_data,s3_hit_data_q;
+    logic [CFG.icache.mshrs-1:0] s2_mshr_match,s3_mshr_match_q;
     coh_data_t bank_data_read_q[BANKS][WAYS];
     logic data_read_bank_q;
     logic tlb_raw_valid,probe_q,tlb_g,tlb_demand_lookup;
@@ -119,6 +124,7 @@ module ICache
     paddr_t alloc_line;logic fill_valid,fill_ready,fill_error,fill_done,mshr_idle;
     paddr_t fill_line,fill_done_line;coh_data_t fill_data;
     logic waiter_valid_q[WAITERS],waiter_ready_q[WAITERS],waiter_error_q[WAITERS];
+    logic [WAITERS-1:0] free_waiter_oh_q,waiter_live_next;
     icache_req_t waiter_req_q[WAITERS];paddr_t waiter_line_q[WAITERS];
     logic [FETCH_BYTES*8-1:0] waiter_data_q[WAITERS];
     logic [31:0] waiter_age_q[WAITERS],age_q;int free_waiter,ready_waiter;
@@ -158,6 +164,8 @@ module ICache
         .csr_i(csr_i),.sfence_i(sfence_i),.sfence_done_o(sfence_done_o),.perf_o(tlb_perf));
     icache_mshr #(.CFG(CFG)) u_mshr(.clk_i(clk),.rst_i(rst),.alloc_valid_i(alloc_valid),.alloc_ready_o(alloc_ready),
         .alloc_line_paddr_i(alloc_line),.alloc_kind_i(demand_miss_pending ? L2_DEMAND:L2_PREFETCH),.alloc_merged_o(alloc_merged),
+        .demand_probe_line_i({s2_q.pa[PADDR_W-1:6],6'b0}),.demand_probe_match_o(s2_mshr_match),
+        .demand_select_i(demand_miss_pending),.demand_line_i({s3_q.pa[PADDR_W-1:6],6'b0}),.demand_match_i(s3_mshr_match_q),
         .probe_line_paddr_i(pf_pending_req_q.line_paddr),.probe_inflight_o(probe_inflight),
         .l2_req_valid_o(l2_req_valid_o),.l2_req_ready_i(l2_req_ready_i),.l2_req_o(l2_req_o),
         .l2_resp_valid_i(l2_resp_valid_i),.l2_resp_i(l2_resp_i),.l2_resp_ready_o(l2_resp_ready_o),
@@ -192,14 +200,69 @@ module ICache
         end
     end
     always_comb begin
-        hit=0;hit_way=0;hit_line='0;
-        for(int w=0;w<WAYS;w++) if(tags3_q[w].valid && tags3_q[w].tag==TW'(s3_q.pa>>(7+SW))) begin hit=1;hit_way=w;hit_line=data3_q[w];end
-        stale=s3_q.version!=version_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)];
-        fault=s3_q.pf || s3_q.af || !pma_exec(64'(s3_q.pa),FETCH_BYTES) ||
-            !pmp_allow_dec(pmp_i.dec,s3_q.pa,FETCH_BYTES,csr_i.priv,1'b0,1'b0,1'b1);
+        s2_hit=0;s2_hit_way=0;s2_hit_data='0;
+        for(int w=0;w<WAYS;w++) if(tags2_q[w].valid && tags2_q[w].tag==TW'(s2_q.pa>>(7+SW))) begin
+            s2_hit=1;s2_hit_way=w;s2_hit_data=data2_q[w];
+        end
+        s2_fault=s2_q.pf || s2_q.af || !pma_exec(64'(s2_q.pa),FETCH_BYTES) ||
+            !pmp_allow_dec(pmp_i.dec,s2_q.pa,FETCH_BYTES,csr_i.priv,1'b0,1'b0,1'b1);
     end
+    assign hit=s3_hit_q;
+    assign hit_way=s3_hit_way_q;
+    assign hit_line=s3_hit_data_q;
+    assign fault=s3_fault_q;
+    // A policy update across the decision edge replays the request. Both
+    // sides of that edge are covered; permissions are never reused blindly.
+    assign stale=s3_q.stale || pmp_i.update || pmp_update_q || s3_priv_q!=csr_i.priv;
     assign demand_miss_pending=v3_q && !stale && !hit && !fault;
-    assign alloc_line=demand_miss_pending ? {s3_q.pa[PADDR_W-1:6],6'b0}:pf_pending_req_q.line_paddr;
+    // PF and demand address comparisons precede the late narrow arbitration.
+    assign alloc_line=pf_pending_req_q.line_paddr;
+    // S2 supplies only captured classifications to S3. No extra fetch stage.
+    always_ff @(posedge clk) begin
+        if(rst) begin
+            s3_hit_q<=0;s3_fault_q<=0;s3_hit_way_q<=0;s3_hit_data_q<='0;
+            s3_priv_q<=0;pmp_update_q<=0;s3_mshr_match_q<='0;
+        end else begin
+            s3_hit_q<=s2_hit;s3_fault_q<=s2_fault;s3_hit_way_q<=s2_hit_way;
+            s3_hit_data_q<=s2_hit_data;s3_priv_q<=csr_i.priv;
+            pmp_update_q<=pmp_i.update;s3_mshr_match_q<=s2_mshr_match;
+        end
+    end
+    for(genvar n=0;n<WAITERS;n++) begin : g_waiter_free
+        assign waiter_live_next[n]=(waiter_valid_q[n] && !(ready_waiter==n && resp_o.valid)) ||
+            (waiter_allocate && free_waiter_oh_q[n]);
+        wire first_free;
+        if(n==0) assign first_free=!waiter_live_next[n];
+        else assign first_free=!waiter_live_next[n] && (&waiter_live_next[n-1:0]);
+        always_ff @(posedge clk) begin
+            if(rst) free_waiter_oh_q[n]<=n==0;
+            else free_waiter_oh_q[n]<=first_free;
+        end
+    end
+    `ifndef SYNTHESIS
+    // Independent old version-number oracle checks all in-flight set changes.
+    // It is absent from hardware; production requests carry one dirty bit.
+    logic [31:0] check_version_q[BANKS][SETS],check_v1_q,check_v2_q,check_v3_q;
+    always_ff @(posedge clk) begin
+        if(rst) begin
+            check_v1_q<=0;check_v2_q<=0;check_v3_q<=0;
+            for(int b=0;b<BANKS;b++) for(int s=0;s<SETS;s++) check_version_q[b][s]<=0;
+        end else begin
+            if(fire) check_v1_q<=check_version_q[selected_req.region_base[6]][SW'(selected_req.region_base>>7)];
+            if(s2_ready) check_v2_q<=check_v1_q;
+            if(s3_ready) check_v3_q<=check_v2_q;
+            if(fill_done && !fill_error) check_version_q[fill_bank][fill_set]<=check_version_q[fill_bank][fill_set]+1;
+            if(v3_q) assert(s3_q.stale==(check_v3_q!=check_version_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)]))
+                else $fatal(1,"ICache dirty bit differs from set-version reference");
+            for(int n=0;n<WAITERS;n++) begin
+                logic expected;
+                expected=!waiter_valid_q[n];
+                for(int k=0;k<n;k++) expected &= waiter_valid_q[k];
+                assert(free_waiter_oh_q[n]==expected) else $fatal(1,"ICache registered free waiter differs from priority reference");
+            end
+        end
+    end
+    `endif
     // Capture pairwise age order when a waiter is allocated. Ages remain
     // constant during its lifetime, so response arbitration only needs a
     // ready mask and this narrow registered matrix (no age-comparison chain).
@@ -244,7 +307,7 @@ module ICache
     always_comb begin
         free_waiter=-1;ready_waiter=-1;
         for(int n=0;n<WAITERS;n++) begin
-            if(!waiter_valid_q[n] && free_waiter<0) free_waiter=n;
+            if(free_waiter_oh_q[n]) free_waiter=n;
             if(ready_waiter_oh[n]) ready_waiter=n;
         end
         s3_complete=!stale && ((ready_waiter<0 && (hit || fault)) ||
@@ -327,13 +390,19 @@ module ICache
             waiter_req_q<='{default:'0};waiter_line_q<='{default:'0};waiter_age_q<='{default:0};age_q<=0;
             inv_done_o<=0;pmp_update_done_o<=0;
             for(int b=0;b<BANKS;b++) for(int s=0;s<SETS;s++) begin
-                plru_q[b][s]<=0;version_q[b][s]<=0;for(int w=0;w<WAYS;w++) tags_q[b][s][w]<='0;
+                plru_q[b][s]<=0;for(int w=0;w<WAYS;w++) tags_q[b][s][w]<='0;
             end
         end else begin
             inv_done_o<=inv_all_i;pmp_update_done_o<=1;
-            if(s3_ready) begin v3_q<=v2_q;s3_q<=s2_q;tags3_q<=tags2_q;data3_q<=data2_q;end
+            if(s3_ready) begin
+                v3_q<=v2_q;s3_q<=s2_q;
+                s3_q.stale<=s2_q.stale || (fill_done && !fill_error &&
+                    fill_bank==int'(s2_q.req.region_base[6]) && fill_set==int'(SW'(s2_q.req.region_base>>7)));
+            end
             if(s2_ready) begin
                 v2_q<=v1_q && (xlate_saved_q || (tlb_valid && !tlb_miss));s2_q<=s1_q;
+                s2_q.stale<=s1_q.stale || (fill_done && !fill_error &&
+                    fill_bank==int'(s1_q.req.region_base[6]) && fill_set==int'(SW'(s1_q.req.region_base>>7)));
                 s2_q.pa<=xlate_saved_q ? saved_pa_q:sv39_pa(tlb_ppn,s1_q.req.region_base,tlb_level);
                 s2_q.pf<=xlate_saved_q ? saved_pf_q:tlb_pf;
                 s2_q.af<=(xlate_saved_q ? saved_af_q:tlb_af) ||
@@ -348,11 +417,14 @@ module ICache
             if(s1_ready) begin
                 xlate_saved_q<=0;v1_q<=fire;
                 if(fire) begin
-                    s1_q.req<=selected_req;s1_q.version<=version_q[selected_req.region_base[6]][SW'(selected_req.region_base>>7)];
+                    s1_q.req<=selected_req;s1_q.stale<=0;
                     for(int w=0;w<WAYS;w++) begin
                         tag_read_q[w]<=tags_q[selected_req.region_base[6]][SW'(selected_req.region_base>>7)][w];
                     end
                 end
+            end else if(fill_done && !fill_error && fill_bank==int'(s1_q.req.region_base[6]) &&
+                fill_set==int'(SW'(s1_q.req.region_base>>7))) begin
+                s1_q.stale<=1;
             end
             if(ingress_push) begin
                 ingress_q[ingress_tail_q]<=req_i;
@@ -375,12 +447,16 @@ module ICache
                 default: ;
             endcase
             assert(int'(retry_count_q)<=RETRIES);
-            if(v3_q && !stale && !hit && !fault && s3_complete) begin
-                waiter_valid_q[free_waiter]<=1;waiter_ready_q[free_waiter]<=0;waiter_req_q[free_waiter]<=s3_q.req;
-                waiter_line_q[free_waiter]<={s3_q.pa[PADDR_W-1:6],6'b0};waiter_age_q[free_waiter]<=age_q;age_q<=age_q+1;
-                // A same-cycle fill may complete the merged waiter immediately.
-                if(fill_done && fill_line=={s3_q.pa[PADDR_W-1:6],6'b0}) begin
-                    waiter_ready_q[free_waiter]<=1;waiter_data_q[free_waiter]<=fill_data[int'(s3_q.req.region_base[5:4])*FETCH_BYTES*8+:FETCH_BYTES*8];waiter_error_q[free_waiter]<=fill_error;
+            if(waiter_allocate) age_q<=age_q+1;
+            for(int n=0;n<WAITERS;n++) begin
+                // Decode locally at the destination row, rather than sharing
+                // a dynamic indexed write-enable across all payload banks.
+                if(waiter_allocate && free_waiter_oh_q[n]) begin
+                    waiter_valid_q[n]<=1;waiter_ready_q[n]<=0;waiter_req_q[n]<=s3_q.req;
+                    waiter_line_q[n]<={s3_q.pa[PADDR_W-1:6],6'b0};waiter_age_q[n]<=age_q;
+                    if(fill_done && fill_line=={s3_q.pa[PADDR_W-1:6],6'b0}) begin
+                        waiter_ready_q[n]<=1;waiter_data_q[n]<=fill_data[int'(s3_q.req.region_base[5:4])*FETCH_BYTES*8+:FETCH_BYTES*8];waiter_error_q[n]<=fill_error;
+                    end
                 end
             end
             if(ready_waiter>=0 && resp_o.valid) begin waiter_valid_q[ready_waiter]<=0;waiter_ready_q[ready_waiter]<=0;end
@@ -391,7 +467,6 @@ module ICache
                 if(!fill_error) begin
                     tags_q[fill_bank][fill_set][fill_way]<='{valid:1'b1,pf:fill_pf,tag:TW'(fill_line>>(7+SW))};
                     plru_q[fill_bank][fill_set]<=touch(plru_q[fill_bank][fill_set],fill_way);
-                    version_q[fill_bank][fill_set]<=version_q[fill_bank][fill_set]+1;
                 end
             end
             if(v3_q && !stale && hit && !fault && s3_complete) tags_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)][hit_way].pf<=0;

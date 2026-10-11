@@ -1,10 +1,11 @@
-/** L7b F0: four compacted instructions per beat, first-beat block consumption,
+/** F0: up to one region's eight compacted instructions per beat,
  * retained remainder, and a pending halfword owned by the following region.
  * All state changes require a beat handshake; truncation uses the same age
  * boundary as a normal kill, including slot-7 preservation of pend_q.
  */
 module ifu_f0 import o3_types_pkg::*; #(
-    parameter o3_cfg_pkg::frontend_cfg_t CFG
+    parameter o3_cfg_pkg::frontend_cfg_t CFG,
+    localparam int F0_SLOTS=CFG.fetch.f0_slots
 )(
     input logic clk_i,rst_i,
     input logic in_valid_i,output logic in_ready_o,
@@ -44,7 +45,11 @@ module ifu_f0 import o3_types_pkg::*; #(
     assign out_brief_o=active ? current_brief:'0;
     assign in_ready_o=out_ready_i && !hold_q.valid && !boundary_wait_i && !kill_i.valid && !sync_clear_i && !rst_i;
     assign fire=active && out_ready_i;
-    assign perf_o='0;
+    always_comb begin
+        perf_o='0;
+        perf_o[PE_F0_REMAINDER_BEAT]=PERF_INC_W'(fire && hold_q.valid);
+        perf_o[PE_IFU_CROSS_REGION]=PERF_INC_W'(fire && edge_start);
+    end
     assign edge_start=!hold_q.valid && pend_q.valid
         && current_block.region_base==pend_q.next_region_base
         && current_brief.pred.entry_slot==0;

@@ -2,6 +2,10 @@
 module ifu_f0_tb_top
     import o3_cfg_pkg::*;
     import o3_types_pkg::*;
+#(parameter int TEST_WIDTH=4,
+  localparam int F0_SLOTS=TEST_WIDTH,
+  localparam int F1_W=TEST_WIDTH,
+  localparam frontend_cfg_t TEST_CFG=ifu_test_cfg_pkg::with_width(TEST_WIDTH))
 (
     input logic clk_i, rst_i, in_valid_i, out_ready_i,
     input logic [VADDR_W-1:0] region_base_i,
@@ -52,7 +56,7 @@ module ifu_f0_tb_top
         kill = '0;
         kill.valid = kill_valid_i;kill.all=1;
     end
-    ifu_f0 #(.CFG(O3_CFG.fe)) dut (
+    ifu_f0 #(.CFG(TEST_CFG)) dut (
         .clk_i(clk_i), .rst_i(rst_i),
         .in_valid_i(in_valid_i), .in_ready_o(in_ready_o),
         .in_i(block_in), .in_brief_i(brief_in),
@@ -65,7 +69,7 @@ module ifu_f0_tb_top
     logic [F0_SLOTS-1:0] ref_valid;
     f0_inst_t ref_inst[F0_SLOTS];
     ftq_pred_brief_t ref_brief;
-    ifu_f0_reference #(.CFG(O3_CFG.fe)) reference (
+    ifu_f0_reference #(.CFG(TEST_CFG)) reference (
         .clk_i(clk_i),.rst_i(rst_i),.in_valid_i(in_valid_i),.in_ready_o(ref_ready),
         .in_i(block_in),.in_brief_i(brief_in),.out_valid_o(ref_valid),
         .out_beat_valid_o(ref_beat),.out_last_o(ref_last),.out_edge_pend_o(ref_pend),

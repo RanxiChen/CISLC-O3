@@ -9,7 +9,9 @@
 module ifu_f1
     import o3_types_pkg::*;
 #(
-    parameter o3_cfg_pkg::frontend_cfg_t CFG
+    parameter o3_cfg_pkg::frontend_cfg_t CFG,
+    localparam int F0_SLOTS=CFG.fetch.f0_slots,
+    localparam int F1_W=CFG.fetch.f1_width
 ) (
     input  logic            clk_i,
     input  logic            rst_i,

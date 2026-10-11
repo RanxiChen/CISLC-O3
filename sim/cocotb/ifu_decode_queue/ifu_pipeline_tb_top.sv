@@ -1,7 +1,10 @@
 /** F0 -> registered beat queue -> F1, with the registered F1 request's
  * actual next-cycle kill boundary. This fixture exercises alignment rollback,
  * not an alternative predictor or a tied-off F1 correction path. */
-module ifu_pipeline_tb_top import o3_types_pkg::*; (
+module ifu_pipeline_tb_top import o3_types_pkg::*;
+#(parameter int TEST_WIDTH=4, localparam int F0_SLOTS=TEST_WIDTH,
+  localparam int F1_W=TEST_WIDTH,
+  localparam o3_cfg_pkg::frontend_cfg_t TEST_CFG=ifu_test_cfg_pkg::with_width(TEST_WIDTH)) (
     input logic clk_i,rst_i,in_valid_i,out_ready_i,clear_i,
     input vaddr_t region_base_i,
     input logic [REGION_BYTES*8-1:0] block_data_i,
@@ -39,19 +42,19 @@ module ifu_pipeline_tb_top import o3_types_pkg::*; (
     assign correction_o=correction.valid;
     assign correction_target_o=correction.target_pc;
     assign correction_slot_o=correction.slot;
-    ifu_f0 #(.CFG(o3_cfg_pkg::O3_CFG.fe)) u_f0(
+    ifu_f0 #(.CFG(TEST_CFG)) u_f0(
         .clk_i(clk_i),.rst_i(rst_i),.in_valid_i(in_valid_i),.in_ready_o(in_ready_o),.in_i(block_in),.in_brief_i(brief_in),
         .out_valid_o(f0_mask),.out_ready_i(f0_ready),.out_o(f0_data),.out_brief_o(f0_brief),
         .out_beat_valid_o(f0_beat),.out_last_o(f0_last),.out_edge_pend_o(f0_edge_pend),
         .trunc_i(1'b0),.trunc_slot_i('0),.boundary_wait_i(boundary_wait_o),
         .kill_i(kill),.ftq_head_i(ftq_id_t'(head_id_i)),.sync_clear_i(clear_i),.perf_o());
-    ifu_decode_queue #(.CFG(o3_cfg_pkg::O3_CFG.fe)) u_queue(
+    ifu_decode_queue #(.CFG(TEST_CFG)) u_queue(
         .clk_i(clk_i),.rst_i(rst_i),.clear_i(clear_i),.in_beat_valid_i(f0_beat),.in_ready_o(f0_ready),
         .in_valid_i(f0_mask),.in_i(f0_data),.in_brief_i(f0_brief),.in_last_i(f0_last),.in_edge_pend_i(f0_edge_pend),
         .out_beat_valid_o(f1_beat),.out_ready_i(f1_ready),.out_valid_o(f1_mask),.out_o(f1_data),.out_brief_o(f1_brief),
         .out_last_o(f1_last),.out_edge_pend_o(f1_edge_pend),.boundary_wait_o(boundary_wait_o),
         .kill_i(kill),.ftq_head_i(ftq_id_t'(head_id_i)));
-    ifu_f1 #(.CFG(o3_cfg_pkg::O3_CFG.fe)) u_f1(
+    ifu_f1 #(.CFG(TEST_CFG)) u_f1(
         .clk_i(clk_i),.rst_i(rst_i),.in_valid_i(f1_mask),.in_beat_valid_i(f1_beat),.in_last_i(f1_last),
         .in_edge_pend_i(f1_edge_pend),.in_ready_o(f1_ready),.in_i(f1_data),.in_brief_i(f1_brief),
         .out_o(result),.out_valid_o(out_valid_o),.out_ready_i(out_ready_i),.predecode_o(correction),
