@@ -1,0 +1,4 @@
+override SIM_BUILD := $(CURDIR)/sim_build/prefix
+COMPILE_ARGS += -GPREFIX_ENQUEUE=1
+export TEST_PREFIX=1
+include Makefile.payload

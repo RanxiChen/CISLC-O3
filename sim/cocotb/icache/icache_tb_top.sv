@@ -3,6 +3,8 @@ module icache_tb_top
 (
     input logic clk,
     input logic rst,
+    input logic pmp_update_i,
+    output logic s2_valid_o,s3_valid_o,s3_dirty_o,fill_done_o,
     input logic [1:0] priv_i,
     input logic [127:0] pmpcfg_i,
     input logic [863:0] pmpaddr_i,
@@ -44,6 +46,7 @@ module icache_tb_top
     pmp_state_t pmp;pf_resp_t pf_resp;xprobe_resp_t probe;
     always_comb begin
         pmp='0;
+        pmp.update=pmp_update_i;
         for(int n=0;n<PMP_N;n++) begin
             pmp.entries[n].cfg=pmpcfg_i[n*8+:8];
             pmp.entries[n].addr=pmpaddr_i[n*54+:54];
@@ -51,6 +54,10 @@ module icache_tb_top
         pmp.dec=pmp_decode(pmp.entries);
     end
     assign pf_resp_valid=pf_resp.valid;assign pf_status=pf_resp.status;assign probe_resp=probe.valid;assign probe_hit=probe.hit;
+    assign s2_valid_o=dut.v2_q;
+    assign s3_valid_o=dut.v3_q;
+    assign s3_dirty_o=dut.s3_q.stale;
+    assign fill_done_o=dut.fill_done;
     assign req = '{region_base:req_pc, ftq_id:req_ftq_id,
                    rq_idx:req_rq_idx, epoch:'0};
     assign l2_resp='{op:COH_READDATA,id:l2_resp_id,data:l2_resp_data,error:l2_resp_error,default:'0};

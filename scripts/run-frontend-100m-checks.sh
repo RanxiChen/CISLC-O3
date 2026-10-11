@@ -44,6 +44,17 @@ make -j4 -C sim/cocotb/fetch_buffer -f Makefile.payload sim \
 rc=$?
 printf 'fetch_buffer_payload\t%s\n' "$rc" >> "$EVIDENCE_DIR/status.tsv"
 if ((rc)); then failed=1; fi
+for spec in 'ifu_f0 Makefile.wide ifu_f0_wide' \
+            'ifu_decode_queue Makefile.bandwidth ifu_bandwidth' \
+            'fetch_buffer Makefile.prefix fetch_buffer_prefix'; do
+    read -r dir makefile name <<< "$spec"
+    make -j4 -C "sim/cocotb/$dir" -f "$makefile" sim TEST_SEED="${TEST_SEED:-1}" \
+        EXTRA_ARGS='--timing --assert -Wno-fatal' \
+        COCOTB_RESULTS_FILE="$EVIDENCE_DIR/$name.xml" > "$EVIDENCE_DIR/$name.log" 2>&1
+    rc=$?
+    printf '%s\t%s\n' "$name" "$rc" >> "$EVIDENCE_DIR/status.tsv"
+    if ((rc)); then failed=1; fi
+done
 python3 - "$EVIDENCE_DIR" <<'PY'
 import json, sys, xml.etree.ElementTree as ET
 from pathlib import Path
@@ -55,7 +66,8 @@ for path in sorted(root.glob("*.xml")):
     results[path.stem]=result
     failed |= not cases or result["failures"]>0 or result["skips"]>0
 required={"ifu_pipeline", "ifu_decode_queue", "ifu_f0", "ifu_f1", "fetch_return_queue", "fetch_prefetcher", "icache",
-          "ubtb", "ras", "ras_depth1", "fetch_buffer", "fetch_buffer_payload", "tage", "bpu", "bpu_slow_check", "ftq", "redirect_arbiter", "loop_predictor", "main_btb"}
+          "ubtb", "ras", "ras_depth1", "fetch_buffer", "fetch_buffer_payload", "tage", "bpu", "bpu_slow_check", "ftq", "redirect_arbiter", "loop_predictor", "main_btb",
+          "ifu_f0_wide", "ifu_bandwidth", "fetch_buffer_prefix"}
 missing=required-set(results)
 (root/"test-results.json").write_text(json.dumps({"suites":results,"missing":sorted(missing)},indent=2)+"\n")
 sys.exit(int(failed or bool(missing)))

@@ -871,6 +871,17 @@ package o3_types_pkg;
 
     typedef logic [PE_NUM-1:0][PERF_INC_W-1:0] fe_perf_t;
 
+    function automatic fe_perf_t fe_delivery_events(
+        input logic ready,valid,input logic [DELIVER_W-1:0] mask);
+        fe_perf_t events;
+        events='0;
+        for(int n=0;n<=DELIVER_W;n++)
+            events[int'(PE_DELIVER_0_READY_CYCLE)+n]=PERF_INC_W'(ready && $countones(mask)==n);
+        events[PE_DELIVER_LT4_BACKEND_READY_CYCLE]=PERF_INC_W'(ready && $countones(mask)<DELIVER_W);
+        events[PE_BACKEND_BACKPRESSURE_CYCLE]=PERF_INC_W'(valid && !ready);
+        return events;
+    endfunction
+
     // ============================================================
     // 后端：推导常量
     // ============================================================

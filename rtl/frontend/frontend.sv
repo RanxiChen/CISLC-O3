@@ -558,11 +558,7 @@ module frontend
                 perf_sum[evt] = perf_bpu[evt] + perf_ftq[evt] + perf_arb[evt]
                     + perf_rq[evt] + perf_f0[evt] + perf_f1[evt]
                     + perf_ibuf[evt] + perf_icache[evt] + perf_pf[evt];
-            perf_sum[PE_DELIVER_LT4_BACKEND_READY_CYCLE]=PERF_INC_W'(deliver_ready_i && $countones(deliver_valid_mask_o)<DELIVER_W);
-            perf_sum[PE_BACKEND_BACKPRESSURE_CYCLE]=PERF_INC_W'(deliver_valid_o && !deliver_ready_i);
-            for(int n=0;n<=DELIVER_W;n++)
-                perf_sum[int'(PE_DELIVER_0_READY_CYCLE)+n]=PERF_INC_W'(
-                    deliver_ready_i && $countones(deliver_valid_mask_o)==n);
+            perf_sum |= fe_delivery_events(deliver_ready_i,deliver_valid_o,deliver_valid_mask_o);
         end
     end
     assign fe_perf_o = perf_sum;

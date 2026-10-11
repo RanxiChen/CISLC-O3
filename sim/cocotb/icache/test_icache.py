@@ -15,8 +15,10 @@ class Harness:
         self.accepted = []
         for n in ('pf_valid','pf_addr','pf_epoch','epoch_i','probe_valid','probe_va'):getattr(dut,n).value=0
         self.events=[0]*0x44
+        self.dirty_seen=0
         dut.clk.value = 0
         dut.rst.value = 1
+        dut.pmp_update_i.value=0
         dut.priv_i.value = 3
         dut.pmpcfg_i.value = 0
         dut.pmpaddr_i.value = 0
@@ -52,6 +54,7 @@ class Harness:
                 int(d.resp_data.value),
                 int(d.resp_exc.value),
             ))
+        self.dirty_seen+=int(d.s3_valid_o.value) and int(d.s3_dirty_o.value)
         perf=int(d.perf_o.value)
         for e in range(0x44):self.events[e]+=(perf>>(e*(len(d.perf_o)//0x44)))&((1<<(len(d.perf_o)//0x44))-1)
         d.clk.value = 1
@@ -417,3 +420,67 @@ async def full_mshrs_replay_then_complete_without_loss(dut):
  assert len(h.responses)==7
  for _ in range(12):await h.tick()
  assert int(dut.idle.value) and len(h.responses)==7
+
+
+@cocotb.test()
+async def consecutive_same_line_alloc_bypass_and_fill_boundaries(d):
+    # Four back-to-back addresses share one MSHR. Vary the fill relative to
+    # later queries to cover live merge, previous-edge allocation and replay.
+    for delay in range(7):
+        h=Harness(d);await h.reset();base=0x80060000
+        payload=bytes((n*19+delay)&255 for n in range(64))
+        for n in range(4):assert await h.request(base+16*n,20+n,n)==0
+        await h.accept_l2_request(base)
+        for _ in range(delay):await h.tick()
+        await h.refill(payload);await h.expect_count(4)
+        actual={x[1]:x[2:] for x in h.responses}
+        assert actual=={20+n:(n,int.from_bytes(payload[n*16:(n+1)*16],'little'),0) for n in range(4)}
+        assert len(h.responses)==4 and h.events[0x24]>=1
+        for _ in range(15):
+            obs=await h.tick();assert not obs['l2_req_valid']
+        assert int(d.idle.value)
+
+
+@cocotb.test()
+async def same_set_fill_marks_inflight_hit_dirty_and_replays(d):
+    dirty=0
+    for delay in range(5):
+        h=Harness(d);await h.reset();old=0x80070000;new=old+8192
+        olddata=bytes((n*7+3)&255 for n in range(64));newdata=bytes((n*11+5)&255 for n in range(64))
+        await h.request(old,1,0);await h.accept_l2_request(old);await h.refill(olddata);await h.expect_count(1)
+        await h.request(new,2,1);await h.accept_l2_request(new)
+        await h.request(old+16,3,2)
+        for _ in range(delay):await h.tick()
+        await h.refill(newdata);await h.expect_count(3)
+        actual={x[1]:x[2:] for x in h.responses}
+        assert actual=={1:(0,int.from_bytes(olddata[:16],'little'),0),
+            2:(1,int.from_bytes(newdata[:16],'little'),0),3:(2,int.from_bytes(olddata[16:32],'little'),0)}
+        for _ in range(10):
+            obs=await h.tick();assert not obs['l2_req_valid']
+        assert len(h.responses)==3
+        dirty+=h.dirty_seen
+    assert dirty>0, 'test must exercise an actual in-flight set invalidation'
+
+
+@cocotb.test()
+async def cached_hit_latency_and_late_permission_update(d):
+    h=Harness(d);await h.reset();pc=0x80080000;payload=bytes(range(64))
+    await h.request(pc,1,0);await h.accept_l2_request(pc);await h.refill(payload);await h.expect_count(1)
+    for _ in range(4):await h.tick()
+    await h.request(pc+16,2,1);accepted=h.accepted[-1][0]
+    await h.expect_count(2)
+    assert h.responses[-1][0]-accepted==4, 'S2 rescheduling must preserve four-cycle hit response'
+    await h.request(pc+32,3,2)
+    for _ in range(10):
+        if int(d.s3_valid_o.value):break
+        await h.tick()
+    else:raise AssertionError('query never reached S3')
+    # Change policy after the S2 decision was registered, before S3 can act.
+    d.priv_i.value=1;d.pmpcfg_i.value=0x0b;d.pmpaddr_i.value=0x40000000;d.pmp_update_i.value=1
+    obs=await h.tick();assert not obs['resp_valid'] and not obs['l2_req_valid']
+    d.pmp_update_i.value=0
+    await h.expect_count(3)
+    assert h.responses[-1][1:3]==(3,2) and h.responses[-1][4]==1
+    for _ in range(10):
+        obs=await h.tick();assert not obs['l2_req_valid']
+    assert len(h.responses)==3

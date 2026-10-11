@@ -27,6 +27,7 @@ async def sv39_probe_hit_miss_and_discard(d):
  d.probe_valid_i.value=1;d.probe_hit_i.value=1;d.probe_ppn_i.value=0x80002
  await edge(d);d.probe_valid_i.value=0;await settle()
  assert not v(d,'request_o'), 'probe translation must pass the new fill register'
+ assert not v(d,'probe_o'), 'do not launch a duplicate probe during installation'
  await edge(d);await settle()
  assert v(d,'request_o') and v(d,'pa_o')==0x80002000 and event(d,0x29)==1
  await edge(d);d.va_i.value=0x500000;d.id_i.value=2;d.probe_grant_i.value=1;await edge(d)
@@ -57,3 +58,16 @@ async def delayed_cache_decision_is_counted_without_candidate(d):
  await edge(d);d.status_i.value=1
  await settle();assert event(d,0x2c)==1 and event(d,0x2b)==0
  d.status_valid_i.value=0;await settle();assert v(d,'perf_o')==0
+
+@cocotb.test()
+async def captured_translation_epoch_and_sfence_discard(d):
+ for change in ('epoch','sfence'):
+  await reset(d);d.mode_i.value=8;d.priv_i.value=1;d.valid_i.value=1;d.va_i.value=0x402000
+  d.probe_grant_i.value=1;await edge(d);d.probe_grant_i.value=0
+  d.probe_valid_i.value=1;d.probe_hit_i.value=1;d.probe_ppn_i.value=0x80002
+  await edge(d);d.probe_valid_i.value=0
+  if change=='epoch':d.epoch_i.value=1
+  else:
+   d.sf_i.value=1;d.rs1_x0_i.value=1;d.rs2_x0_i.value=1
+  await edge(d);d.sf_i.value=0;await settle()
+  assert v(d,'probe_o') and not v(d,'request_o'), 'stale captured translation must not be installed'

@@ -56,7 +56,7 @@ async def all_fields_sparse_backpressure_recovery(d):
         kill_self = bool(rng.getrandbits(1))
         flush = cycle % 97 == 0
         take = bool(rng.getrandbits(1))
-        valid = rng.getrandbits(ew)
+        valid = (1<<rng.randrange(ew+1))-1 if os.getenv('TEST_PREFIX')=='1' else rng.getrandbits(ew)
         incoming = []
         for lane in range(ew):
             p = rng.getrandbits(bits)

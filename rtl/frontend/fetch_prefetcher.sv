@@ -10,7 +10,7 @@ module fetch_prefetcher import o3_types_pkg::*; #(
  output logic xprobe_valid_o,output vaddr_t xprobe_vaddr_o,input logic xprobe_grant_i,input xprobe_resp_t xprobe_resp_i,
  input xlate_fill_t xlate_fill_i,input fe_csr_t csr_i,input sfence_req_t sfence_i,input fe_kill_t kill_i,input logic hold_i,
  output fe_perf_t perf_o);
- logic last_valid_q,waiting_q,reuse_hit,active,xlate_on,probe_match,consume;
+ logic last_valid_q,waiting_q,reuse_hit,active,xlate_on,probe_match,consume,probe_install_q;
  vaddr_t last_line_q,probe_line_q,line;
  ftq_id_t probe_id_q;
  xlate_epoch_t probe_epoch_q,last_epoch_q;
@@ -39,7 +39,7 @@ module fetch_prefetcher import o3_types_pkg::*; #(
      if(xprobe_resp_i.hit) probe_fill='{valid:1'b1,vpn:line[38:12],ppn:xprobe_resp_i.ppn,level:xprobe_resp_i.level,g:xprobe_resp_i.g,asid:csr_i.satp_asid,epoch:csr_i.epoch};
      else begin ftq_pf_ready_o=1;perf_o[PE_PF_XLATE_MISS]=1;end
     end
-   end else begin
+   end else if(!probe_install_q) begin
     xprobe_valid_o=1;
     perf_o[PE_PF_XLATE_PROBE]=PERF_INC_W'(xprobe_grant_i);
    end
@@ -54,8 +54,11 @@ module fetch_prefetcher import o3_types_pkg::*; #(
  end
  assign consume=active && ftq_pf_ready_o;
  always_ff @(posedge clk_i) begin
-  if(rst_i) begin last_valid_q<=0;last_line_q<=0;waiting_q<=0;probe_line_q<=0;probe_id_q<='0;probe_epoch_q<=0;last_epoch_q<=0;end
+  if(rst_i) begin last_valid_q<=0;last_line_q<=0;waiting_q<=0;probe_line_q<=0;probe_id_q<='0;probe_epoch_q<=0;last_epoch_q<=0;probe_install_q<=0;end
   else begin
+   // Hold the candidate while its captured probe translation is installed;
+   // otherwise the added reuse-cache register would launch a duplicate probe.
+   probe_install_q<=probe_fill.valid;
    last_epoch_q<=csr_i.epoch;
    if(!active || !probe_match || xprobe_resp_i.valid) waiting_q<=0;
    if(xprobe_valid_o && xprobe_grant_i) begin waiting_q<=1;probe_line_q<=line;probe_id_q<=ftq_pf_ftq_id_i;probe_epoch_q<=csr_i.epoch;end
