@@ -60,6 +60,14 @@ async def eight_lane_pending_join_fault_and_cut(d):
         assert len(r['rows'])==1 and r['rows'][0]['exc'] and r['rows'][0]['cause']==12
         assert r['rows'][0]['edge']==(cut==7)
         assert r['rows'][0]['tval']==BASE+16
+    # Preserve pending-half precedence even for an inconsistent prediction
+    # before the entry point: no earlier instruction exists to truncate it.
+    for exit_slot in range(8):
+        for edge_exit in (False,True):
+            await b.reset()
+            r=await b.step(True,block([CNOP]*7+[0x0093]),entry=7,
+                cfi=True,slot=exit_slot,cfi_edge=edge_exit)
+            assert r['pending'] and r['last'] and not r['rows']
 
 
 @cocotb.test()

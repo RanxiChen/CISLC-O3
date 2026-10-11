@@ -63,7 +63,7 @@ module ifu_f0 import o3_types_pkg::*; #(
     logic [REGION_SLOTS-1:0] short_at, start_at;
     logic [31:0] expanded_at[REGION_SLOTS];
     logic legal_at[REGION_SLOTS];
-    logic [REGION_SLOTS-1:0] illegal_start;
+    logic [REGION_SLOTS-1:0] illegal_start,covers_exit_at;
     vaddr_t pc_at[REGION_SLOTS],edge_pc;
     assign edge_pc=current_block.region_base-vaddr_t'(2);
     logic [3:0] rank_at[REGION_SLOTS];
@@ -77,6 +77,8 @@ module ifu_f0 import o3_types_pkg::*; #(
         assign short_at[hw]=raw[1:0]!=2'b11;
         rvc_expander expand(.in_i(raw),.out_o(expanded_at[hw]),.legal_o(legal_at[hw]));
         assign illegal_start[hw]=start_at[hw] && short_at[hw] && !legal_at[hw];
+        assign covers_exit_at[hw]=start_at[hw] && (exit_pos<=5'(hw) ||
+            (!short_at[hw] && exit_pos==5'(hw+1)));
         if(hw==0) assign start=first_pos==0;
         else if(hw==1) assign start=first_pos==1 ||
             (first_pos<1 && g_halfword[0].start && short_at[0]);
@@ -179,8 +181,8 @@ module ifu_f0 import o3_types_pkg::*; #(
         assign finished=1'b1;
         assign save_half=active && !current_block.exc_valid && start_at[REGION_SLOTS-1]
             && !short_at[REGION_SLOTS-1] && !(|illegal_start[REGION_SLOTS-2:0])
-            && (!current_brief.pred.cfi_valid || (!current_brief.pred.is_edge &&
-                current_brief.pred.cfi_slot==fetch_slot_t'(REGION_SLOTS-1)));
+            && (!current_brief.pred.cfi_valid || (!(|covers_exit_at[REGION_SLOTS-2:0]) &&
+                !(edge_start && exit_pos<=0)));
     end else begin : g_remainder
         assign save_half=active && !current_block.exc_valid
             && (decode_lane[F0_SLOTS-1].pending_out || (!decode_lane[F0_SLOTS-1].stop_out && next_pos==5'(REGION_SLOTS-1)
