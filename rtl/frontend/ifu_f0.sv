@@ -63,6 +63,7 @@ module ifu_f0 import o3_types_pkg::*; #(
     logic [REGION_SLOTS-1:0] short_at, start_at;
     logic [31:0] expanded_at[REGION_SLOTS];
     logic legal_at[REGION_SLOTS];
+    logic [REGION_SLOTS-1:0] illegal_start;
     vaddr_t pc_at[REGION_SLOTS],edge_pc;
     assign edge_pc=current_block.region_base-vaddr_t'(2);
     logic [3:0] rank_at[REGION_SLOTS];
@@ -75,6 +76,7 @@ module ifu_f0 import o3_types_pkg::*; #(
         assign pc_at[hw]=current_block.region_base+vaddr_t'(2*hw);
         assign short_at[hw]=raw[1:0]!=2'b11;
         rvc_expander expand(.in_i(raw),.out_o(expanded_at[hw]),.legal_o(legal_at[hw]));
+        assign illegal_start[hw]=start_at[hw] && short_at[hw] && !legal_at[hw];
         if(hw==0) assign start=first_pos==0;
         else if(hw==1) assign start=first_pos==1 ||
             (first_pos<1 && g_halfword[0].start && short_at[0]);
@@ -170,10 +172,21 @@ module ifu_f0 import o3_types_pkg::*; #(
         end
     end
     // Can save the final halfword without using a fifth instruction lane.
-    assign save_half=active && !current_block.exc_valid
-        && (decode_lane[F0_SLOTS-1].pending_out || (!decode_lane[F0_SLOTS-1].stop_out && next_pos==5'(REGION_SLOTS-1)
-            && current_block.data[(REGION_SLOTS-1)*16 +: 2]==2'b11));
-    assign finished=decode_lane[F0_SLOTS-1].stop_out || next_pos>=5'(REGION_SLOTS) || save_half;
+    if(F0_SLOTS>=REGION_SLOTS) begin : g_whole_region
+        // At most eight instructions, including the edge join, can belong
+        // to a 16B region. No remainder storage or lane-rank -> hold feedback
+        // exists in this configuration. Only slot 7 can leave a halfword.
+        assign finished=1'b1;
+        assign save_half=active && !current_block.exc_valid && start_at[REGION_SLOTS-1]
+            && !short_at[REGION_SLOTS-1] && !(|illegal_start[REGION_SLOTS-2:0])
+            && (!current_brief.pred.cfi_valid || (!current_brief.pred.is_edge &&
+                current_brief.pred.cfi_slot==fetch_slot_t'(REGION_SLOTS-1)));
+    end else begin : g_remainder
+        assign save_half=active && !current_block.exc_valid
+            && (decode_lane[F0_SLOTS-1].pending_out || (!decode_lane[F0_SLOTS-1].stop_out && next_pos==5'(REGION_SLOTS-1)
+                && current_block.data[(REGION_SLOTS-1)*16 +: 2]==2'b11));
+        assign finished=decode_lane[F0_SLOTS-1].stop_out || next_pos>=5'(REGION_SLOTS) || save_half;
+    end
     assign out_last_o=active && finished;
     assign out_edge_pend_o=save_half;
     always_comb begin
@@ -198,6 +211,7 @@ module ifu_f0 import o3_types_pkg::*; #(
         if(pend_d.valid && (fe_killed_by(kill_i,pend_d.ftq_id,fetch_slot_t'(REGION_SLOTS-1),ftq_head_i)
             || fe_killed_by(trunc_boundary,pend_d.ftq_id,fetch_slot_t'(REGION_SLOTS-1),ftq_head_i))) pend_d.valid=0;
         if(sync_clear_i) begin hold_d='0;pend_d='0;end
+        if(F0_SLOTS>=REGION_SLOTS) hold_d='0;
     end
     always_ff @(posedge clk_i) begin
         if(rst_i) begin hold_q<='0;pend_q<='0;end
