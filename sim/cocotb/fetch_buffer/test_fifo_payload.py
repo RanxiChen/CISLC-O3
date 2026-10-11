@@ -109,7 +109,7 @@ async def full_records_banked_wrap_prefix_kill_and_backpressure(d):
     await b.step(7, take=True)
     await b.step(flush=True)
     # Force generation wrap and repeated physical-slot overwrite explicitly.
-    for _ in range(20):
+    for _ in range(b.gen_mask+2):
         await b.step(1)
         await b.step(kill=dict(all=True))
     for cycle in range(1800):
