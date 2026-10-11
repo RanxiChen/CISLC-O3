@@ -178,6 +178,13 @@ async def event_select_fe_and_be(d):
         await tb.cycles(4);tb.drive_perf()
         assert (await tb.peek(hpmc(3)))[0]==12,hex(event)
 
+    # New IFU observations occupy holes, preserving old selector numbers.
+    for event in range(0x16,0x1c):
+        await tb.access(hpme(3),RW,0x0100|event)
+        await clear_counters(tb);tb.drive_perf(fe={event:1})
+        await tb.cycles(7);tb.drive_perf()
+        assert (await tb.peek(hpmc(3)))[0]==7,hex(event)
+
 
 @cocotb.test()
 async def varying_increment_accumulates(d):

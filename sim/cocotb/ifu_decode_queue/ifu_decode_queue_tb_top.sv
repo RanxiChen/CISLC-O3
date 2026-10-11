@@ -1,4 +1,6 @@
-module ifu_decode_queue_tb_top import o3_types_pkg::*; (
+module ifu_decode_queue_tb_top import o3_types_pkg::*;
+#(parameter int TEST_WIDTH=4, localparam int F0_SLOTS=TEST_WIDTH,
+  localparam o3_cfg_pkg::frontend_cfg_t TEST_CFG=ifu_test_cfg_pkg::with_width(TEST_WIDTH)) (
     input logic clk_i,rst_i,clear_i,in_beat_valid_i,out_ready_i,
     input logic [F0_SLOTS-1:0] in_valid_i,
     input logic [F0_SLOTS-1:0][$bits(f0_inst_t)-1:0] in_inst_bits_i,
@@ -36,7 +38,7 @@ module ifu_decode_queue_tb_top import o3_types_pkg::*; (
     assign brief_id_mask_o=brief_mask;
     assign ftq_depth_o=FTQ_DEPTH;
     assign region_slots_o=REGION_SLOTS;
-    ifu_decode_queue #(.CFG(o3_cfg_pkg::O3_CFG.fe)) dut(
+    ifu_decode_queue #(.CFG(TEST_CFG)) dut(
         .clk_i(clk_i),.rst_i(rst_i),.clear_i(clear_i),
         .in_beat_valid_i(in_beat_valid_i),.in_ready_o(in_ready_o),.in_valid_i(in_valid_i),
         .in_i(in_lanes),.in_brief_i(in_brief),.in_last_i(in_last_i),.in_edge_pend_i(in_edge_pend_i),

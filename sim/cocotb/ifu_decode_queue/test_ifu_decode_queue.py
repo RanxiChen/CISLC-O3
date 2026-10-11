@@ -102,9 +102,10 @@ async def registered_ownership_and_one_beat_per_cycle(d):
 async def selective_wrap_kill_and_empty_beat_metadata(d):
     b=await bench(d)
     older=b.packet(b.depth-1,last=True)
-    winner=b.packet(b.depth,last=False,edge=True)
+    winner=b.packet(b.depth,mask=(1<<b.lanes)-1,last=False,edge=True)
+    positions=(0,2,4,6) if b.lanes==4 else tuple(range(b.lanes))
     winner=replace(winner,lanes=tuple((w&~b.slotmask)|(slot<<b.ss)
-        for w,slot in zip(winner.lanes,(0,2,4,6))))
+        for w,slot in zip(winner.lanes,positions)))
     await b.step(older);await b.step(winner)
     await b.step(kill=dict(id=b.depth,slot=3),head=b.depth-1,ready=True)
     assert b.queue[0]==older

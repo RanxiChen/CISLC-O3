@@ -17,7 +17,7 @@ if ((rc==0)); then
 fi
 printf 'frontend_age\t%s\n' "$rc" >> "$EVIDENCE_DIR/status.tsv"
 if ((rc)); then failed=1; fi
-names=(ifu_decode_queue ubtb ras fetch_buffer tage bpu bpu_slow_check ftq redirect_arbiter loop_predictor main_btb)
+names=(ifu_decode_queue ubtb ras fetch_buffer tage bpu bpu_slow_check ftq redirect_arbiter loop_predictor main_btb hpm_counters)
 for name in "${names[@]}"; do
     make -j4 -C "sim/cocotb/$name" sim TEST_SEED="${TEST_SEED:-1}" \
         EXTRA_ARGS='--timing --assert -Wno-fatal' \
@@ -45,6 +45,7 @@ rc=$?
 printf 'fetch_buffer_payload\t%s\n' "$rc" >> "$EVIDENCE_DIR/status.tsv"
 if ((rc)); then failed=1; fi
 for spec in 'ifu_f0 Makefile.wide ifu_f0_wide' \
+            'ifu_decode_queue Makefile.wide ifu_decode_queue_wide' \
             'ifu_decode_queue Makefile.bandwidth ifu_bandwidth' \
             'fetch_buffer Makefile.prefix fetch_buffer_prefix'; do
     read -r dir makefile name <<< "$spec"
@@ -67,7 +68,7 @@ for path in sorted(root.glob("*.xml")):
     failed |= not cases or result["failures"]>0 or result["skips"]>0
 required={"ifu_pipeline", "ifu_decode_queue", "ifu_f0", "ifu_f1", "fetch_return_queue", "fetch_prefetcher", "icache",
           "ubtb", "ras", "ras_depth1", "fetch_buffer", "fetch_buffer_payload", "tage", "bpu", "bpu_slow_check", "ftq", "redirect_arbiter", "loop_predictor", "main_btb",
-          "ifu_f0_wide", "ifu_bandwidth", "fetch_buffer_prefix"}
+          "ifu_f0_wide", "ifu_decode_queue_wide", "ifu_bandwidth", "fetch_buffer_prefix", "hpm_counters"}
 missing=required-set(results)
 (root/"test-results.json").write_text(json.dumps({"suites":results,"missing":sorted(missing)},indent=2)+"\n")
 sys.exit(int(failed or bool(missing)))
