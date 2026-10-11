@@ -12,7 +12,7 @@
 - 空闲 waiter one-hot 指针提前寄存，每项在本地生成写使能。保持 oldest-ready 响应顺序、错误响应、demand 优先及预取保留额度。
 - F1 到 buffer 不新增寄存级。默认路径按有效前缀固定分配物理行，迟到的截断只影响生效和顺序状态；通用 buffer 保留稀疏入队能力。
 - 翻译复用缓存的 demand/probe 输入各寄存一拍；同拍 demand 优先，安装期间不重复发起 probe；epoch、SFENCE 仍阻止过期翻译安装。
-- TAGE 查询、训练流水、同行冲突策略和不丢训练规则均不变；本轮不做 32B 取指。
+- TAGE 查询、训练流水、同行冲突策略和不丢训练规则均不变。分配 eligibility 用 provider 更新前的 usefulness：provider 更新要求 `provider==t`，分配候选要求 `provider<t` 或无 provider，两条件互斥，因此可去掉更新→候选的组合依赖，保持更新结果完全相同。本轮不做 32B 取指。
 
 ## 观测口径
 

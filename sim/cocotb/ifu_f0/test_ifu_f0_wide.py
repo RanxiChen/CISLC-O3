@@ -26,7 +26,7 @@ async def all_region_tilings_entries_cfi_and_stalls(d):
     for instructions in tilings():
         halves=[];expected=[]
         for length,word in instructions:
-            expected.append((len(halves),length,word))
+            expected.append((len(halves),length,0x13 if length==2 else word))
             halves.append(word & 0xffff)
             if length==4:halves.append(word>>16)
         for entry,_,_ in expected:

@@ -412,6 +412,23 @@ async def seeded_transactions(dut):
 
 
 @cocotb.test()
+async def every_compacted_lane_correction_and_exception(dut):
+    """Include lanes 4..7 in the default wide prefix path, without reducing
+    the original narrow suite or its random transaction count."""
+    b=Bench(dut);await b.reset()
+    for lane in range(b.width):
+        items=tuple(Item(k,BASE+2*k,jal(0,16) if k==lane else NOP,
+                         ftq_id=3,inst_len=2) for k in range(b.width))
+        for ready in (False,True):
+            await b.case(f'compressed correction lane {lane}',Inputs(items=items,ready=ready),
+                exp_lanes=lane+1,exp_next=BASE+2*lane+16,exp_req={'slot':lane})
+        items=tuple(Item(k,BASE+2*k,NOP,ftq_id=3,inst_len=2,
+            exc=k==lane,cause=12 if k==lane else 0,tval=BASE+2*k if k==lane else 0)
+            for k in range(b.width))
+        await b.case(f'exception lane {lane}',Inputs(items=items),exp_lanes=lane+1)
+
+
+@cocotb.test()
 async def priority_and_first_correction(dut):
     b = Bench(dut)
     await b.reset()
