@@ -30,6 +30,21 @@ module l8a_dtlb_array import o3_types_pkg::*; #(
         logic r,w,x,u,g,a,d;
     } entry_t;
     entry_t base_q[8][4],super_q[4],selected[PORTS];
+    // VPN/ASID/global/valid stay in the CAM. Translation payload is single-
+    // writer RAM, with one query copy per port; the registered lookup latency
+    // and two independent queries per cycle remain unchanged.
+    logic [43:0] base_ppn[PORTS][4];
+    for(genvar p=0;p<PORTS;p++) begin : g_ppn_port
+        for(genvar w=0;w<4;w++) begin : g_way
+            (* ram_style="distributed" *) logic [43:0] ppn_mem[8];
+            assign base_ppn[p][w]=ppn_mem[set_idx[p]];
+            always_ff @(posedge clk) if(!rst && ptw_resp_i.valid && ptw_resp_i.src==PTW_SRC_DTLB &&
+                miss_q && granted_q && ptw_resp_i.epoch==miss_req_q.epoch &&
+                ptw_resp_i.epoch==epoch_i && !sfence_i.valid && !sf_pending_q &&
+                !ptw_resp_i.page_fault && !ptw_resp_i.access_fault && ptw_resp_i.perm_a &&
+                ptw_resp_i.level==0 && victim==w) ppn_mem[fill_set]<=ptw_resp_i.ppn;
+        end
+    end
     logic [2:0] plru_q[8],sp_plru_q;
     logic valid_q[PORTS],store_q[PORTS],translate_q[PORTS],sum_q[PORTS],mxr_q[PORTS],adue_q[PORTS];
     logic [1:0] priv_q[PORTS];
@@ -42,6 +57,11 @@ module l8a_dtlb_array import o3_types_pkg::*; #(
     int hit_way[PORTS],hit_super[PORTS],set_idx[PORTS],victim,fill_set;
     sfence_req_t sf_q;
     logic sf_pending_q,sf_done_q;
+    // Registered lookup address drives payload RAM independently of its
+    // returned translation. Avoid a process-wide address/return false loop.
+    for(genvar p=0;p<PORTS;p++) begin : g_lookup_index
+        assign set_idx[p]=int'(va_q[p][14:12]);
+    end
     assign sfence_done_o=sf_done_q;
     assign ptw_req_valid_o=miss_q && !granted_q && !kill_i && miss_req_q.epoch==epoch_i;
     assign ptw_req_o=miss_req_q;
@@ -50,15 +70,30 @@ module l8a_dtlb_array import o3_types_pkg::*; #(
         query_q[p]='{vpn:va_q[p][38:12],asid:asid_q[p],epoch:epoch_q[p],
             src:PTW_SRC_DTLB,root_ppn:root_i,
             priv:priv_q[p],is_store:store_q[p],sum:sum_q[p],mxr:mxr_q[p],adue:adue_q[p]};
-        set_idx[p]=int'(va_q[p][14:12]);selected[p]='0;hit[p]=0;hit_way[p]=-1;hit_super[p]=-1;
-        for(int w=3;w>=0;w--) if(super_q[w].valid &&
-            sv39_covers(super_q[w].vpn,va_q[p][38:12],super_q[w].level) &&
-            (super_q[w].g || super_q[w].asid==asid_q[p])) begin
-            selected[p]=super_q[w];hit[p]=1;hit_super[p]=w;
-        end
-        for(int w=3;w>=0;w--) if(base_q[set_idx[p]][w].valid &&
-            base_q[set_idx[p]][w].vpn==va_q[p][38:12] && (base_q[set_idx[p]][w].g || base_q[set_idx[p]][w].asid==asid_q[p])) begin
-            selected[p]=base_q[set_idx[p]][w];hit[p]=1;hit_way[p]=w;hit_super[p]=-1;
+        selected[p]='0;hit[p]=0;hit_way[p]=-1;hit_super[p]=-1;
+        begin
+            logic [3:0] base_hit,super_hit,base_pick,super_pick;
+            logic seen_base,seen_super;entry_t base_entry;
+            for(int w=0;w<4;w++) begin
+                super_hit[w]=super_q[w].valid &&
+                    sv39_covers(super_q[w].vpn,va_q[p][38:12],super_q[w].level) &&
+                    (super_q[w].g || super_q[w].asid==asid_q[p]);
+                base_hit[w]=base_q[set_idx[p]][w].valid &&
+                    base_q[set_idx[p]][w].vpn==va_q[p][38:12] &&
+                    (base_q[set_idx[p]][w].g || base_q[set_idx[p]][w].asid==asid_q[p]);
+            end
+            seen_base=0;seen_super=0;
+            for(int w=0;w<4;w++) begin
+                base_pick[w]=base_hit[w] && !seen_base;
+                super_pick[w]=super_hit[w] && !seen_super && !(|base_hit);
+                seen_base|=base_hit[w];seen_super|=super_hit[w];
+                base_entry=base_q[set_idx[p]][w];base_entry.ppn=base_ppn[p][w];
+                selected[p]|=entry_t'(base_entry & {$bits(entry_t){base_pick[w]}});
+                selected[p]|=entry_t'(super_q[w] & {$bits(entry_t){super_pick[w]}});
+                if(base_pick[w]) hit_way[p]=w;
+                if(super_pick[w]) hit_super[p]=w;
+            end
+            hit[p]=(|base_hit) || (|super_hit);
         end
         pending_match[p]=fault_q && fault_req_q.vpn==va_q[p][38:12] && fault_req_q.asid==asid_q[p]
             && fault_req_q.epoch==epoch_q[p] && fault_req_q.is_store==store_q[p]
@@ -122,7 +157,7 @@ module l8a_dtlb_array import o3_types_pkg::*; #(
                     end else if(ptw_resp_i.perm_a) begin
                         if(ptw_resp_i.level==0) begin
                             base_q[fill_set][victim]<='{valid:1'b1,vpn:ptw_resp_i.vpn,asid:ptw_resp_i.asid,
-                                ppn:ptw_resp_i.ppn,level:ptw_resp_i.level,r:ptw_resp_i.perm_r,w:ptw_resp_i.perm_w,
+                                ppn:'0,level:ptw_resp_i.level,r:ptw_resp_i.perm_r,w:ptw_resp_i.perm_w,
                                 x:ptw_resp_i.perm_x,u:ptw_resp_i.perm_u,g:ptw_resp_i.perm_g,a:ptw_resp_i.perm_a,d:ptw_resp_i.perm_d};
                             plru_q[fill_set]<=mmu_plru_touch(plru_q[fill_set],victim);
                         end else begin

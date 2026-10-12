@@ -1,18 +1,20 @@
 /**
  * Shared INT PRF read-port allocation by ROB age (B14/B15).
  * INT/MEM/BR and one single-source FP candidate compete atomically for available ports.
- * Only an available execution/RegRead slot can participate; denied candidates remain in IQ.
- * FP store data uses dedicated FP read port 6, so FSW/FSD requests only INT rs1 here.
+ * Only an eligible request can participate. The caller retains ownership on denial;
+ * backend keeps denied heads in the registered per-FU A0 request stage.
+ * FP store data uses dedicated configured FP read ports, so FSW/FSD requests only INT rs1 here.
  * FP lane read ports are fixed separately in backend; this module grants only its INT source.
  * 当前实现状态：闭环简化（L9）；lint/测试未运行。
- * N: order candidates and allocate complete source read sets. N edge: granted entries
- * leave IQ and latch PRF read values in RegRead. N+1: execution sees captured operands.
+ * 2026-10-11: parallel bounded-age rank plus narrow greedy port allocation.
+ * Backend places this combinational helper between two real arbitration registers.
+ * Standalone callers retain the same combinational interface and tie-breaking rules.
  */
 module prf_read_arbiter
     import o3_pkg::*;
 #(
     parameter  o3_cfg_pkg::backend_cfg_t CFG,
-    localparam int NUM_INT_ALUS    = CFG.exec.num_alu,
+    parameter int NUM_INT_CANDIDATES = CFG.exec.num_alu,
     localparam int PRF_READ_PORTS  = CFG.exec.int_prf_read_ports,
     localparam int NUM_ROB_ENTRIES = CFG.rob.entries,
     localparam int PORT_W          = $clog2(PRF_READ_PORTS),
@@ -22,9 +24,9 @@ module prf_read_arbiter
     input  logic                        issue_block_i,   // 仅 M；正确解析不阻塞
     input  logic [ROB_W-1:0]            rob_head_i,
 
-    input  renamed_uop_t [NUM_INT_ALUS-1:0] int_issue_uop_i,
-    input  logic [NUM_INT_ALUS-1:0]     int_issue_valid_i,
-    input  logic                        alu_regread_ready_i [NUM_INT_ALUS-1:0],
+    input  renamed_uop_t [NUM_INT_CANDIDATES-1:0] int_issue_uop_i,
+    input  logic [NUM_INT_CANDIDATES-1:0] int_issue_valid_i,
+    input  logic alu_regread_ready_i [NUM_INT_CANDIDATES-1:0],
     input  renamed_uop_t [P-1:0] mem_issue_uop_i,
     input  logic [P-1:0] mem_issue_valid_i,
     input  logic mem_accept_i[P],    // Memory 执行级可接收
@@ -38,11 +40,11 @@ module prf_read_arbiter
     output logic fp_read_grant_o,
     output logic [PORT_W-1:0] fp_src1_port_o,
 
-    output logic [NUM_INT_ALUS-1:0]     int_read_grant_o,
+    output logic [NUM_INT_CANDIDATES-1:0] int_read_grant_o,
     output logic [P-1:0] mem_read_grant_o,
     output logic                        branch_read_grant_o,
-    output logic [PORT_W-1:0]           int_src1_port_o [NUM_INT_ALUS-1:0],
-    output logic [PORT_W-1:0]           int_src2_port_o [NUM_INT_ALUS-1:0],
+    output logic [PORT_W-1:0] int_src1_port_o [NUM_INT_CANDIDATES-1:0],
+    output logic [PORT_W-1:0] int_src2_port_o [NUM_INT_CANDIDATES-1:0],
     output logic [PORT_W-1:0]           mem_src1_port_o[P],
     output logic [PORT_W-1:0]           mem_src2_port_o[P],
     output logic [PORT_W-1:0]           branch_src1_port_o,
@@ -50,133 +52,114 @@ module prf_read_arbiter
     output logic [PREG_IDX_WIDTH-1:0]   prf_rd_addr_o [PRF_READ_PORTS-1:0]
 );
 
-    function automatic int unsigned rob_age(input logic [ROB_W-1:0] idx);
-        rob_age = (int'(idx) + NUM_ROB_ENTRIES - int'(rob_head_i)) % NUM_ROB_ENTRIES;
+    localparam int SOURCES = NUM_INT_CANDIDATES + P + 2;
+    localparam int LEAVES = 1 << $clog2(SOURCES);
+    localparam int RANK_W = $clog2(SOURCES+1);
+    localparam int USED_W = $clog2(PRF_READ_PORTS+1);
+    typedef logic [ROB_W-1:0] age_t;
+    typedef logic [USED_W:0] count_t;
+    logic [SOURCES-1:0] eligible, granted;
+    renamed_uop_t candidate [SOURCES];
+    logic need1 [SOURCES], need2 [SOURCES];
+    logic [RANK_W-1:0] ranks [SOURCES];
+    logic [PORT_W-1:0] source_port1 [SOURCES], source_port2 [SOURCES];
+
+    function automatic age_t rob_age(input logic [ROB_W-1:0] idx);
+        logic [ROB_W:0] distance;
+        // Circular age is bounded by ROB depth; avoid signed 32-bit remainder.
+        distance = {1'b0,idx} >= {1'b0,rob_head_i}
+                 ? {1'b0,idx} - {1'b0,rob_head_i}
+                 : {1'b0,idx} + (ROB_W+1)'(NUM_ROB_ENTRIES) - {1'b0,rob_head_i};
+        return age_t'(distance);
     endfunction
 
-    // Wakeup/select、FU空闲和PRF读口在同一个组合仲裁中联合决定。候选按ROB年龄
-    // 从老到年轻贪心扫描；一条uop所需的1/2个读口必须原子取得，否则留在IQ。
     always_comb begin
-        logic [NUM_INT_ALUS-1:0] considered_int;
-        logic [P-1:0] considered_mem;
-        logic considered_branch, considered_fp;
-        int unsigned read_used;
+        eligible='0; candidate='{default:'0};
+        need1='{default:0}; need2='{default:0};
+        for (int src=0;src<NUM_INT_CANDIDATES;src++) begin
+            candidate[src]=int_issue_uop_i[src];
+            eligible[src]=int_issue_valid_i[src] && alu_regread_ready_i[src] && !issue_block_i;
+            need1[src]=candidate[src].rs1_read_en;
+            need2[src]=candidate[src].rs2_read_en && !candidate[src].use_imm;
+        end
+        for (int p=0;p<P;p++) begin
+            candidate[NUM_INT_CANDIDATES+p]=mem_issue_uop_i[p];
+            eligible[NUM_INT_CANDIDATES+p]=mem_issue_valid_i[p] && mem_accept_i[p] && !issue_block_i;
+            need1[NUM_INT_CANDIDATES+p]=mem_issue_uop_i[p].rs1_read_en;
+            need2[NUM_INT_CANDIDATES+p]=mem_issue_uop_i[p].rs2_read_en &&
+                mem_issue_uop_i[p].ext.rs2_dom!=o3_types_pkg::RD_FP;
+        end
+        candidate[SOURCES-2]=br_issue_uop_i;
+        eligible[SOURCES-2]=br_issue_valid_i && branch_regread_ready_i && !issue_block_i;
+        need1[SOURCES-2]=br_issue_uop_i.rs1_read_en;
+        need2[SOURCES-2]=br_issue_uop_i.rs2_read_en;
+        candidate[SOURCES-1]=fp_issue_uop_i;
+        eligible[SOURCES-1]=fp_issue_valid_i && fp_regread_ready_i && !issue_block_i;
+        need1[SOURCES-1]=1'b1; // Only an INT-source FP operation uses this candidate.
+    end
 
-        prf_rd_addr_o = '{default: '0};
-        int_read_grant_o = '0;
-        mem_read_grant_o = 1'b0;
-        branch_read_grant_o = 1'b0;
-        fp_read_grant_o=0; fp_src1_port_o='0;
-        int_src1_port_o = '{default: '0};
-        int_src2_port_o = '{default: '0};
-        mem_src1_port_o = '{default:'0};
-        mem_src2_port_o = '{default:'0};
-        branch_src1_port_o = '0;
-        branch_src2_port_o = '0;
-        considered_int = '0;
-        considered_mem = 1'b0;
-        considered_branch = 1'b0; considered_fp=0;
-        read_used = 0;
-
-        for (int choice = 0; choice < NUM_INT_ALUS + P + 2; choice++) begin
-            int chosen_kind;
-            int chosen_idx;
-            int unsigned chosen_age;
-            int unsigned read_need;
-            chosen_kind = -1;
-            chosen_idx = -1;
-            chosen_age = NUM_ROB_ENTRIES;
-            read_need = 0;
-
-            for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
-                if (!issue_block_i
-                 && !considered_int[alu] && int_issue_valid_i[alu]
-                 && alu_regread_ready_i[alu]
-                 && (rob_age(int_issue_uop_i[alu].rob_idx) < chosen_age)) begin
-                    chosen_kind = 0;
-                    chosen_idx = alu;
-                    chosen_age = rob_age(int_issue_uop_i[alu].rob_idx);
-                end
-            end
-            for(int m=0;m<P;m++) if (!issue_block_i && !considered_mem[m] && mem_issue_valid_i[m]
-             && mem_accept_i[m] && ((chosen_kind<0) || rob_age(mem_issue_uop_i[m].rob_idx)<chosen_age)) begin
-                chosen_kind=1;chosen_idx=m;chosen_age=rob_age(mem_issue_uop_i[m].rob_idx);
-            end
-            if (!issue_block_i && !considered_branch && br_issue_valid_i
-             && branch_regread_ready_i
-             && ((chosen_kind < 0) || (rob_age(br_issue_uop_i.rob_idx) < chosen_age))) begin
-                chosen_kind = 2;
-                chosen_idx = 0;
-                chosen_age = rob_age(br_issue_uop_i.rob_idx);
-            end
-
-            if (!issue_block_i && !considered_fp && fp_issue_valid_i && fp_regread_ready_i
-                && ((chosen_kind<0) || rob_age(fp_issue_uop_i.rob_idx)<chosen_age)) begin
-                chosen_kind=3; chosen_idx=0; chosen_age=rob_age(fp_issue_uop_i.rob_idx);
-            end
-
-            if (chosen_kind == 0) begin
-                considered_int[chosen_idx] = 1'b1;
-                read_need = int'(int_issue_uop_i[chosen_idx].rs1_read_en)
-                          + int'(int_issue_uop_i[chosen_idx].rs2_read_en
-                                 && !int_issue_uop_i[chosen_idx].use_imm);
-                if ((read_used + read_need) <= PRF_READ_PORTS) begin
-                    int_read_grant_o[chosen_idx] = 1'b1;
-                    if (int_issue_uop_i[chosen_idx].rs1_read_en) begin
-                        int_src1_port_o[chosen_idx] = PORT_W'(read_used);
-                        prf_rd_addr_o[read_used] = int_issue_uop_i[chosen_idx].src1_preg;
-                        read_used++;
-                    end
-                    if (int_issue_uop_i[chosen_idx].rs2_read_en
-                     && !int_issue_uop_i[chosen_idx].use_imm) begin
-                        int_src2_port_o[chosen_idx] = PORT_W'(read_used);
-                        prf_rd_addr_o[read_used] = int_issue_uop_i[chosen_idx].src2_preg;
-                        read_used++;
-                    end
-                end
-            end else if (chosen_kind == 1) begin
-                considered_mem[chosen_idx] = 1'b1;
-                read_need = int'(mem_issue_uop_i[chosen_idx].rs1_read_en)
-                          + int'(mem_issue_uop_i[chosen_idx].rs2_read_en && mem_issue_uop_i[chosen_idx].ext.rs2_dom!=o3_types_pkg::RD_FP);
-                if ((read_used + read_need) <= PRF_READ_PORTS) begin
-                    mem_read_grant_o[chosen_idx] = 1'b1;
-                    if (mem_issue_uop_i[chosen_idx].rs1_read_en) begin
-                        mem_src1_port_o[chosen_idx] = PORT_W'(read_used);
-                        prf_rd_addr_o[read_used] = mem_issue_uop_i[chosen_idx].src1_preg;
-                        read_used++;
-                    end
-                    if (mem_issue_uop_i[chosen_idx].rs2_read_en && mem_issue_uop_i[chosen_idx].ext.rs2_dom!=o3_types_pkg::RD_FP) begin
-                        mem_src2_port_o[chosen_idx] = PORT_W'(read_used);
-                        prf_rd_addr_o[read_used] = mem_issue_uop_i[chosen_idx].src2_preg;
-                        read_used++;
-                    end
-                end
-            end else if (chosen_kind == 2) begin
-                considered_branch = 1'b1;
-                read_need = int'(br_issue_uop_i.rs1_read_en)
-                          + int'(br_issue_uop_i.rs2_read_en);
-                if ((read_used + read_need) <= PRF_READ_PORTS) begin
-                    branch_read_grant_o = 1'b1;
-                    if (br_issue_uop_i.rs1_read_en) begin
-                        branch_src1_port_o = PORT_W'(read_used);
-                        prf_rd_addr_o[read_used] = br_issue_uop_i.src1_preg;
-                        read_used++;
-                    end
-                    if (br_issue_uop_i.rs2_read_en) begin
-                        branch_src2_port_o = PORT_W'(read_used);
-                        prf_rd_addr_o[read_used] = br_issue_uop_i.src2_preg;
-                        read_used++;
-                    end
-                end
-            end else if (chosen_kind==3) begin
-                considered_fp=1;
-                if (read_used<PRF_READ_PORTS) begin
-                    fp_read_grant_o=1; fp_src1_port_o=PORT_W'(read_used);
-                    prf_rd_addr_o[read_used]=fp_issue_uop_i.src1_preg;
-                    read_used++;
-                end
-            end
+    // Rank eligible candidates in parallel; ties retain the original source order.
+    always_comb begin
+        age_t ages [SOURCES];
+        logic [RANK_W-1:0] tree [SOURCES][2*LEAVES];
+        tree='{default:'{default:'0}};
+        for (int src=0;src<SOURCES;src++) ages[src]=rob_age(candidate[src].rob_idx);
+        for (int src=0;src<SOURCES;src++) begin
+            for (int other=0;other<SOURCES;other++)
+                tree[src][LEAVES+other]=RANK_W'(eligible[other] &&
+                    (ages[other]<ages[src] || (ages[other]==ages[src] && other<src)));
+            for (int node=LEAVES-1;node>0;node--)
+                tree[src][node]=tree[src][2*node]+tree[src][2*node+1];
+            ranks[src]=tree[src][1];
         end
     end
 
+    // Only bounded port occupancy depends on the preceding age rank. No rank
+    // repeats a full oldest-candidate scan or transports a wide uop through it.
+    // Keep skip-and-continue semantics when an older two-source request cannot fit.
+    always_comb begin
+        count_t used;
+        used='0; granted='0; prf_rd_addr_o='{default:'0};
+        source_port1='{default:'0}; source_port2='{default:'0};
+        for (int rank=0;rank<SOURCES;rank++) begin
+            logic [SOURCES-1:0] at_rank;
+            logic first,second;
+            logic [PREG_IDX_WIDTH-1:0] addr1,addr2;
+            count_t demand;
+            at_rank='0; first=0; second=0; addr1='0; addr2='0;
+            for (int src=0;src<SOURCES;src++) begin
+                at_rank[src]=eligible[src] && ranks[src]==RANK_W'(rank);
+                first |= at_rank[src] && need1[src];
+                second |= at_rank[src] && need2[src];
+                addr1 |= candidate[src].src1_preg & {PREG_IDX_WIDTH{at_rank[src]}};
+                addr2 |= candidate[src].src2_preg & {PREG_IDX_WIDTH{at_rank[src]}};
+            end
+            demand=count_t'(first)+count_t'(second);
+            if ((used+demand)<=count_t'(PRF_READ_PORTS)) begin
+                granted |= at_rank;
+                for (int src=0;src<SOURCES;src++) if(at_rank[src]) begin
+                    if(first) source_port1[src]=PORT_W'(used);
+                    if(second) source_port2[src]=PORT_W'(used+count_t'(first));
+                end
+                if(first) prf_rd_addr_o[used]=addr1;
+                if(second) prf_rd_addr_o[used+count_t'(first)]=addr2;
+                used+=demand;
+            end
+        end
+        int_read_grant_o='0; mem_read_grant_o='0;
+        int_src1_port_o='{default:'0}; int_src2_port_o='{default:'0};
+        mem_src1_port_o='{default:'0}; mem_src2_port_o='{default:'0};
+        for(int src=0;src<NUM_INT_CANDIDATES;src++) begin
+            int_read_grant_o[src]=granted[src];
+            int_src1_port_o[src]=source_port1[src]; int_src2_port_o[src]=source_port2[src];
+        end
+        for(int p=0;p<P;p++) begin
+            mem_read_grant_o[p]=granted[NUM_INT_CANDIDATES+p];
+            mem_src1_port_o[p]=source_port1[NUM_INT_CANDIDATES+p];
+            mem_src2_port_o[p]=source_port2[NUM_INT_CANDIDATES+p];
+        end
+        branch_read_grant_o=granted[SOURCES-2]; fp_read_grant_o=granted[SOURCES-1];
+        branch_src1_port_o=source_port1[SOURCES-2]; branch_src2_port_o=source_port2[SOURCES-2];
+        fp_src1_port_o=source_port1[SOURCES-1];
+    end
 endmodule

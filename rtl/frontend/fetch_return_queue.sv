@@ -44,7 +44,21 @@ module fetch_return_queue
     localparam int DEPTH=CFG.fetch.return_queue_depth;
     localparam int CW=$clog2(DEPTH+1);
     typedef enum logic [1:0] {FREE,PEND,READY,ZOMBIE} state_t;
-    typedef struct packed {state_t state; rq_out_t item;} slot_t;
+    typedef struct packed {ftq_id_t ftq_id; vaddr_t region_base;} owner_t;
+    typedef struct packed {state_t state; owner_t item;} slot_t;
+    typedef struct packed {
+        logic [REGION_BYTES*8-1:0] data;
+        logic exc_valid;
+        exception_cause_t exc_cause;
+    } response_payload_t;
+    // Reservation/cancellation change ownership, never returned cache data.
+    // A response is the only writer; the output snapshot is the only reader.
+    (* ram_style="distributed" *) response_payload_t response_mem[DEPTH];
+    response_payload_t snapshot_payload;
+    assign snapshot_payload=response_mem[snapshot_slot];
+    always_ff @(posedge clk_i) if(!rst_i && resp_i.valid)
+        response_mem[resp_i.rq_idx] <= '{data:resp_i.data,
+            exc_valid:resp_i.exc_valid,exc_cause:resp_i.exc_cause};
     slot_t slots_q[DEPTH],slots_d[DEPTH];
     rq_idx_t ord_q[DEPTH],ord_d[DEPTH];
     logic [CW-1:0] count_q,count_d;
@@ -92,7 +106,10 @@ module fetch_return_queue
         end else if(kill_i.valid || (output_valid_q && head_refresh)) output_valid_q<=0;
         else if((!output_valid_q || deq_fire) && head_ready && !snapshot_refresh) begin
             output_valid_q<=1;
-            output_data_q<=slots_q[snapshot_slot].item;
+            output_data_q<='{ftq_id:slots_q[snapshot_slot].item.ftq_id,
+                region_base:slots_q[snapshot_slot].item.region_base,
+                data:snapshot_payload.data,exc_valid:snapshot_payload.exc_valid,
+                exc_cause:snapshot_payload.exc_cause};
             output_brief_q<=ftq_brief_i;
         end else if(deq_fire) output_valid_q<=0;
     end
@@ -158,9 +175,6 @@ module fetch_return_queue
                     if (slots_d[row].state==ZOMBIE) slots_d[row].state=FREE;
                     else begin
                         slots_d[row].state=READY;
-                        slots_d[row].item.data=resp_i.data;
-                        slots_d[row].item.exc_valid=resp_i.exc_valid;
-                        slots_d[row].item.exc_cause=resp_i.exc_cause;
                     end
                 end
                 if (kill_row) slots_d[row].state=slots_d[row].state==PEND ? ZOMBIE : FREE;

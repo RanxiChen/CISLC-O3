@@ -1,20 +1,31 @@
 /**
  * Split CVFPU identity and result transport shared by the four L9 wrappers.
  * N: RegRead handshakes once, reserving a free identity slot. Only accepted
- * CVFPU outputs enter the common holding register; the format arbiter need not
+ * CVFPU outputs enter a two-entry local completion buffer; the format arbiter need not
  * lock a candidate under backpressure. N edge: capture/update slots; N+1 holds
  * the result until domain writeback accepts it. Recovery marks in-flight slots
- * killed without reusing them. A slot is freed only on final writeback/discard.
+ * killed without reusing them. A slot is freed on W0 ownership transfer or discard; W1 owns final writeback.
  * CVFPU and side tables share system reset; native flush is tied low.
- * FMV has a one-cycle bitwise bypass, round-robin with CVFPU at the holding slot.
+ * FMV has a one-cycle bitwise bypass, round-robin with CVFPU at completion capture.
  * Cancellation is checked combinationally at every delivery boundary.
- * B33 early wakeup for FP FUs is deferred to performance work.
- * 当前实现状态：闭环简化（L9）；lint/功能测试未运行。
+ * 2026-10-11: reuse Breeze CVFPU 23153ba, with distributed ADDMUL FP32/FP64
+ * arithmetic pipelines of 5/7 stages. Requests may overlap; admission requires
+ * both a free identity slot and native CVFPU input readiness. Results/flags/tags
+ * advance together and remain held through writeback; native flush stays low.
+ * B33: a known holding-slot capture notifies scheduling; held live results bypass.
+ * 当前实现状态：闭环简化（L9）；本次流水迁移的 lint/功能测试未运行。
+ * 测试：sim/cocotb/fpu_fu/（新增流水重叠、混合格式/舍入及取消用例未运行）。
  */
 module o3_fpu_opgroup import o3_pkg::*; #(
     parameter o3_cfg_pkg::backend_cfg_t CFG,
     parameter fpnew_pkg::opgroup_e GROUP,
-    localparam int S=CFG.exec.fpu_inflight_slots,
+    localparam int SP_PIPE_REGS=5,
+    localparam int DP_PIPE_REGS=7,
+    // Seven native stages + two local result slots + one admission slack.
+    // Admission deliberately uses current ownership, never WB returns.
+    localparam int FMA_MIN_SLOTS=DP_PIPE_REGS+3,
+    localparam int S=(GROUP==fpnew_pkg::ADDMUL && CFG.exec.fpu_inflight_slots<FMA_MIN_SLOTS)
+        ? FMA_MIN_SLOTS:CFG.exec.fpu_inflight_slots,
     localparam int SLOT_W=(S>1 ? $clog2(S):1),
     localparam int NOP=fpnew_pkg::num_operands(GROUP)
 ) (
@@ -26,6 +37,8 @@ module o3_fpu_opgroup import o3_pkg::*; #(
     input logic resp_ready_i,
     output o3_types_pkg::fpu_resp_t resp_o,
     input branch_resolution_t resolution_i,
+    output o3_types_pkg::wake_promise_t wake_o,
+    output o3_types_pkg::cpl_bypass_t bypass_o,
     output logic busy_o
 );
     typedef logic [SLOT_W-1:0] slot_id_t;
@@ -37,6 +50,17 @@ module o3_fpu_opgroup import o3_pkg::*; #(
     slot_id_t hold_slot_q;
     logic [63:0] hold_result_q;
     logic [4:0] hold_flags_q;
+    // Local completion ownership is separate from current W0 selection.
+    // Current registered occupancy supplies capture credit, including at II=1.
+    logic hold_head_q,hold_tail_q;
+    logic [1:0] hold_count_q;
+    slot_id_t hold_slot_ram [2];
+    logic [63:0] hold_result_ram [2];
+    logic [4:0] hold_flags_ram [2];
+    assign hold_valid_q=hold_count_q!=0;
+    assign hold_slot_q=hold_slot_ram[hold_head_q];
+    assign hold_result_q=hold_result_ram[hold_head_q];
+    assign hold_flags_q=hold_flags_ram[hold_head_q];
     logic move_valid_q,move_killed,move_ready,is_move,prefer_move_q;
     slot_id_t move_slot_q;
     logic [63:0] move_result_q,move_result;
@@ -50,9 +74,13 @@ module o3_fpu_opgroup import o3_pkg::*; #(
     logic op_mod;
     logic [NOP-1:0][63:0] operands;
     logic [fpnew_pkg::NUM_FP_FORMATS-1:0][NOP-1:0] is_boxed;
-    // Vivado needs an explicit assignment context for array patterns before
-    // they enter a conditional expression. Preserve every format's latency.
-    localparam fpnew_pkg::fmt_unsigned_t ADDMUL_REGS = '{3,4,1,1,1};
+    // Match Breeze FlowFpnewWrapper at 2051dd0 with CVFPU 23153ba. These
+    // DISTRIBUTED stages cut arithmetic: input, pre-adder, sum, unrounded
+    // normalization, rounded result/status. FP64 also registers alignment
+    // control and normalization control before their wide shifts. The counts
+    // exclude the backend RegRead slot and this wrapper's local completion buffer.
+    // Vivado needs an explicit assignment context for array patterns.
+    localparam fpnew_pkg::fmt_unsigned_t ADDMUL_REGS = '{SP_PIPE_REGS,DP_PIPE_REGS,1,1,1};
     localparam fpnew_pkg::fmt_unsigned_t DIVSQRT_REGS = '{default:2};
     localparam fpnew_pkg::fmt_unsigned_t NONCOMP_REGS = '{default:1};
     localparam fpnew_pkg::fmt_unsigned_t CONV_REGS = '{default:4};
@@ -157,8 +185,14 @@ module o3_fpu_opgroup import o3_pkg::*; #(
             resp_o.valid=!slot_killed(hold_slot_q);
         end
         resp_valid_o=resp_o.valid;
-        hold_end=hold_valid_q && (slot_killed(hold_slot_q) || resp_ready_i);
-        hold_available=!hold_valid_q || hold_end;
+        bypass_o='{valid:(resp_o.valid && resp_o.tag.dst_write_en && !rst),
+            dom:resp_o.tag.dst_dom,preg:resp_o.tag.dst_preg,data:resp_o.result};
+    end
+    // Output delivery depends only on local registered ownership. Separate
+    // W0 acknowledgement from the output process to avoid process-wide feedback.
+    assign hold_end=hold_valid_q && (slot_killed(hold_slot_q) || resp_ready_i);
+    always_comb begin
+        hold_available=hold_count_q<2;
         cv_killed=cv_out_valid && slot_killed(cv_slot);
         move_killed=move_valid_q && slot_killed(move_slot_q);
         choose_cv=0; choose_move=0;
@@ -169,6 +203,15 @@ module o3_fpu_opgroup import o3_pkg::*; #(
                 choose_cv=cv_out_valid && !cv_killed;
                 choose_move=move_valid_q && !move_killed;
             end
+        end
+        wake_o='0;
+        if(!rst && (choose_cv || choose_move)) begin
+            wake_o.valid=1;
+            wake_o.dom=tags_q[choose_cv ? cv_slot:move_slot_q].dst_dom;
+            wake_o.preg=tags_q[choose_cv ? cv_slot:move_slot_q].dst_preg;
+            wake_o.br_mask=tags_q[choose_cv ? cv_slot:move_slot_q].br_mask;
+            if(resolution_i.valid) wake_o.br_mask[resolution_i.branch_tag]=0;
+            wake_o.valid=tags_q[choose_cv ? cv_slot:move_slot_q].dst_write_en;
         end
         cv_out_ready=cv_killed || choose_cv;
         move_ready=!move_valid_q || move_killed || choose_move;
@@ -181,7 +224,8 @@ module o3_fpu_opgroup import o3_pkg::*; #(
     always_ff @(posedge clk) begin
         if (rst) begin
             valid_q<='0; killed_q<='0; tags_q<='{default:'0};
-            hold_valid_q<=0; hold_slot_q<='0; hold_result_q<='0; hold_flags_q<='0;
+            hold_head_q<=0; hold_tail_q<=0; hold_count_q<=0;
+            hold_slot_ram<='{default:'0}; hold_result_ram<='{default:'0}; hold_flags_ram<='{default:'0};
             move_valid_q<=0; move_slot_q<='0; move_result_q<='0; prefer_move_q<=0;
         end else begin
             for (int s=0;s<S;s++) if (valid_q[s]) begin
@@ -193,14 +237,19 @@ module o3_fpu_opgroup import o3_pkg::*; #(
                 valid_q[alloc_slot]<=1; killed_q[alloc_slot]<=0; tags_q[alloc_slot]<=req_i.tag;
                 if (resolution_i.valid) tags_q[alloc_slot].br_mask[resolution_i.branch_tag]<=0;
             end
-            if (hold_end) hold_valid_q<=0;
-            if (choose_cv) begin
-                hold_valid_q<=1; hold_slot_q<=cv_slot; hold_result_q<=cv_result; hold_flags_q<=cv_status;
-                prefer_move_q<=1;
-            end else if (choose_move) begin
-                hold_valid_q<=1; hold_slot_q<=move_slot_q; hold_result_q<=move_result_q; hold_flags_q<=0;
-                prefer_move_q<=0;
+            if (hold_end) hold_head_q<=!hold_head_q;
+            if (choose_cv || choose_move) begin
+                hold_tail_q<=!hold_tail_q;
+                hold_slot_ram[hold_tail_q]<=choose_cv ? cv_slot:move_slot_q;
+                hold_result_ram[hold_tail_q]<=choose_cv ? cv_result:move_result_q;
+                hold_flags_ram[hold_tail_q]<=choose_cv ? cv_status:5'd0;
+                prefer_move_q<=choose_cv;
             end
+            case ({(choose_cv || choose_move),hold_end})
+                2'b10: hold_count_q<=hold_count_q+1'b1;
+                2'b01: hold_count_q<=hold_count_q-1'b1;
+                default: ;
+            endcase
             if (move_ready) begin
                 move_valid_q<=req_fire && is_move;
                 if (req_fire && is_move) begin move_slot_q<=alloc_slot; move_result_q<=move_result; end
@@ -213,7 +262,15 @@ module o3_fpu_opgroup import o3_pkg::*; #(
             assert (int'(cv_slot)<S);
             assert (valid_q[cv_slot]);
         end
+        assert (hold_count_q<=2);
         if (hold_valid_q) assert (valid_q[hold_slot_q]);
+        if (hold_count_q==2) begin
+            assert (valid_q[hold_slot_ram[!hold_head_q]]);
+            assert (hold_slot_ram[0]!=hold_slot_ram[1]);
+            assert (!(choose_cv || choose_move));
+        end
+        if (hold_end && (choose_cv || choose_move))
+            assert (hold_slot_q!=(choose_cv ? cv_slot:move_slot_q));
         if (move_valid_q) assert (valid_q[move_slot_q]);
         if (req_fire) assert (!valid_q[alloc_slot]);
     end
@@ -225,10 +282,15 @@ endmodule
 
 /**
  * L9 ADDMUL wrapper: pinned CVFPU split operation group with identity side table,
- * stable common result holding slot and same-cycle recovery filtering.
+ * stable two-entry completion buffer and same-cycle recovery filtering.
  * Uses o3_fpu_opgroup (defined in fpu_fma_fu.sv); CONV also carries raw FMV bits.
- * B33 early wakeup for FP FUs is deferred to performance work; actual PRF grant wakes.
- * 当前实现状态：闭环简化（L9）；lint/功能测试未运行。
+ * Each configured backend FMA instance uses Breeze's FP32 5-stage / FP64 7-stage
+ * distributed arithmetic. Pipeline requests overlap subject to identity and
+ * output capacity, rather than waiting for the previous request to complete.
+ * B33: notify before accepting a live result into the local completion buffer; only held
+ * results bypass. Consumer buffers recheck data availability before RegRead.
+ * 当前实现状态：闭环简化（L9）；本次流水迁移的 lint/功能测试未运行。
+ * 测试：sim/cocotb/fpu_fu/。
  */
 module fpu_fma_fu import o3_pkg::*; #(
     parameter o3_cfg_pkg::backend_cfg_t CFG
@@ -241,6 +303,8 @@ module fpu_fma_fu import o3_pkg::*; #(
     input logic resp_ready_i,
     output o3_types_pkg::fpu_resp_t resp_o,
     input branch_resolution_t resolution_i,
+    output o3_types_pkg::wake_promise_t wake_o,
+    output o3_types_pkg::cpl_bypass_t bypass_o,
     output logic busy_o
 );
     o3_fpu_opgroup #(.CFG(CFG),.GROUP(fpnew_pkg::ADDMUL)) u_transport (.*);

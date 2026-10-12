@@ -1,0 +1,1 @@
+Deferred 80-batch full-line storage model: all MSHR owners, random 512-bit payloads/errors, out-of-order response IDs, fill backpressure, simultaneous different-owner consume/response, same-line merging, reuse and reset. Existing integrated ICache tests remain intact.

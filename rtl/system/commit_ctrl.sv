@@ -110,6 +110,8 @@ module commit_ctrl
     input logic [63:0] status_i,
     input exception_cause_t irq_cause_i,
     input  logic            irq_take_i,          // csr_file 按正式中断条件给出（含委托/全局使能）
+    input logic trap_inflight_i = 1'b0, // accepted trap owns CSR/update/redirect boundary
+    input  logic            csr_inflight_i = 1'b0, // admitted head CSR owns its boundary until response
     output trap_req_t       trap_req_o,
     input  logic            trap_redirect_valid_i,
     input  vaddr_t          trap_redirect_pc_i,
@@ -145,13 +147,13 @@ module commit_ctrl
             (head_i.exc.valid || system_illegal || head_i.sys_op==SYSOP_ECALL);
         // No retirement participates in this decision, so there is no ROB
         // retire -> block -> retire loop. A begun CSR/sync must first retire.
-        irq_accept=irq_take_i && !heu_irreversible_i && !order_flush_i && !sync_trap && !csr_executed_q && !serial_done_q && !sync_sent_q
+        irq_accept=irq_take_i && !trap_inflight_i && !heu_irreversible_i && !order_flush_i && !sync_trap && !csr_inflight_i && !csr_executed_q && !serial_done_q && !sync_sent_q
             && !sf_sent_q && !d_sent_q && !(head_valid_i && head_i.needs_d) && !trap_redirect_valid_i && !isolate_i && !wfi_stall_i;
         csr_req_o='0;csr_req_o.op=head_i.ext.csr_op;csr_req_o.addr=head_i.ext.csr_addr;
         csr_req_o.wdata=head_i.ext.csr_use_imm ? 64'(head_i.rs1) : csr_operand_i;
         csr_req_o.write_en=head_i.ext.csr_op==CSROP_RW || head_i.rs1!=0;csr_req_o.rob_idx=head_i.rob_idx;
-        csr_req_valid_o=ptw_idle_i && head_valid_i && head_i.ext.csr_op!=CSROP_NONE && !head_i.exc.valid
-            && !csr_executed_q && !serial_done_q && !isolate_i && !irq_accept && !trap_redirect_valid_i;
+        csr_req_valid_o=csr_inflight_i || (!trap_inflight_i && ptw_idle_i && head_valid_i && head_i.ext.csr_op!=CSROP_NONE && !head_i.exc.valid
+            && !csr_executed_q && !serial_done_q && !isolate_i && !irq_accept && !trap_redirect_valid_i);
         head_serial_done_o=serial_done_q;
         if(head_i.ext.csr_op==CSROP_NONE) case(head_i.sys_op)
             SYSOP_FENCE: head_serial_done_o=!head_i.ext.fence_pred[0] || sq_committed_empty_i;
@@ -159,13 +161,13 @@ module commit_ctrl
             SYSOP_SFENCE_VMA: head_serial_done_o=serial_done_q;
             default: head_serial_done_o=!system_illegal && head_i.sys_op!=SYSOP_ECALL;
         endcase
-        fe_sync_valid_o=head_valid_i && !sync_sent_q && !serial_done_q && !irq_accept && !isolate_i &&
+        fe_sync_valid_o=!trap_inflight_i && head_valid_i && !sync_sent_q && !serial_done_q && !irq_accept && !isolate_i &&
             ((head_i.sys_op==SYSOP_FENCE_I && sq_committed_empty_i) || (head_i.sys_op==SYSOP_SFENCE_VMA && sf_done_q) || refetch_q || order_flush_i);
         fe_sync_o='{kind:(order_flush_i ? SYS_PMP:refetch_q ? refetch_kind_q : head_i.sys_op==SYSOP_SFENCE_VMA ? SYS_SFENCE : SYS_FENCE_I),default:'0};
         fe_sync_o.sfence='{valid:1'b1,rs1_is_x0:head_i.ext.sfence_rs1_x0,rs2_is_x0:head_i.ext.sfence_rs2_x0,
             vaddr:csr_operand_i,asid:asid_t'(sfence_asid_operand_i)};
         trap_req_o='0;
-        if(sync_trap && !isolate_i && !trap_redirect_valid_i) begin
+        if(sync_trap && !trap_inflight_i && !isolate_i && !trap_redirect_valid_i) begin
             trap_req_o.valid=1;trap_req_o.epc=head_i.pc;
             trap_req_o.cause=head_i.exc.cause;trap_req_o.tval=head_i.exc.tval;
             if(!head_i.exc.valid && head_i.sys_op==SYSOP_ECALL) begin
@@ -205,13 +207,13 @@ module commit_ctrl
             end
         end
         if(order_flush_i && serial_done_q) sys_redirect_o='{valid:1'b1,kind:SYS_PMP,ftq_id:head_i.ftq_id,slot:head_i.slot,target_pc:head_i.pc};
-        commit_block_o=order_flush_i || (head_valid_i && head_i.needs_d) || isolate_i || sync_trap || irq_accept || trap_redirect_valid_i || wfi_stall_i;
+        commit_block_o=trap_inflight_i || order_flush_i || (head_valid_i && head_i.needs_d) || isolate_i || sync_trap || irq_accept || trap_redirect_valid_i || wfi_stall_i;
         flush_all_o=trap_req_o.valid || (sys_redirect_o.valid && sys_redirect_o.kind inside {SYS_FENCE_I,SYS_SATP,SYS_PMP,SYS_SFENCE});
         committed_next_pc_o=committed_next_pc_q;
         sfence_o=fe_sync_o.sfence;
-        sfence_o.valid=head_valid_i && head_i.sys_op==SYSOP_SFENCE_VMA && !system_illegal &&
+        sfence_o.valid=!trap_inflight_i && head_valid_i && head_i.sys_op==SYSOP_SFENCE_VMA && !system_illegal &&
             sq_committed_empty_i && ptw_idle_i && !sf_sent_q && !irq_accept && !trap_redirect_valid_i;
-        st_d_req_valid_o=head_valid_i && head_i.is_store && head_i.complete && head_i.needs_d &&
+        st_d_req_valid_o=!trap_inflight_i && head_valid_i && head_i.is_store && head_i.complete && head_i.needs_d &&
             !head_i.exc.valid && !d_sent_q && !isolate_i && !trap_redirect_valid_i;
         rsv_clear_valid_o=sfence_o.valid || trap_req_o.valid || (sys_redirect_o.valid && sys_redirect_o.kind==SYS_SATP);
         rsv_clear_reason_o=sfence_o.valid ? RSV_CLR_SFENCE_SATP : trap_req_o.is_xret ? RSV_CLR_XRET : RSV_CLR_TRAP;

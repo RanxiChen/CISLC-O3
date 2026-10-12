@@ -3,7 +3,7 @@ from l3_contract import tick,settle,val,clear
 
 @cocotb.test()
 async def special_entries_block_then_wake_and_release_without_drain(d):
-    inputs=['clk','flush_all_i','kind_i','heu_done_i','heu_done_idx_i','rob_head_i','alloc_valid','alloc_rob','execute_valid','execute_idx','execute_addr','execute_data','execute_mask','query_valid','query_rob','query_addr','query_mask','commit_valid','commit_idx','dc_req_ready','dc_resp_valid','dc_resp_idx','local_drain_ready','multi_mode_i','multi_alloc_count_i','multi_commit_count_i','resolution_valid_i','resolution_mispredict_i','resolution_tag_i','restore_tail_i','execute1_valid','query1_valid','dc_retry','dc_reason','dc_wake_i']
+    inputs=['clk','flush_all_i','kind_i','heu_done_i','heu_done_idx_i','rob_head_i','alloc_valid','alloc_rob','execute_valid','execute_idx','execute_addr','execute_data','execute_mask','query_valid','query_rob','query_addr','query_mask','commit_valid','commit_idx','dc_req_ready','dc_resp_valid','dc_resp_idx','local_drain_ready','multi_mode_i','multi_alloc_count_i','multi_commit_count_i','resolution_valid_i','resolution_mispredict_i','resolution_tag_i','restore_tail_i','execute1_valid','query1_valid','dc_retry','dc_reason','dc_wake_i','replay_capture_valid_i','replay_update_valid_i','replay_ready_i','replay_tlb_wake_i','replay_ad_wake_i']
     for kind in (1,2,3):
         clear(d,inputs);d.rst.value=1;await tick(d);d.rst.value=0
         depth=val(d.free_count_o);d.kind_i.value=kind;d.alloc_valid.value=1;d.alloc_rob.value=1

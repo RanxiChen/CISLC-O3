@@ -25,8 +25,11 @@ async def directed_arithmetic_delivery_cancel(d):
     d.write_i.value=1;d.rst.value=1;await edge(d);d.rst.value=0
     async def tick():
         await settle();w=int(d.wake_valid_o.value);wp=int(d.wake_preg_o.value)
+        # The user-authorized B33 contract also notifies FIFO tails. Only an
+        # empty, non-recovering FIFO promises this completion as its next head.
+        empty=not int(d.resp_valid_o.value) and not int(d.kill_valid_i.value)
         await edge(d)
-        if w: assert int(d.resp_valid_o.value) and int(d.preg_o.value)==wp,('broken wake promise',wp)
+        if w and empty: assert int(d.resp_valid_o.value) and int(d.preg_o.value)==wp,('broken empty-FIFO wake promise',wp)
     async def request(op,a,b,rob=1,preg=33,mask=0,fuse=False,lomask=0):
         d.op_i.value=op;d.a_i.value=a&MASK;d.b_i.value=b&MASK;d.rob_i.value=rob;d.preg_i.value=preg
         d.mask_i.value=mask;d.fuse_i.value=fuse;d.lo_rob_i.value=rob+1;d.lo_preg_i.value=preg+1;d.lo_mask_i.value=lomask
@@ -91,3 +94,74 @@ async def directed_arithmetic_delivery_cancel(d):
     await request(5 if div else 0,123,7)
     d.rst.value=1;await edge(d);d.rst.value=0
     for _ in range(6):await tick();assert not int(d.resp_valid_o.value)
+
+
+@cocotb.test()
+async def stalled_head_tail_notices_and_fused_second_destination(d):
+    """Each result must notify once before capture, even behind a stalled head.
+    Both fused destinations notify together; actual bypass remains the live head.
+    """
+    for n in ['clk','req_valid_i','resp_ready_i','op_i','a_i','b_i','rob_i','preg_i','mask_i','fuse_i','lo_rob_i','lo_preg_i','lo_mask_i','kill_valid_i','kill_mispredict_i','kill_tag_i']:
+        getattr(d,n).value=0
+    d.write_i.value=1;d.rst.value=1;await edge(d);d.rst.value=0
+    div=bool(int(d.cfg_div_o.value));notices=[]
+
+    async def tick():
+        await settle()
+        before=(int(d.rob_o.value),int(d.preg_o.value),int(d.data_o.value)) if int(d.resp_valid_o.value) else None
+        held=before is not None and not int(d.resp_ready_i.value)
+        for valid,preg in [('wake_valid_o','wake_preg_o'),('wake2_valid_o','wake2_preg_o')]:
+            if int(getattr(d,valid).value):
+                target=int(getattr(d,preg).value)
+                assert target not in notices,('duplicate notice',target,notices)
+                notices.append(target)
+                if before is not None:
+                    assert before[1]==33,('tail bypass replaced held head',before,target)
+        if held:
+            assert int(d.bypass_valid_o.value) and int(d.bypass_data_o.value)==before[2]
+        await edge(d)
+        if held:
+            assert int(d.resp_valid_o.value)
+            assert (int(d.rob_o.value),int(d.preg_o.value),int(d.data_o.value))==before
+
+    async def launch(op,a,b,rob,preg,fuse=False):
+        d.op_i.value=op;d.a_i.value=a&MASK;d.b_i.value=b&MASK
+        d.rob_i.value=rob;d.preg_i.value=preg;d.fuse_i.value=fuse
+        d.lo_rob_i.value=rob+1;d.lo_preg_i.value=preg+1;d.req_valid_i.value=1
+        await settle()
+        for _ in range(50):
+            if int(d.req_ready_o.value):break
+            await tick()
+        else:assert False,'request backpressure never released'
+        await tick();d.req_valid_i.value=0
+
+    await launch(5 if div else 0,12 if div else 7,3 if div else 9,1,33)
+    for _ in range(40):
+        if int(d.resp_valid_o.value):break
+        await tick()
+    assert int(d.resp_valid_o.value) and int(d.preg_o.value)==33
+    assert notices==[33],notices
+    if div:
+        await launch(5,35,5,2,34)
+        expected=[(1,33,4),(2,34,7)]
+        expected_notices=[33,34]
+    else:
+        await launch(1,-1,2,2,34,fuse=True)
+        expected=[(1,33,63),(2,34,MASK),(3,35,MASK-1)]
+        expected_notices=[33,34,35]
+    for _ in range(40):
+        if notices==expected_notices:break
+        await tick()
+    assert notices==expected_notices,('tail notice missing',notices,expected_notices)
+    assert int(d.preg_o.value)==33 and int(d.resp_valid_o.value)
+    for _ in range(4):await tick()
+    d.resp_ready_i.value=1
+    for item in expected:
+        await settle()
+        assert int(d.resp_valid_o.value)
+        assert (int(d.rob_o.value),int(d.preg_o.value),int(d.data_o.value))==item
+        await tick()
+    d.resp_ready_i.value=0
+    await settle()
+    assert not int(d.resp_valid_o.value) and not int(d.busy_o.value)
+    assert int(d.req_ready_o.value)

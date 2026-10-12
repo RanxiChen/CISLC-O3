@@ -77,7 +77,12 @@ async def zicsr_warl_traps_counters(d):
     d.trap_i.value=1;d.xret_i.value=1;await settle();assert int(d.target_o.value)==0x80000040;await edge(d);d.trap_i.value=0;d.xret_i.value=0;state[0x300]=0xa00000088;await access(0x300)
     # Counter writes and retirement increments are checked against arithmetic, not RTL state.
     d.addr_i.value=0xb02;d.op_i.value=1;d.data_i.value=50;d.write_i.value=1;d.req_valid_i.value=1;await edge(d)
-    d.req_valid_i.value=0;d.retired_i.value=4;await edge(d);d.retired_i.value=0;d.addr_i.value=0xc02;await settle();assert int(d.read_o.value)==54
+    d.req_valid_i.value=0
+    remaining=4
+    while remaining:
+        batch=min(remaining,int(d.commit_width_o.value))
+        d.retired_i.value=batch;await edge(d);remaining-=batch
+    d.retired_i.value=0;d.addr_i.value=0xc02;await settle();assert int(d.read_o.value)==54
 
 @cocotb.test()
 async def hpm_routed_through_csr_file(d):
@@ -330,3 +335,49 @@ async def frontend_feature_csr_warl_nonserial_privilege(d):
  d.trap_i.value=1;d.xret_i.value=1;await edge(d);d.trap_i.value=0;d.xret_i.value=0
  assert int(d.priv_o.value)==0
  assert (await access(0x7c0,0,True))[1]==1 and int(d.pf_dis_o.value)==1
+
+
+@cocotb.test()
+async def pmp_refetch_tracks_effective_raw_changes_and_lock_rules(d):
+    seed=int(os.getenv('TEST_SEED','105'));rng=random.Random(seed)
+    t=PrivTb(d);await t.reset();count=len(d.pmpcfg_o)//8;cfg=[0]*count;raw=[0]*count;mask54=(1<<54)-1
+    for cycle in range(1000):
+        if cycle and cycle%80==0:
+            await t.reset();cfg=[0]*count;raw=[0]*count
+        a=rng.choice([0x3a0,0x3a2,0x3a1]+list(range(0x3b0,0x3b0+count)))
+        op=rng.randrange(1,4);data=rng.getrandbits(64)
+        # Keep most bytes unlocked so the run repeatedly changes all regions.
+        if a in (0x3a0,0x3a2) and cycle%11:
+            data &= 0x7f7f7f7f7f7f7f7f
+        write=bool(rng.randrange(2));active=bool(rng.randrange(5))
+        group=0 if a==0x3a0 else 8
+        if a in (0x3a0,0x3a2):old=sum(cfg[n]<<(8*(n-group)) for n in range(group,group+8))
+        elif 0x3b0<=a<0x3b0+count:
+            n=a-0x3b0;old=(raw[n]|1) if ((cfg[n]>>3)&3)==3 else raw[n]&~3
+        else:old=0
+        value=data if op==1 else old|data if op==2 else old&~data
+        new_cfg,new_raw=list(cfg),list(raw)
+        if active and write:
+            if a in (0x3a0,0x3a2):
+                for n in range(group,group+8):
+                    if cfg[n]&0x80:continue
+                    byte=(value>>(8*(n-group)))&0x9f
+                    if ((byte>>3)&3)==2:byte=(byte&~0x18)|(cfg[n]&0x18)
+                    if not(byte&1):byte &= ~2
+                    new_cfg[n]=byte
+            elif 0x3b0<=a<0x3b0+count:
+                n=a-0x3b0
+                if not(cfg[n]&0x80) and not(n<count-1 and cfg[n+1]&0x80 and ((cfg[n+1]>>3)&3)==1):
+                    new_raw[n]=value&mask54
+        expected_change=(new_cfg!=cfg or new_raw!=raw)
+        d.clk.value=0;d.addr_i.value=a;d.op_i.value=op;d.data_i.value=data
+        d.write_i.value=write;d.req_valid_i.value=active
+        await settle()
+        context=(seed,cycle,hex(a),op,hex(data),write,active,cfg,raw)
+        assert int(d.read_o.value)==old,context
+        assert int(d.illegal_o.value)==(a==0x3a1),context
+        assert bool(int(d.refetch_o.value))==expected_change,context
+        await edge(d);cfg,raw=new_cfg,new_raw
+        assert int(d.pmpcfg_o.value)==sum(v<<(8*n) for n,v in enumerate(cfg)),context
+        assert int(d.pmpaddr_o.value)==sum(v<<(54*n) for n,v in enumerate(raw)),context
+        d.req_valid_i.value=0;d.write_i.value=0

@@ -21,6 +21,24 @@ class Observed:
     response: Response
 
 
+class TrainingWriteTransportModel(TageModel):
+    """Row capture and write transport edges; row/prediction oracle unchanged."""
+    def reset(self):
+        super().reset()
+        self.transport_train=Train()
+        self.capture_transport_train=Train()
+
+    def tick(self, inputs):
+        if inputs.rst:
+            self.reset()
+            return
+        complete=self.write_train
+        self.write_train=self.capture_transport_train
+        super().tick(inputs)
+        self.capture_transport_train=self.transport_train
+        self.transport_train=complete
+
+
 class Bench:
     def __init__(self, dut, seed: int) -> None:
         self.dut = dut
@@ -29,7 +47,7 @@ class Bench:
         tables = value(dut.cfg_tables_o)
         index_packed = value(dut.cfg_index_bits_o)
         tag_packed = value(dut.cfg_tag_bits_o)
-        self.model = TageModel(
+        self.model = TrainingWriteTransportModel(
             vaddr_bits=len(dut.s0_region_base_i),
             region_bytes=value(dut.cfg_region_bytes_o),
             slots=len(dut.resp_taken_mask_o),
@@ -118,6 +136,10 @@ async def new_bench(dut, seed: int) -> Bench:
 
 
 async def query(b: Bench, pc: int, folds: int = 0) -> Response:
+    # Directed post-training queries wait the two extra transport edges;
+    # the two-edge S0/S1/S2 query assertions below remain unchanged.
+    if b.model.pending_train.valid or b.model.write_train.valid or b.model.transport_train.valid or b.model.capture_transport_train.valid:
+        await b.step(Inputs());await b.step(Inputs())
     _, first = await b.step(Inputs(query_valid=True, pc=pc, folds=folds))
     assert not first.valid, "S0 must not bypass the S1/S2 registers"
     _, second = await b.step(Inputs())
@@ -278,7 +300,7 @@ async def consecutive_rows_match_frozen_legacy_bitwise(dut):
     rng=random.Random(29);pc=0x4000
     # Change only the acceptance/write schedule; the frozen row-update
     # reference, all 256 accepted packets and every bit comparison remain.
-    pending=[None,None]
+    pending=[None,None,None,None]
     stalls=0
     async def edge(t=None):
         nonlocal stalls
@@ -307,8 +329,45 @@ async def consecutive_rows_match_frozen_legacy_bitwise(dut):
         for retry in range(4):
             if await edge(t): break
         else: raise AssertionError('training did not accept a held packet')
-    await edge();await edge()
+    for _ in range(4):await edge()
     assert stalls==255, 'same-row dependency must insert exactly one cycle'
     await b.step(Inputs());await b.step(Inputs())
     await query(b,pc)
     assert b.model.base==ref.base and all(vars(a)==vars(c) for ar,cr in zip(b.model.tagged,ref.tagged) for a,c in zip(ar,cr))
+
+
+@cocotb.test()
+async def atomic_write_transport_keeps_independent_training_each_cycle(dut):
+    """Full packets plus query/read collisions, checked by the unchanged row oracle."""
+    b=await new_bench(dut,105);m=b.model;rng=random.Random(105)
+    base_meta=sum(7<<(slot*3) for slot in range(m.slots))
+    accepted=[]
+    for cycle in range(256):
+        pc=0x10000+(cycle%32)*(1<<m.shift)
+        mask=rng.randrange(1,1<<m.slots)
+        packet=Train(True,pc,0,base_meta,mask,rng.getrandbits(m.slots)&mask)
+        before,_=await b.step(Inputs(query_valid=True,pc=pc,folds=0,train=packet,
+                                    stall=cycle%17==0,kill=cycle%29==0))
+        assert before.ready,(cycle,'independent rows must accept every cycle')
+        accepted.append(pc)
+    for _ in range(4):await b.step(Inputs())
+    assert len(accepted)==256 and not m.pending_train.valid and not m.write_train.valid and not m.transport_train.valid and not m.capture_transport_train.valid
+
+
+@cocotb.test()
+async def two_row_revisits_forward_complete_updates_without_admission_bubbles(dut):
+    """Revisit A/B/A/B while older row updates precede SRAM publication."""
+    b=await new_bench(dut,405);m=b.model;rng=random.Random(405)
+    base_meta=sum(7<<(slot*3) for slot in range(m.slots))
+    pcs=[0x20000,0x20000+(1<<m.shift)]
+    a,c=(m.query(pc,0) for pc in pcs)
+    assert a.base_idx!=c.base_idx and all(x!=y for x,y in zip(a.idx,c.idx))
+    for cycle in range(512):
+        pc=pcs[cycle&1]
+        mask=rng.randrange(1,1<<m.slots)
+        packet=Train(True,pc,0,base_meta,mask,rng.getrandbits(m.slots)&mask)
+        before,_=await b.step(Inputs(query_valid=True,pc=pcs[(cycle+1)&1],train=packet,
+                                    stall=cycle%17==0,kill=cycle%29==0))
+        assert before.ready,(cycle,'A/B revisit must accept every cycle through complete-row forwarding')
+    for _ in range(4):await b.step(Inputs())
+    assert not any(t.valid for t in [m.pending_train,m.write_train,m.transport_train,m.capture_transport_train])

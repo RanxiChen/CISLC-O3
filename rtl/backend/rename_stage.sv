@@ -5,7 +5,7 @@
  * blocks that lane and younger ones. FP f0 needs a register; INT x0 does not.
  * Third-source mapping and resolved FP control are carried through renamed_uop.rext/ext.
  * Integer MUL fusion still requires complete pair resources before accepting HEAD.
- * 当前实现状态：闭环简化（L9）；single-cycle map-table bypass retained, R1/R2 split deferred.
+ * 当前实现状态：目标实现。R2 原子资源前缀；输入来自 R1 暂存，旁路使用已寄存依赖。
  * No internal state: N computes resource prefix then assembles mapped uops; N edge
  * downstream tables allocate that prefix, N+1 RDQ holds complete renamed identities.
  * 本次 lint/测试未运行。
@@ -58,70 +58,73 @@ module rename_stage
     output renamed_uop_t [WIDTH-1:0] renamed_uop_o
 );
     localparam int LANE_COUNT_WIDTH = $clog2(WIDTH + 1);
+    // Decode-only demand prefixes are independent of free-resource counts.
+    // All capacity comparisons run in parallel, followed by a prefix AND.
+    // No lane subtracts an accepted predecessor from a resource budget.
+    logic [WIDTH-1:0] demand_preg,demand_fp,demand_lq,demand_sq,visible_live;
+    logic [WIDTH-1:0] lane_ok;
     always_comb begin
-        int unsigned preg_left, fp_preg_left, rob_left, lq_left, sq_left, rdq_left;
-        logic blocked;
-        branch_mask_t running_mask;
-
-        preg_left = int'(preg_free_count_i);
-        fp_preg_left = int'(fp_preg_free_count_i);
-        rob_left = int'(rob_free_count_i);
-        lq_left = int'(lq_free_count_i);
-        sq_left = int'(sq_free_count_i);
-        rdq_left = int'(rdq_free_count_i);
-        blocked = recovery_block_i;
-        running_mask = active_branch_mask_i;
-        accept_count_o = '0;
-        lane_accept_o = '{default: 1'b0};
-        dst_alloc_req_o = '{default: 1'b0};
-        rob_alloc_req_o = '{default: 1'b0};
-        lq_alloc_req_o = '{default: 1'b0};
-        sq_alloc_req_o = '{default: 1'b0};
-        checkpoint_create_o = '{default: 1'b0};
-        lane_branch_mask_o = '{default: '0};
-
-        for (int lane = 0; lane < WIDTH; lane++) begin
-            logic need_preg, need_lq, need_sq, need_cp, can_accept;
-            need_preg = decoded_i[lane].valid && decoded_i[lane].rd_write_en && (decoded_i[lane].ext.rd_dom == o3_types_pkg::RD_FP || decoded_i[lane].rd != '0);
-            need_lq = decoded_i[lane].valid && decoded_i[lane].is_load;
-            need_sq = decoded_i[lane].valid && decoded_i[lane].is_store;
-            need_cp = decoded_i[lane].valid && decoded_i[lane].needs_checkpoint;
-
-            can_accept = !blocked && (lane < int'(visible_count_i)) && decoded_i[lane].valid
-                       && (rob_left > 0) && (rdq_left > 0)
-                       && (!need_preg || (decoded_i[lane].ext.rd_dom == o3_types_pkg::RD_FP ? fp_preg_left > 0 : preg_left > 0))
-                       && (!need_lq || (lq_left > 0))
-                       && (!need_sq || (sq_left > 0))
-                       && (!need_cp || checkpoint_grant_i[lane]);
-
-            if(decoded_i[lane].ext.fuse_role==o3_types_pkg::FUSE_HEAD) begin
-                if(lane+1>=WIDTH) can_accept=0;
-                else can_accept &= lane+1<int'(visible_count_i) && decoded_i[lane+1].valid &&
-                    decoded_i[lane+1].ext.fuse_role==o3_types_pkg::FUSE_MEMBER && rob_left>=2 && rdq_left>=2 &&
-                    preg_left>=(int'(need_preg)+int'(decoded_i[lane+1].rd_write_en && decoded_i[lane+1].rd!=0));
+        demand_preg='0; demand_fp='0; demand_lq='0; demand_sq='0; visible_live='0;
+        for(int lane=0;lane<WIDTH;lane++) begin
+            visible_live[lane]=lane<int'(visible_count_i) && decoded_i[lane].valid;
+            demand_preg[lane]=visible_live[lane] && decoded_i[lane].rd_write_en &&
+                (decoded_i[lane].ext.rd_dom==o3_types_pkg::RD_FP || decoded_i[lane].rd!='0);
+            demand_fp[lane]=demand_preg[lane] && decoded_i[lane].ext.rd_dom==o3_types_pkg::RD_FP;
+            demand_lq[lane]=visible_live[lane] && decoded_i[lane].is_load;
+            demand_sq[lane]=visible_live[lane] && decoded_i[lane].is_store;
+        end
+    end
+    always_comb begin
+        lane_ok='1;
+        for(int lane=0;lane<WIDTH;lane++) begin
+            logic [LANE_COUNT_WIDTH-1:0] int_need,fp_need,rob_need,lq_need,sq_need;
+            int_need='0; fp_need='0; rob_need='0; lq_need='0; sq_need='0;
+            for(int older=0;older<=lane;older++) begin
+                int_need+=LANE_COUNT_WIDTH'(demand_preg[older] && !demand_fp[older]);
+                fp_need+=LANE_COUNT_WIDTH'(demand_fp[older]);
+                rob_need+=LANE_COUNT_WIDTH'(visible_live[older]);
+                lq_need+=LANE_COUNT_WIDTH'(demand_lq[older]);
+                sq_need+=LANE_COUNT_WIDTH'(demand_sq[older]);
             end
-            lane_branch_mask_o[lane] = running_mask;
-            if (can_accept) begin
-                lane_accept_o[lane] = 1'b1;
-                rob_alloc_req_o[lane] = 1'b1;
-                dst_alloc_req_o[lane] = need_preg;
-                lq_alloc_req_o[lane] = need_lq;
-                sq_alloc_req_o[lane] = need_sq;
-                checkpoint_create_o[lane] = need_cp;
-                accept_count_o = accept_count_o + LANE_COUNT_WIDTH'(1);
-                rob_left--;
-                rdq_left--;
-                if (need_preg) begin
-                    if (decoded_i[lane].ext.rd_dom == o3_types_pkg::RD_FP) fp_preg_left--;
-                    else preg_left--;
+            if(visible_live[lane]) begin
+                lane_ok[lane]=int'(preg_free_count_i)>=int'(int_need) &&
+                    int'(fp_preg_free_count_i)>=int'(fp_need) &&
+                    int'(rob_free_count_i)>=int'(rob_need) && int'(rdq_free_count_i)>=int'(rob_need) &&
+                    int'(lq_free_count_i)>=int'(lq_need) && int'(sq_free_count_i)>=int'(sq_need) &&
+                    (!decoded_i[lane].needs_checkpoint || checkpoint_grant_i[lane]);
+                // Preserve legacy integer-pair HEAD lookahead, including the
+                // original generic-field rules for malformed fusion inputs.
+                if(decoded_i[lane].ext.fuse_role==o3_types_pkg::FUSE_HEAD) begin
+                    if(lane+1>=WIDTH) lane_ok[lane]=0;
+                    else lane_ok[lane]&=lane+1<int'(visible_count_i) && decoded_i[lane+1].valid &&
+                        decoded_i[lane+1].ext.fuse_role==o3_types_pkg::FUSE_MEMBER &&
+                        int'(rob_free_count_i)>=int'(rob_need)+1 && int'(rdq_free_count_i)>=int'(rob_need)+1 &&
+                        int'(preg_free_count_i)>=int'(int_need)+int'(demand_fp[lane])+
+                            int'(decoded_i[lane+1].rd_write_en && decoded_i[lane+1].rd!=0);
                 end
-                if (need_lq) lq_left--;
-                if (need_sq) sq_left--;
-                if (need_cp) running_mask[checkpoint_tag_i[lane]] = 1'b1;
-            end else if ((lane < int'(visible_count_i)) && decoded_i[lane].valid) begin
-                blocked = 1'b1;
             end
-
+        end
+    end
+    always_comb begin
+        lane_accept_o='{default:0}; dst_alloc_req_o='{default:0}; rob_alloc_req_o='{default:0};
+        lq_alloc_req_o='{default:0}; sq_alloc_req_o='{default:0}; checkpoint_create_o='{default:0};
+        lane_branch_mask_o='{default:'0}; accept_count_o='0;
+        for(int lane=0;lane<WIDTH;lane++) begin
+            logic prefix_ok;
+            prefix_ok=!recovery_block_i;
+            for(int older=0;older<=lane;older++) prefix_ok &= lane_ok[older];
+            lane_accept_o[lane]=visible_live[lane] && prefix_ok;
+            dst_alloc_req_o[lane]=lane_accept_o[lane] && demand_preg[lane];
+            rob_alloc_req_o[lane]=lane_accept_o[lane];
+            lq_alloc_req_o[lane]=lane_accept_o[lane] && demand_lq[lane];
+            sq_alloc_req_o[lane]=lane_accept_o[lane] && demand_sq[lane];
+            checkpoint_create_o[lane]=lane_accept_o[lane] && decoded_i[lane].needs_checkpoint;
+            accept_count_o+=LANE_COUNT_WIDTH'(lane_accept_o[lane]);
+        end
+        for(int lane=0;lane<WIDTH;lane++) begin
+            lane_branch_mask_o[lane]=active_branch_mask_i;
+            for(int older=0;older<lane;older++)
+                if(checkpoint_create_o[older]) lane_branch_mask_o[lane][checkpoint_tag_i[older]]=1;
         end
     end
 

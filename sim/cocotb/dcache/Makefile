@@ -12,11 +12,12 @@ SETS ?= 64
 WAYS ?= 8
 WBS ?= 2
 RFO ?= 1
-export SETS WAYS MSHRS WBS RFO
+RESERVATION ?= 3
+export SETS WAYS MSHRS WBS RFO RESERVATION
 VERILOG_SOURCES := $(REPO_ROOT)/rtl/common/o3_isa_pkg.sv $(REPO_ROOT)/rtl/common/o3_platform_pkg.sv $(REPO_ROOT)/rtl/common/o3_cfg_pkg.sv $(REPO_ROOT)/rtl/common/o3_types_pkg.sv $(wildcard $(REPO_ROOT)/rtl/lsu/dcache*.sv) $(REPO_ROOT)/rtl/lsu/lrsc_reservation.sv $(CURDIR)/dcache_tb_top.sv
-SIM_BUILD ?= $(CURDIR)/sim_build/s$(SETS)-w$(WAYS)-m$(MSHRS)-b$(WBS)-r$(RFO)
+SIM_BUILD ?= $(CURDIR)/sim_build/s$(SETS)-w$(WAYS)-m$(MSHRS)-b$(WBS)-r$(RFO)-v$(RESERVATION)
 COCOTB_RESULTS_FILE ?= $(CURDIR)/results.xml
 TEST_SEED ?= 1
 export TEST_SEED
-COMPILE_ARGS += --timing --assert -Wno-fatal -GSETS=$(SETS) -GWAYS=$(WAYS) -GMSHRS=$(MSHRS) -GWBS=$(WBS) -GRFO=$(RFO)
+COMPILE_ARGS += --timing --assert -Wno-fatal -GSETS=$(SETS) -GWAYS=$(WAYS) -GMSHRS=$(MSHRS) -GWBS=$(WBS) -GRFO=$(RFO) -GRESERVATION=$(RESERVATION)
 include $(shell cocotb-config --makefiles)/Makefile.sim

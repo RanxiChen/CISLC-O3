@@ -7,14 +7,14 @@ async def edge(d):
 
 @cocotb.test()
 async def prefix_trap_serial_and_refetch(d):
-    for n in ['heu_irreversible_i','order_flush_i','head_split_i','clk','head_valid_i','head_exc_i','head_serial_i','head_csr_i','csr_resp_valid_i','csr_illegal_i','sysop_i','pc_i','target_i','commit_valid_i','sq_empty_i','sync_ready_i','sync_done_i','trap_redirect_i']:getattr(d,n).value=0
+    for n in ['trap_inflight_i','csr_inflight_i','heu_irreversible_i','order_flush_i','head_split_i','clk','head_valid_i','head_exc_i','head_serial_i','head_csr_i','csr_resp_valid_i','csr_illegal_i','sysop_i','pc_i','target_i','commit_valid_i','sq_empty_i','sync_ready_i','sync_done_i','trap_redirect_i']:getattr(d,n).value=0
     d.head_needs_d_i.value=0;d.d_ready_i.value=0;d.d_done_i.value=0
     d.ptw_idle_i.value=1;d.sf_ack_i.value=0
     d.priv_i.value=3;d.status_i.value=0;d.irq_i.value=0;d.refetch_i.value=0;d.refetch_kind_i.value=6;d.wfi_stall_i.value=0
     d.rst.value=1;await edge(d);d.rst.value=0
     pc=0x80000000;rng=random.Random(int(os.getenv('TEST_SEED','1')))
     for cycle in range(300):
-        count=rng.randrange(5);d.pc_i.value=pc;d.commit_valid_i.value=(1<<count)-1;await settle()
+        count=rng.randrange(int(d.commit_width_o.value)+1);d.pc_i.value=pc;d.commit_valid_i.value=(1<<count)-1;await settle()
         assert int(d.ftq_valid_o.value)==(1<<count)-1
         await edge(d);pc+=count*4;assert int(d.committed_pc_o.value)==pc
     d.commit_valid_i.value=0;d.head_valid_i.value=1;d.head_exc_i.value=1;d.pc_i.value=pc;await settle()
@@ -30,7 +30,7 @@ async def prefix_trap_serial_and_refetch(d):
     d.commit_valid_i.value=1;await settle();assert int(d.redirect_o.value)==1 and int(d.flush_o.value)==1
 
 async def reset_l10(d):
-    for n in ('heu_irreversible_i','order_flush_i','head_split_i','clk','head_valid_i','head_exc_i','head_serial_i','head_csr_i','csr_resp_valid_i','csr_illegal_i','sysop_i','pc_i','target_i','commit_valid_i','sq_empty_i','sync_ready_i','sync_done_i','trap_redirect_i','status_i','irq_i','refetch_i','wfi_stall_i'):
+    for n in ('trap_inflight_i','csr_inflight_i','heu_irreversible_i','order_flush_i','head_split_i','clk','head_valid_i','head_exc_i','head_serial_i','head_csr_i','csr_resp_valid_i','csr_illegal_i','sysop_i','pc_i','target_i','commit_valid_i','sq_empty_i','sync_ready_i','sync_done_i','trap_redirect_i','status_i','irq_i','refetch_i','wfi_stall_i'):
         getattr(d,n).value=0
     d.head_needs_d_i.value=0;d.d_ready_i.value=0;d.d_done_i.value=0
     d.ptw_idle_i.value=1;d.sf_ack_i.value=0
@@ -118,3 +118,54 @@ async def fence_i_waits_for_sq_and_frontend_sync(d):
     await edge(d);d.sync_done_i.value=1;await edge(d);d.sync_done_i.value=0
     assert int(d.serial_done_o.value)
     d.commit_valid_i.value=1;await settle();assert int(d.redirect_o.value) and int(d.flush_o.value)
+
+
+@cocotb.test()
+async def admitted_csr_owns_boundary_until_response_and_retirement(d):
+    await reset_l10(d)
+    d.pc_i.value=0x80000000
+    d.head_valid_i.value=1;d.head_serial_i.value=1;d.head_csr_i.value=1
+    await settle();assert int(d.csr_req_o.value) and not int(d.serial_done_o.value)
+    # The backend captures the head request. A newly pending IRQ and PTW change
+    # must not preempt the captured CSR or lose its later execution response.
+    d.csr_inflight_i.value=1;d.irq_i.value=1;d.ptw_idle_i.value=0
+    for _ in range(4):
+        await settle()
+        assert int(d.csr_req_o.value) and not int(d.trap_o.value)
+        assert not int(d.serial_done_o.value)
+        await edge(d)
+    d.csr_resp_valid_i.value=1
+    await edge(d);d.csr_inflight_i.value=0;d.csr_resp_valid_i.value=0
+    await settle()
+    assert int(d.serial_done_o.value) and not int(d.trap_o.value)
+    d.commit_valid_i.value=1
+    await edge(d);d.commit_valid_i.value=0;d.head_valid_i.value=0
+    await settle()
+    assert int(d.trap_irq_o.value) and int(d.trap_epc_o.value)==0x80000004
+
+
+@cocotb.test()
+async def trap_transport_owns_boundary_through_update_and_redirect(d):
+    await reset_l10(d)
+    d.irq_i.value=1
+    await settle()
+    assert int(d.trap_o.value) and int(d.flush_o.value) and int(d.block_o.value)
+    await edge(d)
+    d.trap_inflight_i.value=1
+    for _ in range(3):
+        await settle()
+        assert int(d.block_o.value) and not int(d.trap_o.value) and not int(d.csr_req_o.value)
+        assert not int(d.sync_o.value) and not int(d.sf_valid_o.value) and not int(d.d_req_o.value)
+        await edge(d)
+    # A pending synchronous exception cannot replace an accepted IRQ request.
+    d.head_valid_i.value=1;d.head_exc_i.value=1;d.pc_i.value=0x80000000
+    await settle()
+    assert int(d.block_o.value) and not int(d.trap_o.value)
+    d.head_exc_i.value=0;d.head_valid_i.value=0
+    d.trap_redirect_i.value=1;d.target_i.value=0x80004000
+    await settle()
+    assert int(d.redirect_o.value) and not int(d.trap_o.value)
+    await edge(d)
+    d.trap_inflight_i.value=0;d.trap_redirect_i.value=0;d.irq_i.value=0
+    await settle()
+    assert not int(d.block_o.value) and int(d.committed_pc_o.value)==0x80004000

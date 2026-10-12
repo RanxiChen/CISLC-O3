@@ -1,6 +1,15 @@
-# L6 mdu 定向验证
+# MDU directed verification
 
-Alan：`make -C sim/cocotb/mdu`，DIV 使用 `DIV=1`。
+Before compilation/simulation reread `/home/chen/leisure/flow/docs/cross-project/simulation-host.md`,
+validate cloud_chen first, and use Alan if cloud_chen is unavailable.
+Run `make -C sim/cocotb/mdu`; DIV uses `DIV=1`.
 
-只测试接口、身份、取消、握手和少量典型/边界运算。不运行随机算术或新增 Spike 随机门禁。
-测试中 wake 必须指向下一拍可见的 FIFO 头；背压期间的结果持续可见。
+The existing arithmetic, identity, cancellation, credit, reset and backpressure
+checks remain. Under the user-authorized 2026-10-11 B33 update, the next-head wake
+assertion applies to an empty FIFO; FIFO tails can notify scheduling as well.
+The new test explicitly checks exactly one notice per destination behind a stalled
+head, simultaneous notices for both fused MUL destinations, unchanged live-head
+bypass, and eventual exact ROB/preg/value delivery in order.
+
+2026-10-11: fixture migrated and tail-notice test written, not compiled/run.
+These tests do not prove backend buffer/read arbitration or whole-core behavior.

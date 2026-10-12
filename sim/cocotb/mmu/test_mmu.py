@@ -253,3 +253,48 @@ async def instruction_probe_never_walks_or_counts(d):
  assert (await t.lookup(0x4000,'fetch'))['pf']
  assert not t.get('mon_i_fault_o') and not t.get('i_walk_o') and t.get('mon_i_plru_o')==plru
  assert len(t.reads)==before
+
+
+@cocotb.test()
+async def dual_dtlb_payload_all_sets_reuse_and_reset(d):
+    # The old scalar/page-table oracle is retained. Exercise every resident
+    # way with two independent queries per edge, then targeted invalidation,
+    # refill reuse and reset without relying on internal storage details.
+    t=Tb(d);await t.reset();rng=random.Random(105)
+    pages=[0x100000+4096*n for n in range(32)]
+    physical={va:0x80000000+4096*rng.randrange(0x10000) for va in pages}
+    for va in pages:t.map(va,physical[va])
+    for va in pages:
+        assert (await t.access(va,'load','hit'))['pa']==physical[va]
+    before=len(t.reads)
+    for cycle in range(512):
+        a,b=rng.choice(pages),rng.choice(pages);ao,bo=rng.randrange(4096),rng.randrange(4096)
+        t.put('d_va_i',a+ao);t.put('d1_va_i',b+bo)
+        t.put('d_valid_i',1);t.put('d1_valid_i',1)
+        t.put('d_store_i',cycle&1);t.put('d1_store_i',(cycle>>1)&1)
+        await t.tick()
+        assert t.get('d_resp_o') and t.get('d1_resp_o'),cycle
+        assert t.get('d_hit_o') and t.get('d1_hit_o'),cycle
+        assert not (t.get('d_pf_o') or t.get('d1_pf_o') or t.get('d_af_o') or t.get('d1_af_o')),cycle
+        assert (t.get('d_pa_o'),t.get('d1_pa_o'))==(physical[a]+ao,physical[b]+bo),cycle
+    assert len(t.reads)==before
+    t.put('d_valid_i',0);t.put('d1_valid_i',0)
+    for batch in range(64):
+        va=pages[batch%32];physical[va]=0x80000000+4096*rng.randrange(0x10000)
+        t.map(va,physical[va]);await t.fence(va)
+        assert (await t.access(va,'load','hit'))['pa']==physical[va],batch
+        other=pages[(batch+1)%32]
+        assert (await t.access(other,'store','hit'))['pa']==physical[other],batch
+    # Refill after reset must replace all old RAM contents through the same
+    # external miss/walk protocol; reset is tested with both lanes resident.
+    await t.reset()
+    for va in pages:
+        physical[va]=0x90000000+4096*rng.randrange(0x10000);t.map(va,physical[va])
+        assert (await t.access(va,'load','hit'))['pa']==physical[va]
+    for cycle in range(256):
+        a,b=pages[cycle%32],pages[(7*cycle+3)%32]
+        t.put('d_va_i',a);t.put('d1_va_i',b);t.put('d_valid_i',1);t.put('d1_valid_i',1)
+        await t.tick()
+        assert t.get('d_hit_o') and t.get('d1_hit_o'),cycle
+        assert (t.get('d_pa_o'),t.get('d1_pa_o'))==(physical[a],physical[b]),cycle
+    t.put('d_valid_i',0);t.put('d1_valid_i',0)

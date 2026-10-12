@@ -14,7 +14,7 @@ class Bench:
         self.d=d;self.cycle=0;self.reply=[0,0];self.s0=[None,None]
         self.saved={};self.waits={};self.updates=[];self.results=[];self.stores=[];self.requests=[]
         self.head_replies=[];self.error=False;self.exceptions=[];self.block=False;self.forward=False;self.data=0;self.miss=False;self.hold_result=True
-        self.d_marks=[];self.d_clears=[];self.ad_wakes=[]
+        self.d_marks=[];self.d_clears=[];self.ad_wakes=[];self.wakes=[]
 
     async def reset(self):
         clear(self.d,[n for n in INPUTS if hasattr(self.d,n)]);self.d.rst.value=1
@@ -26,7 +26,7 @@ class Bench:
         # The CSR struct starts priv_eff[1:0]; all other fields zero.
         self.d.pmp_i.value=(0x1f<<54)|0x1fffffff
         await self.tick();await self.tick();self.d.rst.value=0
-        self.saved.clear();self.waits.clear();self.updates.clear();self.results.clear();self.stores.clear();self.requests.clear();self.exceptions.clear()
+        self.saved.clear();self.waits.clear();self.updates.clear();self.results.clear();self.stores.clear();self.requests.clear();self.exceptions.clear();self.wakes.clear()
 
     def uop(self,ident,addr=0x80000108,load=True,mask=0,rob=2,lq=1,sq=0,value=0):
         return codec(self.d,'uop',valid=1,instruction_id=ident,rob_idx=rob,lq_idx=lq,sq_idx=sq,
@@ -47,6 +47,8 @@ class Bench:
         next_reply=[0,0];next_s0=[None,None]
         if hasattr(d,'heu_resp_o') and val(d.heu_resp_o):self.head_replies.append(val(d.heu_resp_o))
         for p in range(2):
+            if hasattr(d,'fmt_wake_valid') and field(d,'wake',val(d.wake_o[p]),'valid'):
+                self.wakes.append((self.cycle,p,val(d.wake_o[p])))
             if val(d.load_result_o[p]):
                 raw=val(d.load_result_o[p])
                 if field(d,'result',raw,'valid'):self.results.append((self.cycle,p,raw))
@@ -61,6 +63,8 @@ class Bench:
                 else:self.waits.pop(idx,None)
             if self.s0[p] is not None:
                 q=val(d.dc_s1_o[p]);idx=field(d,'request',q,'lq_tag.idx');gen=field(d,'request',q,'lq_tag.gen')
+                for f in ('lq_tag.idx','lq_tag.gen','vaddr','is_sta'):
+                    assert field(d,'request',q,f)==field(d,'request',self.s0[p],f),(self.cycle,p,f,'cache owner alignment')
                 exc=field(d,'request',q,'exc');status=0;reason=0
                 if exc:status=3
                 elif field(d,'request',q,'translation_miss'):status=2;reason=3
@@ -77,11 +81,12 @@ class Bench:
             if val(d.dc_req_valid_o[p]):
                 req=val(d.dc_req_o[p]);next_s0[p]=req
                 self.requests.append((self.cycle,p,field(d,'request',req,'vaddr')))
-                if val(d.lq_capture_valid_o[p]):
-                    saved=val(d.capture_o[p]);# AG capture owns the complete saved VA/uop.
-                    idx=field(d,'request',req,'lq_tag.idx')
-                    saved|=codec(d,'replay',**{'tag.idx':idx,'tag.gen':1})
-                    self.saved[idx]=saved
+            # AG ownership capture precedes cache S0 by the translation stage.
+            if val(d.lq_capture_valid_o[p]):
+                saved=val(d.capture_o[p]);uop=field(d,'replay',saved,'uop')
+                idx=field(d,'uop',uop,'lq_idx')
+                saved|=codec(d,'replay',**{'tag.idx':idx,'tag.gen':1})
+                self.saved[idx]=saved
         if val(d.flush_all_i):self.saved.clear();self.waits.clear()
         if val(d.resolution_valid_i):
             bit=1<<val(d.resolution_tag_i)

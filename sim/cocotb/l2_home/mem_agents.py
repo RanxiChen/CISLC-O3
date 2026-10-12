@@ -75,6 +75,7 @@ class Bench:
         self.bhold = None
         self.errors = set()
         self.block_r = False
+        self.response_ready = [1, 1, None]
         self.probe_delay = 0
         self.backpressure = False
         self.trace = deque(maxlen=32)
@@ -203,7 +204,10 @@ class Bench:
             if not self.line_busy(line) and not (op == MASKWRITE and i_busy):
                 self.dma_script.popleft()
                 self.submit(2, op, line, tid=0, mask=mask, data=data)
-        d.dma_resp_ready_i.value = int(self.chance()) if self.dma_enabled else 1
+        for c, name in enumerate(('l1d', 'l1i', 'dma')):
+            ready = self.response_ready[c]
+            if ready is None:ready = int(self.chance()) if self.dma_enabled else 1
+            getattr(d, name + '_resp_ready_i').value = ready
         for c, name in enumerate(('l1d', 'l1i', 'dma')):
             t = self.present[c]
             getattr(d, name + '_req_valid_i').value = int(t is not None)
@@ -245,6 +249,7 @@ class Bench:
         await Timer(5, unit='ns')
         names = ('dma_resp_valid_o', 'dma_resp_o', 'dma_resp_ready_i', 'dma_req_ready_o',
                  'l1d_resp_valid_o', 'l1d_resp_o', 'l1i_resp_valid_o', 'l1i_resp_o',
+                 'l1d_resp_ready_i', 'l1i_resp_ready_i',
                  'l1d_req_ready_o', 'l1i_req_ready_o', 'rsp_up_ready_o', 'snp_valid_o',
                  'snp_ready_i', 'snp_o', 'm_axi_arvalid', 'm_axi_arready', 'm_axi_araddr',
                  'm_axi_arid', 'm_axi_arlen', 'm_axi_arsize', 'm_axi_arburst',
@@ -257,11 +262,13 @@ class Bench:
         self.slot_full += v['mon_slot_full']
         for prefix, ready, fields in (
             ('dma_resp', 'dma_resp_ready_i', ('dma_resp_o',)),
+            ('l1d_resp', 'l1d_resp_ready_i', ('l1d_resp_o',)),
+            ('l1i_resp', 'l1i_resp_ready_i', ('l1i_resp_o',)),
             ('snp', 'snp_ready_i', ('snp_o',)),
             ('m_axi_ar', 'm_axi_arready', ('m_axi_arid', 'm_axi_araddr', 'm_axi_arlen', 'm_axi_arsize', 'm_axi_arburst')),
             ('m_axi_aw', 'm_axi_awready', ('m_axi_awid', 'm_axi_awaddr', 'm_axi_awlen', 'm_axi_awsize', 'm_axi_awburst')),
             ('m_axi_w', 'm_axi_wready', ('m_axi_wdata', 'm_axi_wstrb', 'm_axi_wlast'))):
-            valid = v[prefix + ('_valid_o' if prefix in ('snp', 'dma_resp') else 'valid')]
+            valid = v[prefix + ('_valid_o' if prefix in ('snp', 'dma_resp', 'l1d_resp', 'l1i_resp') else 'valid')]
             bits = tuple(v[f] for f in fields)
             if prefix in self.stalled:
                 self.check(valid and bits == self.stalled[prefix], f'{prefix} changed while stalled')
@@ -271,7 +278,7 @@ class Bench:
                 self.stalled.pop(prefix, None)
         # Process old response permissions before same-edge answers and new requests.
         for c, name in enumerate(('l1d', 'l1i', 'dma')):
-            if v[name + '_resp_valid_o'] and (c != 2 or v['dma_resp_ready_i']):
+            if v[name + '_resp_valid_o'] and v[name + '_resp_ready_i']:
                 op, tid, err, data = response(v[name + '_resp_o'])
                 self.note('response', c, op, tid)
                 if c == 0 and op == PUTACK:

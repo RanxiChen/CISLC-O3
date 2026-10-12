@@ -10,7 +10,8 @@ module fetch_return_queue_tb_top
     input logic [RQ_IDX_W-1:0] rsv_idx_i,
     input logic [$bits(ftq_id_t)-1:0] rsv_ftq_id_i,
     input logic [VADDR_W-1:0] rsv_region_base_i,
-    input logic resp_valid_i,
+    input logic resp_valid_i,resp_exc_valid_i,
+    input logic [$bits(exception_cause_t)-1:0] resp_exc_cause_i,
     input logic [RQ_IDX_W-1:0] resp_rq_idx_i,
     input logic [$bits(ftq_id_t)-1:0] resp_ftq_id_i,
     input logic [REGION_BYTES*8-1:0] resp_data_i,
@@ -25,6 +26,8 @@ module fetch_return_queue_tb_top
     output logic [$bits(ftq_id_t)-1:0] deq_ftq_id_o,
     output logic [VADDR_W-1:0] deq_region_base_o,
     output logic [REGION_BYTES*8-1:0] deq_data_o,
+    output logic deq_exc_valid_o,
+    output logic [$bits(exception_cause_t)-1:0] deq_exc_cause_o,
     output logic [$bits(ftq_id_t)-1:0] deq_brief_id_o,
     input logic kill_valid_i, kill_all_i, kill_self_i,
     input logic [$bits(ftq_id_t)-1:0] kill_ftq_id_i, ftq_head_i,
@@ -46,7 +49,7 @@ module fetch_return_queue_tb_top
         resp.valid = resp_valid_i;
         resp.rq_idx = resp_rq_idx_i;
         resp.ftq_id = ftq_id_t'(resp_ftq_id_i);
-        resp.data = resp_data_i;
+        resp.data = resp_data_i;resp.exc_valid=resp_exc_valid_i;resp.exc_cause=exception_cause_t'(resp_exc_cause_i);
         brief = '0;
         brief.slow_done = brief_slow_done_i;
         brief.ftq_id = ftq_id_t'(brief_ftq_id_i);
@@ -72,6 +75,7 @@ module fetch_return_queue_tb_top
     assign deq_ftq_id_o = deq.ftq_id;
     assign deq_region_base_o = deq.region_base;
     assign deq_data_o = deq.data;
+    assign deq_exc_valid_o=deq.exc_valid;assign deq_exc_cause_o=deq.exc_cause;
     assign deq_brief_id_o = deq_brief.ftq_id;
     assign cfg_ftq_depth_o = FTQ_DEPTH;
     assign cfg_region_bytes_o = O3_CFG.fe.fetch.region_bytes;

@@ -3,7 +3,8 @@
  * independent high/low tags, per-entry cancellation, dual enqueue to completion FIFO.
  * N accepts/reserves 1 or 2 credits and captures stage0. N+1..N+3 advance;
  * N+4 edge enqueues surviving results and returns canceled credits. The cycle before
- * a result becomes head broadcasts wake; head remains bypass-visible until WB grant.
+ * each surviving result enters the FIFO broadcasts scheduling notice, including tails;
+ * only the actual head is bypass-visible until WB grant. Read buffers recheck data.
  * Tests: sim/cocotb/mdu/.
  */
 module mul_execute_unit import o3_pkg::*; #(
@@ -19,6 +20,7 @@ module mul_execute_unit import o3_pkg::*; #(
     output o3_types_pkg::mdu_resp_t resp_o,
     output o3_types_pkg::cpl_bypass_t bypass_o,
     output o3_types_pkg::wake_promise_t wake_o,
+    output o3_types_pkg::wake_promise_t wake2_o,
     input branch_resolution_t resolution_i,
     output logic busy_o
 );
@@ -50,13 +52,20 @@ module mul_execute_unit import o3_pkg::*; #(
         if(valid_q[3]) release_count=2'((pipe_q[3].fuse.valid?2:1)-int'(hi_live)-int'(lo_live));
         resp_o='0;resp_o.valid=resp_valid_o;resp_o.tag=head.tag;resp_o.result=head.data;
         busy_o=fifo_busy || (|valid_q);
+        // Scheduling notices cover every live completion, including FIFO tails.
+        // Consumers may leave IQ, but must recheck actual bypass/PRF availability.
+        wake_o='0;wake2_o='0;
+        if(!rst && enq_valid && hi.tag.dst_write_en) wake_o='{valid:1'b1,
+            dom:hi.tag.dst_dom,preg:hi.tag.dst_preg,br_mask:hi.tag.br_mask};
+        if(!rst && enq_pair && lo.tag.dst_write_en) wake2_o='{valid:1'b1,
+            dom:lo.tag.dst_dom,preg:lo.tag.dst_preg,br_mask:lo.tag.br_mask};
     end
     signed_mul65x65 u_data(.clk(clk),.en_i(1'b1),.a_i(a),.b_i(b),.p_o(product));
     fu_completion_fifo #(.CFG(CFG),.DEPTH(RESULT_SLOTS)) u_completion(
         .clk(clk),.rst(rst),.rsv_req_i(req_valid_i && req_ready_o),.rsv_pair_i(req_i.fuse.valid),
         .rsv_ok_o(req_ready_o),.rsv_single_ok_o(req_single_ready_o),.rsv_pair_ok_o(req_pair_ready_o),.rsv_release_i(release_count),
         .enq_valid_i(enq_valid),.enq_pair_i(enq_pair),.enq_i(hi),.enq2_i(lo),
-        .promise_i('0),.promise_o(wake_o),.head_valid_o(resp_valid_o),.head_o(head),
+        .promise_i('0),.promise_o(),.head_valid_o(resp_valid_o),.head_o(head),
         .head_consume_i(resp_ready_i),.bypass_o(bypass_o),.resolution_i(resolution_i),.busy_o(fifo_busy));
     always_ff @(posedge clk) begin
         if(rst) begin valid_q<=0;hi_live_q<=0;lo_live_q<=0;pipe_q<='{default:'0}; end

@@ -18,9 +18,9 @@
  * 区域、入口槽、mask、被选择的 CFI 和 next_pc。hit_o 表示 tag 命中，
  * 不表示一定选择 taken。复位/stall/无查询时输出无效结果；train_ready_o
  * 只在复位时为 0。PE_UBTB_LOOKUP/HIT 对有效查询给出当拍增量。
- * 周期 N 上升沿：仅有效训练更新一个表项；BPU 可在同一边沿采样边沿前的
- * 组合预测。训练与查询没有端口冲突，边沿前看到旧表，边沿后看到新表。
- * 周期 N+1：下一查询使用更新后的表；stall 本身不保持内部查询寄存器，
+ * 周期 N 上升沿：T0选行并捕获训练包/旧值，T1更新一个表项；BPU 查询仍是组合且与训练无端口冲突。
+ * 同址相邻训练通过pending CAM计划与完整旧值旁路保持II1。目标存于query/train两份单写RAM，元数据独立。
+ * 周期 N+2：查询使用更新后的表；stall 本身不保持内部查询寄存器，
  * 预测 PC 的保持由 BPU/FTQ 分配握手负责。
  *
  * 单模块时序/功能测试见 sim/cocotb/ubtb/；本模块无仿真专用逻辑。
@@ -61,15 +61,34 @@ module ubtb
         fetch_slot_t cfi_slot;
         cfi_type_e   cfi_type;
         ras_action_e ras_action;
-        vaddr_t      target;
         logic [1:0]  br_ctr;
         logic        cfi_is_rvc; // L7b actual instruction length/edge
         logic        is_edge;       // L7b actual instruction length/edge
-    } ubtb_entry_t;
+    } ubtb_meta_t;
 
-    ubtb_entry_t entry_q [ENTRIES];
+    ubtb_meta_t entry_q [ENTRIES];
     logic [ENTRIES-1:0] valid_q;
     ptr_t replace_q;
+    // T0 chooses a stationary CAM row and snapshots its old payload. T1
+    // updates confidence/owner/masks and writes it. Pending T0 tag/valid/RR
+    // forwarding and previous T1 data forwarding permit one training per cycle.
+    bpu_train_t t1_packet_q;
+    tag_t t1_tag_q;
+    ptr_t t1_row_q,wb_row_q;
+    logic t1_valid_q,t1_matched_q,t1_replace_q,wb_valid_q;
+    ubtb_meta_t t1_old_q,wb_meta_q,write_meta;
+    vaddr_t t1_target_q,wb_target_q,write_target,query_target;
+    ptr_t train_row,query_row;
+    logic train_matched,train_replace,train_write,write_valid;
+    tag_t incoming_tag;
+    (* ram_style="distributed" *) logic [VADDR_W-1:0] query_target_mem[ENTRIES];
+    (* ram_style="distributed" *) logic [VADDR_W-1:0] train_target_mem[ENTRIES];
+    assign query_target=query_target_mem[query_row];
+    assign write_valid=!rst_i && t1_valid_q;
+    always_ff @(posedge clk_i) if(write_valid) begin
+        query_target_mem[t1_row_q]<=write_target;
+        train_target_mem[t1_row_q]<=write_target;
+    end
 
     // 全部区域号位参与折叠；tag 比完整地址短，碰撞是明确的首版取舍。
     function automatic tag_t tag_of(input vaddr_t region_base);
@@ -118,16 +137,17 @@ module ubtb
             owner_payload[idx].raw_pred_taken=1;
             owner_payload[idx].cfi_is_rvc=entry_q[idx].cfi_is_rvc;
             owner_payload[idx].is_edge=entry_q[idx].is_edge;
-            owner_payload[idx].cfi_target=entry_q[idx].target;
-            owner_payload[idx].next_pc=entry_q[idx].target;
+
         end
     end
     always_comb begin : lookup
-        owner_prediction='0;pred_o='0;perf_o='0;hit_o=0;
+        owner_prediction='0;pred_o='0;perf_o='0;hit_o=0;query_row='0;
+        for(int idx=0;idx<ENTRIES;idx++) query_row|=ptr_t'(idx) & {PTR_BITS{lookup_pick[idx]}};
         for(int idx=0;idx<ENTRIES;idx++)
             owner_prediction |= owner_payload[idx] & {$bits(bpu_pred_t){owner_pick[idx]}};
         if(lookup_valid_i && !stall_i && !rst_i) begin
             pred_o=owner_prediction;
+            if(owner_prediction.cfi_valid) begin pred_o.cfi_target=query_target;pred_o.next_pc=query_target;end
             pred_o.region_base=lookup_region;
             pred_o.entry_slot=lookup_entry;
             if(!owner_prediction.cfi_valid) pred_o.next_pc=lookup_region+vaddr_t'(CFG.fetch.region_bytes);
@@ -141,74 +161,79 @@ module ubtb
         end
     end
 
-    // 只有提交训练可写表；同拍查表在边沿前使用旧状态，下一拍使用新状态。
-    always_ff @(posedge clk_i) begin : update_table
-        tag_t train_tag;
-        int selected_idx;
-        logic matched;
-        logic found_empty;
-        ubtb_entry_t updated;
+    // T0 CAM selection includes the row that T1 will write on this edge.
+    // Only its narrow tag/valid/replacement plan feeds this decision; numerical
+    // target and confidence updates do not feed the CAM priority chain.
+    assign incoming_tag=tag_of(train_i.region_base);
+    function automatic logic [ENTRIES-1:0] first_onehot(input logic [ENTRIES-1:0] hits);
+        logic [ENTRIES-1:0] pick;
+        for(int n=0;n<ENTRIES;n++) pick[n]=hits[n] && !(|(hits & ((ENTRIES'(1)<<n)-ENTRIES'(1))));
+        return pick;
+    endfunction
+    always_comb begin
+        logic [ENTRIES-1:0] hits,empty,hit_pick,empty_pick,chosen;
+        logic virtual_valid;
+        tag_t virtual_tag;
+        ptr_t replacement;
+        for(int idx=0;idx<ENTRIES;idx++) begin
+            virtual_valid=valid_q[idx] || (t1_valid_q && t1_row_q==ptr_t'(idx));
+            virtual_tag=t1_valid_q && t1_row_q==ptr_t'(idx) ? t1_tag_q:entry_q[idx].tag;
+            hits[idx]=virtual_valid && virtual_tag==incoming_tag;
+            empty[idx]=!virtual_valid;
+        end
+        hit_pick=first_onehot(hits);empty_pick=first_onehot(empty);
+        train_matched=|hits;
+        replacement=t1_valid_q && t1_replace_q ? ptr_t'((int'(t1_row_q)+1)%ENTRIES):replace_q;
+        chosen=train_matched ? hit_pick:empty_pick;
+        train_row=|chosen ? '0:replacement;
+        for(int idx=0;idx<ENTRIES;idx++) train_row|=ptr_t'(idx) & {PTR_BITS{chosen[idx]}};
+        train_write=train_valid_i && train_ready_o &&
+            ((|train_i.br_commit_mask) || (train_i.cfi_valid && train_i.cfi_type!=CFI_NONE)) &&
+            (train_matched || (train_i.cfi_valid && train_i.cfi_type!=CFI_NONE));
+        train_replace=!train_matched && !(|empty);
+    end
 
-        if (rst_i) begin
-            valid_q <= '0;
-            replace_q <= '0;
-        end else if (train_valid_i && train_ready_o &&
-                     ((|train_i.br_commit_mask) ||
-                      (train_i.cfi_valid && train_i.cfi_type != CFI_NONE))) begin
-            train_tag = tag_of(train_i.region_base);
-            selected_idx = int'(replace_q);
-            matched = 1'b0;
-            found_empty = 1'b0;
-            for (int idx = 0; idx < ENTRIES; idx++) begin
-                if (!matched && valid_q[idx] && entry_q[idx].tag == train_tag) begin
-                    selected_idx = idx;
-                    matched = 1'b1;
-                end
-            end
-            if (!matched) begin
-                for (int idx = 0; idx < ENTRIES; idx++) begin
-                    if (!found_empty && !valid_q[idx]) begin
-                        selected_idx = idx;
-                        found_empty = 1'b1;
-                    end
-                end
-            end
-
-            updated = '0;
-            if (matched) updated = entry_q[selected_idx];
-            updated.cfi_is_rvc = train_i.cfi_is_rvc;
-            updated.is_edge = train_i.is_edge;
-            updated.tag = train_tag;
-            updated.br_mask |= train_i.br_commit_mask;
-            if (train_i.cfi_valid && train_i.cfi_type != CFI_NONE) begin
-                // 新 owner 替换目标；同一 BR owner 才累积方向信心。
-                if (train_i.cfi_type == CFI_BR) begin
-                    updated.br_mask[train_i.cfi_slot] = 1'b1;
-                    if (matched && updated.owner_valid &&
-                        updated.cfi_type == CFI_BR && updated.cfi_slot == train_i.cfi_slot)
-                        updated.br_ctr = ctr_inc(updated.br_ctr);
-                    else
-                        updated.br_ctr = 2'b10;
-                end else begin
-                    updated.br_ctr = '0;
-                end
-                if (train_i.cfi_type == CFI_JAL)
-                    updated.jal_mask[train_i.cfi_slot] = 1'b1;
-                updated.owner_valid = 1'b1;
-                updated.cfi_slot = train_i.cfi_slot;
-                updated.cfi_type = train_i.cfi_type;
-                updated.ras_action = train_i.ras_action;
-                updated.target = train_i.cfi_target;
-            end else if (matched && updated.owner_valid && updated.cfi_type == CFI_BR &&
-                         train_i.br_commit_mask[updated.cfi_slot]) begin
-                // 没有 taken CFI 但 owner BR 确实提交，才让该方向计数器退一步。
-                updated.br_ctr = ctr_dec(updated.br_ctr);
-            end
-            if (matched || (train_i.cfi_valid && train_i.cfi_type != CFI_NONE)) begin
-                entry_q[selected_idx] <= updated;
-                valid_q[selected_idx] <= 1'b1;
-                if (!matched && !found_empty)
-                    replace_q <= ptr_t'((selected_idx + 1) % ENTRIES);
+    // T1 RAW forwarding covers consecutive training of the same row. T0's
+    // snapshot precedes the older write; a matching previous write supplies
+    // the complete old confidence/masks/owner/target image to this update.
+    always_comb begin
+        ubtb_meta_t old;
+        vaddr_t old_target;
+        old=wb_valid_q && wb_row_q==t1_row_q ? wb_meta_q:t1_old_q;
+        old_target=wb_valid_q && wb_row_q==t1_row_q ? wb_target_q:t1_target_q;
+        write_meta='0;write_target='0;
+        if(t1_matched_q) begin write_meta=old;write_target=old_target;end
+        write_meta.cfi_is_rvc=t1_packet_q.cfi_is_rvc;
+        write_meta.is_edge=t1_packet_q.is_edge;
+        write_meta.tag=t1_tag_q;
+        write_meta.br_mask|=t1_packet_q.br_commit_mask;
+        if(t1_packet_q.cfi_valid && t1_packet_q.cfi_type!=CFI_NONE) begin
+            if(t1_packet_q.cfi_type==CFI_BR) begin
+                write_meta.br_mask[t1_packet_q.cfi_slot]=1'b1;
+                if(t1_matched_q && write_meta.owner_valid && write_meta.cfi_type==CFI_BR &&
+                    write_meta.cfi_slot==t1_packet_q.cfi_slot) write_meta.br_ctr=ctr_inc(write_meta.br_ctr);
+                else write_meta.br_ctr=2'b10;
+            end else write_meta.br_ctr='0;
+            if(t1_packet_q.cfi_type==CFI_JAL) write_meta.jal_mask[t1_packet_q.cfi_slot]=1'b1;
+            write_meta.owner_valid=1'b1;write_meta.cfi_slot=t1_packet_q.cfi_slot;
+            write_meta.cfi_type=t1_packet_q.cfi_type;write_meta.ras_action=t1_packet_q.ras_action;
+            write_target=t1_packet_q.cfi_target;
+        end else if(t1_matched_q && write_meta.owner_valid && write_meta.cfi_type==CFI_BR &&
+                     t1_packet_q.br_commit_mask[write_meta.cfi_slot]) write_meta.br_ctr=ctr_dec(write_meta.br_ctr);
+    end
+    always_ff @(posedge clk_i) begin
+        if(rst_i) begin
+            valid_q<='0;replace_q<='0;t1_valid_q<=0;wb_valid_q<=0;
+            t1_packet_q<='0;t1_tag_q<='0;t1_row_q<='0;t1_matched_q<=0;t1_replace_q<=0;
+            t1_old_q<='0;t1_target_q<='0;wb_row_q<='0;wb_meta_q<='0;wb_target_q<='0;
+        end else begin
+            t1_valid_q<=train_write;t1_packet_q<=train_i;t1_tag_q<=incoming_tag;
+            t1_row_q<=train_row;t1_matched_q<=train_matched;t1_replace_q<=train_replace;
+            t1_old_q<=entry_q[train_row];t1_target_q<=train_target_mem[train_row];
+            wb_valid_q<=write_valid;wb_row_q<=t1_row_q;wb_meta_q<=write_meta;wb_target_q<=write_target;
+            if(write_valid) begin
+                entry_q[t1_row_q]<=write_meta;valid_q[t1_row_q]<=1'b1;
+                if(t1_replace_q) replace_q<=ptr_t'((int'(t1_row_q)+1)%ENTRIES);
             end
         end
     end

@@ -1,0 +1,1 @@
+Deferred 500-cycle seed replay: registered cancellation/refetch, held original packet despite next input changes, overlapping requests, direct already registered trap target and reset. Run after backend refactor; integration must separately prove precise retirement and exclusion of new irreversible head transactions.

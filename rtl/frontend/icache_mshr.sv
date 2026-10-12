@@ -1,5 +1,8 @@
 /** L8a four Read transactions, whole-line response, merge by physical line.
- * Accepted requests survive redirects and satp changes. FENCE.I waits idle. */
+ * Accepted requests survive redirects and satp changes. FENCE.I waits idle.
+ * Payload has one response writer and one fill reader in fixed-slot RAM. Per-
+ * transaction SEND/WAIT/FILL states track external ownership; all N owners may
+ * progress independently, with no whole-cache serial FSM. */
 module icache_mshr import o3_types_pkg::*; #(
     parameter o3_cfg_pkg::frontend_cfg_t CFG,localparam int N=CFG.icache.mshrs
 )(input logic clk_i,rst_i,input logic alloc_valid_i,output logic alloc_ready_o,
@@ -18,7 +21,12 @@ module icache_mshr import o3_types_pkg::*; #(
     output logic [$clog2(N+1)-1:0] free_count_o,
     output logic fill_pf_o,output logic idle_o,output fe_perf_t perf_o);
     typedef enum logic [1:0] {IDLE,SEND,WAIT,FILL} state_t;
-    state_t state_q[N];paddr_t addr_q[N];coh_data_t data_q[N];logic err_q[N];
+    state_t state_q[N];paddr_t addr_q[N];logic err_q[N];
+    // The external response is the sole payload writer. Only FILL owners may
+    // expose RAM data; state and error remain resettable metadata.
+    (* ram_style="distributed" *) logic [$bits(coh_data_t)-1:0] response_mem[N];
+    always_ff @(posedge clk_i)
+        if (!rst_i && l2_resp_valid_i) response_mem[l2_resp_i.id]<=l2_resp_i.data;
     logic pf_only_q[N];
     logic send_held_q;int send_q,free_idx,merge_idx,send_idx,fill_idx;
     logic last_alloc_q;logic [N-1:0] last_alloc_oh_q;
@@ -47,7 +55,7 @@ module icache_mshr import o3_types_pkg::*; #(
         l2_req_o.id=COH_ID_W'(send_q);l2_req_o.addr=coh_addr_t'(addr_q[send_q]>>6);
         l2_resp_ready_o=1;fill_wr_valid_o=fill_idx>=0;
         fill_wr_line_paddr_o=fill_idx>=0 ? addr_q[fill_idx]:'0;
-        fill_wr_data_o=fill_idx>=0 ? data_q[fill_idx]:'0;
+        fill_wr_data_o=fill_idx>=0 ? response_mem[fill_idx]:'0;
         fill_wr_error_o=fill_idx>=0 && err_q[fill_idx];
         fill_done_o=fill_wr_valid_o && fill_wr_ready_i;fill_done_line_paddr_o=fill_wr_line_paddr_o;
     end
@@ -58,7 +66,7 @@ module icache_mshr import o3_types_pkg::*; #(
         for(int n=0;n<N;n++) if(state_q[n]==WAIT) perf_o[PE_ICACHE_REFILL_WAIT_CYCLE]=PERF_INC_W'(1);
     end
     always_ff @(posedge clk_i) begin
-        if(rst_i) begin pf_only_q<='{default:0};state_q<='{default:IDLE};addr_q<='{default:'0};data_q<='{default:'0};err_q<='{default:0};send_held_q<=0;send_q<=0;last_alloc_q<=0;last_alloc_oh_q<='0;last_alloc_line_q<='0;end
+        if(rst_i) begin pf_only_q<='{default:0};state_q<='{default:IDLE};addr_q<='{default:'0};err_q<='{default:0};send_held_q<=0;send_q<=0;last_alloc_q<=0;last_alloc_oh_q<='0;last_alloc_line_q<='0;end
         else begin
             last_alloc_q<=alloc_valid_i && alloc_ready_o && !alloc_merged_o;
             last_alloc_oh_q<='0;
@@ -72,7 +80,7 @@ module icache_mshr import o3_types_pkg::*; #(
             if(l2_req_valid_o && l2_req_ready_i) begin send_held_q<=0;state_q[send_q]<=WAIT;end
             if(l2_resp_valid_i) begin
                 assert(l2_resp_i.op==COH_READDATA && int'(l2_resp_i.id)<N && state_q[l2_resp_i.id]==WAIT);
-                state_q[l2_resp_i.id]<=FILL;data_q[l2_resp_i.id]<=l2_resp_i.data;err_q[l2_resp_i.id]<=l2_resp_i.error;
+                state_q[l2_resp_i.id]<=FILL;err_q[l2_resp_i.id]<=l2_resp_i.error;
             end
             if(fill_done_o) state_q[fill_idx]<=IDLE;
             if($past(l2_req_valid_o && !l2_req_ready_i && !rst_i)) assert(l2_req_valid_o && $stable(l2_req_o));

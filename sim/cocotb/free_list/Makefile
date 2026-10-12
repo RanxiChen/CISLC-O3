@@ -9,7 +9,8 @@ COCOTB_RESULTS_FILE := $(CURDIR)/results.xml
 TEST_SEED ?= 1
 export TEST_SEED
 export PYTHONPATH := $(REPO_ROOT)/sim/cocotb:$(PYTHONPATH)
-EXTRA_ARGS += --timing -Wno-fatal --assert
+DOMAIN ?= 1
+EXTRA_ARGS += -GDOMAIN=$(DOMAIN) --timing -Wno-fatal --assert
 ifeq ($(WAVES),1)
 EXTRA_ARGS += --trace --trace-structs
 endif

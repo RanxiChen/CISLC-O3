@@ -4,9 +4,10 @@
  * 来源：2026-10-02 从 backend.sv 的 ALU 循环原样迁出，每个 ALU 一个实例，逻辑未改。
  *
  * 当前已经实现：
- * - 读口 grant 与 IQ 删除原子发生；组合 PRF 读值、PC（AUIPC）和扩展立即数锁存到 RegRead 槽。
+ * - 读口 grant 与发射 buffer 出队原子发生；PRF 读值、PC 和立即数锁存到 RegRead 槽。
  * - int_execute_unit 组合执行；Result 槽只有在旧结果被消费/杀死/为空时才能被覆盖。
  * - 结果未取得写口时保持并反压 RegRead（regread_ready_o=0）。
+ * - 执行结果确认可在下一拍进入 Result 时提前唤醒；Result 保持到写回并持续提供 bypass。
  * - 分支解析时清除对应 branch bit；误预测时进入 Result 的年轻结果被丢弃。
  *
  * B12 恢复补充：Result 背压期间若发生误预测，RegRead 槽按原 branch mask 先判断 kill；
@@ -38,6 +39,8 @@ module alu_pipe
 
     output logic                  regread_ready_o,
     output int_execute_result_t   result_o,
+    output o3_types_pkg::wake_promise_t wake_o,
+    output o3_types_pkg::cpl_bypass_t bypass_o,
 
     // 观测口：仅供 backend 仿真日志使用
     output int_regread_pipe_uop_t obs_regread_o,
@@ -54,6 +57,25 @@ module alu_pipe
     assign result_o          = alu_result_q;
     assign obs_regread_o     = alu_regread_q;
     assign obs_exec_result_o = exec_result;
+
+    always_comb begin
+        wake_o = '0;
+        // Once promised, this result is registered next cycle and remains visible
+        // through the actual PRF write edge even if writeback arbitration stalls.
+        if (!rst && result_consume_i && exec_valid && alu_regread_q.dst_write_en
+            && !br_killed(alu_regread_q.branch_mask, resolution_i)) begin
+            wake_o.valid = 1'b1;
+            wake_o.dom = o3_types_pkg::RD_INT;
+            wake_o.preg = alu_regread_q.dst_preg;
+            wake_o.br_mask = br_resolved_mask(alu_regread_q.branch_mask, resolution_i);
+        end
+        bypass_o = '0;
+        bypass_o.valid = !rst && alu_result_q.valid && alu_result_q.dst_write_en
+                        && !br_killed(alu_result_q.branch_mask, resolution_i);
+        bypass_o.dom = o3_types_pkg::RD_INT;
+        bypass_o.preg = alu_result_q.dst_preg;
+        bypass_o.data = alu_result_q.result;
+    end
 
     int_execute_unit u_int_execute_unit (
         .op_i(int_alu_op_t'(alu_regread_q.int_alu_op)),
@@ -90,7 +112,7 @@ module alu_pipe
                 alu_result_q.branch_mask <= br_resolved_mask(alu_result_q.branch_mask, resolution_i);
             end
 
-            // 读口grant与IQ删除原子发生；组合PRF读值直接锁存到RegRead槽。
+            // Read grant removes the issue-buffer head and captures its PRF values.
             if (br_killed(alu_regread_q.branch_mask, resolution_i)) begin
                 alu_regread_q.valid <= 1'b0;
             end else if (regread_ready_o) begin

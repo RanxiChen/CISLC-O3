@@ -87,16 +87,15 @@ module store_queue
     logic [ROB_IDX_WIDTH_LOCAL-1:0] rob_idx_q [DEPTH-1:0];
     branch_mask_t branch_mask_q [DEPTH-1:0];
     o3_types_pkg::sq_kind_e kind_q[DEPTH];logic heu_complete_q[DEPTH];
-    logic heu_release;
+    logic heu_release;int heu_selected;
     always_comb begin
-        int selected;
-        selected = -1;
-        heu_valid_o=0;heu_entry_o='0;heu_kind_o=o3_types_pkg::SQ_NORMAL;heu_release=0;
+        heu_selected = -1;
+        heu_valid_o=0;heu_kind_o=o3_types_pkg::SQ_NORMAL;heu_release=0;
         for(int n=0;n<DEPTH;n++) if(valid_q[n] && rob_idx_q[n]==rob_head_i &&
             kind_q[n]!=o3_types_pkg::SQ_NORMAL && sta_q[n].uop.valid && !heu_complete_q[n])
-            selected = n;
-        if (selected >= 0) begin
-            heu_valid_o=1;heu_entry_o=sta_q[selected];heu_kind_o=kind_q[selected];
+            heu_selected = n;
+        if (heu_selected >= 0) begin
+            heu_valid_o=1;heu_kind_o=kind_q[heu_selected];
         end
         for(int p=0;p<COMMIT_WIDTH;p++) heu_release|=commit_valid_i[p] && commit_idx_i[p]==head_q && kind_q[head_q]!=o3_types_pkg::SQ_NORMAL;
     end
@@ -122,26 +121,97 @@ module store_queue
     logic head_dtcm;
     logic head_ready;
 
-    lq_replay_t sta_q[DEPTH];logic sta_ready_q[DEPTH],sta_wait_q[DEPTH];
-    int replay_idx[P];
-    always_comb begin
-        replay_valid_o='{default:0};replay_o='{default:'0};replay_idx='{default:-1};
-        for(int d=0;d<DEPTH;d++) begin
-            int n,pick;n=(int'(head_q)+d)%DEPTH;pick=-1;
-            for(int p=0;p<P;p++) if(p<CFG.lsu.mem_pipes && pick<0 && replay_idx[p]<0) pick=p;
-            if(pick>=0 && valid_q[n] && sta_ready_q[n] && !committed_q[n] && !flush_all_i &&
-                !(resolution_valid_i && resolution_mispredict_i && branch_mask_q[n][resolution_tag_i])) begin
-                replay_idx[pick]=n;replay_valid_o[pick]=1;
-            end
+    typedef struct packed {logic valid;} sta_uop_t;
+    typedef struct packed {sta_uop_t uop;o3_types_pkg::ld_wait_e wait_reason;} sta_metadata_t;
+    sta_metadata_t sta_q[DEPTH];logic sta_ready_q[DEPTH],sta_wait_q[DEPTH];
+    localparam int PAYLOAD_BITS=$bits(lq_replay_t),WRITER_BITS=P>1?$clog2(P):1;
+    logic payload_written_q[DEPTH];logic [WRITER_BITS-1:0] payload_writer_q[DEPTH];
+    logic [IDX_WIDTH-1:0] payload_index[P+1];logic [PAYLOAD_BITS-1:0] bank_payload[P][P+1];
+    lq_replay_t payload_read[P+1];
+    // Capture payload is immutable; retries only update narrow wait metadata.
+    // Each capture lane has a writer bank and independent HEU/replay replicas.
+    for(genvar wp=0;wp<P;wp++) begin : g_sta_writer
+        for(genvar rp=0;rp<P+1;rp++) begin : g_sta_reader
+            (* ram_style="distributed" *) logic [PAYLOAD_BITS-1:0] mem[DEPTH];
+            wire [IDX_WIDTH-1:0] wi=IDX_WIDTH'(capture_i[wp].uop.sq_idx);
+            wire accept=capture_valid_i[wp] && int'(capture_i[wp].uop.sq_idx)<DEPTH && !flush_all_i
+                && !(resolution_valid_i && resolution_mispredict_i && branch_mask_q[wi][resolution_tag_i]);
+            always_ff @(posedge clk) if(!rst && accept) mem[wi]<=PAYLOAD_BITS'(capture_i[wp]);
+            assign bank_payload[wp][rp]=mem[payload_index[rp]];
         end
-        // The age scan chooses narrow indices; each port reads its payload once.
-        for (int p = 0; p < P; p++) if (replay_valid_o[p]) begin
-            replay_o[p] = sta_q[replay_idx[p]];
-            replay_o[p].uop.branch_mask = branch_mask_q[replay_idx[p]];
+    end
+    for(genvar rp=0;rp<P+1;rp++) begin : g_sta_select
+        always_comb begin
+            payload_read[rp]='0;
+            for(int wp=0;wp<P;wp++)
+                if(payload_written_q[payload_index[rp]] && payload_writer_q[payload_index[rp]]==WRITER_BITS'(wp))
+                    payload_read[rp] |= lq_replay_t'(bank_payload[wp][rp]);
+        end
+    end
+    function automatic lq_replay_t sta_record(input lq_replay_t payload,input sta_metadata_t state);
+        lq_replay_t x;
+        x=payload;x.uop.valid=state.uop.valid;x.wait_reason=state.wait_reason;
+        return x;
+    endfunction
+    initial assert(P<=2) else $fatal(1,"SQ replay tree supports at most two memory pipes");
+    localparam int REPLAY_LEAVES=1 << $clog2(DEPTH);
+    typedef struct packed {
+        logic valid;
+        logic [IDX_WIDTH-1:0] age,idx;
+    } replay_choice_t;
+    typedef struct packed {replay_choice_t first,second;} replay_pair_t;
+    replay_pair_t replay_tree[2*REPLAY_LEAVES];
+    logic [IDX_WIDTH-1:0] replay_idx[P];
+    function automatic replay_choice_t older_replay(input replay_choice_t a,b);
+        return b.valid && (!a.valid || b.age<a.age) ? b:a;
+    endfunction
+    function automatic replay_pair_t merge_replay(input replay_pair_t a,b);
+        replay_pair_t result;
+        logic right_first;
+        right_first=b.first.valid && (!a.first.valid || b.first.age<a.first.age);
+        result.first=right_first ? b.first:a.first;
+        result.second=right_first ? older_replay(a.first,b.second):older_replay(a.second,b.first);
+        return result;
+    endfunction
+    // Compare physical owners in parallel. Only narrow age/index pairs enter
+    // a balanced oldest-two tree; no rotating wide payload or serial age scan.
+    for(genvar row=0;row<REPLAY_LEAVES;row++) begin : g_replay_leaf
+        if(row<DEPTH) begin
+            assign replay_tree[REPLAY_LEAVES+row].first='{
+                valid:valid_q[row] && sta_ready_q[row] && !committed_q[row] &&
+                    !(resolution_valid_i && resolution_mispredict_i && branch_mask_q[row][resolution_tag_i]),
+                age:IDX_WIDTH'((row+DEPTH-int'(head_q))%DEPTH),idx:IDX_WIDTH'(row)};
+            assign replay_tree[REPLAY_LEAVES+row].second='0;
+        end else assign replay_tree[REPLAY_LEAVES+row]='0;
+    end
+    for(genvar node=1;node<REPLAY_LEAVES;node++) begin : g_replay_merge
+        assign replay_tree[node]=merge_replay(replay_tree[2*node],replay_tree[2*node+1]);
+    end
+    always_comb begin
+        replay_valid_o='{default:0};replay_idx='{default:'0};
+        for(int p=0;p<P;p++) begin
+            replay_choice_t chosen;
+            chosen=p==0 ? replay_tree[1].first:replay_tree[1].second;
+            replay_idx[p]=chosen.idx;
+            replay_valid_o[p]=p<CFG.lsu.mem_pipes && chosen.valid && !flush_all_i;
+        end
+    end
+    assign payload_index[0]=heu_valid_o ? IDX_WIDTH'(heu_selected):'0;
+    for(genvar rp=0;rp<P;rp++) assign payload_index[rp+1]=replay_valid_o[rp] ? replay_idx[rp]:'0;
+    always_comb begin
+        heu_entry_o='0;
+        if(heu_valid_o) heu_entry_o=sta_record(payload_read[0],sta_q[heu_selected]);
+        for(int rp=0;rp<P;rp++) begin
+            replay_o[rp]='0;
+            if(replay_valid_o[rp]) begin
+                replay_o[rp]=sta_record(payload_read[rp+1],sta_q[replay_idx[rp]]);
+                replay_o[rp].uop.branch_mask=branch_mask_q[replay_idx[rp]];
+            end
         end
     end
     always_ff @(posedge clk) begin
         if(rst) begin
+            payload_written_q<='{default:0};payload_writer_q<='{default:'0};
             sta_q<='{default:'0};sta_ready_q<='{default:0};sta_wait_q<='{default:0};
             dc_wait_q<=0;dc_reason_q<=o3_types_pkg::LDW_NONE;dc_mshr_q<=0;
         end else begin
@@ -168,7 +238,10 @@ module store_queue
                     endcase
                     for(int p=0;p<P;p++) begin
                         if(replay_valid_o[p] && replay_ready_i[p] && replay_idx[p]==n) begin sta_ready_q[n]<=0;sta_wait_q[n]<=0;end
-                        if(capture_valid_i[p] && capture_i[p].uop.sq_idx==n) sta_q[n]<=capture_i[p];
+                        if(capture_valid_i[p] && capture_i[p].uop.sq_idx==n) begin
+                            sta_q[n]<='{uop:'{valid:capture_i[p].uop.valid},wait_reason:capture_i[p].wait_reason};
+                            payload_written_q[n]<=1;payload_writer_q[n]<=WRITER_BITS'(p);
+                        end
                         if(update_valid_i[p] && update_i[p].sq_idx==n) begin
                             sta_q[n].wait_reason<=update_i[p].reason;
                             sta_wait_q[n]<=update_i[p].status==o3_types_pkg::DC_REPLAY && update_i[p].reason!=o3_types_pkg::LDW_HEAD;
@@ -188,7 +261,7 @@ module store_queue
             end
             if (alloc_fire_i) for (int n = 0; n < DEPTH; n++)
                 for (int l = 0; l < RENAME_WIDTH; l++) if (alloc_req_i[l] && alloc_idx_o[l] == IDX_WIDTH'(n)) begin
-                    sta_q[n] <= '0; sta_ready_q[n] <= 0; sta_wait_q[n] <= 0;
+                    sta_q[n] <= '0; payload_written_q[n]<=0; sta_ready_q[n] <= 0; sta_wait_q[n] <= 0;
                 end
         end
     end
@@ -252,6 +325,8 @@ module store_queue
         end
     end
 
+    // Carry forwarding readiness with the overlap winner; do not re-index
+    // all entry predicates after age selection. No extra query cycle.
     // Compare each physical entry once; only narrow age/index records enter
     // the selection tree. Rotating every wide address/data row by head_q
     // before comparing creates a DEPTH-by-DEPTH crossbar.
@@ -259,6 +334,7 @@ module store_queue
     typedef struct packed {
         logic valid;
         logic [IDX_WIDTH-1:0] age, idx;
+        logic ready;
     } query_choice_t;
     function automatic query_choice_t younger_choice(input query_choice_t a, b);
         return b.valid && (!a.valid || b.age > a.age) ? b : a;
@@ -297,9 +373,9 @@ module store_queue
             assign full_ready[idx] = overlaps[idx] && data_valid_q[idx]
                 && (covered_bytes & query_mask_i[p]) == query_mask_i[p];
             assign overlap_tree[QUERY_LEAVES+idx] =
-                '{valid:overlaps[idx], age:age, idx:IDX_WIDTH'(idx)};
+                '{valid:overlaps[idx], age:age, idx:IDX_WIDTH'(idx),ready:full_ready[idx]};
             assign full_tree[QUERY_LEAVES+idx] =
-                '{valid:full_ready[idx], age:age, idx:IDX_WIDTH'(idx)};
+                '{valid:full_ready[idx], age:age, idx:IDX_WIDTH'(idx),ready:1'b0};
         end
         for (genvar pad = DEPTH; pad < QUERY_LEAVES; pad++) begin : g_pad
             assign overlap_tree[QUERY_LEAVES+pad] = '0;
@@ -311,7 +387,7 @@ module store_queue
         end
         always_comb begin
             query_block_o[p] = |unknown_addr
-                || (overlap_tree[1].valid && !full_ready[overlap_tree[1].idx]);
+                || (overlap_tree[1].valid && !overlap_tree[1].ready);
             query_forward_valid_o[p] = full_tree[1].valid && !query_block_o[p];
             // Preserve data even when a younger partial/unknown store blocks
             // the load: the old scan retained the youngest full-cover value.
@@ -320,6 +396,10 @@ module store_queue
                 query_forward_data_o[p] = data_q[full_tree[1].idx]
                     >> {byte_offset[full_tree[1].idx], 3'b000};
         end
+`ifndef SYNTHESIS
+        always_ff @(posedge clk) if(!rst && overlap_tree[1].valid)
+            assert (overlap_tree[1].ready==full_ready[overlap_tree[1].idx]);
+`endif
     end
 
     always_ff @(posedge clk) begin

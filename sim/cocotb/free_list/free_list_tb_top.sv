@@ -35,8 +35,9 @@ module free_list_tb_top import o3_pkg::*; #(
     input  logic                              resolution_mispredict_i,
     input  branch_tag_t                       resolution_tag_i
 ,
-output logic [31:0] cfg_width_o, cfg_depth_o, cfg_rob_o, cfg_pregs_o, cfg_read_ports_o, cfg_tags_o
+output logic [31:0] cfg_width_o, cfg_depth_o, cfg_rob_o, cfg_pregs_o, cfg_read_ports_o, cfg_tags_o, cfg_fp_o
 );
+assign cfg_fp_o=DOMAIN==o3_types_pkg::RD_FP;
 free_list #(.CFG(CFG), .DOMAIN(DOMAIN)) dut (
 .clk(clk),
 .flush_all_i(flush_all_i),

@@ -62,6 +62,7 @@ class CacheBench:
         self.ways = int(os.environ.get('WAYS', 8))
         self.rfo = int(os.environ.get('RFO', 1))
         self.widths = None
+        self.reservation = None
         self.mem, self.gold, self.held = {}, {}, {}
         self.pending = deque()
         self.sent = {}
@@ -134,6 +135,7 @@ class CacheBench:
         await Timer(1, unit='ns')
         v = int(d.widths.value)
         self.widths = [(v >> x) & 255 for x in (24, 16, 8, 0)]
+        self.reservation = int(d.reservation_cycles_o.value)
         await self.until(lambda: int(d.init_done.value), self.sets + 10)
 
     async def until(self, condition, limit=1000):
@@ -265,10 +267,10 @@ class CacheBench:
         return v
 
     async def issue(self, *requests):
-        # Reserve at IS, then carry two bubbles to S0, matching the actual LSU.
+        # Reserve at RR, then carry the configured AG/translation stages to S0.
         await self.until(lambda: not int(self.d.full_line_busy_o.value) and not int(self.d.internal_busy_o.value))
-        await self.tick()
-        await self.tick()
+        for _ in range(self.reservation):
+            await self.tick()
         before = len(self.responses)
         for r in requests:
             self.cpu[r.lane] = r

@@ -12,7 +12,10 @@
  * and inhibit bits. At edge N a counter write replaces only that counter's
  * increment (U11). Configuration writes become visible in N+1, while other
  * counters still accumulate their N increments. Counters wrap at 64 bits.
- * Tests: sim/cocotb/hpm_counters/; evidence in O3-T08-report.md.
+ * Event E0 captures a qualified narrow increment; E1 accumulates it. CSR
+ * reads/RMW forward the pending increment, so the architected value and
+ * same-edge write/configuration/overflow rules above remain unchanged.
+ * Tests: sim/cocotb/hpm_counters/; pipeline functional validation is pending.
  */
 module hpm_counters
     import o3_types_pkg::*;
@@ -34,12 +37,20 @@ module hpm_counters
     output logic [31:0] scountovf_o
 );
     localparam int FIRST_HPM = 3;
+    localparam int INC_W = (PERF_INC_W > BE_PERF_INC_W) ? PERF_INC_W : BE_PERF_INC_W;
     localparam logic [63:0] INHIBIT_MASK = 64'h5
         | (((64'h1 << NUM_HPM) - 64'h1) << FIRST_HPM);
 
     logic [63:0] mcycle_q, minstret_q;
     logic [63:0] counter_q [NUM_HPM];
     logic [63:0] event_q [NUM_HPM];
+    // E0 selects/gates this cycle's event; E1 applies that frozen increment.
+    // The architected view forwards E0's pending increment, preserving exact
+    // CSR read/RMW, selector/inhibit and same-edge counter-write semantics.
+    logic [INC_W-1:0] pending_q[NUM_HPM];
+    logic [$clog2(o3_cfg_pkg::O3_CFG.core.commit_width+1)-1:0] retire_pending_q;
+    logic [63:0] counter_view[NUM_HPM],minstret_view;
+    logic [64:0] forwarded[NUM_HPM];
     logic [64:0] sums [NUM_HPM];
     logic [NUM_HPM-1:0] count_enable, overflow_set;
     logic of_base;
@@ -51,22 +62,47 @@ module hpm_counters
 
     // Event zero and the FE numbering holes are not events. Range checks occur
     // before dynamic indexing; unsupported sources/numbers always increment 0.
-    function automatic logic [63:0] event_increment(input logic [15:0] selector);
-        logic [63:0] increment;
+    function automatic logic [INC_W-1:0] event_increment(input logic [15:0] selector);
+        logic [INC_W-1:0] increment;
         increment = '0;
         case (selector[15:8])
             8'h01: if ((int'(selector[7:0]) >= int'(PE_UBTB_LOOKUP)
                        && int'(selector[7:0]) <= int'(PE_F0_REMAINDER_BEAT))
                       || (int'(selector[7:0]) >= int'(PE_TAGE_COND_PRED)
                           && int'(selector[7:0]) < int'(PE_NUM)))
-                increment = 64'(fe_perf_i[selector[7:0]]);
+                increment = INC_W'(fe_perf_i[selector[7:0]]);
             8'h02: if (int'(selector[7:0]) >= int'(BE_RENAME_STALL_PREG)
                        && int'(selector[7:0]) < int'(BE_PERF_NUM))
-                increment = 64'(be_perf_i[selector[7:0]]);
+                increment = INC_W'(be_perf_i[selector[7:0]]);
             default: ;
         endcase
         return increment;
     endfunction
+
+    // Keep the counter update on the native carry chain. Overflow depends only
+    // on the narrow event addition and an upper-bit reduction, so a late event
+    // does not propagate through 65 counter bits to the same-cycle OF/IRQ pulse.
+    // The native adder applies the previously captured increment; the narrow
+    // overflow logic evaluates this cycle against the forwarded architected
+    // value. CSR views preserve the original edge semantics. Full-SoC recheck
+    // and functional validation of this pipeline are pending.
+    function automatic logic [64:0] add_event(
+        input logic [63:0] count,
+        input logic [INC_W-1:0] increment
+    );
+        logic [INC_W:0] low_sum;
+        logic [64:0] result;
+        low_sum={1'b0,count[INC_W-1:0]}+{1'b0,increment};
+        result={1'b0,count + 64'(increment)};
+        result[64]=low_sum[INC_W] && (&count[63:INC_W]);
+        return result;
+    endfunction
+
+    assign minstret_view=minstret_q+64'(retire_pending_q);
+    for(genvar counter=0;counter<NUM_HPM;counter++) begin : g_architected_view
+        assign forwarded[counter]=add_event(counter_q[counter],pending_q[counter]);
+        assign counter_view[counter]=forwarded[counter][63:0];
+    end
 
     // HPM handles its CSR subset directly from the original request, including
     // RMW and WARL masking. No input depends on csr_file's read/write outputs.
@@ -78,13 +114,13 @@ module hpm_counters
         old_value = '0;
         case (req_i.addr)
             12'hb00, 12'hc00: begin implemented_o = 1'b1; old_value = mcycle_q; end
-            12'hb02, 12'hc02: begin implemented_o = 1'b1; old_value = minstret_q; end
+            12'hb02, 12'hc02: begin implemented_o = 1'b1; old_value = minstret_view; end
             12'h320: begin implemented_o = 1'b1; old_value = 64'(inhibit_q); end
             default: ;
         endcase
         for (int i = 0; i < NUM_HPM; i++) begin
             if (int'(req_i.addr[4:0]) == FIRST_HPM + i) begin
-                if (counter_addr) old_value = counter_q[i];
+                if (counter_addr) old_value = counter_view[i];
                 if (event_addr) old_value = 64'(event_q[i]);
             end
         end
@@ -116,7 +152,7 @@ module hpm_counters
                 !((priv_i==PRIV_M && event_q[i][62]) ||
                   (priv_i==PRIV_S && event_q[i][61]) ||
                   (priv_i==PRIV_U && event_q[i][60]));
-            sums[i]={1'b0,counter_q[i]}+{1'b0,event_increment(event_q[i][15:0])};
+            sums[i]=add_event(counter_view[i],event_increment(event_q[i][15:0]));
             scountovf_o[FIRST_HPM+i]=event_q[i][63];
             of_base=(write_fire && req_i.addr==12'(12'h323+i)) ? write_value_o[63] : event_q[i][63];
             overflow_set[i]=count_enable[i] && sums[i][64] && !of_base &&
@@ -129,31 +165,32 @@ module hpm_counters
     always_ff @(posedge clk_i) begin
         if (rst_i) begin
             mcycle_q <= '0;
-            minstret_q <= '0;
+            minstret_q <= '0;retire_pending_q<='0;
             inhibit_q <= '0;
             for (int i = 0; i < NUM_HPM; i++) begin
-                counter_q[i] <= '0;
+                counter_q[i] <= '0;pending_q[i]<='0;
                 event_q[i] <= '0;
             end
         end else begin
             if (!inhibit_q[0]) mcycle_q <= mcycle_q + 64'd1;
-            if (!inhibit_q[2]) minstret_q <= minstret_q + 64'(retire_count_i);
-            for (int i = 0; i < NUM_HPM; i++)
-                if (count_enable[i]) begin
-                    counter_q[i] <= sums[i][63:0];
-                end
+            minstret_q <= minstret_view;
+            retire_pending_q <= inhibit_q[2] ? '0:retire_count_i;
+            for (int i = 0; i < NUM_HPM; i++) begin
+                counter_q[i] <= counter_view[i];
+                pending_q[i] <= count_enable[i] ? event_increment(event_q[i][15:0]):'0;
+            end
 
             // Only the written counter loses its increment on this edge.
             // Nonblocking config updates leave this edge's increments unchanged.
             if (write_fire) begin
                 case (req_i.addr)
                     12'hb00: mcycle_q <= write_value_o;
-                    12'hb02: minstret_q <= write_value_o;
+                    12'hb02: begin minstret_q <= write_value_o;retire_pending_q<='0;end
                     12'h320: inhibit_q <= write_value_o[31:0];
                     default: ;
                 endcase
                 for (int i = 0; i < NUM_HPM; i++) begin
-                    if (req_i.addr == 12'(12'hb03 + i)) counter_q[i] <= write_value_o;
+                    if (req_i.addr == 12'(12'hb03 + i)) begin counter_q[i] <= write_value_o;pending_q[i]<='0;end
                     if (req_i.addr == 12'(12'h323 + i)) event_q[i] <= write_value_o;
                 end
             end

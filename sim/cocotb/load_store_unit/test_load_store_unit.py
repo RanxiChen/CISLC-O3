@@ -62,6 +62,7 @@ async def seeded_c_m_replay_pending_response_result_backpressure(d):
             mask&=~(1<<tag)
             if kill:
                 if mode==1:
+                    await e.until(lambda:bool(e.stores))
                     assert e.stores[-1][2:]==(0x80020000,data),(transaction,'old STA on M')
                 assert idx not in e.saved and idx not in e.waits
                 e.miss=False;e.block=False
@@ -99,13 +100,22 @@ async def two_lane_results_and_fifo_reservations(d):
     assert [field(d,'result',val(d.load_result_o[p]),'instruction_id') for p in range(2)]==[1,2]
     await e.issue(e.uop(3,lq=2),e.uop(4,lq=3,rob=4))
     await e.until(lambda: len({field(d,'response',a,'lq_tag.idx') for _,_,a in e.updates})==4)
+    # Preserve the original four requests and add enough owners to fill the
+    # configured capacity after the pipeline-credit increase.
+    depth=val(d.cfg_fifo_o)
+    for group in range(2,depth):
+        await e.issue(e.uop(2*group+1,lq=2*group,rob=2*group),
+                      e.uop(2*group+2,addr=0x80000110,lq=2*group+1,rob=2*group+1))
+    await e.until(lambda:len({field(d,'response',a,'lq_tag.idx') for _,_,a in e.updates})==2*depth)
     for _ in range(12):
         await e.tick()
         assert not val(d.issue_ready_o[0]) and not val(d.issue_ready_o[1])
         assert [field(d,'result',val(d.load_result_o[p]),'instruction_id') for p in range(2)]==[1,2]
-    e.hold_result=False;await e.tick()
-    assert all(field(d,'result',val(d.load_result_o[p]),'valid') for p in range(2))
-    assert [field(d,'result',val(d.load_result_o[p]),'instruction_id') for p in range(2)]==[3,4]
+    e.hold_result=False
+    for group in range(1,depth):
+        await e.tick()
+        assert all(field(d,'result',val(d.load_result_o[p]),'valid') for p in range(2))
+        assert [field(d,'result',val(d.load_result_o[p]),'instruction_id') for p in range(2)]==[2*group+1,2*group+2]
     await e.tick();await e.tick()
     assert all(not field(d,'result',val(d.load_result_o[p]),'valid') for p in range(2))
 
@@ -120,6 +130,9 @@ async def mispredict_at_s2_cancels_young_but_keeps_old_store(d):
     await e.until(lambda:any(e.reply))
     d.resolution_valid_i.value=1;d.resolution_mispredict_i.value=1;d.resolution_tag_i.value=0
     await e.tick();d.resolution_valid_i.value=0;d.resolution_mispredict_i.value=0
+    # R adds one edge after the raw cache return; the surviving older STA
+    # must still finish even though the younger response was killed at S2.
+    await e.until(lambda:bool(e.stores))
     assert e.stores[-1][2:]==(0x80000108,0x1122334455667788)
     for _ in range(12):await e.tick();assert not e.results
 
@@ -175,3 +188,71 @@ async def dirty_refresh_keeps_young_load_asleep_until_owner_revalidates(d):
     await e.until(lambda:any(field(d,'result',r,'instruction_id')==3 for _,_,r in e.results))
     r=next(r for _,_,r in e.results if field(d,'result',r,'instruction_id')==3)
     assert field(d,'result',r,'result')==0x55667788
+
+
+@cocotb.test()
+async def continuous_two_lane_hits_keep_one_packet_per_cycle_after_translation_split(d):
+    e=Bench(d);await e.reset();e.data=0x5566778899aabbcc;e.hold_result=False
+    accepted=[];packets=48;send_cycles=[]
+    for cycle in range(100):
+        ready=all(val(d.issue_ready_o[p]) for p in range(2))
+        if len(accepted)<packets and ready:
+            ident=2*len(accepted)+1
+            array(d.mem_uop_i,[e.uop(ident,lq=cycle%16,rob=cycle%val(d.cfg_rob_o)),
+                e.uop(ident+1,addr=0x80000110,lq=(cycle+1)%16,rob=(cycle+1)%val(d.cfg_rob_o))])
+            accepted.append((ident,ident+1));send_cycles.append(e.cycle)
+        else:array(d.mem_uop_i,[0,0])
+        await e.tick()
+        if len(e.results)==2*packets:break
+    assert len(accepted)==packets and len(e.results)==2*packets
+    assert send_cycles==list(range(send_cycles[0],send_cycles[0]+packets)),send_cycles
+    for lane in range(2):
+        got=[field(d,'result',raw,'instruction_id') for _,p,raw in e.results if p==lane]
+        assert got==[pair[lane] for pair in accepted]
+        result_cycles=[c for c,p,_ in e.results if p==lane]
+        assert result_cycles==list(range(result_cycles[0],result_cycles[0]+packets))
+        assert all(field(d,'result',raw,'result')==e.data for _,p,raw in e.results if p==lane)
+
+
+@cocotb.test()
+async def response_boundary_identity_cancel_and_early_notice(d):
+    """Capture both raw returns, then kill/resolve in the new R stage.
+
+    The external cache agent keeps the original fixed cache protocol. Its full
+    owner/data packet must survive the extra edge, and the notification precedes
+    actual result visibility by exactly one cycle. No private pipeline signals.
+    """
+    rng=random.Random(105)
+    for transaction in range(192):
+        e=Bench(d);await e.reset();e.data=rng.getrandbits(64)
+        tag=transaction%val(d.cfg_tags_o);bit=1<<tag
+        kill=transaction%3==0;flush=transaction%7==0
+        pair=[e.uop(2*transaction+1,mask=bit,rob=3,lq=0),
+              e.uop(2*transaction+2,mask=0,rob=2,lq=1)]
+        pair=[u|codec(d,'uop',dst_write_en=1) for u in pair]
+        await e.issue(*pair)
+        await e.until(lambda:all(e.reply))
+        assert not e.updates and not e.wakes and not e.results
+        await e.tick()  # actual cache return captured at R boundary
+        assert not e.updates and not e.wakes and not e.results
+        d.resolution_valid_i.value=1;d.resolution_tag_i.value=tag
+        d.resolution_mispredict_i.value=int(kill);d.flush_all_i.value=int(flush)
+        await e.tick()
+        d.resolution_valid_i.value=0;d.resolution_mispredict_i.value=0;d.flush_all_i.value=0
+        expected=[] if flush else ([pair[1]] if kill else pair)
+        for _ in range(12):await e.tick()
+        got=[field(d,'result',r,'instruction_id') for _,_,r in e.results[:len(expected)]]
+        want=[field(d,'uop',u,'instruction_id') for u in expected]
+        assert got==want,(transaction,got,want)
+        # The held FIFO head may be sampled repeatedly; every visible packet
+        # keeps its correct owner, payload and resolved branch mask.
+        for c,lane,raw in e.results:
+            assert field(d,'result',raw,'instruction_id') in want
+            assert field(d,'result',raw,'result')==e.data
+            assert field(d,'result',raw,'branch_mask')==0
+        assert len(e.wakes)==len(expected),(transaction,e.wakes)
+        for wc,lane,promise in e.wakes:
+            assert field(d,'wake',promise,'preg')==7
+            assert field(d,'wake',promise,'br_mask')==0
+            first=min(c for c,p,_ in e.results if p==lane)
+            assert first==wc+1,(transaction,wc,first)

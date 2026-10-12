@@ -19,3 +19,5 @@ from AXI backing RAM. Reads concurrent with stores must equal a value that
 existed during their interval. Final readback is exact. Permission monitoring
 uses only link handshakes; directory structural checks run every cycle and
 exact correspondence is checked after quiescence. DMA is tied off.
+
+后端重构新增`client_payload_fifo_reuse_with_response_backpressure`：seed105、40批四条L1I完整返回与独立DMA一槽，验证held身份/512-bit数据、部分消费、wrap/复用。Bench新增可选每client ready控制，旧默认ready/随机种子/事务规模保留。新载荷存储与测试尚未功能执行。

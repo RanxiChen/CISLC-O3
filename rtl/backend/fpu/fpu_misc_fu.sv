@@ -2,7 +2,8 @@
  * L9 NONCOMP wrapper: pinned CVFPU split operation group with identity side table,
  * stable common result holding slot and same-cycle recovery filtering.
  * Uses o3_fpu_opgroup (defined in fpu_fma_fu.sv); CONV also carries raw FMV bits.
- * B33 early wakeup for FP FUs is deferred to performance work; actual PRF grant wakes.
+ * B33: notify before accepting a live result into the holding slot; only held
+ * results bypass. Consumer buffers recheck data availability before RegRead.
  * 当前实现状态：闭环简化（L9）；lint/功能测试未运行。
  */
 module fpu_misc_fu import o3_pkg::*; #(
@@ -16,6 +17,8 @@ module fpu_misc_fu import o3_pkg::*; #(
     input logic resp_ready_i,
     output o3_types_pkg::fpu_resp_t resp_o,
     input branch_resolution_t resolution_i,
+    output o3_types_pkg::wake_promise_t wake_o,
+    output o3_types_pkg::cpl_bypass_t bypass_o,
     output logic busy_o
 );
     o3_fpu_opgroup #(.CFG(CFG),.GROUP(fpnew_pkg::NONCOMP)) u_transport (.*);

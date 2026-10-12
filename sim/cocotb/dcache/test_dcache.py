@@ -98,3 +98,32 @@ async def byte_enable_all_bank_boundaries_and_line_read_port(dut):
             assert reply['data'] == int.from_bytes(expected, 'little')
             assert (await e.load(base + 56))['data'] == int.from_bytes(expected[56:64], 'little')
     await e.idle()
+
+
+@cocotb.test()
+async def complete_line_payload_reuse_through_install_and_dirty_put(dut):
+    # Exercise all 512 response/Put bits across repeated owner/way reuse.
+    # No internal RAM view or implementation-specific data comparison.
+    e=await env(dut);rng=random.Random(105)
+    stride=e.sets*64
+    for batch in range(48):
+        addresses=[BASE+0x300+(batch*(e.ways+1)+way)*stride for way in range(e.ways+1)]
+        for addr in addresses:
+            data=rng.getrandbits(512);e.mem[addr>>6]=e.gold[addr>>6]=data
+        first=addresses[0]
+        for word in range(8):
+            got=await e.load(first+word*8,ident=8*batch+word)
+            assert got['data']==(e.gold[first>>6]>>(word*64))&((1<<64)-1),(batch,word)
+        for word in range(8):
+            assert (await e.store(first+word*8,rng.getrandbits(64),ident=word))['status']==OK
+        expected=e.gold[first>>6]
+        for addr in addresses[1:]:
+            got=await e.load(addr+56)
+            assert got['data']==e.gold[addr>>6]>>448,(batch,hex(addr))
+        await e.idle()
+        reply=next(q for _,q in reversed(e.up) if q['op']==0 and q['line']==first>>6)
+        assert reply['dirty'] and reply['data']==expected,batch
+        # The old owner was replaced; a new refill in the same MSHR/way must
+        # carry the backing line, including the most significant word.
+        assert (await e.load(first+56))['data']==expected>>448,batch
+    await e.idle()

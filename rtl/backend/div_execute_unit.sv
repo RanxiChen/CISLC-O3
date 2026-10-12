@@ -4,7 +4,8 @@
  * N accepts/reserves and starts radix4, or sets fast_valid. The cycle done/fast is
  * visible computes sign-restored enqueue; its edge makes a new head available.
  * Kill aborts active math and returns its one credit; queued results cancel separately.
- * Wake is issued only for a next-cycle deliverable FIFO head, never at DIV launch.
+ * A scheduling notice is issued before enqueue on known done/fast, never at launch.
+ * Only a completed head provides bypass; consumer buffers recheck data availability.
  * Tests: sim/cocotb/mdu/.
  */
 module div_execute_unit import o3_pkg::*; #(
@@ -43,6 +44,11 @@ module div_execute_unit import o3_pkg::*; #(
         enq='0;enq.valid=active_q && (done || fast_q) && !kill_active;
         enq.tag=tag_q;enq.tag.br_mask=br_resolved_mask(tag_q.br_mask,resolution_i);enq.data=value;
         resp_o='0;resp_o.valid=resp_valid_o;resp_o.tag=head.tag;resp_o.result=head.data;
+        // done/fast deterministically enqueues at this edge; no launch countdown.
+        // The notice schedules consumers even if this result queues behind a head.
+        wake_o='0;
+        if(!rst && enq.valid && enq.tag.dst_write_en) wake_o='{valid:1'b1,
+            dom:enq.tag.dst_dom,preg:enq.tag.dst_preg,br_mask:enq.tag.br_mask};
     end
     assign kill_active=active_q && br_killed(tag_q.br_mask,resolution_i);
     assign req_ready_o=!rst && !active_q && data_ready && fifo_ready;
@@ -54,7 +60,7 @@ module div_execute_unit import o3_pkg::*; #(
     fu_completion_fifo #(.CFG(CFG),.DEPTH(2)) u_completion(
         .clk(clk),.rst(rst),.rsv_req_i(fire),.rsv_pair_i(1'b0),.rsv_ok_o(fifo_ready),.rsv_single_ok_o(),.rsv_pair_ok_o(),
         .rsv_release_i({1'b0,kill_active}),.enq_valid_i(enq.valid),.enq_pair_i(1'b0),.enq_i(enq),.enq2_i('0),
-        .promise_i('0),.promise_o(wake_o),.head_valid_o(resp_valid_o),.head_o(head),
+        .promise_i('0),.promise_o(),.head_valid_o(resp_valid_o),.head_o(head),
         .head_consume_i(resp_ready_i),.bypass_o(bypass_o),.resolution_i(resolution_i),.busy_o(fifo_busy));
     always_ff @(posedge clk) begin
         if(rst) begin active_q<=0;fast_q<=0;word_q<=0;rem_q<=0;qneg_q<=0;rneg_q<=0;tag_q<='0;fast_data_q<=0;end

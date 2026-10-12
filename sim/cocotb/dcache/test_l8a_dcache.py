@@ -261,6 +261,7 @@ async def refill_snapshot_replay(dut):
     await e.tick()
     e.block_gets=False
     await e.tick()
+    for _ in range(e.reservation-2): await e.tick()
     start=len(e.responses)
     e.cpu[0]=Cpu(BASE)
     await e.tick();await e.tick();await e.tick()
@@ -275,7 +276,7 @@ async def s0_store_word_conflict(dut):
     e=await env(dut)
     await e.load(BASE)
     await e.until(lambda: not int(dut.full_line_busy_o.value) and not int(dut.internal_busy_o.value))
-    await e.tick();await e.tick()
+    for _ in range(e.reservation): await e.tick()
     start=len(e.responses)
     e.cpu[0]=Cpu(BASE,sta=True,ident=1)
     await e.tick()
@@ -320,7 +321,7 @@ async def cancellation_keeps_plru_and_mshr(dut):
     for addr in (BASE,BASE+64):
         for stage in range(3):
             await e.until(lambda: not int(dut.full_line_busy_o.value))
-            await e.tick();await e.tick()
+            for _ in range(e.reservation): await e.tick()
             before=len(e.responses);gets=sum(x[1]=='get' for x in e.events)
             e.cpu[0]=Cpu(addr,branch=1)
             for t in range(3):
@@ -365,4 +366,65 @@ async def wb_capacity_full_wait_contract(dut):
     assert any(w['wb_free'] for _,w in e.wakes[start:]), 'X11 waiter never wakes: missing wb_free'
     assert not any(w['free'] for _,w in e.wakes[start:]), 'PutAck must not fabricate mshr_free'
     assert (await e.load(BASE+(e.ways+2)*e.sets*64))['data']==e.golden(BASE+(e.ways+2)*e.sets*64)
+    await e.idle()
+
+
+@cocotb.test()
+async def continuous_cpu_reservations_overlap_internal_reads_and_probes(dut):
+    """RR bookings reach S0 after the configured horizon, with exact identities.
+
+    CPU requests overlap a held PTW stream and all-bank probe reservations.
+    Every S0 must have its reserved port; replay is checked without dropping an
+    identity, and successful data uses the independent byte oracle.
+    """
+    e=await env(dut)
+    for n in range(4): await e.load(BASE+64*n)
+    await e.idle()
+    calendar={};active={};seq=[0,0];accepted=[0,0];runs=[0,0];max_runs=[0,0]
+    response_cursor=len(e.responses);ptw_cursor=len(e.ptw_responses)
+    seen=set();cpu_delay=e.reservation
+    assert cpu_delay in (2,3)
+    for cycle in range(800):
+        e.cpu=calendar.pop(e.cycle,[None,None])
+        if cycle<600 and cycle%7==0 and e.ptw is None:
+            e.ptw=Cpu(BASE+64*(cycle%4)+16,src=3)
+        if cycle<600 and cycle%31==0 and e.snp is None:
+            line=(BASE+64*((cycle//31)%4))>>6
+            e.snp=(1,int(e.held.get(line)=='X'),line) # Down retains resident data.
+        at=e.cycle
+        v=await e.tick()
+        for _,lane,r in e.responses[response_cursor:]:
+            key=(lane,r['ident'])
+            assert key in active,('duplicate or unknown CPU result',key,r)
+            req=active.pop(key)
+            assert r['pa']==req.addr and r['gen']==1,(key,'packet identity',r)
+            assert r['status'] in (OK,REPLAY),(key,'resident load status',r)
+            if r['status']==OK: assert r['data']==e.golden(req.addr),(key,'data')
+        response_cursor=len(e.responses)
+        for _,r in e.ptw_responses[ptw_cursor:]:
+            assert r['status'] in (OK,REPLAY)
+            if r['status']==OK: assert r['data']==e.golden(r['pa'])
+        ptw_cursor=len(e.ptw_responses)
+        if v['full_line_busy_o']: seen.add('line')
+        if v['internal_busy_o']: seen.add('internal')
+        if cycle<600:
+            packet=[None,None]
+            for lane in range(2):
+                allowed=not v['full_line_busy_o'] and (lane==0 or not v['internal_busy_o'])
+                if allowed:
+                    ident=seq[lane]%16
+                    key=(lane,ident)
+                    assert key not in active,('owner reused before response',key)
+                    addr=BASE+64*((seq[lane]//8)%4)+lane*8
+                    req=Cpu(addr,ident=ident,lane=lane,rob=(2*seq[lane]+lane)%32)
+                    packet[lane]=req;active[key]=req;seq[lane]+=1;accepted[lane]+=1
+                    runs[lane]+=1;max_runs[lane]=max(max_runs[lane],runs[lane])
+                else: runs[lane]=0
+            if any(packet): calendar[at+cpu_delay]=packet
+        elif not calendar and not active and e.ptw is None and e.snp is None:
+            break
+    assert not active and not calendar,('missing reserved results',active,calendar)
+    assert accepted[0]>200 and accepted[1]>100,(accepted,'continuous issue scale')
+    assert min(max_runs)>=4,(max_runs,'per-cycle overlap')
+    assert seen=={'line','internal'},seen
     await e.idle()

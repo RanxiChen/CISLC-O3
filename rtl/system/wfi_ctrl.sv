@@ -1,6 +1,8 @@
 /** L10 B38: locally enabled pending interrupts wake independently of global
  * enable/delegation. N retirement without wake sets sleep at edge N; N+1
- * blocks entry. A wake level clears sleep at its edge; caches/SQ still run.
+ * blocks entry. A wake level clears sleep at its edge; N+1 resumes entry.
+ * This registered resume boundary keeps interrupt qualification out of the
+ * same-cycle retirement/translation control cone. Caches/SQ still run.
  * Current implementation: target implementation (Debug input unused until L11).
  * Tests: sim/cocotb/wfi_ctrl/ and commit_ctrl/.
  */
@@ -10,7 +12,7 @@ module wfi_ctrl import o3_types_pkg::*; #(
   input logic debug_req_i,output logic sleeping_o,stall_o);
     logic wake;
     assign wake=|(irq_i.mip & irq_i.mie);
-    assign stall_o=sleeping_o && !wake;
+    assign stall_o=sleeping_o;
     always_ff @(posedge clk) begin
         if(rst) sleeping_o<=0;
         else if(wake) sleeping_o<=0;

@@ -3,18 +3,26 @@
  * L9: independent INT/FP RAT/free/ready/PRF; shared checkpoints and atomic four-lane rename.
  * FS Off/reserved dynamic rm checks precede entry-gate prefix truncation; exceptions
  * lose all execution semantics and consume only ROB/RDQ. Original exception identity survives.
- * A 12-entry three-source FP IQ issues at most two requests into five elastic RegRead
- * slots (two FMA, DIVSQRT, MISC, CONV). At most one INT-source FP operation competes
- * for the existing age-ordered integer PRF reads; FP PRF is fixed 8R/2W.
+ * A configured three-source FP IQ selects at most two into five independent issue
+ * routing slots (one/two configured FMAs, DIVSQRT, MISC, CONV); disabled FMA owns no storage.
+ * Each active slot uses buffer/A0/A1/RegRead. One INT-source FP operation competes
+ * for the existing age-ordered integer PRF reads; FP PRF uses one/two native read sets plus MEM store ports and one/two write ports.
  * Split pinned CVFPU opgroups use killed identity slots and stable held results;
  * FP/INT writeback and ROB flags share the actual grant event. Retirement merges flags/Dirty.
- * FLW/FLD and FSW/FSD use the existing L3 LSU/SQ path; FP RVC expands upstream.
+ * MEM uses two issue buffers and independent one-cycle RegRead, then the existing
+ * L8b LSU/cache/replay paths; FP stores read dedicated FP PRF ports.
  * 当前实现状态：L8b总装：特权、HEU/AMO/MMIO/拆分/DMA与双行order重取已接通。
- * B33 early wakeup for FP FUs is deferred to performance work; actual writes wake FP consumers.
- * B42 single-cycle rename/map-table bypass retained; R1/R2 split awaits timing evidence.
+ * B33: all INT/FP FUs and successful loads notify before result capture. Only
+ * PRF-ready/current writes/live bypass data authorize buffer read grants.
+ * Rename is split into registered R1 dependency preprocessing and atomic R2 allocation.
+ * R1 consumes the entry-gated Decode Queue prefix without reserving any resources.
+ * Fixed buffer slots survive partial acceptance; R2 compacts them and remaps selectors.
+ * INT IQ selection feeds independent ALU/MUL/DIV issue buffers. Only registered
+ * buffer heads request PRF ports; each FU receives separately captured operands.
+ * MUL is II=1 subject to reserved completion credits, never gated by aggregate busy.
  * L5 historical lockstep limitations and L8c speculation remain outside this closure.
  * N: prepare rename prefix/issue candidates/read grants/writeback grants/retirement.
- * N edge: accepted prefix allocates atomically; granted IQ entries enter RegRead;
+ * N edge: accepted prefix allocates atomically; IQ enqueues buffers; read grants enter RegRead;
  * held results write PRF/ready/ROB; actual retirement updates committed maps and CSR FP state.
  * N+1: queues/tables expose updated identities, readiness and operands.
  * L10 Sv39/PTW/queue-head A-D integrated; VM and IRQ retirement validation in O3-T10-report.md.
@@ -40,6 +48,8 @@ module backend
     localparam int MEM_ISSUE_QUEUE_DEPTH = CFG.dispatch.mem_iq_depth,
     localparam int BRANCH_ISSUE_QUEUE_DEPTH = CFG.dispatch.br_iq_depth,
     localparam int NUM_INT_ALUS = CFG.exec.num_alu,
+    localparam int INT_ISSUE_WIDTH = CFG.exec.int_issue_width,
+    localparam int FP_FUS = 5,
     localparam int NUM_BRANCH_CHECKPOINTS = CFG.rename.checkpoints,
     localparam int LOAD_QUEUE_DEPTH = CFG.lsu.lq_depth,
     localparam int STORE_QUEUE_DEPTH = CFG.lsu.sq_depth,
@@ -121,7 +131,7 @@ module backend
     logic heu_done,heu_exc_valid,heu_exc_ready,heu_irreversible,dc_irreversible;
     logic heu_irq_hold_q;
     o3_types_pkg::rob_idx_t heu_irq_owner_q;
-    logic [CFG.rob.entries-1:0] lq_rob_order_flush;
+    logic [RETIRE_WIDTH-1:0] lq_retire_order_flush;
     logic dma_invalidate,pte_a_write,lq_order_flush; o3_types_pkg::coh_addr_t dma_line,pte_a_line;
     logic heu_d_valid,heu_d_ready,heu_d_done,up_d_ready,up_d_done;
     o3_types_pkg::exc_info_t up_d_exc;
@@ -157,7 +167,7 @@ module backend
         lsu_sfence=heu_sfence.valid ? heu_sfence:t_sfence;
     end
     mem_head_unit #(.CFG(CFG)) u_heu(.clk(clk),.rst(rst),
-        .start_valid_i(heu_start_valid && head_valid && !rob_head_info.complete),.start_ready_o(heu_start_ready),.start_i(heu_start),
+        .start_valid_i(heu_start_valid && head_valid && !rob_head_info.complete && !heu_completion_pending_q && !commit_cancel_request && !recovery_pending && !trap_inflight),.start_ready_o(heu_start_ready),.start_i(heu_start),
         .sq_empty_i(t_sq_committed_empty),.flush_i(global_flush),.rob_head_i(rob_head),
         .dc_valid_o(heu_dc_valid),.dc_ready_i(heu_dc_ready),.dc_req_o(heu_dc_req),.dc_resp_i(heu_dc_resp),
         .wake_i(dc_wake),.tlb_wake_i(t_ptw_resp.valid),
@@ -168,24 +178,26 @@ module backend
         .result_o(heu_result),.result_ready_i(heu_result_ready),.exc_valid_o(heu_exc_valid),.exc_ready_i(heu_exc_ready),
         .exc_o(heu_exc),.exc_idx_o(heu_exc_idx),.done_o(heu_done),.done_idx_o(heu_done_idx),.perf_o(perf_heu));
     always_ff @(posedge clk) begin
-        if(rst) begin mem_atomic_q<='{default:0};split_table_q<='{default:0};end
+        if(rst) begin split_table_q<='{default:0};end
         else begin
             for(int p=0;p<P;p++) begin
-                mem_atomic_q[p]<=mem_iq_issue_uop[p].ext.fu_class==o3_types_pkg::FU_AMO;
                 if(lq_capture[p] || sq_capture[p]) if(CFG.lsu.heu_enable && CFG.lsu.split_enable &&
                     int'(mem_capture[p].va[5:0])+(1<<int'(mem_capture[p].uop.mem_size))>64) split_table_q[mem_capture[p].uop.rob_idx]<=1;
             end
             for(int l=0;l<MACHINE_WIDTH;l++) if(rename_fire && rob_req[l]) split_table_q[rob_idx[l]]<=0;
         end
     end
-    // The frozen L9 datapath uses five FU slots, seven fixed reads and two FP
-    // completion ports. Reject a configuration that would silently lose a lane.
+    // Keep five stable FP routing slots. User-authorized resource variants may
+    // instantiate one or two FMAs; disabled slots cannot accept or issue a uop.
     initial begin
-        if (CFG.exec.num_fma!=2 || CFG.exec.num_fdivsqrt!=1 || CFG.exec.num_fmisc!=1 ||
-            CFG.exec.num_fconv!=1 || CFG.exec.fp_prf_read_ports!=8 || CFG.exec.fp_prf_write_ports!=2)
-            $error("backend L9 FP topology must match the frozen 2/1/1/1, 8R/2W contract");
+        if (CFG.exec.num_fma<1 || CFG.exec.num_fma>2 || CFG.exec.num_fdivsqrt!=1 || CFG.exec.num_fmisc!=1 ||
+            CFG.exec.num_fconv!=1 ||
+            (CFG.exec.fp_prf_read_ports!=3+P && CFG.exec.fp_prf_read_ports!=6+P) ||
+            CFG.exec.fp_prf_write_ports<1 || CFG.exec.fp_prf_write_ports>2)
+            $error("backend FP topology requires 1 or 2 FMAs, one DIVSQRT/MISC/CONV, one/two FP read sets and one/two write ports");
     end
     localparam int FP_READ_PORTS=CFG.exec.fp_prf_read_ports;
+    localparam int FP_STORE_READ_BASE=FP_READ_PORTS-P;
     localparam int FP_WRITE_PORTS=CFG.exec.fp_prf_write_ports;
     o3_types_pkg::fp_retire_evt_t fp_retire;
     logic [2:0] fp_frm;
@@ -208,12 +220,14 @@ module backend
     logic [1:0] fp_iq_issue_valid,fp_iq_issue_ready;
     logic [2:0] fp_issue_fu [1:0];
     logic [4:0] fp_regread_ready;
-    logic fp_regread_valid_q [5],fp_fu_ready [5],fp_req_valid [5],fp_resp_ready [5];
-    o3_types_pkg::fpu_req_t fp_regread_q [5],fp_fu_req [5];
+    logic fp_fu_ready [FP_FUS],fp_req_valid [FP_FUS],fp_resp_ready [FP_FUS];
+    o3_types_pkg::fpu_req_t fp_fu_req [FP_FUS];
     o3_types_pkg::fpu_resp_t fp_resp [5];
-    renamed_uop_t fp_int_candidate;
-    logic fp_int_candidate_valid,fp_int_read_grant;
-    logic [$clog2(CFG.exec.int_prf_read_ports)-1:0] fp_int_src1_port;
+    renamed_uop_t [FP_FUS-1:0] fp_buffer_uop,fp_buffer_enq_uop;
+    logic [FP_FUS-1:0] fp_buffer_valid,fp_buffer_ready,fp_buffer_enq_valid,fp_read_grant;
+    logic [XLEN-1:0] fp_operand1[FP_FUS],fp_operand2[FP_FUS],fp_operand3[FP_FUS];
+    o3_types_pkg::wake_promise_t fp_wake[FP_FUS];
+    o3_types_pkg::cpl_bypass_t fp_bypass[FP_FUS];
     logic [PREG_IDX_WIDTH-1:0] fp_rd_addr [FP_READ_PORTS],fp_wr_addr [FP_WRITE_PORTS];
     logic [XLEN-1:0] fp_rd_data [FP_READ_PORTS],fp_wr_data [FP_WRITE_PORTS];
     logic fp_wr_en [FP_WRITE_PORTS],fp_complete_valid [FP_WRITE_PORTS];
@@ -226,6 +240,9 @@ module backend
     logic int_load_consume[P];
 
     logic global_flush, backend_block, rob_commit_block, head_valid, head_serial_done;
+    logic head_csr, head_sfence;
+    logic commit_cancel_request,recovery_pending;
+    o3_types_pkg::sys_redirect_t commit_redirect_request;
     o3_types_pkg::rob_commit_t rob_head_info, rob_commit [RETIRE_WIDTH-1:0];
     o3_types_pkg::exc_info_t rob_alloc_exc [MACHINE_WIDTH-1:0], lsu_exc, rob_exec_exc;
     o3_types_pkg::uop_ext_t rob_alloc_ext [MACHINE_WIDTH-1:0];
@@ -236,19 +253,30 @@ module backend
     logic [4:0] rob_meta_rs1 [MACHINE_WIDTH-1:0];
     logic rob_exc_valid, lsu_exc_valid;
     logic [ROB_IDX_WIDTH-1:0] rob_exc_idx, lsu_exc_idx;
-    logic csr_req_valid, csr_write_fire, trap_update_valid, trap_done, trap_redirect_valid;
+    logic csr_req_valid, csr_write_fire, trap_update_valid, trap_done, trap_redirect_valid, trap_inflight;
     o3_types_pkg::csr_req_t csr_req;
+    logic csr_head_req_valid, csr_request_valid_q, csr_head_serial;
+    o3_types_pkg::csr_req_t csr_head_req, csr_request_q;
     o3_types_pkg::csr_resp_t csr_resp;
     o3_types_pkg::trap_req_t trap_req, trap_update;
     o3_types_pkg::vaddr_t trap_target, trap_redirect_pc, committed_next_pc;
     logic [63:0] csr_write_value;
     o3_types_pkg::be_perf_t perf_commit, perf_lsu, perf_dcache, be_perf;
     logic serial_retire, gate_block_cycle;
-    logic wfi_retire,wfi_stall,irq_take;
+    logic wfi_retire,wfi_stall,irq_take,irq_eligible_q;
     logic [1:0] priv;
     logic [63:0] csr_status;
     o3_types_pkg::irq_view_t irq_view;
-    o3_isa_pkg::exception_cause_t irq_cause;
+    o3_isa_pkg::exception_cause_t irq_cause,irq_cause_q;
+    // Candidate qualification is a separate logical stage. This is not an
+    // accepted interrupt: commit still owns priority, serialization and EPC at
+    // its actual boundary. CSR execution/retirement and trap transport exclude
+    // acceptance while architectural interrupt configuration can change.
+    // Sample each cycle, including deassertion; never make a sticky IRQ here.
+    always_ff @(posedge clk) begin
+        if(rst) begin irq_eligible_q<=0;irq_cause_q<='0;end
+        else begin irq_eligible_q<=irq_take;irq_cause_q<=irq_cause;end
+    end
     wfi_ctrl #(.CFG(CFG)) u_wfi_ctrl(.clk(clk),.rst(rst),.wfi_retire_i(wfi_retire),
         .irq_i(irq_view),.debug_req_i(1'b0),.sleeping_o(),.stall_o(wfi_stall));
     logic [$clog2(MACHINE_WIDTH+1)-1:0] gate_pass_count;
@@ -256,10 +284,53 @@ module backend
     o3_pkg::retire_info_t csr_observe_q [NUM_ROB_ENTRIES];
 `endif
     logic [PREG_IDX_WIDTH-1:0] arb_rd_addr [PRF_READ_PORTS-1:0];
+    localparam int INT_WB_SOURCES=NUM_INT_ALUS+P+1+6;
+    localparam int INT_WB_SOURCE_W=$clog2(INT_WB_SOURCES);
+    logic int_wb_admit,fp_wb_admit;
+    logic raw_arb_wr_en[PRF_WRITE_PORTS],int_wb_port_ready[PRF_WRITE_PORTS];
+    logic [PREG_IDX_WIDTH-1:0] raw_arb_wr_addr[PRF_WRITE_PORTS];
+    logic [XLEN-1:0] raw_arb_wr_data[PRF_WRITE_PORTS];
+    logic [INT_WB_SOURCE_W-1:0] int_wb_source[PRF_WRITE_PORTS];
+    logic raw_wb_complete_valid[NUM_INT_ALUS+P:0],raw_wb_extra_complete[6];
+    logic [ROB_IDX_WIDTH-1:0] raw_wb_complete_idx[NUM_INT_ALUS+P:0],raw_wb_extra_idx[6];
+    logic [XLEN-1:0] raw_wb_complete_data[NUM_INT_ALUS+P:0],raw_wb_extra_data[6];
+    logic [4:0] raw_wb_extra_fflags[6];
+    o3_types_pkg::wb_req_t int_wb_packet[INT_WB_SOURCES],int_wb_done[INT_WB_SOURCES];
+    o3_types_pkg::cpl_bypass_t int_wb_bypass[PRF_WRITE_PORTS],fp_wb_bypass[FP_WRITE_PORTS];
+    logic raw_fp_wr_en[FP_WRITE_PORTS],raw_fp_complete_valid[FP_WRITE_PORTS],fp_wb_port_ready[FP_WRITE_PORTS];
+    logic [PREG_IDX_WIDTH-1:0] raw_fp_wr_addr[FP_WRITE_PORTS];
+    logic [XLEN-1:0] raw_fp_wr_data[FP_WRITE_PORTS],raw_fp_complete_data[FP_WRITE_PORTS];
+    logic [ROB_IDX_WIDTH-1:0] raw_fp_complete_idx[FP_WRITE_PORTS];
+    logic [4:0] raw_fp_complete_fflags[FP_WRITE_PORTS];
+    logic [$clog2(6+P)-1:0] fp_wb_source[FP_WRITE_PORTS];
+    logic [($clog2(FP_WRITE_PORTS)>0?$clog2(FP_WRITE_PORTS):1)-1:0] fp_wb_packet_source[FP_WRITE_PORTS];
+    o3_types_pkg::wb_req_t fp_wb_packet[FP_WRITE_PORTS],fp_wb_done[FP_WRITE_PORTS];
+    logic heu_completion_pending_q;
+    o3_types_pkg::rob_idx_t heu_pending_owner_q;
     logic arb_wr_en [PRF_WRITE_PORTS-1:0];
     logic [PREG_IDX_WIDTH-1:0] arb_wr_addr [PRF_WRITE_PORTS-1:0];
     logic [XLEN-1:0] arb_wr_data [PRF_WRITE_PORTS-1:0];
-    assign backend_block = branch_mispredict || global_flush || sys_redirect_o.valid;
+    assign backend_block = trap_inflight || branch_mispredict || global_flush || sys_redirect_o.valid;
+    // CSR admission reads the head operand and captures one complete request.
+    // The next stage owns architectural CSR execution; its response still marks
+    // the same stationary ROB head. In-flight ownership inhibits interrupts.
+    assign csr_req_valid = csr_request_valid_q && !global_flush;
+    assign csr_req = csr_request_q;
+    // Reserve the serial head's operand/translation admission independently of
+    // the later IRQ/order decision. The raw CSR head is stable until retirement.
+    assign csr_head_serial = head_valid && head_csr;
+    always_ff @(posedge clk) begin
+        if (rst || global_flush) csr_request_valid_q <= 1'b0;
+        else if (csr_request_valid_q) begin
+            if (csr_resp.valid) csr_request_valid_q <= 1'b0;
+        end else if (csr_head_req_valid) begin
+            csr_request_valid_q <= 1'b1;
+            csr_request_q <= csr_head_req;
+        end
+        if (!rst && csr_request_valid_q && !global_flush)
+            assert(head_valid && rob_head_info.rob_idx == csr_request_q.rob_idx)
+                else $fatal(1,"CSR request lost its precise ROB head");
+    end
     assign csr_write_fire = csr_req_valid && csr_resp.valid && !csr_resp.illegal;
     always_comb begin
         serial_retire=0;
@@ -286,7 +357,7 @@ module backend
         end
         if(heu_exc_ready) begin rob_exc_valid=1;rob_exec_exc=heu_exc;rob_exc_idx=heu_exc_idx;end
         for (int port=0;port<PRF_READ_PORTS;port++) prf_rd_addr[port]=arb_rd_addr[port];
-        if (csr_req_valid || (head_valid && rob_head_info.sys_op==o3_types_pkg::SYSOP_SFENCE_VMA)) begin
+        if (csr_head_serial || csr_req_valid || (head_valid && head_sfence)) begin
             prf_rd_addr[0]=rob_head_info.src1_preg;prf_rd_addr[1]=rob_head_info.src2_preg;
         end
         for (int port=0;port<PRF_WRITE_PORTS;port++) begin
@@ -298,8 +369,8 @@ module backend
         end
     end
     rename_entry_gate #(.CFG(CFG)) u_rename_entry_gate (
-        .clk(clk),.rst(rst),.uop_i(rename_uop_head),.count_i(uopq_deq_count),.pair_head_i(fuse_pair_head),
-        .pass_count_o(gate_pass_count),.accepted_count_i(rename_accept_count),
+        .clk(clk),.rst(rst),.uop_i(rename_uop_entry),.count_i(uopq_deq_count),.pair_head_i(fuse_pair_head),
+        .pass_count_o(gate_pass_count),.accepted_count_i(r1_accept_count),
         .serial_retire_i(serial_retire),.flush_i(backend_block),.wfi_stall_i(wfi_stall),.isolate_i(1'b0),
         .block_younger_cycle_o(gate_block_cycle));
     commit_ctrl #(.CFG(CFG)) u_commit_ctrl (
@@ -307,19 +378,29 @@ module backend
         .heu_irreversible_i(heu_irreversible || heu_irq_hold_q),.order_flush_i(lq_order_flush),.head_split_i(split_table_q[rob_head]),
         .head_valid_i(head_valid),.head_i(rob_head_info),.head_serial_done_o(head_serial_done),
         .commit_block_o(rob_commit_block),.ftq_commit_o(ftq_commit_o),.sq_commit_valid_o(),.sq_commit_idx_o(),
-        .fp_retire_o(fp_retire),.committed_next_pc_o(committed_next_pc),.sys_redirect_o(sys_redirect_o),
+        .fp_retire_o(fp_retire),.committed_next_pc_o(committed_next_pc),.sys_redirect_o(commit_redirect_request),
         .fe_sync_valid_o(fe_sync_valid_o),.fe_sync_ready_i(fe_sync_ready_i),.fe_sync_o(fe_sync_o),.fe_sync_done_i(fe_sync_done_i),
         .sq_committed_empty_i(t_sq_committed_empty),
-        .sfence_o(t_sfence),.sfence_done_i(t_sfence_done),.ptw_idle_i(ptw_idle_o),.sfence_asid_operand_i(prf_rd_data[1]),.st_d_req_valid_o(st_d_valid),.st_d_req_ready_i(st_d_ready),.st_d_done_i(st_d_done),
-        .csr_req_valid_o(csr_req_valid),.csr_req_o(csr_req),.csr_resp_i(csr_resp),.csr_operand_i(prf_rd_data[0]),
-        .block_younger_cycle_i(gate_block_cycle),.irq_take_i(irq_take),.irq_cause_i(irq_cause),.priv_i(priv),.status_i(csr_status),.trap_req_o(trap_req),
+        .sfence_o(sfence_request),.sfence_done_i(t_sfence_done),.ptw_idle_i(ptw_idle_o),.sfence_asid_operand_i(prf_rd_data[1]),.st_d_req_valid_o(st_d_valid),.st_d_req_ready_i(st_d_ready),.st_d_done_i(st_d_done),
+        .csr_req_valid_o(csr_head_req_valid),.csr_req_o(csr_head_req),.csr_resp_i(csr_resp),.csr_operand_i(prf_rd_data[0]),
+        .block_younger_cycle_i(gate_block_cycle),.irq_take_i(irq_eligible_q),.irq_cause_i(irq_cause_q),.priv_i(priv),.status_i(csr_status),.csr_inflight_i(csr_request_valid_q),.trap_inflight_i(trap_inflight || recovery_pending),.trap_req_o(trap_req),
         .trap_redirect_valid_i(trap_redirect_valid),.trap_redirect_pc_i(trap_redirect_pc),
         .rsv_clear_valid_o(t_rsv_clear_valid),.rsv_clear_reason_o(t_rsv_clear_reason),.wfi_retire_o(wfi_retire),.wfi_stall_i(wfi_stall),.isolate_i(1'b0),
-        .flush_all_o(global_flush),.perf_o(perf_commit));
+        .flush_all_o(commit_cancel_request),.perf_o(perf_commit));
+    recovery_boundary u_recovery_boundary(
+        .clk(clk),.rst(rst),.cancel_request_i(commit_cancel_request),
+        .redirect_request_i(commit_redirect_request),
+        .cancel_o(global_flush),.pending_o(recovery_pending),.redirect_o(sys_redirect_o));
+    // The precise head accepts SFENCE only after SQ drain / PTW idle. Freeze
+    // its operands, then broadcast invalidation and advance the epoch next cycle.
+    // commit_ctrl's sent/done tracking retains the head through the real ack;
+    // ordinary retirement/issue do not pass through this command boundary.
+    sfence_boundary u_sfence_boundary(.clk(clk),.rst(rst),.flush_i(global_flush),
+        .request_i(sfence_request),.command_o(t_sfence));
     trap_ctrl #(.CFG(CFG)) u_trap_ctrl (
         .clk(clk),.rst(rst),.req_i(trap_req),.csr_update_valid_o(trap_update_valid),.csr_update_o(trap_update),
         .csr_target_pc_i(trap_target),.csr_update_done_i(trap_done),
-        .redirect_valid_o(trap_redirect_valid),.redirect_pc_o(trap_redirect_pc));
+        .redirect_valid_o(trap_redirect_valid),.redirect_pc_o(trap_redirect_pc),.busy_o(trap_inflight));
     csr_file #(.CFG(CFG)) u_csr_file (
         .clk(clk),.rst(rst),.sfence_epoch_i(t_sfence.valid),.req_valid_i(csr_req_valid),.req_i(csr_req),.resp_o(csr_resp),
         .fe_perf_i(fe_perf_i),.be_perf_i(be_perf),
@@ -348,6 +429,16 @@ module backend
     localparam int INST_ID_LANE_BITS      = (DECODE_WIDTH <= 1) ? 1 : $clog2(DECODE_WIDTH);
     localparam int PRF_READ_PORTS         = CFG.exec.int_prf_read_ports;
     localparam int PRF_WRITE_PORTS        = CFG.exec.int_prf_write_ports;
+    localparam int INT_READ_CANDIDATES    = NUM_INT_ALUS + 2;
+    localparam int MEM_READ_BASE=INT_READ_CANDIDATES;
+    localparam int BR_READ_SLOT=MEM_READ_BASE+P;
+    localparam int FP_READ_BASE=BR_READ_SLOT+1;
+    localparam int READ_SOURCES=FP_READ_BASE+FP_FUS;
+    localparam int MUL_READ_SLOT          = NUM_INT_ALUS;
+    localparam int DIV_READ_SLOT          = NUM_INT_ALUS + 1;
+    localparam int BYPASS_SOURCES = NUM_INT_ALUS + 2 + FP_FUS + P;
+    localparam int INT_WAKEUP_WIDTH = PRF_WRITE_PORTS + 2*BYPASS_SOURCES + 1;
+    localparam int FP_WAKEUP_WIDTH = FP_WRITE_PORTS + 2*BYPASS_SOURCES + 1;
 
     o3_types_pkg::fetch_entry_t [DECODE_WIDTH-1:0] fetch_entry_q;
     logic                             fetch_entry_valid_q;
@@ -359,8 +450,16 @@ module backend
     decode_out_t   [DECODE_WIDTH-1:0] decode_out;
     decoded_uop_t  [DECODE_WIDTH-1:0] decoded_uop;
     o3_types_pkg::uop_ext_t decoded_ext [DECODE_WIDTH-1:0];  // decoder ext + FTQ 槽位
-    decoded_uop_t  [MACHINE_WIDTH-1:0] rename_uop_head,rename_uop_raw,rename_uop_fused;
+    decoded_uop_t  [MACHINE_WIDTH-1:0] rename_uop_head,rename_uop_raw,rename_uop_fused,rename_uop_entry;
     logic [MACHINE_WIDTH-1:0] fuse_pair_head;
+    o3_types_pkg::r1_lane_dep_t r1_dep [MACHINE_WIDTH-1:0];
+    o3_types_pkg::r1_lane_dep_t rsb_dep [MACHINE_WIDTH-1:0];
+    o3_types_pkg::r1_lane_dep_t r2_dep [MACHINE_WIDTH-1:0];
+    decoded_uop_t [MACHINE_WIDTH-1:0] rsb_uop;
+    logic [MACHINE_WIDTH-1:0] rsb_valid, rsb_accept_mask;
+    logic [o3_types_pkg::RENAME_SLOT_W-1:0] rsb_lane [MACHINE_WIDTH-1:0];
+    logic r1_ready, r1_fire;
+    logic [BACKEND_LANE_COUNT_WIDTH-1:0] r1_accept_count, r2_count;
     renamed_uop_t  [MACHINE_WIDTH-1:0] renamed_uop;
     renamed_uop_t  [DISPATCH_WIDTH-1:0] dispatch_uop_head;
 
@@ -444,9 +543,25 @@ module backend
     logic [$clog2(INT_ISSUE_QUEUE_DEPTH+1)-1:0] int_iq_free_count;
     logic [$clog2(MEM_ISSUE_QUEUE_DEPTH+1)-1:0] mem_iq_free_count;
     logic [$clog2(BRANCH_ISSUE_QUEUE_DEPTH+1)-1:0] br_iq_free_count;
-    renamed_uop_t [NUM_INT_ALUS-1:0] int_iq_issue_uop;
-    logic [NUM_INT_ALUS-1:0] int_iq_issue_valid;
-    logic [NUM_INT_ALUS-1:0] int_iq_issue_ready;
+    renamed_uop_t [INT_ISSUE_WIDTH-1:0] int_iq_issue_uop;
+    logic [INT_ISSUE_WIDTH-1:0] int_iq_issue_valid;
+    logic [INT_ISSUE_WIDTH-1:0] int_iq_issue_ready;
+    logic [$clog2(NUM_INT_ALUS+2)-1:0] int_iq_issue_fu[INT_ISSUE_WIDTH];
+    renamed_uop_t [INT_READ_CANDIDATES-1:0] int_buffer_enq_uop, int_buffer_uop;
+    logic [INT_READ_CANDIDATES-1:0] int_buffer_enq_valid, int_buffer_ready, int_buffer_valid;
+    renamed_uop_t [P-1:0] mem_buffer_uop,mem_buffer_enq_uop;
+    logic [P-1:0] mem_buffer_valid,mem_buffer_ready,mem_buffer_enq_valid;
+    renamed_uop_t br_buffer_uop;
+    logic br_buffer_ready,br_buffer_valid;
+    renamed_uop_t [READ_SOURCES-1:0] read_request_uop,read_pending_uop,read_stage_uop,read_port_uop;
+    logic [READ_SOURCES-1:0] read_request_valid,read_request_take,read_pending_eligible,read_stage_eligible,read_stage_grant;
+    logic [READ_SOURCES-1:0] read_port_eligible,read_port_grant;
+    logic [XLEN-1:0] read_operand_src1[READ_SOURCES],read_operand_src2[READ_SOURCES],read_operand_src3[READ_SOURCES];
+    logic serial_prf_read;
+    logic [$clog2(PRF_READ_PORTS)-1:0] read_src1_port[READ_SOURCES],read_src2_port[READ_SOURCES];
+    logic [2:0] fp_read_base[FP_FUS];
+    o3_types_pkg::wake_promise_t load_wake[P];
+    o3_types_pkg::cpl_bypass_t load_bypass[P];
     renamed_uop_t [P-1:0] mem_iq_issue_uop;
     logic [P-1:0] mem_iq_issue_valid;
     logic [P-1:0] mem_iq_issue_ready;
@@ -477,11 +592,11 @@ module backend
     // branch_execute_ready 已迁入 branch_unit
     logic branch_regread_ready;
     logic alu_regread_ready [NUM_INT_ALUS-1:0];
-    logic [NUM_INT_ALUS-1:0] int_read_grant;
+    logic [INT_READ_CANDIDATES-1:0] int_read_grant;
     logic [P-1:0] mem_read_grant;
     logic branch_read_grant;
-    logic [$clog2(PRF_READ_PORTS)-1:0] int_src1_port [NUM_INT_ALUS-1:0];
-    logic [$clog2(PRF_READ_PORTS)-1:0] int_src2_port [NUM_INT_ALUS-1:0];
+    logic [$clog2(PRF_READ_PORTS)-1:0] int_src1_port [INT_READ_CANDIDATES-1:0];
+    logic [$clog2(PRF_READ_PORTS)-1:0] int_src2_port [INT_READ_CANDIDATES-1:0];
     logic [$clog2(PRF_READ_PORTS)-1:0] mem_src1_port[P], mem_src2_port[P];
     logic [$clog2(PRF_READ_PORTS)-1:0] branch_src1_port, branch_src2_port;
 
@@ -493,13 +608,48 @@ module backend
 
     o3_types_pkg::mdu_req_t mul_req,div_req;
     o3_types_pkg::mdu_resp_t mul_resp,div_resp;
-    o3_types_pkg::wake_promise_t mul_wake,div_wake;
+    o3_types_pkg::wake_promise_t mul_wake,mul_wake2,div_wake;
     o3_types_pkg::cpl_bypass_t mul_bypass,div_bypass;
+    o3_types_pkg::wake_promise_t alu_wake [NUM_INT_ALUS];
+    o3_types_pkg::cpl_bypass_t alu_bypass [NUM_INT_ALUS];
     logic mul_valid,div_valid,mul_ready,mul_single_ready,mul_pair_ready,div_ready;
-    logic read_fu_ready [NUM_INT_ALUS-1:0];
-    logic iq_wake_valid [PRF_WRITE_PORTS+1:0];
-    logic [PREG_IDX_WIDTH-1:0] iq_wake_preg [PRF_WRITE_PORTS+1:0];
+    logic mul_regread_ready, div_regread_ready;
+    logic read_fu_ready [INT_READ_CANDIDATES-1:0];
+    logic iq_wake_valid [INT_WAKEUP_WIDTH-1:0];
+    logic [PREG_IDX_WIDTH-1:0] iq_wake_preg [INT_WAKEUP_WIDTH-1:0];
+    logic fp_iq_wake_valid[FP_WAKEUP_WIDTH-1:0];
+    logic [PREG_IDX_WIDTH-1:0] fp_iq_wake_preg[FP_WAKEUP_WIDTH-1:0];
+    o3_types_pkg::wake_promise_t scheduling_notice[BYPASS_SOURCES+1];
+    o3_types_pkg::cpl_bypass_t data_bypass[BYPASS_SOURCES];
+    logic [XLEN-1:0] fp_raw_data[FP_READ_PORTS];
     logic [XLEN-1:0] prf_raw_data [PRF_READ_PORTS-1:0];
+
+    // An early scheduling notice is deliberately absent from this check.
+    // Only real PRF data, a current write, or a live completion head can be read.
+    function automatic logic source_data_available(input o3_types_pkg::reg_domain_e dom,
+        input logic [PREG_IDX_WIDTH-1:0] preg);
+        logic hit;
+        hit=dom==o3_types_pkg::RD_NONE;
+        if(dom==o3_types_pkg::RD_INT) begin
+            if(int'(preg)<NUM_PHYS_REGS) hit=preg_ready_q[preg];
+            for(int p=0;p<PRF_WRITE_PORTS;p++) hit|=prf_wr_en[p] && prf_wr_addr[p]==preg;
+        end else if(dom==o3_types_pkg::RD_FP) begin
+            if(int'(preg)<CFG.rename.fp_phys_regs) hit=fp_preg_ready[preg];
+            for(int p=0;p<FP_WRITE_PORTS;p++) hit|=fp_wr_en[p] && fp_wr_addr[p]==preg;
+        end
+        for(int b=0;b<BYPASS_SOURCES;b++)
+            hit|=data_bypass[b].valid && data_bypass[b].dom==dom && data_bypass[b].preg==preg;
+        for(int b=0;b<PRF_WRITE_PORTS;b++)
+            hit|=int_wb_bypass[b].valid && int_wb_bypass[b].dom==dom && int_wb_bypass[b].preg==preg;
+        for(int b=0;b<FP_WRITE_PORTS;b++)
+            hit|=fp_wb_bypass[b].valid && fp_wb_bypass[b].dom==dom && fp_wb_bypass[b].preg==preg;
+        return hit;
+    endfunction
+    function automatic logic operands_available(input renamed_uop_t u);
+        return (!u.rs1_read_en || source_data_available(u.ext.rs1_dom,u.src1_preg)) &&
+            (!u.rs2_read_en || source_data_available(u.ext.rs2_dom,u.src2_preg)) &&
+            (!u.ext.rs3_read_en || source_data_available(u.ext.rs3_dom,u.rext.src3_preg));
+    endfunction
     o3_types_pkg::wb_req_t wb_extra [6];
     logic wb_extra_consume [6],wb_extra_complete [6];
     logic [ROB_IDX_WIDTH-1:0] wb_extra_idx [6];
@@ -565,7 +715,7 @@ module backend
     always_comb begin
         lsu_exc_valid=0;lsu_exc_idx='0;lsu_exc='0;mem_exc_ready='{default:0};
         for(int p=0;p<P;p++) begin
-            mem_issue_load[p]=mem_iq_issue_uop[p].is_load;
+            mem_issue_load[p]=read_stage_uop[MEM_READ_BASE+p].is_load;
             if(mem_exc_valid[p] && (!lsu_exc_valid ||
                 ((int'(mem_exc_idx[p])+NUM_ROB_ENTRIES-int'(rob_head))%NUM_ROB_ENTRIES <
                  (int'(lsu_exc_idx)+NUM_ROB_ENTRIES-int'(rob_head))%NUM_ROB_ENTRIES))) begin
@@ -885,19 +1035,21 @@ module backend
     assign fetch_ready_o   = !backend_block
                            && ((!fetch_entry_valid_q) || decode_ready);
     assign fetch_fire      = fetch_valid_i && fetch_ready_o;
-    assign rename_valid    = (uopq_deq_count != '0);
+    assign r1_fire         = (gate_pass_count != '0) && r1_ready && !backend_block;
+    assign r1_accept_count = r1_fire ? gate_pass_count : '0;
+    assign rename_valid    = (r2_count != '0);
     assign rename_fire     = (rename_accept_count != '0);
-    assign uopq_deq_accept_count = rename_accept_count;
+    assign uopq_deq_accept_count = r1_accept_count;
     // branch_resolution_i 由 branch_unit 产生（旧合同，仍是后端恢复的驱动源）。
     assign done            = 1'b0;
-    // Integer、Memory与Branch候选共享8个逻辑PRF读口；真正grant由年龄优先仲裁产生。
-    assign issueq_issue_ready = int_read_grant;
+    // IQ acceptance is the issue-buffer enqueue, independent of PRF read grants.
+    assign issueq_issue_ready = int_iq_issue_ready;
     assign retired_inst_count_o = retired_inst_count_q;
 
     always_comb begin
         // 把通用Integer IQ候选转换成已有整数Issue Register使用的最小载荷。
         issueq_issue_entry = '{default: '0};
-        issueq_issue_valid = int_iq_issue_valid & int_read_grant;
+        issueq_issue_valid = int_iq_issue_valid & int_iq_issue_ready;
         issueq_wakeup_entry = '{default: '0};
         issueq_wakeup_valid = '0;
         for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
@@ -958,38 +1110,57 @@ module backend
     assign single_inst_retired_o = single_trace_done_q;
 `endif
 
-    // 读口仲裁（原样迁出到 prf_read_arbiter）。issue_block 仅为 M；C 保留正常年龄/读口仲裁。
-    prf_read_arbiter #(.CFG(CFG)) u_prf_read_arbiter (
-        .issue_block_i        (backend_block),
-        .rob_head_i           (rob_head),
-        .int_issue_uop_i      (int_iq_issue_uop),
-        .int_issue_valid_i    (int_iq_issue_valid),
-        .alu_regread_ready_i  (read_fu_ready),
-        .mem_issue_uop_i      (mem_iq_issue_uop),
-        .mem_issue_valid_i    (mem_iq_issue_valid),
-        .mem_accept_i         (mem_issue_ready),
-        .br_issue_uop_i       (br_iq_issue_uop[0]),
-        .br_issue_valid_i     (br_iq_issue_valid[0]),
-        .branch_regread_ready_i(branch_regread_ready),
-        .fp_issue_uop_i(fp_int_candidate),.fp_issue_valid_i(fp_int_candidate_valid),.fp_regread_ready_i(1'b1),
-        .fp_read_grant_o(fp_int_read_grant),.fp_src1_port_o(fp_int_src1_port),
-        .int_read_grant_o     (int_read_grant),
-        .mem_read_grant_o     (mem_read_grant),
-        .branch_read_grant_o  (branch_read_grant),
-        .int_src1_port_o      (int_src1_port),
-        .int_src2_port_o      (int_src2_port),
-        .mem_src1_port_o      (mem_src1_port),
-        .mem_src2_port_o      (mem_src2_port),
-        .branch_src1_port_o   (branch_src1_port),
-        .branch_src2_port_o   (branch_src2_port),
-        .prf_rd_addr_o        (arb_rd_addr)
-    );
+    // Buffer -> A0 reservations -> ranked A1 -> granted A2 -> per-FU operand
+    // capture -> RegRead/FU request. Capture credits are reserved at allocation;
+    // FU readiness controls only its own captured operands, not shared addresses.
+    assign serial_prf_read=csr_head_serial || csr_req_valid || (head_valid && head_sfence);
+    operand_read_pipeline #(.CFG(CFG),.INT_SOURCES(INT_READ_CANDIDATES),.FP_SOURCES(FP_FUS)) u_operand_read_pipeline(
+        .clk(clk),.rst(rst),.flush_i(global_flush || sys_redirect_o.valid),
+        .issue_block_i(backend_block),.rob_head_i(rob_head),.resolution_i(branch_resolution_i),
+        .request_uop_i(read_request_uop),.request_valid_i(read_request_valid),.request_take_o(read_request_take),
+        .pending_uop_o(read_pending_uop),.pending_eligible_i(read_pending_eligible),
+        .read_uop_o(read_port_uop),.read_eligible_i(read_port_eligible),.read_grant_o(read_port_grant),
+        .src1_port_o(read_src1_port),.src2_port_o(read_src2_port),.fp_base_o(fp_read_base),
+        .int_addr_o(arb_rd_addr),.fp_addr_o(fp_rd_addr),.int_data_i(prf_rd_data),.fp_data_i(fp_rd_data),
+        .operand_uop_o(read_stage_uop),.operand_ready_i(read_stage_eligible),.operand_grant_o(read_stage_grant),
+        .operand_src1_o(read_operand_src1),.operand_src2_o(read_operand_src2),.operand_src3_o(read_operand_src3));
     always_comb begin
-        int_iq_issue_ready = int_read_grant;
-        mem_iq_issue_ready = mem_read_grant;
-        br_iq_issue_ready[0] = branch_read_grant;
+        read_request_uop='0;read_request_valid='0;
+        read_pending_eligible='0;read_stage_eligible='0;read_port_eligible='0;
+        for(int src=0;src<READ_SOURCES;src++)
+            read_port_eligible[src]=operands_available(read_port_uop[src]) && !serial_prf_read;
+        for(int src=0;src<INT_READ_CANDIDATES;src++) begin
+            read_request_uop[src]=int_buffer_uop[src];read_request_valid[src]=int_buffer_valid[src];
+            read_pending_eligible[src]=operands_available(read_pending_uop[src]);
+            read_stage_eligible[src]=read_fu_ready[src];
+            int_read_grant[src]=read_stage_grant[src];
+            int_src1_port[src]=read_src1_port[src];int_src2_port[src]=read_src2_port[src];
+        end
+        for(int p=0;p<P;p++) begin
+            read_request_uop[MEM_READ_BASE+p]=mem_buffer_uop[p];read_request_valid[MEM_READ_BASE+p]=mem_buffer_valid[p];
+            read_pending_eligible[MEM_READ_BASE+p]=operands_available(read_pending_uop[MEM_READ_BASE+p]);
+            read_stage_eligible[MEM_READ_BASE+p]=mem_issue_ready[p];
+            mem_read_grant[p]=read_stage_grant[MEM_READ_BASE+p];
+            mem_src1_port[p]=read_src1_port[MEM_READ_BASE+p];mem_src2_port[p]=read_src2_port[MEM_READ_BASE+p];
+        end
+        read_request_uop[BR_READ_SLOT]=br_buffer_uop;read_request_valid[BR_READ_SLOT]=br_buffer_valid;
+        read_pending_eligible[BR_READ_SLOT]=operands_available(read_pending_uop[BR_READ_SLOT]);
+        read_stage_eligible[BR_READ_SLOT]=branch_regread_ready;
+        branch_read_grant=read_stage_grant[BR_READ_SLOT];
+        branch_src1_port=read_src1_port[BR_READ_SLOT];branch_src2_port=read_src2_port[BR_READ_SLOT];
+        br_iq_issue_ready[0]=br_buffer_ready && !backend_block;
+        for(int fu=0;fu<FP_FUS;fu++) begin
+            read_request_uop[FP_READ_BASE+fu]=fp_buffer_uop[fu];read_request_valid[FP_READ_BASE+fu]=fp_buffer_valid[fu];
+            read_pending_eligible[FP_READ_BASE+fu]=operands_available(read_pending_uop[FP_READ_BASE+fu]);
+            read_stage_eligible[FP_READ_BASE+fu]=fp_regread_ready[fu];
+            fp_read_grant[fu]=read_stage_grant[FP_READ_BASE+fu];
+        end
     end
-
+    fu_issue_buffer #(.CFG(CFG)) u_br_issue_buffer(
+        .clk(clk),.rst(rst),.flush_i(global_flush || sys_redirect_o.valid),
+        .enq_valid_i(br_iq_issue_valid[0] && !backend_block),.enq_ready_o(br_buffer_ready),
+        .enq_uop_i(br_iq_issue_uop[0]),.deq_valid_o(br_buffer_valid),
+        .deq_ready_i(read_request_take[BR_READ_SLOT]),.deq_uop_o(br_buffer_uop),.resolution_i(branch_resolution_i));
 
     always_comb begin
         rob_retire_any = 1'b0;
@@ -1026,6 +1197,56 @@ module backend
         .uop_i(rename_uop_raw),.count_i(uopq_deq_count),.no_fuse_i(1'b0),
         .uop_o(rename_uop_fused),.pair_head_o(fuse_pair_head));
 
+    rename_dep_r1 #(.CFG(CFG)) u_rename_dep_r1 (
+        .uop_i(rename_uop_entry), .count_i(gate_pass_count), .dep_o(r1_dep));
+    rename_stage_buffer #(.CFG(CFG)) u_rename_stage_buffer (
+        .clk(clk), .rst(rst), .flush_i(backend_block),
+        .enq_valid_i(r1_fire), .enq_ready_o(r1_ready), .enq_count_i(gate_pass_count),
+        .enq_uop_i(rename_uop_entry), .enq_dep_i(r1_dep),
+        .slot_valid_o(rsb_valid), .slot_uop_o(rsb_uop), .slot_dep_o(rsb_dep),
+        .producer_gone_o(), .accept_mask_i(rsb_accept_mask));
+
+    // Translate a fixed R1 producer slot into the compacted R2 lane. A producer
+    // accepted on an earlier edge has already updated the RAT, so no bypass is needed.
+    function automatic o3_types_pkg::r1_dep_t r2_dependency(
+        input o3_types_pkg::r1_dep_t dep,
+        input logic [MACHINE_WIDTH-1:0] valid_slots
+    );
+        o3_types_pkg::r1_dep_t result;
+        int unsigned producer_lane;
+        result = '0;
+        producer_lane = 0;
+        if (dep.valid && valid_slots[dep.slot]) begin
+            for (int slot = 0; slot < MACHINE_WIDTH; slot++)
+                if (slot < int'(dep.slot) && valid_slots[slot]) producer_lane++;
+            result = '{valid:1'b1, slot:o3_types_pkg::RENAME_SLOT_W'(producer_lane)};
+        end
+        return result;
+    endfunction
+
+    always_comb begin
+        int unsigned lane;
+        lane = 0;
+        rename_uop_head = '0;
+        r2_dep = '{default:'0};
+        for (int slot = 0; slot < MACHINE_WIDTH; slot++) begin
+            rsb_lane[slot] = o3_types_pkg::RENAME_SLOT_W'(lane);
+            if (rsb_valid[slot]) begin
+                rename_uop_head[lane] = rsb_uop[slot];
+                r2_dep[lane].src1 = r2_dependency(rsb_dep[slot].src1, rsb_valid);
+                r2_dep[lane].src2 = r2_dependency(rsb_dep[slot].src2, rsb_valid);
+                r2_dep[lane].src3 = r2_dependency(rsb_dep[slot].src3, rsb_valid);
+                r2_dep[lane].rd_prev = r2_dependency(rsb_dep[slot].rd_prev, rsb_valid);
+                lane++;
+            end
+        end
+        r2_count = BACKEND_LANE_COUNT_WIDTH'(lane);
+    end
+    always_comb begin
+        for (int slot = 0; slot < MACHINE_WIDTH; slot++)
+            rsb_accept_mask[slot] = rsb_valid[slot] && (int'(rsb_lane[slot]) < int'(rename_accept_count));
+    end
+
     branch_checkpoint_file #(.CFG(CFG)) u_branch_checkpoint_file (
         .clk(clk),
         .rst(rst || global_flush),
@@ -1046,11 +1267,11 @@ module backend
         .restore_sq_tail_o(restore_sq_tail)
     );
 
-    // L9 rename-entry checks see current serialized CSR state, including stalled lanes.
-    // N: sanitize exceptions before entry-gate prefix selection; only accepted lanes
-    // capture resolved rm. Original fetch/decode exceptions retain their cause/tval.
+    // R1 entry checks see current serialized CSR state. The entry gate closes on
+    // R1 acceptance through serial retirement/flush, so an older CSR cannot change
+    // FS/frm between this snapshot and R2. Exceptions retain original cause/tval.
     always_comb begin
-        rename_uop_head=rename_uop_fused;
+        rename_uop_entry=rename_uop_fused;
         for (int lane=0;lane<MACHINE_WIDTH;lane++) begin
             if (!rename_uop_fused[lane].exception_valid && rename_uop_fused[lane].valid) begin
                 if ((rename_uop_fused[lane].ext.rd_dom==o3_types_pkg::RD_FP ||
@@ -1059,23 +1280,23 @@ module backend
                      rename_uop_fused[lane].ext.rs3_dom==o3_types_pkg::RD_FP) &&
                     (fp_fs==0 || (rename_uop_fused[lane].ext.uses_arch_rm &&
                         rename_uop_fused[lane].ext.rm==7 && fp_frm>=5))) begin
-                    rename_uop_head[lane].exception_valid=1;
-                    rename_uop_head[lane].exception_cause=EXCEPTION_CAUSE_ILLEGAL_INSTRUCTION;
-                    rename_uop_head[lane].exception_tval=XLEN'(rename_uop_fused[lane].raw_instruction);
+                    rename_uop_entry[lane].exception_valid=1;
+                    rename_uop_entry[lane].exception_cause=EXCEPTION_CAUSE_ILLEGAL_INSTRUCTION;
+                    rename_uop_entry[lane].exception_tval=XLEN'(rename_uop_fused[lane].raw_instruction);
                 end else if (rename_uop_fused[lane].ext.uses_arch_rm && rename_uop_fused[lane].ext.rm==7)
-                    rename_uop_head[lane].ext.rm=fp_frm;
+                    rename_uop_entry[lane].ext.rm=fp_frm;
             end
-            if (rename_uop_head[lane].exception_valid) begin
-                rename_uop_head[lane].rd_write_en=0;
-                rename_uop_head[lane].rs1_read_en=0; rename_uop_head[lane].rs2_read_en=0;
-                rename_uop_head[lane].src1_is_pc=0; rename_uop_head[lane].use_imm=0;
-                rename_uop_head[lane].is_word_op=0;
-                rename_uop_head[lane].is_int_uop=0; rename_uop_head[lane].is_load=0; rename_uop_head[lane].is_store=0;
-                rename_uop_head[lane].is_branch=0; rename_uop_head[lane].is_jal=0; rename_uop_head[lane].is_jalr=0;
-                rename_uop_head[lane].needs_checkpoint=0;
-                rename_uop_head[lane].ext='0;
-                rename_uop_head[lane].ext.ftq_slot=rename_uop_fused[lane].ext.ftq_slot;
-                rename_uop_head[lane].ext.block_younger=1;
+            if (rename_uop_entry[lane].exception_valid) begin
+                rename_uop_entry[lane].rd_write_en=0;
+                rename_uop_entry[lane].rs1_read_en=0; rename_uop_entry[lane].rs2_read_en=0;
+                rename_uop_entry[lane].src1_is_pc=0; rename_uop_entry[lane].use_imm=0;
+                rename_uop_entry[lane].is_word_op=0;
+                rename_uop_entry[lane].is_int_uop=0; rename_uop_entry[lane].is_load=0; rename_uop_entry[lane].is_store=0;
+                rename_uop_entry[lane].is_branch=0; rename_uop_entry[lane].is_jal=0; rename_uop_entry[lane].is_jalr=0;
+                rename_uop_entry[lane].needs_checkpoint=0;
+                rename_uop_entry[lane].ext='0;
+                rename_uop_entry[lane].ext.ftq_slot=rename_uop_fused[lane].ext.ftq_slot;
+                rename_uop_entry[lane].ext.block_younger=1;
             end
         end
     end
@@ -1096,11 +1317,23 @@ module backend
     end
     always_comb begin
         for (int lane=0;lane<MACHINE_WIDTH;lane++) begin
+            dst_new_preg[lane]=fp_rd_en[lane] ? fp_new_preg[lane]:int_new_preg[lane];
+        end
+    end
+    always_comb begin
+        for (int lane=0;lane<MACHINE_WIDTH;lane++) begin
             src1_preg[lane]=fp_rs1_en[lane] ? fp_src1_preg[lane]:int_src1_preg[lane];
             src2_preg[lane]=fp_rs2_en[lane] ? fp_src2_preg[lane]:int_src2_preg[lane];
             src3_preg[lane]=fp_rs3_en[lane] ? fp_src3_preg[lane]:int_src3_preg[lane];
             dst_old_preg[lane]=fp_rd_en[lane] ? fp_old_preg[lane]:int_old_preg[lane];
-            dst_new_preg[lane]=fp_rd_en[lane] ? fp_new_preg[lane]:int_new_preg[lane];
+            src1_from_older_lane[lane]=rename_lane_valid[lane] && rename_rs1_read_en[lane] && r2_dep[lane].src1.valid;
+            src2_from_older_lane[lane]=rename_lane_valid[lane] && rename_rs2_read_en[lane] && r2_dep[lane].src2.valid;
+            if (src1_from_older_lane[lane]) src1_preg[lane]=dst_new_preg[r2_dep[lane].src1.slot];
+            if (src2_from_older_lane[lane]) src2_preg[lane]=dst_new_preg[r2_dep[lane].src2.slot];
+            if (rename_lane_valid[lane] && rename_uop_head[lane].ext.rs3_read_en && r2_dep[lane].src3.valid)
+                src3_preg[lane]=dst_new_preg[r2_dep[lane].src3.slot];
+            if (rename_lane_valid[lane] && alloc_req[lane] && r2_dep[lane].rd_prev.valid)
+                dst_old_preg[lane]=dst_new_preg[r2_dep[lane].rd_prev.slot];
         end
     end
     free_list #(.CFG(CFG),.DOMAIN(o3_types_pkg::RD_FP)) u_fp_free_list (
@@ -1111,7 +1344,7 @@ module backend
         .checkpoint_create_i(checkpoint_create),.checkpoint_create_tag_i(checkpoint_tag),.alloc_branch_mask_i(rename_branch_mask),
         .resolution_valid_i(branch_resolution_i.valid),.resolution_mispredict_i(branch_resolution_i.mispredict),.resolution_tag_i(branch_resolution_i.branch_tag)
     );
-    rename_map_table #(.CFG(CFG),.DOMAIN(o3_types_pkg::RD_FP)) u_fp_rename_map_table (
+    rename_map_table #(.CFG(CFG),.DOMAIN(o3_types_pkg::RD_FP),.INTRA_GROUP_BYPASS(1'b0)) u_fp_rename_map_table (
         .clk(clk),.rst(rst),.flush_all_i(global_flush),.rename_fire_i(rename_fire),.lane_valid_i(rename_lane_valid),
         .rs1_addr_i(rename_rs1_addr),.rs2_addr_i(rename_rs2_addr),.rs3_addr_i(rename_rs3_addr),.rd_addr_i(rename_rd_addr),
         .rs1_read_en_i(fp_rs1_en),.rs2_read_en_i(fp_rs2_en),.rs3_read_en_i(fp_rs3_en),.rd_write_en_i(fp_rd_en),.new_dst_preg_i(fp_new_preg),
@@ -1126,92 +1359,85 @@ module backend
         .wr_en_i(fp_wr_en),.wr_addr_i(fp_wr_addr),.ready_o(fp_preg_ready)
     );
     physical_regfile #(.CFG(CFG),.DOMAIN(o3_types_pkg::RD_FP)) u_fp_physical_regfile (
-        .clk(clk),.rst(rst),.rd_addr_i(fp_rd_addr),.rd_data_o(fp_rd_data),
+        .clk(clk),.rst(rst),.rd_addr_i(fp_rd_addr),.rd_data_o(fp_raw_data),
         .wr_en_i(fp_wr_en),.wr_addr_i(fp_wr_addr),.wr_data_i(fp_wr_data)
     );
-    backend_issue_queue #(.CFG(CFG),.KIND(o3_types_pkg::IQ_FP),.WAKEUP_WIDTH(PRF_WRITE_PORTS+2)) u_fp_issue_queue (
+    backend_issue_queue #(.CFG(CFG),.KIND(o3_types_pkg::IQ_FP),.WAKEUP_WIDTH(INT_WAKEUP_WIDTH),.FP_WAKEUP_WIDTH(FP_WAKEUP_WIDTH)) u_fp_issue_queue (
         .clk(clk),.rst(rst || global_flush),.enq_uop_i(fp_iq_enq_uop),.enq_fire_i(dispatch_accept_count!='0),.free_count_o(fp_iq_free_count),
         .preg_ready_i(preg_ready_q),.fp_preg_ready_i(fp_preg_ready),.wakeup_valid_i(iq_wake_valid),.wakeup_preg_i(iq_wake_preg),
-        .fp_wakeup_valid_i(fp_wr_en),.fp_wakeup_preg_i(fp_wr_addr),.fp_regread_ready_i(fp_regread_ready),.issue_fp_fu_o(fp_issue_fu),
+        .fp_wakeup_valid_i(fp_iq_wake_valid),.fp_wakeup_preg_i(fp_iq_wake_preg),.fp_regread_ready_i(fp_buffer_ready),.issue_fp_fu_o(fp_issue_fu),
         .mul_ready_i(1'b0),.mul_pair_ready_i(1'b0),.div_ready_i(1'b0),.issue_uop_o(fp_iq_issue_uop),.issue_valid_o(fp_iq_issue_valid),.issue_ready_i(fp_iq_issue_ready),
         .resolution_valid_i(branch_resolution_i.valid),.resolution_mispredict_i(branch_resolution_i.mispredict),.resolution_tag_i(branch_resolution_i.branch_tag)
     );
-    // Each FU has an elastic RegRead slot. Slot readiness depends on its stored
-    // request only, not a new IQ candidate; the two acceptance boundaries stay distinct.
+    // FP scheduling leaves IQ on buffer enqueue, before read-port arbitration.
     always_comb begin
-        for (int fu=0;fu<5;fu++) begin
-            fp_fu_req[fu]=fp_regread_q[fu];
-            fp_fu_req[fu].tag.br_mask=resolved_branch_mask(fp_regread_q[fu].tag.br_mask);
-            fp_req_valid[fu]=fp_regread_valid_q[fu] && !global_flush && !sys_redirect_o.valid &&
-                !(branch_resolution_i.valid && branch_resolution_i.mispredict && fp_regread_q[fu].tag.br_mask[branch_resolution_i.branch_tag]);
-            fp_regread_ready[fu]=!fp_regread_valid_q[fu] || fp_fu_ready[fu] ||
-                (branch_resolution_i.valid && branch_resolution_i.mispredict && fp_regread_q[fu].tag.br_mask[branch_resolution_i.branch_tag]);
+        fp_buffer_enq_valid='0;fp_buffer_enq_uop='0;fp_iq_issue_ready='0;
+        for(int lane=0;lane<2;lane++) if(fp_iq_issue_valid[lane] && !backend_block) begin
+            fp_buffer_enq_valid[fp_issue_fu[lane]]=1;
+            fp_buffer_enq_uop[fp_issue_fu[lane]]=fp_iq_issue_uop[lane];
+            fp_iq_issue_ready[lane]=fp_buffer_ready[fp_issue_fu[lane]];
         end
     end
+    // Captured operands are independent of the current shared PRF addresses.
     always_comb begin
-        fp_int_candidate='0; fp_int_candidate_valid=0;
-        for (int lane=0;lane<2;lane++) if (fp_iq_issue_valid[lane] && fp_iq_issue_uop[lane].rs1_read_en &&
-            fp_iq_issue_uop[lane].ext.rs1_dom==o3_types_pkg::RD_INT) begin
-            fp_int_candidate=fp_iq_issue_uop[lane]; fp_int_candidate_valid=1;
+        fp_operand1='{default:'0};fp_operand2='{default:'0};fp_operand3='{default:'0};
+        for(int fu=0;fu<FP_FUS;fu++) begin
+            fp_operand1[fu]=read_operand_src1[FP_READ_BASE+fu];
+            fp_operand2[fu]=read_operand_src2[FP_READ_BASE+fu];
+            fp_operand3[fu]=read_operand_src3[FP_READ_BASE+fu];
         end
     end
-    always_comb begin
-        fp_iq_issue_ready='0; fp_rd_addr='{default:'0};
-        for (int lane=0;lane<2;lane++) begin
-            fp_iq_issue_ready[lane]=fp_iq_issue_valid[lane] && !backend_block &&
-                fp_regread_ready[fp_issue_fu[lane]] &&
-                (!(fp_iq_issue_uop[lane].rs1_read_en && fp_iq_issue_uop[lane].ext.rs1_dom==o3_types_pkg::RD_INT) || fp_int_read_grant);
-            if (fp_iq_issue_uop[lane].ext.rs1_dom==o3_types_pkg::RD_FP) fp_rd_addr[lane*3]=fp_iq_issue_uop[lane].src1_preg;
-            if (fp_iq_issue_uop[lane].ext.rs2_dom==o3_types_pkg::RD_FP) fp_rd_addr[lane*3+1]=fp_iq_issue_uop[lane].src2_preg;
-            if (fp_iq_issue_uop[lane].ext.rs3_dom==o3_types_pkg::RD_FP) fp_rd_addr[lane*3+2]=fp_iq_issue_uop[lane].rext.src3_preg;
-        end
-        for(int p=0;p<P;p++) fp_rd_addr[6+p]=mem_iq_issue_uop[p].src2_preg;
-    end
-    always_ff @(posedge clk) begin
-        if (rst) begin fp_regread_valid_q<='{default:0}; fp_regread_q<='{default:'0}; end
-        else begin
-            for (int fu=0;fu<5;fu++) begin
-                if (fp_regread_ready[fu]) fp_regread_valid_q[fu]<=0;
-                if (branch_resolution_i.valid) fp_regread_q[fu].tag.br_mask[branch_resolution_i.branch_tag]<=0;
-            end
-            for (int lane=0;lane<2;lane++) if (fp_iq_issue_ready[lane]) begin
-                fp_regread_valid_q[fp_issue_fu[lane]]<=1;
-                fp_regread_q[fp_issue_fu[lane]].tag<=make_fu_tag(fp_iq_issue_uop[lane]);
-                fp_regread_q[fp_issue_fu[lane]].op<=fp_iq_issue_uop[lane].ext.fp_op;
-                fp_regread_q[fp_issue_fu[lane]].src_fmt<=fp_iq_issue_uop[lane].ext.fp_src_fmt;
-                fp_regread_q[fp_issue_fu[lane]].dst_fmt<=fp_iq_issue_uop[lane].ext.fp_fmt;
-                fp_regread_q[fp_issue_fu[lane]].int_fmt<=fp_iq_issue_uop[lane].ext.fp_int_fmt;
-                fp_regread_q[fp_issue_fu[lane]].rm<=fp_iq_issue_uop[lane].ext.rm;
-                fp_regread_q[fp_issue_fu[lane]].op_mod<=fp_iq_issue_uop[lane].ext.fp_unsigned;
-                fp_regread_q[fp_issue_fu[lane]].src1<=fp_iq_issue_uop[lane].rs1_read_en ?
-                    (fp_iq_issue_uop[lane].ext.rs1_dom==o3_types_pkg::RD_INT ? prf_rd_data[fp_int_src1_port]:fp_rd_data[lane*3]) : '0;
-                fp_regread_q[fp_issue_fu[lane]].src2<=fp_iq_issue_uop[lane].rs2_read_en ? fp_rd_data[lane*3+1]:'0;
-                fp_regread_q[fp_issue_fu[lane]].src3<=fp_iq_issue_uop[lane].ext.rs3_read_en ? fp_rd_data[lane*3+2]:'0;
-            end
-            if (global_flush || sys_redirect_o.valid) fp_regread_valid_q<='{default:0};
+    for(genvar fu=0;fu<FP_FUS;fu++) begin : g_fp_issue
+        if(fu==1 && CFG.exec.num_fma==1) begin : disabled
+            // Disabled FMA routing slot owns no buffer, RegRead, or request.
+            assign fp_buffer_ready[fu]=1'b0;
+            assign fp_buffer_valid[fu]=1'b0;
+            assign fp_buffer_uop[fu]='0;
+            assign fp_regread_ready[fu]=1'b0;
+            assign fp_req_valid[fu]=1'b0;
+            assign fp_fu_req[fu]='0;
+        end else begin : enabled
+            fu_issue_buffer #(.CFG(CFG)) u_buffer(
+                .clk(clk),.rst(rst),.flush_i(global_flush || sys_redirect_o.valid),
+                .enq_valid_i(fp_buffer_enq_valid[fu]),.enq_ready_o(fp_buffer_ready[fu]),
+                .enq_uop_i(fp_buffer_enq_uop[fu]),.deq_valid_o(fp_buffer_valid[fu]),
+                .deq_ready_i(read_request_take[FP_READ_BASE+fu]),.deq_uop_o(fp_buffer_uop[fu]),.resolution_i(branch_resolution_i));
+            fp_regread #(.CFG(CFG)) u_regread(
+                .clk(clk),.rst(rst),.flush_i(global_flush || sys_redirect_o.valid),
+                .read_uop_i(read_stage_uop[FP_READ_BASE+fu]),.read_grant_i(fp_read_grant[fu]),
+                .src1_data_i(fp_operand1[fu]),.src2_data_i(fp_operand2[fu]),.src3_data_i(fp_operand3[fu]),
+                .read_ready_o(fp_regread_ready[fu]),.req_valid_o(fp_req_valid[fu]),
+                .req_ready_i(fp_fu_ready[fu]),.req_o(fp_fu_req[fu]),.resolution_i(branch_resolution_i));
         end
     end
-    for (genvar fma=0;fma<2;fma++) begin : g_fp_fma
-        fpu_fma_fu #(.CFG(CFG)) u_fu (
-            .clk(clk),.rst(rst),.flush_all_i(global_flush),.resolution_i(branch_resolution_i),
-            .req_valid_i(fp_req_valid[fma]),.req_ready_o(fp_fu_ready[fma]),.req_i(fp_fu_req[fma]),
-            .resp_valid_o(),.resp_ready_i(fp_resp_ready[fma]),.resp_o(fp_resp[fma]),.busy_o()
-        );
+    for(genvar fma=0;fma<2;fma++) begin : g_fp_fma
+        if(fma<CFG.exec.num_fma) begin : enabled
+            fpu_fma_fu #(.CFG(CFG)) u_fu (
+                .clk(clk),.rst(rst),.flush_all_i(global_flush),.resolution_i(branch_resolution_i),
+                .req_valid_i(fp_req_valid[fma]),.req_ready_o(fp_fu_ready[fma]),.req_i(fp_fu_req[fma]),
+                .resp_valid_o(),.resp_ready_i(fp_resp_ready[fma]),.resp_o(fp_resp[fma]),.wake_o(fp_wake[fma]),.bypass_o(fp_bypass[fma]),.busy_o()
+            );
+        end else begin : disabled
+            assign fp_fu_ready[fma]=1'b0;
+            assign fp_resp[fma]='0;
+            assign fp_wake[fma]='0;
+            assign fp_bypass[fma]='0;
+        end
     end
     fpu_divsqrt_fu #(.CFG(CFG)) u_fp_divsqrt_fu (
         .clk(clk),.rst(rst),.flush_all_i(global_flush),.resolution_i(branch_resolution_i),
         .req_valid_i(fp_req_valid[2]),.req_ready_o(fp_fu_ready[2]),.req_i(fp_fu_req[2]),
-        .resp_valid_o(),.resp_ready_i(fp_resp_ready[2]),.resp_o(fp_resp[2]),.busy_o()
+        .resp_valid_o(),.resp_ready_i(fp_resp_ready[2]),.resp_o(fp_resp[2]),.wake_o(fp_wake[2]),.bypass_o(fp_bypass[2]),.busy_o()
     );
     fpu_misc_fu #(.CFG(CFG)) u_fp_misc_fu (
         .clk(clk),.rst(rst),.flush_all_i(global_flush),.resolution_i(branch_resolution_i),
         .req_valid_i(fp_req_valid[3]),.req_ready_o(fp_fu_ready[3]),.req_i(fp_fu_req[3]),
-        .resp_valid_o(),.resp_ready_i(fp_resp_ready[3]),.resp_o(fp_resp[3]),.busy_o()
+        .resp_valid_o(),.resp_ready_i(fp_resp_ready[3]),.resp_o(fp_resp[3]),.wake_o(fp_wake[3]),.bypass_o(fp_bypass[3]),.busy_o()
     );
     fpu_conv_fu #(.CFG(CFG)) u_fp_conv_fu (
         .clk(clk),.rst(rst),.flush_all_i(global_flush),.resolution_i(branch_resolution_i),
         .req_valid_i(fp_req_valid[4]),.req_ready_o(fp_fu_ready[4]),.req_i(fp_fu_req[4]),
-        .resp_valid_o(),.resp_ready_i(fp_resp_ready[4]),.resp_o(fp_resp[4]),.busy_o()
+        .resp_valid_o(),.resp_ready_i(fp_resp_ready[4]),.resp_o(fp_resp[4]),.wake_o(fp_wake[4]),.bypass_o(fp_bypass[4]),.busy_o()
     );
     always_comb begin
         fp_wb_src='{default:'0};
@@ -1236,14 +1462,32 @@ module backend
         for(int p=0;p<P;p++) load_result_consume[p]=load_result[p].dst_dom==o3_types_pkg::RD_FP ? fp_wb_consume[5+p]:int_load_consume[p];
     end
     fp_writeback_arbiter #(.CFG(CFG),.NUM_SRC(6+P)) u_fp_writeback_arbiter (
-        .src_i(fp_wb_src),.consume_o(fp_wb_consume),.rob_head_i(rob_head),.resolution_i(branch_resolution_i),.flush_all_i(global_flush),
-        .prf_wr_en_o(fp_wr_en),.prf_wr_addr_o(fp_wr_addr),.prf_wr_data_o(fp_wr_data),
-        .complete_valid_o(fp_complete_valid),.complete_idx_o(fp_complete_idx),.complete_data_o(fp_complete_data),.complete_fflags_o(fp_complete_fflags)
+        .src_i(fp_wb_src),.admit_i(fp_wb_admit),.write_source_o(fp_wb_source),.consume_o(fp_wb_consume),.rob_head_i(rob_head),.resolution_i(branch_resolution_i),.flush_all_i(global_flush),
+        .prf_wr_en_o(raw_fp_wr_en),.prf_wr_addr_o(raw_fp_wr_addr),.prf_wr_data_o(raw_fp_wr_data),
+        .complete_valid_o(raw_fp_complete_valid),.complete_idx_o(raw_fp_complete_idx),.complete_data_o(raw_fp_complete_data),.complete_fflags_o(raw_fp_complete_fflags)
     );
+
+    always_comb begin
+        for(int p=0;p<FP_WRITE_PORTS;p++) begin
+            fp_wb_packet[p]=fp_wb_src[fp_wb_source[p]];
+            fp_wb_packet[p].valid=raw_fp_complete_valid[p];
+            fp_wb_packet_source[p]=($clog2(FP_WRITE_PORTS)>0?$clog2(FP_WRITE_PORTS):1)'(p);
+            fp_wb_port_ready[p]=1;
+            fp_complete_valid[p]=fp_wb_done[p].valid;
+            fp_complete_idx[p]=fp_wb_done[p].tag.rob_idx;
+            fp_complete_data[p]=fp_wb_done[p].data;fp_complete_fflags[p]=fp_wb_done[p].fflags;
+        end
+    end
+    writeback_transport #(.SOURCES(FP_WRITE_PORTS),.PORTS(FP_WRITE_PORTS)) u_fp_writeback_transport(
+        .clk(clk),.rst(rst),.flush_i(global_flush),.resolution_i(branch_resolution_i),
+        .source_i(fp_wb_packet),.write_i(raw_fp_wr_en),.write_source_i(fp_wb_packet_source),
+        .admit_o(fp_wb_admit),.busy_o(),.port_ready_i(fp_wb_port_ready),
+        .write_o(fp_wr_en),.addr_o(fp_wr_addr),.data_o(fp_wr_data),
+        .complete_o(fp_wb_done),.bypass_o(fp_wb_bypass));
 
     rename_stage #(.CFG(CFG)) u_rename_stage (
         .decoded_i(rename_uop_head),
-        .visible_count_i(gate_pass_count),
+        .visible_count_i(r2_count),
         .recovery_block_i(backend_block),
         .preg_free_count_i(free_preg_count),.fp_preg_free_count_i(fp_free_preg_count),
         .rob_free_count_i(rob_free_count),
@@ -1318,8 +1562,9 @@ module backend
         .t_alloc_inst_len_i(rob_meta_inst_len),.t_alloc_pc_i(rob_meta_pc),.t_alloc_instruction_i(rob_meta_instruction),.t_alloc_src1_i(rob_meta_src1),.t_alloc_src2_i(rob_meta_src2),.t_alloc_rs1_i(rob_meta_rs1),
         .t_fflags_valid_i(rob_complete_valid),.t_fflags_i(rob_complete_fflags),
         .t_exc_valid_i(rob_exc_valid),.t_exc_idx_i(rob_exc_idx),.t_exc_i(rob_exec_exc),
-        .t_head_valid_o(head_valid),.t_head_o(rob_head_info),.t_head_serial_done_i(head_serial_done),.t_d_mark_valid_i(d_mark),.t_d_clear_valid_i(d_clear),.t_d_idx_i(d_idx),
-        .t_commit_o(rob_commit),.t_flush_all_i(global_flush),.t_commit_block_i(rob_commit_block),.t_order_flush_i(lq_rob_order_flush),
+        .t_head_valid_o(head_valid),.t_head_o(rob_head_info),
+        .t_head_csr_o(head_csr),.t_head_sfence_o(head_sfence),.t_head_serial_done_i(head_serial_done),.t_d_mark_valid_i(d_mark),.t_d_clear_valid_i(d_clear),.t_d_idx_i(d_idx),
+        .t_commit_o(rob_commit),.t_flush_all_i(global_flush),.t_commit_block_i(rob_commit_block),.t_order_flush_i(lq_retire_order_flush),
         .t_succ_valid_i(exec_resolve_o.valid),.t_succ_pc_i(exec_resolve_o.redirect_pc),
         .alloc_ready_i(rename_fire),
         .complete_valid_i(rob_complete_valid),
@@ -1357,7 +1602,7 @@ module backend
 `endif
     );
 
-    rename_map_table #(.CFG(CFG), .DOMAIN(o3_types_pkg::RD_INT)) u_rename_map_table (
+    rename_map_table #(.CFG(CFG), .DOMAIN(o3_types_pkg::RD_INT), .INTRA_GROUP_BYPASS(1'b0)) u_rename_map_table (
         .clk(clk),
         .rst(rst),
         .flush_all_i(global_flush),
@@ -1382,13 +1627,13 @@ module backend
         .src1_preg_o(int_src1_preg),
         .src2_preg_o(int_src2_preg),
         .old_dst_preg_o(int_old_preg),
-        .src1_from_older_lane_o(src1_from_older_lane),
-        .src2_from_older_lane_o(src2_from_older_lane)
+        .src1_from_older_lane_o(),
+        .src2_from_older_lane_o()
     );
 
     load_queue #(.CFG(CFG)) u_load_queue (
         .clk(clk),.rst(rst),.flush_i(global_flush),.rob_head_i(rob_head),.dma_invalidate_i(dma_invalidate),.dma_line_i(dma_line),.pte_a_write_i(pte_a_write),.pte_a_line_i(pte_a_line),
-        .order_flush_o(lq_order_flush),.rob_order_flush_o(lq_rob_order_flush),.heu_valid_o(heu_lq_valid),.heu_entry_o(heu_lq_entry),.heu_done_i(heu_complete),.heu_done_idx_i(heu_complete_idx),.alloc_req_i(lq_alloc_req),.alloc_fire_i(rename_fire),
+        .order_flush_o(lq_order_flush),.rob_order_flush_o(),.retire_order_flush_o(lq_retire_order_flush),.heu_valid_o(heu_lq_valid),.heu_entry_o(heu_lq_entry),.heu_done_i(heu_complete),.heu_done_idx_i(heu_complete_idx),.alloc_req_i(lq_alloc_req),.alloc_fire_i(rename_fire),
         .alloc_rob_idx_i(rob_idx),.alloc_branch_mask_i(rename_branch_mask),.alloc_idx_o(lq_idx),.free_count_o(lq_free_count),.tail_o(lq_tail),
         .capture_valid_i(lq_capture),.capture_i(mem_capture),.capture_tag_o(mem_lq_tag),
         .update_valid_i(lq_update),.update_i(mem_update),.dc_wake_i(dc_wake),.tlb_wake_i(t_ptw_resp.valid),.sq_change_i(sq_changed),.ad_wake_i(ad_wake),
@@ -1448,22 +1693,25 @@ module backend
 
     // L1 integer instructions must enter a live IQ after dispatch. These
     // candidates drive the existing PRF read arbiter and ALU pipelines.
-    backend_issue_queue #(.CFG(CFG),.WAKEUP_WIDTH(PRF_WRITE_PORTS+2), .KIND(o3_types_pkg::IQ_INT)) u_int_issue_queue (
+    backend_issue_queue #(.CFG(CFG),.WAKEUP_WIDTH(INT_WAKEUP_WIDTH),.FP_WAKEUP_WIDTH(FP_WAKEUP_WIDTH), .KIND(o3_types_pkg::IQ_INT)) u_int_issue_queue (
         .clk(clk), .rst(rst || global_flush), .enq_uop_i(int_iq_enq_uop),
         .enq_fire_i(dispatch_accept_count != '0), .free_count_o(int_iq_free_count),
-        .mul_ready_i(mul_single_ready),.mul_pair_ready_i(mul_pair_ready),.div_ready_i(div_ready),.fp_preg_ready_i(fp_preg_ready),.fp_wakeup_valid_i(fp_wr_en),.fp_wakeup_preg_i(fp_wr_addr),
+        .mul_ready_i(int_buffer_ready[MUL_READ_SLOT]),.mul_pair_ready_i(int_buffer_ready[MUL_READ_SLOT]),
+        .div_ready_i(int_buffer_ready[DIV_READ_SLOT]),.alu_buffer_ready_i(int_buffer_ready[NUM_INT_ALUS-1:0]),
+        .fp_preg_ready_i(fp_preg_ready),.fp_wakeup_valid_i(fp_iq_wake_valid),.fp_wakeup_preg_i(fp_iq_wake_preg),
         .fp_regread_ready_i(fp_regread_ready),.issue_fp_fu_o(),.preg_ready_i(preg_ready_q), .wakeup_valid_i(iq_wake_valid),
         .wakeup_preg_i(iq_wake_preg), .issue_uop_o(int_iq_issue_uop),
         .issue_valid_o(int_iq_issue_valid), .issue_ready_i(int_iq_issue_ready),
+        .issue_int_fu_o(int_iq_issue_fu),
         .resolution_valid_i(branch_resolution_i.valid),
         .resolution_mispredict_i(branch_resolution_i.mispredict),
         .resolution_tag_i(branch_resolution_i.branch_tag)
     );
 
-    backend_issue_queue #(.CFG(CFG),.WAKEUP_WIDTH(PRF_WRITE_PORTS+2), .KIND(o3_types_pkg::IQ_MEM)) u_mem_issue_queue (
+    backend_issue_queue #(.CFG(CFG),.WAKEUP_WIDTH(INT_WAKEUP_WIDTH),.FP_WAKEUP_WIDTH(FP_WAKEUP_WIDTH), .KIND(o3_types_pkg::IQ_MEM)) u_mem_issue_queue (
         .clk(clk), .rst(rst || global_flush), .enq_uop_i(mem_iq_enq_uop),
         .enq_fire_i(dispatch_accept_count != '0), .free_count_o(mem_iq_free_count),
-        .mul_ready_i(mul_single_ready),.mul_pair_ready_i(mul_pair_ready),.div_ready_i(div_ready),.fp_preg_ready_i(fp_preg_ready),.fp_wakeup_valid_i(fp_wr_en),.fp_wakeup_preg_i(fp_wr_addr),
+        .mul_ready_i(mul_single_ready),.mul_pair_ready_i(mul_pair_ready),.div_ready_i(div_ready),.fp_preg_ready_i(fp_preg_ready),.fp_wakeup_valid_i(fp_iq_wake_valid),.fp_wakeup_preg_i(fp_iq_wake_preg),
         .fp_regread_ready_i(fp_regread_ready),.issue_fp_fu_o(),.preg_ready_i(preg_ready_q),
         .wakeup_valid_i(iq_wake_valid),
         .wakeup_preg_i(iq_wake_preg), .issue_uop_o(mem_iq_issue_uop),
@@ -1473,10 +1721,10 @@ module backend
         .resolution_tag_i(branch_resolution_i.branch_tag)
     );
 
-    backend_issue_queue #(.CFG(CFG),.WAKEUP_WIDTH(PRF_WRITE_PORTS+2), .KIND(o3_types_pkg::IQ_BR)) u_branch_issue_queue (
+    backend_issue_queue #(.CFG(CFG),.WAKEUP_WIDTH(INT_WAKEUP_WIDTH),.FP_WAKEUP_WIDTH(FP_WAKEUP_WIDTH), .KIND(o3_types_pkg::IQ_BR)) u_branch_issue_queue (
         .clk(clk), .rst(rst || global_flush), .enq_uop_i(br_iq_enq_uop),
         .enq_fire_i(dispatch_accept_count != '0), .free_count_o(br_iq_free_count),
-        .mul_ready_i(mul_single_ready),.mul_pair_ready_i(mul_pair_ready),.div_ready_i(div_ready),.fp_preg_ready_i(fp_preg_ready),.fp_wakeup_valid_i(fp_wr_en),.fp_wakeup_preg_i(fp_wr_addr),
+        .mul_ready_i(mul_single_ready),.mul_pair_ready_i(mul_pair_ready),.div_ready_i(div_ready),.fp_preg_ready_i(fp_preg_ready),.fp_wakeup_valid_i(fp_iq_wake_valid),.fp_wakeup_preg_i(fp_iq_wake_preg),
         .fp_regread_ready_i(fp_regread_ready),.issue_fp_fu_o(),.preg_ready_i(preg_ready_q), .wakeup_valid_i(iq_wake_valid),
         .wakeup_preg_i(iq_wake_preg), .issue_uop_o(br_iq_issue_uop),
         .issue_valid_o(br_iq_issue_valid), .issue_ready_i(br_iq_issue_ready),
@@ -1501,7 +1749,7 @@ module backend
         .full_line_busy_i(dc_full_busy),.internal_busy_i(dc_internal_busy),
         .dc_req_valid_o(t_dc_ld_req_valid),.dc_req_ready_i(t_dc_ld_req_ready),.dc_req_o(t_dc_ld_req),.dc_s1_o(t_dc_s1),.dc_resp_i(t_dc_ld_resp),
         .store_complete_valid_o(store_complete_valid),.store_complete_rob_idx_o(store_complete_rob_idx),
-        .load_result_o(load_result),.load_result_ready_i(load_result_consume),.exc_valid_o(mem_exc_valid),.exc_rob_idx_o(mem_exc_idx),.exc_o(mem_exc),.exc_ready_i(mem_exc_ready),
+        .load_result_o(load_result),.load_result_ready_i(load_result_consume),.wake_o(load_wake),.bypass_o(load_bypass),.exc_valid_o(mem_exc_valid),.exc_rob_idx_o(mem_exc_idx),.exc_o(mem_exc),.exc_ready_i(mem_exc_ready),
         .flush_all_i(global_flush),.resolution_valid_i(branch_resolution_i.valid),.resolution_mispredict_i(branch_resolution_i.mispredict),.resolution_tag_i(branch_resolution_i.branch_tag),
         .ptw_req_valid_o(t_dtlb_ptw_req_valid),.ptw_req_ready_i(t_dtlb_ptw_req_ready),.ptw_req_o(t_dtlb_ptw_req),.ptw_resp_i(t_ptw_resp),
         .csr_i(t_dmmu_csr),.pmp_i(t_pmp),.sfence_i(lsu_sfence),.sfence_done_o(t_dtlb_sf_done),.rob_head_i(rob_head),
@@ -1512,27 +1760,82 @@ module backend
     // 分支单元（原样迁出到 branch_unit；内部例化 branch_execute_unit）。
     branch_unit #(.CFG(CFG)) u_branch_unit (
         .clk(clk), .rst(rst || global_flush),
-        .issue_uop_i(br_iq_issue_uop[0]), .read_grant_i(branch_read_grant),
-        .src1_data_i(prf_rd_data[branch_src1_port]), .src2_data_i(prf_rd_data[branch_src2_port]),
+        .issue_uop_i(read_stage_uop[BR_READ_SLOT]), .read_grant_i(branch_read_grant),
+        .src1_data_i(read_operand_src1[BR_READ_SLOT]), .src2_data_i(read_operand_src2[BR_READ_SLOT]),
         .result_consume_i(branch_result_consume),
         .regread_ready_o(branch_regread_ready), .result_o(branch_result_q),
         .resolution_o(branch_resolution_i), .resolve_o(exec_resolve_o)
     );
 
     writeback_arbiter #(.CFG(CFG)) u_writeback_arbiter (
-        .flush_all_i(global_flush),.alu_result_i(alu_result_q), .load_result_i(int_load_result),
+        .flush_all_i(global_flush),.admit_i(int_wb_admit),.write_source_o(int_wb_source),.alu_result_i(alu_result_q), .load_result_i(int_load_result),
         .branch_result_i(branch_result_q), .rob_head_i(rob_head),
         .resolution_valid_i(branch_resolution_i.valid),
         .resolution_mispredict_i(branch_resolution_i.mispredict),
         .resolution_tag_i(branch_resolution_i.branch_tag),
         .alu_consume_o(alu_result_consume), .load_consume_o(int_load_consume),
         .branch_consume_o(wb_branch_consume),
-        .prf_wr_en_o(arb_wr_en), .prf_wr_addr_o(arb_wr_addr), .prf_wr_data_o(arb_wr_data),
-        .complete_valid_o(wb_complete_valid), .complete_idx_o(wb_complete_idx),
-        .complete_data_o(wb_complete_data),
+        .prf_wr_en_o(raw_arb_wr_en), .prf_wr_addr_o(raw_arb_wr_addr), .prf_wr_data_o(raw_arb_wr_data),
+        .complete_valid_o(raw_wb_complete_valid), .complete_idx_o(raw_wb_complete_idx),
+        .complete_data_o(raw_wb_complete_data),
         .extra_src_i(wb_extra),.extra_consume_o(wb_extra_consume),
-        .extra_complete_valid_o(wb_extra_complete),.extra_complete_idx_o(wb_extra_idx),.extra_complete_data_o(wb_extra_data),.extra_complete_fflags_o(wb_extra_fflags)
+        .extra_complete_valid_o(raw_wb_extra_complete),.extra_complete_idx_o(raw_wb_extra_idx),.extra_complete_data_o(raw_wb_extra_data),.extra_complete_fflags_o(raw_wb_extra_fflags)
     );
+
+    always_comb begin
+        int_wb_packet='{default:'0};
+        for(int a=0;a<NUM_INT_ALUS;a++) begin
+            int_wb_packet[a]='{valid:raw_wb_complete_valid[a],
+                tag:'{rob_idx:alu_result_q[a].rob_idx,br_mask:alu_result_q[a].branch_mask,
+                    dst_dom:o3_types_pkg::RD_INT,dst_preg:alu_result_q[a].dst_preg,dst_write_en:alu_result_q[a].dst_write_en},
+                data:alu_result_q[a].result,fflags:'0};
+        end
+        for(int p=0;p<P;p++) begin
+            int_wb_packet[NUM_INT_ALUS+p]='{valid:raw_wb_complete_valid[NUM_INT_ALUS+p],
+                tag:'{rob_idx:int_load_result[p].rob_idx,br_mask:int_load_result[p].branch_mask,
+                    dst_dom:o3_types_pkg::RD_INT,dst_preg:int_load_result[p].dst_preg,dst_write_en:1'b1},
+                data:int_load_result[p].result,fflags:'0};
+        end
+        int_wb_packet[NUM_INT_ALUS+P]='{valid:raw_wb_complete_valid[NUM_INT_ALUS+P],
+            tag:'{rob_idx:branch_result_q.rob_idx,br_mask:branch_result_q.branch_mask,
+                dst_dom:o3_types_pkg::RD_INT,dst_preg:branch_result_q.dst_preg,dst_write_en:branch_result_q.dst_write_en},
+            data:branch_result_q.link_value,fflags:'0};
+        for(int e=0;e<6;e++) begin
+            int_wb_packet[NUM_INT_ALUS+P+1+e]=wb_extra[e];
+            int_wb_packet[NUM_INT_ALUS+P+1+e].valid=raw_wb_extra_complete[e];
+            wb_extra_complete[e]=int_wb_done[NUM_INT_ALUS+P+1+e].valid;
+            wb_extra_idx[e]=int_wb_done[NUM_INT_ALUS+P+1+e].tag.rob_idx;
+            wb_extra_data[e]=int_wb_done[NUM_INT_ALUS+P+1+e].data;
+            wb_extra_fflags[e]=int_wb_done[NUM_INT_ALUS+P+1+e].fflags;
+        end
+        for(int s=0;s<NUM_INT_ALUS+P+1;s++) begin
+            wb_complete_valid[s]=int_wb_done[s].valid;wb_complete_idx[s]=int_wb_done[s].tag.rob_idx;
+            wb_complete_data[s]=int_wb_done[s].data;
+        end
+        for(int p=0;p<PRF_WRITE_PORTS;p++)
+            int_wb_port_ready[p]=p!=0 || !(csr_write_fire && rob_head_info.rd_write_en);
+    end
+    writeback_transport #(.SOURCES(INT_WB_SOURCES),.PORTS(PRF_WRITE_PORTS)) u_int_writeback_transport(
+        .clk(clk),.rst(rst),.flush_i(global_flush),.resolution_i(branch_resolution_i),
+        .source_i(int_wb_packet),.write_i(raw_arb_wr_en),.write_source_i(int_wb_source),
+        .admit_o(int_wb_admit),.busy_o(),.port_ready_i(int_wb_port_ready),
+        .write_o(arb_wr_en),.addr_o(arb_wr_addr),.data_o(arb_wr_data),
+        .complete_o(int_wb_done),.bypass_o(int_wb_bypass));
+    // A consumed HEU result now belongs to W1. Prevent restart of the same
+    // precise head until that queued result actually completes the ROB.
+    always_ff @(posedge clk) begin
+        if(rst || global_flush) begin heu_completion_pending_q<=0;heu_pending_owner_q<='0;end
+        else begin
+            if(heu_result.valid && heu_result_ready) begin
+                heu_completion_pending_q<=1;heu_pending_owner_q<=heu_result.tag.rob_idx;
+            end
+            if(heu_completion_pending_q) begin
+                if(wb_extra_complete[5] && wb_extra_idx[5]==heu_pending_owner_q) heu_completion_pending_q<=0;
+                for(int p=0;p<FP_WRITE_PORTS;p++)
+                    if(fp_complete_valid[p] && fp_complete_idx[p]==heu_pending_owner_q) heu_completion_pending_q<=0;
+            end
+        end
+    end
 
     // LSU owns the single exception port when simultaneous; hold BRU fault until next cycle.
     assign branch_result_consume=wb_branch_consume && !(branch_result_q.exc.valid && lsu_exc_valid);
@@ -1590,46 +1893,134 @@ module backend
         .wr_data_i(prf_wr_data)
     );
 
-    // B13 shared INT IQ: independent MUL/DIV occupancy and the existing age-based
-    // PRF arbitration. Operands are captured directly at request acceptance.
+    // Route selected instructions into independent per-FU issue slots.
+    // IQ selection budgets these capacities; buffer enqueue owns IQ deletion.
     always_comb begin
-        for(int lane=0;lane<NUM_INT_ALUS;lane++) begin
+        logic [INT_READ_CANDIDATES-1:0] available;
+        available = int_buffer_ready;
+        int_buffer_enq_uop = '0;
+        int_buffer_enq_valid = '0;
+        int_iq_issue_ready = '0;
+        for (int lane = 0; lane < INT_ISSUE_WIDTH; lane++) begin
+            int target;
+            target = -1;
+            if (int_iq_issue_valid[lane] && !backend_block) begin
+                // The IQ has already assigned unique FU destinations from
+                // narrow candidate classes and registered buffer capacities.
+                // Acceptance must not wait for the full payload RAM read.
+                if(available[int_iq_issue_fu[lane]]) target=int'(int_iq_issue_fu[lane]);
+                if (target >= 0) begin
+                    int_buffer_enq_uop[target] = int_iq_issue_uop[lane];
+                    int_buffer_enq_valid[target] = 1'b1;
+                    int_iq_issue_ready[lane] = 1'b1;
+                    available[target] = 1'b0;
+                end
+            end
+        end
+    end
+    for (genvar slot = 0; slot < INT_READ_CANDIDATES; slot++) begin : int_issue_buffers
+        fu_issue_buffer #(.CFG(CFG)) u_buffer (
+            .clk(clk),.rst(rst),.flush_i(global_flush || sys_redirect_o.valid),
+            .enq_valid_i(int_buffer_enq_valid[slot]),.enq_ready_o(int_buffer_ready[slot]),
+            .enq_uop_i(int_buffer_enq_uop[slot]),.deq_valid_o(int_buffer_valid[slot]),
+            .deq_ready_i(read_request_take[slot]),.deq_uop_o(int_buffer_uop[slot]),
+            .resolution_i(branch_resolution_i));
+    end
+    always_comb begin
+        for(int lane=0;lane<NUM_INT_ALUS;lane++)
             read_fu_ready[lane]=alu_regread_ready[lane];
-            if(int_iq_issue_uop[lane].ext.fu_class==o3_types_pkg::FU_MUL)
-                read_fu_ready[lane]=int_iq_issue_uop[lane].mdu_fuse.valid ? mul_pair_ready:mul_single_ready;
-            if(int_iq_issue_uop[lane].ext.fu_class==o3_types_pkg::FU_DIV) read_fu_ready[lane]=div_ready;
-        end
+        read_fu_ready[MUL_READ_SLOT]=mul_regread_ready;
+        read_fu_ready[DIV_READ_SLOT]=div_regread_ready;
     end
     always_comb begin
-        // Kept separate from readiness to avoid a data/valid -> grant feedback path.
-        mul_req='0;div_req='0;mul_valid=0;div_valid=0;
-        for(int lane=0;lane<NUM_INT_ALUS;lane++) if(int_read_grant[lane]) begin
-            if(int_iq_issue_uop[lane].ext.fu_class==o3_types_pkg::FU_MUL) begin
-                mul_valid=1;mul_req.op=int_iq_issue_uop[lane].ext.mdu_op;
-                mul_req.src1=prf_rd_data[int_src1_port[lane]];mul_req.src2=prf_rd_data[int_src2_port[lane]];
-                mul_req.tag=make_fu_tag(int_iq_issue_uop[lane]);mul_req.fuse=int_iq_issue_uop[lane].mdu_fuse;
-            end
-            if(int_iq_issue_uop[lane].ext.fu_class==o3_types_pkg::FU_DIV) begin
-                div_valid=1;div_req.op=int_iq_issue_uop[lane].ext.mdu_op;
-                div_req.src1=prf_rd_data[int_src1_port[lane]];div_req.src2=prf_rd_data[int_src2_port[lane]];
-                div_req.tag=make_fu_tag(int_iq_issue_uop[lane]);
+        logic [P-1:0] available;
+        available=mem_buffer_ready;mem_buffer_enq_valid='0;mem_buffer_enq_uop='0;mem_iq_issue_ready='0;
+        for(int lane=0;lane<P;lane++) begin
+            int target;target=-1;
+            for(int p=0;p<P;p++) if(target<0 && available[p]) target=p;
+            if(target>=0 && mem_iq_issue_valid[lane] && !backend_block) begin
+                mem_buffer_enq_valid[target]=1;mem_buffer_enq_uop[target]=mem_iq_issue_uop[lane];
+                mem_iq_issue_ready[lane]=1;available[target]=0;
             end
         end
     end
+    for(genvar p=0;p<P;p++) begin : g_mem_issue
+        fu_issue_buffer #(.CFG(CFG)) u_buffer(
+            .clk(clk),.rst(rst),.flush_i(global_flush || sys_redirect_o.valid),
+            .enq_valid_i(mem_buffer_enq_valid[p]),.enq_ready_o(mem_buffer_ready[p]),
+            .enq_uop_i(mem_buffer_enq_uop[p]),.deq_valid_o(mem_buffer_valid[p]),
+            .deq_ready_i(read_request_take[MEM_READ_BASE+p]),.deq_uop_o(mem_buffer_uop[p]),.resolution_i(branch_resolution_i));
+        mem_regread #(.CFG(CFG)) u_regread(
+            .clk(clk),.rst(rst),.flush_i(global_flush || sys_redirect_o.valid),
+            .read_uop_i(read_stage_uop[MEM_READ_BASE+p]),.read_grant_i(mem_read_grant[p]),
+            .src1_data_i(read_operand_src1[MEM_READ_BASE+p]),
+            .src2_data_i(read_operand_src2[MEM_READ_BASE+p]),
+            .execute_o(mem_execute_q[p]),.atomic_o(mem_atomic_q[p]),.resolution_i(branch_resolution_i));
+    end
+    mdu_regread #(.CFG(CFG)) u_mul_regread (
+        .clk(clk),.rst(rst),.flush_i(global_flush || sys_redirect_o.valid),.read_uop_i(read_stage_uop[MUL_READ_SLOT]),
+        .read_grant_i(int_read_grant[MUL_READ_SLOT]),.read_ready_o(mul_regread_ready),
+        .src1_data_i(read_operand_src1[MUL_READ_SLOT]),
+        .src2_data_i(read_operand_src2[MUL_READ_SLOT]),
+        .req_valid_o(mul_valid),.req_ready_i(mul_ready),.req_o(mul_req),.resolution_i(branch_resolution_i));
+    mdu_regread #(.CFG(CFG)) u_div_regread (
+        .clk(clk),.rst(rst),.flush_i(global_flush || sys_redirect_o.valid),.read_uop_i(read_stage_uop[DIV_READ_SLOT]),
+        .read_grant_i(int_read_grant[DIV_READ_SLOT]),.read_ready_o(div_regread_ready),
+        .src1_data_i(read_operand_src1[DIV_READ_SLOT]),
+        .src2_data_i(read_operand_src2[DIV_READ_SLOT]),
+        .req_valid_o(div_valid),.req_ready_i(div_ready),.req_o(div_req),.resolution_i(branch_resolution_i));
     function automatic o3_types_pkg::fu_tag_t make_fu_tag(input renamed_uop_t u);
         make_fu_tag='{rob_idx:u.rob_idx,br_mask:u.branch_mask,dst_dom:u.ext.rd_dom,
                       dst_preg:u.dst_preg,dst_write_en:u.rd_write_en};
     endfunction
     always_comb begin
+        for(int f=0;f<NUM_INT_ALUS;f++) begin
+            scheduling_notice[f]=alu_wake[f];data_bypass[f]=alu_bypass[f];
+        end
+        scheduling_notice[NUM_INT_ALUS]=mul_wake;data_bypass[NUM_INT_ALUS]=mul_bypass;
+        scheduling_notice[NUM_INT_ALUS+1]=div_wake;data_bypass[NUM_INT_ALUS+1]=div_bypass;
+        for(int f=0;f<FP_FUS;f++) begin
+            scheduling_notice[NUM_INT_ALUS+2+f]=fp_wake[f];
+            data_bypass[NUM_INT_ALUS+2+f]=fp_bypass[f];
+        end
+        for(int p=0;p<P;p++) begin
+            scheduling_notice[NUM_INT_ALUS+2+FP_FUS+p]=load_wake[p];
+            data_bypass[NUM_INT_ALUS+2+FP_FUS+p]=load_bypass[p];
+        end
+        scheduling_notice[BYPASS_SOURCES]=mul_wake2;
         for(int p=0;p<PRF_WRITE_PORTS;p++) begin iq_wake_valid[p]=prf_wr_en[p];iq_wake_preg[p]=prf_wr_addr[p];end
-        iq_wake_valid[PRF_WRITE_PORTS]=mul_wake.valid || mul_bypass.valid;
-        iq_wake_preg[PRF_WRITE_PORTS]=mul_wake.valid ? mul_wake.preg:mul_bypass.preg;
-        iq_wake_valid[PRF_WRITE_PORTS+1]=div_wake.valid || div_bypass.valid;
-        iq_wake_preg[PRF_WRITE_PORTS+1]=div_wake.valid ? div_wake.preg:div_bypass.preg;
+        for(int p=0;p<FP_WRITE_PORTS;p++) begin fp_iq_wake_valid[p]=fp_wr_en[p];fp_iq_wake_preg[p]=fp_wr_addr[p];end
+        for(int n=0;n<BYPASS_SOURCES+1;n++) begin
+            iq_wake_valid[PRF_WRITE_PORTS+n]=scheduling_notice[n].valid &&
+                scheduling_notice[n].dom==o3_types_pkg::RD_INT && !br_killed(scheduling_notice[n].br_mask,branch_resolution_i);
+            iq_wake_preg[PRF_WRITE_PORTS+n]=scheduling_notice[n].preg;
+            fp_iq_wake_valid[FP_WRITE_PORTS+n]=scheduling_notice[n].valid &&
+                scheduling_notice[n].dom==o3_types_pkg::RD_FP && !br_killed(scheduling_notice[n].br_mask,branch_resolution_i);
+            fp_iq_wake_preg[FP_WRITE_PORTS+n]=scheduling_notice[n].preg;
+        end
+        for(int n=0;n<BYPASS_SOURCES;n++) begin
+            iq_wake_valid[PRF_WRITE_PORTS+BYPASS_SOURCES+1+n]=data_bypass[n].valid && data_bypass[n].dom==o3_types_pkg::RD_INT;
+            iq_wake_preg[PRF_WRITE_PORTS+BYPASS_SOURCES+1+n]=data_bypass[n].preg;
+            fp_iq_wake_valid[FP_WRITE_PORTS+BYPASS_SOURCES+1+n]=data_bypass[n].valid && data_bypass[n].dom==o3_types_pkg::RD_FP;
+            fp_iq_wake_preg[FP_WRITE_PORTS+BYPASS_SOURCES+1+n]=data_bypass[n].preg;
+        end
         for(int p=0;p<PRF_READ_PORTS;p++) begin
             prf_rd_data[p]=prf_raw_data[p];
-            if(prf_rd_addr[p]!=0 && mul_bypass.valid && prf_rd_addr[p]==mul_bypass.preg) prf_rd_data[p]=mul_bypass.data;
-            if(prf_rd_addr[p]!=0 && div_bypass.valid && prf_rd_addr[p]==div_bypass.preg) prf_rd_data[p]=div_bypass.data;
+            for(int b=0;b<BYPASS_SOURCES;b++)
+                if(prf_rd_addr[p]!=0 && data_bypass[b].valid && data_bypass[b].dom==o3_types_pkg::RD_INT &&
+                   prf_rd_addr[p]==data_bypass[b].preg) prf_rd_data[p]=data_bypass[b].data;
+            for(int b=0;b<PRF_WRITE_PORTS;b++)
+                if(prf_rd_addr[p]!=0 && int_wb_bypass[b].valid && int_wb_bypass[b].dom==o3_types_pkg::RD_INT &&
+                    prf_rd_addr[p]==int_wb_bypass[b].preg) prf_rd_data[p]=int_wb_bypass[b].data;
+        end
+        for(int p=0;p<FP_READ_PORTS;p++) begin
+            fp_rd_data[p]=fp_raw_data[p];
+            for(int b=0;b<BYPASS_SOURCES;b++)
+                if(data_bypass[b].valid && data_bypass[b].dom==o3_types_pkg::RD_FP &&
+                   fp_rd_addr[p]==data_bypass[b].preg) fp_rd_data[p]=data_bypass[b].data;
+            for(int b=0;b<FP_WRITE_PORTS;b++)
+                if(fp_wb_bypass[b].valid && fp_wb_bypass[b].dom==o3_types_pkg::RD_FP &&
+                    fp_rd_addr[p]==fp_wb_bypass[b].preg) fp_rd_data[p]=fp_wb_bypass[b].data;
         end
         wb_extra='{default:'0};
         wb_extra[0]='{valid:mul_resp.valid,tag:mul_resp.tag,data:mul_resp.result,fflags:'0};
@@ -1646,23 +2037,47 @@ module backend
         .clk(clk),.rst(rst || global_flush),.req_valid_i(mul_valid),.req_ready_o(mul_ready),
         .req_single_ready_o(mul_single_ready),.req_pair_ready_o(mul_pair_ready),.req_i(mul_req),
         .resp_valid_o(),.resp_ready_i(wb_extra_consume[0]),.resp_o(mul_resp),
-        .bypass_o(mul_bypass),.wake_o(mul_wake),.resolution_i(branch_resolution_i),.busy_o());
+        .bypass_o(mul_bypass),.wake_o(mul_wake),.wake2_o(mul_wake2),.resolution_i(branch_resolution_i),.busy_o());
     div_execute_unit #(.CFG(CFG)) u_div_execute_unit(
         .clk(clk),.rst(rst || global_flush),.req_valid_i(div_valid),.req_ready_o(div_ready),.req_i(div_req),
         .resp_valid_o(),.resp_ready_i(wb_extra_consume[1]),.resp_o(div_resp),
         .bypass_o(div_bypass),.wake_o(div_wake),.resolution_i(branch_resolution_i),.busy_o());
 
-    // ALU 管线（原样迁出到 alu_pipe，每个 ALU 一个实例）。B12 缺口 2 见 alu_pipe 注释。
+    // Passive RR observation of each independent operand-capture head.
+    always_comb begin
+        alu_issue_q = '{default:'0};
+        for (int alu=0;alu<NUM_INT_ALUS;alu++) begin
+            alu_issue_q[alu].valid = int_read_grant[alu];
+            alu_issue_q[alu].instruction_id = read_stage_uop[alu].instruction_id;
+`ifdef O3_SIM
+            alu_issue_q[alu].kanata_id = read_stage_uop[alu].kanata_id;
+`endif
+            alu_issue_q[alu].src1_preg = read_stage_uop[alu].src1_preg;
+            alu_issue_q[alu].src2_preg = read_stage_uop[alu].src2_preg;
+            alu_issue_q[alu].src1_valid = read_stage_uop[alu].rs1_read_en;
+            alu_issue_q[alu].src2_valid = read_stage_uop[alu].rs2_read_en;
+            alu_issue_q[alu].rob_idx = read_stage_uop[alu].rob_idx;
+            alu_issue_q[alu].dst_preg = read_stage_uop[alu].dst_preg;
+            alu_issue_q[alu].dst_write_en = read_stage_uop[alu].rd_write_en && read_stage_uop[alu].rd!=0;
+            alu_issue_q[alu].imm_raw = read_stage_uop[alu].imm_raw;
+            alu_issue_q[alu].imm_valid = read_stage_uop[alu].use_imm;
+            alu_issue_q[alu].imm_type = read_stage_uop[alu].imm_type;
+            alu_issue_q[alu].int_alu_op = read_stage_uop[alu].int_alu_op;
+            alu_issue_q[alu].branch_mask = read_stage_uop[alu].branch_mask;
+        end
+    end
+
+    // Actual ALU operand and result registers; B12 cancellation remains in alu_pipe.
     generate
         for (i = 0; i < NUM_INT_ALUS; i++) begin : alu_pipe_array
             alu_pipe #(.CFG(CFG)) u_alu_pipe (
                 .clk(clk), .rst(rst || global_flush),
-                .issue_uop_i(int_iq_issue_uop[i]), .read_grant_i(int_read_grant[i] &&
-                    !(int_iq_issue_uop[i].ext.fu_class inside {o3_types_pkg::FU_MUL,o3_types_pkg::FU_DIV})),
-                .src1_data_i(prf_rd_data[int_src1_port[i]]),
-                .src2_data_i(prf_rd_data[int_src2_port[i]]),
+                .issue_uop_i(read_stage_uop[i]), .read_grant_i(int_read_grant[i]),
+                .src1_data_i(read_operand_src1[i]),
+                .src2_data_i(read_operand_src2[i]),
                 .resolution_i(branch_resolution_i), .result_consume_i(alu_result_consume[i]),
                 .regread_ready_o(alu_regread_ready[i]), .result_o(alu_result_q[i]),
+                .wake_o(alu_wake[i]), .bypass_o(alu_bypass[i]),
                 .obs_regread_o(alu_regread_q[i]), .obs_exec_result_o(exec_result[i])
             );
         end
@@ -1674,8 +2089,6 @@ module backend
             fetch_entry_valid_q    <= 1'b0;
             fetch_instruction_id_q <= '{default: '0};
             fetch_group_seq_q      <= '0;
-            alu_issue_q            <= '{default: '0};
-            mem_execute_q <= '{default:'0};
             retired_inst_count_q   <= 64'd0;
 `ifdef O3_SIM
             sim_cycle_q             <= 64'd0;
@@ -1811,7 +2224,7 @@ module backend
                     end else if (alu_issue_q[alu].src2_valid) begin
                         src2_desc = $sformatf("p%0d=0x%0h",
                                               alu_issue_q[alu].src2_preg,
-                                              prf_rd_data[(2*alu)+1]);
+                                              read_operand_src2[alu]);
                     end else begin
                         src2_desc = "zero";
                     end
@@ -1821,7 +2234,7 @@ module backend
                     $fdisplay(kanata_fd, "L\t%0d\t1\tsrc1:p%0d=0x%0h src2:%s rob:%0d",
                               alu_issue_q[alu].kanata_id,
                               alu_issue_q[alu].src1_preg,
-                              prf_rd_data[(2*alu)+0],
+                              read_operand_src1[alu],
                               src2_desc,
                               alu_issue_q[alu].rob_idx);
                 end
@@ -1951,11 +2364,11 @@ module backend
                                  sim_cycle_q,
                                  single_trace_id_q,
                                  alu,
-                                 prf_rd_data[(2*alu)+0],
+                                 read_operand_src1[alu],
                                  alu_issue_q[alu].imm_valid
                                     ? expand_imm_value(alu_issue_q[alu].imm_type, alu_issue_q[alu].imm_raw)
                                     : (alu_issue_q[alu].src2_valid
-                                        ? prf_rd_data[(2*alu)+1]
+                                        ? read_operand_src2[alu]
                                         : '0));
                     end
                 end
@@ -2076,14 +2489,14 @@ module backend
                              alu,
                              alu_issue_q[alu].instruction_id,
                              alu_issue_q[alu].src1_preg,
-                             prf_rd_data[(2*alu)+0],
+                             read_operand_src1[alu],
                              alu_issue_q[alu].imm_valid
                                 ? $sformatf("imm[%s]=0x%0h -> 0x%0h",
                                             imm_type_name(alu_issue_q[alu].imm_type),
                                             alu_issue_q[alu].imm_raw,
                                             expand_imm_value(alu_issue_q[alu].imm_type, alu_issue_q[alu].imm_raw))
                                 : (alu_issue_q[alu].src2_valid
-                                    ? $sformatf("p%0d->0x%0h", alu_issue_q[alu].src2_preg, prf_rd_data[(2*alu)+1])
+                                    ? $sformatf("p%0d->0x%0h", alu_issue_q[alu].src2_preg, read_operand_src2[alu])
                                     : "zero"),
                              alu_issue_q[alu].rob_idx);
                 end else begin
@@ -2162,55 +2575,8 @@ module backend
             end
 `endif
 
-            for (int alu = 0; alu < NUM_INT_ALUS; alu++) begin
-                // RegRead/Result 槽更新已迁入 alu_pipe。
-                // 保留Issue观察寄存器供现有调试日志使用；执行数据直接进入RegRead槽。
-                alu_issue_q[alu].valid <= int_read_grant[alu];
-                alu_issue_q[alu].instruction_id <= issueq_issue_entry[alu].instruction_id;
-`ifdef O3_SIM
-                alu_issue_q[alu].kanata_id <= issueq_issue_entry[alu].kanata_id;
-`endif
-                alu_issue_q[alu].src1_preg <= issueq_issue_entry[alu].src1_preg;
-                alu_issue_q[alu].src2_preg <= issueq_issue_entry[alu].src2_preg;
-                alu_issue_q[alu].src1_valid <= issueq_issue_entry[alu].src1_valid;
-                alu_issue_q[alu].src2_valid <= issueq_issue_entry[alu].src2_valid;
-                alu_issue_q[alu].rob_idx <= issueq_issue_entry[alu].rob_idx;
-                alu_issue_q[alu].dst_preg <= issueq_issue_entry[alu].dst_preg;
-                alu_issue_q[alu].dst_write_en <= issueq_issue_entry[alu].dst_write_en;
-                alu_issue_q[alu].imm_raw <= issueq_issue_entry[alu].imm_raw;
-                alu_issue_q[alu].imm_valid <= issueq_issue_entry[alu].imm_valid;
-                alu_issue_q[alu].imm_type <= issueq_issue_entry[alu].imm_type;
-                alu_issue_q[alu].int_alu_op <= issueq_issue_entry[alu].int_alu_op;
-                alu_issue_q[alu].branch_mask <= resolved_branch_mask(issueq_issue_entry[alu].branch_mask);
-            end
-
             // Branch RegRead/Result 槽更新已迁入 branch_unit。
 
-            for(int p=0;p<P;p++) begin
-                mem_execute_q[p].valid <= mem_read_grant[p];
-                mem_execute_q[p].instruction_id <= mem_iq_issue_uop[p].instruction_id;
-`ifdef O3_SIM
-                mem_execute_q[p].kanata_id <= mem_iq_issue_uop[p].kanata_id;
-`endif
-                mem_execute_q[p].rob_idx <= mem_iq_issue_uop[p].rob_idx;
-                mem_execute_q[p].lq_idx <= mem_iq_issue_uop[p].lq_idx;
-                mem_execute_q[p].sq_idx <= mem_iq_issue_uop[p].sq_idx;
-                mem_execute_q[p].dst_preg <= mem_iq_issue_uop[p].dst_preg;
-                mem_execute_q[p].dst_write_en <= mem_iq_issue_uop[p].rd_write_en;
-                mem_execute_q[p].dst_dom <= mem_iq_issue_uop[p].ext.rd_dom;
-                mem_execute_q[p].is_load <= mem_iq_issue_uop[p].is_load;
-                mem_execute_q[p].is_store <= mem_iq_issue_uop[p].is_store;
-                mem_execute_q[p].mem_size <= mem_iq_issue_uop[p].mem_size;
-                mem_execute_q[p].mem_unsigned <= mem_iq_issue_uop[p].mem_unsigned;
-                mem_execute_q[p].base_value <= mem_iq_issue_uop[p].rs1_read_en
-                                          ? prf_rd_data[mem_src1_port[p]] : '0;
-                mem_execute_q[p].store_value <= mem_iq_issue_uop[p].rs2_read_en
-                                           ? (mem_iq_issue_uop[p].ext.rs2_dom==o3_types_pkg::RD_FP ? fp_rd_data[6+p] : prf_rd_data[mem_src2_port[p]]) : '0;
-                mem_execute_q[p].imm_value <= expand_imm_value(
-                    mem_iq_issue_uop[p].imm_type, mem_iq_issue_uop[p].imm_raw);
-                mem_execute_q[p].branch_mask <= resolved_branch_mask(mem_iq_issue_uop[p].branch_mask);
-                if(global_flush) mem_execute_q[p].valid<=0;
-            end
             if (backend_block) begin
                 fetch_entry_valid_q <= 1'b0;
             end else if (fetch_fire) begin
@@ -2240,7 +2606,7 @@ module backend
     o3_types_pkg::dcache_req_t  t_pf_req;
     o3_types_pkg::dmmu_csr_t    t_dmmu_csr;
     o3_types_pkg::pmp_state_t   t_pmp;
-    o3_types_pkg::sfence_req_t  t_sfence;
+    o3_types_pkg::sfence_req_t  sfence_request,t_sfence;
     logic t_sfence_done;
     logic                       t_dc_ld_req_valid [CFG.lsu.agu_pipes];
     logic                       t_dc_ld_req_ready [CFG.lsu.agu_pipes];
@@ -2264,12 +2630,12 @@ module backend
     logic t_dtlb_sf_done;
     o3_types_pkg::be_perf_t perf_ptw,perf_ad;
     logic ptw_ad_valid,ptw_ad_ready,rewalk_valid,rewalk_ready,itlb_ptw_ready;
-    assign itlb_ptw_req_ready_o=itlb_ptw_ready && !csr_req_valid && !trap_req.valid;
+    assign itlb_ptw_req_ready_o=itlb_ptw_ready && !csr_head_serial && !csr_req_valid && !commit_cancel_request && !recovery_pending && !trap_req.valid && !trap_inflight;
     o3_types_pkg::pte_ad_req_t ptw_ad_req;
     o3_types_pkg::pte_ad_resp_t ptw_ad_resp;
     o3_types_pkg::ptw_req_t rewalk_req;
     ptw #(.CFG(CFG)) u_ptw(.clk(clk),.rst(rst),
-        .itlb_req_valid_i(itlb_ptw_req_valid_i && !csr_req_valid && !trap_req.valid),.itlb_req_ready_o(itlb_ptw_ready),.itlb_req_i(itlb_ptw_req_i),
+        .itlb_req_valid_i(itlb_ptw_req_valid_i && !csr_head_serial && !csr_req_valid && !commit_cancel_request && !recovery_pending && !trap_req.valid && !trap_inflight),.itlb_req_ready_o(itlb_ptw_ready),.itlb_req_i(itlb_ptw_req_i),
         .dtlb_req_valid_i(t_dtlb_ptw_req_valid),.dtlb_req_ready_o(t_dtlb_ptw_req_ready),.dtlb_req_i(t_dtlb_ptw_req),
         .resp_o(t_ptw_resp),.mem_req_valid_o(t_ptw_mem_req_valid),.mem_req_ready_i(t_ptw_mem_req_ready),
         .mem_req_o(t_ptw_mem_req),.mem_resp_i(t_ptw_mem_resp),.csr_i(t_dmmu_csr),.pmp_i(t_pmp),
@@ -2314,6 +2680,11 @@ module backend
     always_ff @(posedge clk) begin
         if (!rst) begin
             assert (rename_accept_count <= MACHINE_WIDTH && dispatch_accept_count <= DISPATCH_WIDTH);
+            if(CFG.exec.num_fma==1) begin
+                assert(!fp_buffer_valid[1] && !fp_req_valid[1] && !fp_resp[1].valid);
+                for(int lane=0;lane<2;lane++)
+                    assert(!(fp_iq_issue_valid[lane] && fp_issue_fu[lane]==3'd1));
+            end
             if (branch_mispredict) begin
                 assert (int_read_grant == '0 && !(|mem_read_grant) && !branch_read_grant);
                 assert (rename_accept_count == '0 && dispatch_accept_count == '0);
@@ -2322,11 +2693,11 @@ module backend
             if (branch_resolution_i.valid && !branch_resolution_i.mispredict) begin
                 // A correct resolve never blocks progress itself. An independent
                 // trap or serial redirect may coincide and must still flush.
-                if (!global_flush && !sys_redirect_o.valid) begin
+                if (!global_flush && !sys_redirect_o.valid && !trap_inflight && !recovery_pending) begin
                 assert (decode_ready == uopq_enq_ready)
                     else $fatal(1,"correct-branch progress: decode_ready=%0b enq_ready=%0b block=%0b flush=%0b sys=%0b trap=%0b cause=%0d head_pc=%h",
                         decode_ready,uopq_enq_ready,backend_block,global_flush,sys_redirect_o.valid,trap_req.valid,trap_req.cause,rob_head_info.pc);
-                assert (!u_prf_read_arbiter.issue_block_i);
+                assert (!u_operand_read_pipeline.issue_block_i);
                 assert (!u_rename_stage.recovery_block_i && !u_dispatch_stage.recovery_block_i);
                 end
                 for (int lane=0; lane<MACHINE_WIDTH; lane++) begin

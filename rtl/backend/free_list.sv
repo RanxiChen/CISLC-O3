@@ -5,6 +5,7 @@
  * record all younger allocations in both domains. Global flush restores committed
  * free state including actual same-boundary retirement; mispredict returns dependent allocations.
  * 当前实现状态：闭环简化（L9）；lint/测试未运行。
+ * Cached lowest candidates and exact capacity are registered with the ownership bitmap.
  * N: choose distinct free candidates for the accepted rename prefix. N edge: consume
  * allocations, return retired old mappings and record/recover checkpoint masks.
  * N+1: free count/candidate bitmap reflects the new or restored state.
@@ -55,53 +56,63 @@ module free_list
     logic [NUM_PHYS_REGS-1:0] allocation_mask_q [NUM_CHECKPOINTS-1:0];
     logic [NUM_PHYS_REGS-1:0] candidate_bitmap_after_alloc;
 
-    // Balanced encoders choose the lowest free index. Each lane excludes
-    // only earlier accepted candidates; sparse requests keep their lane order.
-    // Counting is a separate balanced reduction instead of a serial accumulator.
+    // Exact registered capacity for each 64-register bitmap group. Allocation,
+    // release and recovery update both representations at the same edge. The
+    // rename admission view no longer starts with a bitmap population count;
+    // the balanced next-state count is local to this resource owner. No new
+    // admission latency, speculative/free-on-current-release credit or FSM.
+    localparam int COUNT_GROUP_SIZE=64;
+    localparam int COUNT_GROUPS=(NUM_PHYS_REGS+COUNT_GROUP_SIZE-1)/COUNT_GROUP_SIZE;
+    localparam int COUNT_GROUP_W=$clog2(COUNT_GROUP_SIZE+1);
+    logic [COUNT_GROUP_W-1:0] group_count_q[COUNT_GROUPS];
+
+    // A balanced gather prepares the next first WIDTH free candidates at the
+    // ownership edge. Current sparse requests map onto the registered view by
+    // prefix rank; no encoder waits for a preceding lane's destination.
     localparam int LEAVES = 1 << $clog2(NUM_PHYS_REGS);
     localparam int RANK_WIDTH = $clog2(MACHINE_WIDTH+1);
     typedef struct packed {
         logic valid;
         logic [PREG_IDX_WIDTH-1:0] index;
     } candidate_t;
+    candidate_t candidate_q[MACHINE_WIDTH];
+    // Current candidates are an exact cached view of the registered bitmap,
+    // prepared at the same ownership edge. Sparse request routing no longer
+    // traverses the bitmap gather during the rename admission/consume cycle.
     always_comb begin
-        logic [COUNT_WIDTH-1:0] count_tree [2*LEAVES];
-        candidate_t tree [MACHINE_WIDTH][2*LEAVES];
-        candidate_t winner [MACHINE_WIDTH];
+        candidate_t winner[MACHINE_WIDTH];
         logic [RANK_WIDTH-1:0] request_count;
-        count_tree = '{default:'0};
-        tree = '{default:'{default:'0}};
-        winner = '{default:'0};
-        request_count = '0;
-        alloc_preg_o = '{default:'0};
-        for (int preg = int'(HAS_ZERO_REG); preg < NUM_PHYS_REGS; preg++)
-            count_tree[LEAVES+preg] = COUNT_WIDTH'(free_bitmap_q[preg]);
-        for (int node = LEAVES-1; node > 0; node--)
-            count_tree[node] = count_tree[2*node] + count_tree[2*node+1];
-        for (int lane = 0; lane < MACHINE_WIDTH; lane++) begin
-            for (int preg = int'(HAS_ZERO_REG); preg < NUM_PHYS_REGS; preg++) begin
-                tree[lane][LEAVES+preg].valid = free_bitmap_q[preg];
-                tree[lane][LEAVES+preg].index = PREG_IDX_WIDTH'(preg);
-                for (int prior = 0; prior < lane; prior++)
-                    if (winner[prior].valid && winner[prior].index == PREG_IDX_WIDTH'(preg))
-                        tree[lane][LEAVES+preg].valid = 0;
-            end
-            for (int node = LEAVES-1; node > 0; node--)
-                tree[lane][node] = tree[lane][2*node].valid ? tree[lane][2*node] : tree[lane][2*node+1];
-            winner[lane] = tree[lane][1];
-            winner[lane].valid &= alloc_req_i[lane];
-            if (winner[lane].valid) alloc_preg_o[lane] = winner[lane].index;
-            request_count += RANK_WIDTH'(alloc_req_i[lane]);
+        winner='{default:'0};
+        request_count='0;
+        alloc_preg_o='{default:'0};
+        for(int lane=0;lane<MACHINE_WIDTH;lane++) begin
+            for(int rank=0;rank<MACHINE_WIDTH;rank++)
+                if(alloc_req_i[lane] && request_count==RANK_WIDTH'(rank))
+                    winner[lane]=candidate_q[rank];
+            if(winner[lane].valid) alloc_preg_o[lane]=winner[lane].index;
+            request_count+=RANK_WIDTH'(alloc_req_i[lane]);
         end
-        for (int preg = 0; preg < NUM_PHYS_REGS; preg++) begin
+        for(int preg=0;preg<NUM_PHYS_REGS;preg++) begin
             logic taken;
-            taken = 0;
-            for (int lane = 0; lane < MACHINE_WIDTH; lane++)
-                taken |= winner[lane].valid && winner[lane].index == PREG_IDX_WIDTH'(preg);
-            candidate_bitmap_after_alloc[preg] = free_bitmap_q[preg] && !taken;
+            taken=0;
+            // Every sparse lane mask consumes the first N sorted identities.
+            // Decode the registered identities in parallel with request counting,
+            // instead of decoding request-routed destinations afterwards.
+            for(int rank=0;rank<MACHINE_WIDTH;rank++)
+                taken |= candidate_q[rank].valid && candidate_q[rank].index==PREG_IDX_WIDTH'(preg)
+                    && request_count>RANK_WIDTH'(rank);
+            candidate_bitmap_after_alloc[preg]=free_bitmap_q[preg] && !taken;
         end
-        alloc_available_o = count_tree[1] >= COUNT_WIDTH'(request_count);
-        free_count_o = count_tree[1];
+        alloc_available_o=free_count_o>=COUNT_WIDTH'(request_count);
+    end
+
+    // Capacity depends only on registered ownership state. Keep its process
+    // independent of request encoding so tools cannot infer a spurious
+    // request -> capacity -> rename-admission -> request combinational loop.
+    always_comb begin
+        free_count_o='0;
+        for(int group=0;group<COUNT_GROUPS;group++)
+            free_count_o+=COUNT_WIDTH'(group_count_q[group]);
     end
 
     // Shared one-hot destination decode. Checkpoint rows reuse these wires
@@ -147,7 +158,20 @@ module free_list
             for (int preg = NUM_ARCH_REGS; preg < NUM_PHYS_REGS; preg++) begin
                 free_bitmap_q[preg] <= 1'b1;
             end
+            for(int rank=0;rank<MACHINE_WIDTH;rank++) begin
+                candidate_q[rank].valid <= NUM_ARCH_REGS+rank<NUM_PHYS_REGS;
+                candidate_q[rank].index <= NUM_ARCH_REGS+rank<NUM_PHYS_REGS ?
+                    PREG_IDX_WIDTH'(NUM_ARCH_REGS+rank):'0;
+            end
             committed_free_q <= {NUM_PHYS_REGS{1'b1}} << NUM_ARCH_REGS;
+            for(int group=0;group<COUNT_GROUPS;group++) begin
+                logic [COUNT_GROUP_W-1:0] count;
+                count='0;
+                for(int bit_idx=0;bit_idx<COUNT_GROUP_SIZE;bit_idx++)
+                    count+=COUNT_GROUP_W'(group*COUNT_GROUP_SIZE+bit_idx>=NUM_ARCH_REGS &&
+                        group*COUNT_GROUP_SIZE+bit_idx<NUM_PHYS_REGS);
+                group_count_q[group]<=count;
+            end
         end else begin
             logic [NUM_PHYS_REGS-1:0] free_next;
 
@@ -165,7 +189,9 @@ module free_list
                 for (int lane=0;lane<RELEASE_WIDTH;lane++)
                     released_bitmap[preg] |= release_valid_i[lane]
                         && (!HAS_ZERO_REG || release_preg_i[lane]!='0)
-                        && (release_preg_i[lane]<PREG_IDX_WIDTH'(NUM_PHYS_REGS))
+                        // The exclusive upper bound needs one more bit than
+                        // an address at power-of-two depths (64 must not become 0).
+                        && (int'(release_preg_i[lane])<NUM_PHYS_REGS)
                         && release_preg_i[lane]==PREG_IDX_WIDTH'(preg);
             if (HAS_ZERO_REG) committed_next[0]=0;
             committed_free_q<=committed_next;
@@ -178,8 +204,78 @@ module free_list
 
             if (flush_all_i) free_next=committed_next;
             free_bitmap_q <= free_next;
+            // Prepare the next candidate view from the exact next bitmap,
+            // including same-edge release, branch recovery and committed flush.
+            // Current allocators cannot borrow any of these returns before this
+            // edge. No extra public allocation cycle, capacity or FSM is added.
+            begin
+                logic [COUNT_WIDTH-1:0] count_tree[2*LEAVES];
+                candidate_t tree[2*LEAVES][MACHINE_WIDTH];
+                count_tree='{default:'0};
+                tree='{default:'{default:'0}};
+                for(int preg=int'(HAS_ZERO_REG);preg<NUM_PHYS_REGS;preg++) begin
+                    count_tree[LEAVES+preg]=COUNT_WIDTH'(free_next[preg]);
+                    tree[LEAVES+preg][0].valid=free_next[preg];
+                    tree[LEAVES+preg][0].index=PREG_IDX_WIDTH'(preg);
+                end
+                for(int node=LEAVES-1;node>0;node--) begin
+                    count_tree[node]=count_tree[2*node]+count_tree[2*node+1];
+                    for(int rank=0;rank<MACHINE_WIDTH;rank++) begin
+                        if(int'(count_tree[2*node])>rank)
+                            tree[node][rank]=tree[2*node][rank];
+                        else for(int right=0;right<=rank;right++)
+                            if(int'(count_tree[2*node])==rank-right)
+                                tree[node][rank]=tree[2*node+1][right];
+                    end
+                end
+                for(int rank=0;rank<MACHINE_WIDTH;rank++)
+                    candidate_q[rank]<=tree[1][rank];
+            end
+
+            for(int group=0;group<COUNT_GROUPS;group++) begin
+                logic [COUNT_GROUP_W-1:0] tree[2*COUNT_GROUP_SIZE];
+                tree='{default:'0};
+                for(int bit_idx=0;bit_idx<COUNT_GROUP_SIZE;bit_idx++)
+                    if(group*COUNT_GROUP_SIZE+bit_idx<NUM_PHYS_REGS &&
+                        (!HAS_ZERO_REG || group*COUNT_GROUP_SIZE+bit_idx!=0))
+                        tree[COUNT_GROUP_SIZE+bit_idx]=COUNT_GROUP_W'(free_next[group*COUNT_GROUP_SIZE+bit_idx]);
+                for(int node=COUNT_GROUP_SIZE-1;node>0;node--)
+                    tree[node]=tree[2*node]+tree[2*node+1];
+                group_count_q[group]<=tree[1];
+            end
         end
     end
+
+`ifndef SYNTHESIS
+    always_ff @(posedge clk) if(!rst) begin
+        for(int group=0;group<COUNT_GROUPS;group++) begin
+            int expected;
+            expected=0;
+            for(int bit_idx=0;bit_idx<COUNT_GROUP_SIZE;bit_idx++)
+                if(group*COUNT_GROUP_SIZE+bit_idx<NUM_PHYS_REGS &&
+                    (!HAS_ZERO_REG || group*COUNT_GROUP_SIZE+bit_idx!=0))
+                    expected+=int'(free_bitmap_q[group*COUNT_GROUP_SIZE+bit_idx]);
+            assert(int'(group_count_q[group])==expected)
+                else $fatal(1,"free-list capacity differs from its ownership bitmap");
+        end
+    end
+`endif
+
+`ifndef SYNTHESIS
+    always_ff @(posedge clk) if(!rst) begin
+        int rank;
+        rank=0;
+        for(int preg=int'(HAS_ZERO_REG);preg<NUM_PHYS_REGS;preg++)
+            if(free_bitmap_q[preg] && rank<MACHINE_WIDTH) begin
+                assert(candidate_q[rank].valid && candidate_q[rank].index==PREG_IDX_WIDTH'(preg))
+                    else $fatal(1,"free-list cached candidate differs from ownership bitmap");
+                rank++;
+            end
+        for(int empty=0;empty<MACHINE_WIDTH;empty++)
+            if(empty>=rank) assert(!candidate_q[empty].valid)
+                else $fatal(1,"free-list cached candidate exceeds ownership bitmap");
+    end
+`endif
 
     initial begin
         if (NUM_PHYS_REGS <= NUM_ARCH_REGS) begin

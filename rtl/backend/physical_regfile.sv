@@ -1,6 +1,6 @@
 /**
  * Domain-parametric multiport physical register file (B15).
- * INT p0 reads zero and ignores writes. FP p0 is writable. FP uses CFG 8R/2W;
+ * INT p0 reads zero and ignores writes. FP p0 is writable. Read/write port counts come from CFG;
  * every granted write participates in the existing same-cycle write/read bypass.
  * Generic implementation resets data to zero; FPGA bank/latest-tag variants are retained.
  * 当前实现状态：闭环简化（L9）；lint/测试未运行，no PPA/FPGA inference claim.
@@ -73,7 +73,22 @@ module physical_regfile
     logic [DATA_WIDTH-1:0] ram_banks [NUM_WRITE_PORTS][NUM_ENTRIES];
 
     generate
-        if (USE_NO_BANK_FLAT_CFG) begin : gen_impl_no_bank_flat
+        if (NUM_WRITE_PORTS==1) begin : gen_single_write
+            // A single writer needs no latest-tag bank dimension. Each generated
+            // read replica is a one-dimensional, single-write distributed RAM.
+            // No data reset: matches the existing FPGA storage contract.
+            for(genvar rp=0;rp<NUM_READ_PORTS;rp++) begin : g_read_replica
+                (* ram_style="distributed" *) logic [DATA_WIDTH-1:0] mem [NUM_ENTRIES];
+                always_ff @(posedge clk) if(!rst && wr_en_i[0] && !is_zero_preg(wr_addr_i[0]))
+                    mem[wr_addr_i[0]]<=wr_data_i[0];
+                always_comb begin
+                    if(is_zero_preg(rd_addr_i[rp])) rd_data_o[rp]='0;
+                    else if(wr_en_i[0] && !is_zero_preg(wr_addr_i[0]) && wr_addr_i[0]==rd_addr_i[rp])
+                        rd_data_o[rp]=wr_data_i[0];
+                    else rd_data_o[rp]=mem[rd_addr_i[rp]];
+                end
+            end
+        end else if (USE_NO_BANK_FLAT_CFG) begin : gen_impl_no_bank_flat
             logic [DATA_WIDTH-1:0] mem_flat [NUM_ENTRIES];
 
             always_ff @(posedge clk) begin
@@ -179,76 +194,40 @@ module physical_regfile
                 end
             end
         end else begin : gen_impl_latest_tag
-            // --------------------------------------------------------------------
-            // 方案B：bank + latest-tag
-            // --------------------------------------------------------------------
             logic [BANK_SEL_WIDTH-1:0] latest_bank [NUM_ENTRIES];
-
-            always_ff @(posedge clk) begin
-                if (rst) begin
-                    for (int e = 0; e < NUM_ENTRIES; e++) begin
-                        latest_bank[e] <= '0;
-                    end
-                end else begin
-                    // 每个写端口仅写本bank，并更新latest tag
-                    // 同地址多写时，端口号大的写端口最终生效
-                    for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
-                        if (wr_en_i[i] && !is_zero_preg(wr_addr_i[i])) begin
-                            ram_banks[i][wr_addr_i[i]] <= wr_data_i[i];
-                            latest_bank[wr_addr_i[i]] <= BANK_SEL_WIDTH'(i);
-                        end
-                    end
+            logic [DATA_WIDTH-1:0] bank_read [NUM_READ_PORTS][NUM_WRITE_PORTS];
+            // Each bank/replica is structurally a single-writer one-dimensional
+            // RAM, including a non-power-of-two number of writers. No data reset.
+            for(genvar wb=0;wb<NUM_WRITE_PORTS;wb++) begin : g_bank
+                for(genvar rp=0;rp<NUM_READ_PORTS;rp++) begin : g_replica
+                    (* ram_style="distributed" *) logic [DATA_WIDTH-1:0] mem[NUM_ENTRIES];
+                    always_ff @(posedge clk)
+                        if(!rst && wr_en_i[wb] && !is_zero_preg(wr_addr_i[wb]))
+                            mem[wr_addr_i[wb]]<=wr_data_i[wb];
+                    assign bank_read[rp][wb]=mem[rd_addr_i[rp]];
                 end
             end
-
-            genvar rp;
-            for (rp = 0; rp < NUM_READ_PORTS; rp++) begin : gen_read_ports_latest
-                logic [DATA_WIDTH-1:0] bank_data [NUM_WRITE_PORTS];
-                logic [NUM_WRITE_PORTS-1:0] bypass_match;
-                logic [DATA_WIDTH-1:0]      bypass_data;
-                logic                       bypass_valid;
-                logic [BANK_SEL_WIDTH-1:0]  selected_bank;
-                logic [DATA_WIDTH-1:0]      selected_bank_data;
-
-                genvar bp;
-                for (bp = 0; bp < NUM_WRITE_PORTS; bp++) begin : gen_bank_read
-                    assign bank_data[bp] = ram_banks[bp][rd_addr_i[rp]];
+            for(genvar row=0;row<NUM_ENTRIES;row++) begin : g_latest
+                always_ff @(posedge clk) begin
+                    if(rst) latest_bank[row]<='0;
+                    else for(int wb=0;wb<NUM_WRITE_PORTS;wb++)
+                        if(wr_en_i[wb] && !is_zero_preg(wr_addr_i[wb]) && wr_addr_i[wb]==ADDR_WIDTH'(row))
+                            latest_bank[row]<=BANK_SEL_WIDTH'(wb);
                 end
-
-                assign selected_bank = latest_bank[rd_addr_i[rp]];
-
+            end
+            for(genvar rp=0;rp<NUM_READ_PORTS;rp++) begin : g_read
+                logic bypass_valid;
+                logic [DATA_WIDTH-1:0] stored,bypass_data;
                 always_comb begin
-                    selected_bank_data = '0;
-                    for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
-                        if (selected_bank == BANK_SEL_WIDTH'(i)) begin
-                            selected_bank_data = bank_data[i];
+                    stored='0;bypass_data='0;bypass_valid=0;
+                    for(int wb=0;wb<NUM_WRITE_PORTS;wb++) begin
+                        stored|=bank_read[rp][wb] &
+                            {DATA_WIDTH{latest_bank[rd_addr_i[rp]]==BANK_SEL_WIDTH'(wb)}};
+                        if(wr_en_i[wb] && !is_zero_preg(wr_addr_i[wb]) && wr_addr_i[wb]==rd_addr_i[rp]) begin
+                            bypass_valid=1;bypass_data=wr_data_i[wb];
                         end
                     end
-                end
-
-                for (bp = 0; bp < NUM_WRITE_PORTS; bp++) begin : gen_bypass_check
-                    assign bypass_match[bp] = wr_en_i[bp] && !is_zero_preg(wr_addr_i[bp]) && (wr_addr_i[bp] == rd_addr_i[rp]);
-                end
-
-                always_comb begin
-                    bypass_valid = 1'b0;
-                    bypass_data  = '0;
-                    for (int i = NUM_WRITE_PORTS-1; i >= 0; i--) begin
-                        if (!bypass_valid && bypass_match[i]) begin
-                            bypass_valid = 1'b1;
-                            bypass_data  = wr_data_i[i];
-                        end
-                    end
-                end
-
-                always_comb begin
-                    if (is_zero_preg(rd_addr_i[rp])) begin
-                        rd_data_o[rp] = '0;
-                    end else if (bypass_valid) begin
-                        rd_data_o[rp] = bypass_data;
-                    end else begin
-                        rd_data_o[rp] = selected_bank_data;
-                    end
+                    rd_data_o[rp]=is_zero_preg(rd_addr_i[rp]) ? '0 : bypass_valid ? bypass_data:stored;
                 end
             end
         end

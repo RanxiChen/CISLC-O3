@@ -106,6 +106,8 @@ rtl/common/o3_sram_1r1w.sv
 rtl/backend/uop_queue.sv
 rtl/backend/free_list.sv
 rtl/backend/rename_map_table.sv
+rtl/backend/rename_dep_r1.sv
+rtl/backend/rename_stage_buffer.sv
 rtl/backend/branch_checkpoint_file.sv
 rtl/backend/preg_ready_table.sv
 rtl/backend/rename_stage.sv
@@ -115,10 +117,16 @@ rtl/backend/rename_dispatch_queue.sv
 rtl/backend/decoder.sv
 rtl/backend/dispatch_stage.sv
 rtl/backend/backend_issue_queue.sv
+rtl/backend/fu_issue_buffer.sv
+rtl/backend/mdu_regread.sv
+rtl/backend/fp_regread.sv
+rtl/backend/mem_regread.sv
 
 // ---------- 6. 后端：物理寄存器堆与读写仲裁 ----------
 rtl/backend/physical_regfile.sv
 rtl/backend/prf_read_arbiter.sv
+rtl/backend/operand_read_pipeline.sv
+rtl/backend/writeback_transport.sv
 rtl/backend/writeback_arbiter.sv
 rtl/backend/fp_writeback_arbiter.sv
 
@@ -162,6 +170,8 @@ rtl/backend/rename_entry_gate.sv
 rtl/system/hpm_counters.sv
 rtl/system/csr_file.sv
 rtl/system/trap_ctrl.sv
+rtl/system/recovery_boundary.sv
+rtl/system/sfence_boundary.sv
 rtl/system/wfi_ctrl.sv
 rtl/system/commit_ctrl.sv
 rtl/backend/backend.sv

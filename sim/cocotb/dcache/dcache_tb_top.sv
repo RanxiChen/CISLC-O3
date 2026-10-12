@@ -1,5 +1,6 @@
 module dcache_tb_top import o3_types_pkg::*; #(
     parameter int SETS=64,WAYS=8,MSHRS=4,WBS=2,
+    parameter int RESERVATION=o3_cfg_pkg::O3_CFG.be.lsu.cache_s0_delay,
     parameter bit RFO=1
 )(input logic clk,rst,
     input logic context_valid_i=1'b0,input logic [1:0] test_priv_i=2'd3,
@@ -9,7 +10,7 @@ module dcache_tb_top import o3_types_pkg::*; #(
     output dcache_resp_t resp0,resp1,
     input rob_idx_t rob_head_i,
     input logic flush_i,resolution_valid_i,resolution_mispredict_i,input br_tag_t resolution_tag_i,
-    // Reservations for LSU's IS stage; the CPU S0 request arrives two cycles later.
+    // Reservations for LSU's IS stage; the CPU S0 request arrives RESERVATION cycles later.
     output logic full_line_busy_o,output logic internal_busy_o,
     input logic st_req_valid_i,output logic st_req_ready_o,input dcache_req_t st_req_i,output dcache_resp_t st_resp_o,
     input logic ptw_req_valid_i,output logic ptw_req_ready_o,input dcache_req_t ptw_req_i,output dcache_resp_t ptw_resp_o,
@@ -21,7 +22,7 @@ module dcache_tb_top import o3_types_pkg::*; #(
     output logic rsp_up_valid_o,input logic rsp_up_ready_i,output coh_rsp_up_t rsp_up_o,
     input logic snp_valid_i,output logic snp_ready_o,input coh_snp_t snp_i,
     output logic idle_o,output fatal_evt_t fatal_o,output be_perf_t perf_o,
-    output logic init_done,
+    output logic init_done,output logic [7:0] reservation_cycles_o,
     output logic mon_ps_valid,mon_ps_write,mon_probe_hold,mon_probe_read,mon_ps_alloc,
     output logic mon_rsv_valid,mon_rsv_window,mon_atomic_hold,
     output logic dma_invalidate_o,output coh_addr_t dma_line_o,output logic irreversible_o,
@@ -38,7 +39,7 @@ module dcache_tb_top import o3_types_pkg::*; #(
     function automatic o3_cfg_pkg::backend_cfg_t test_config();
         o3_cfg_pkg::backend_cfg_t c;c=o3_cfg_pkg::O3_CFG.be;
         c.dcache.sets=SETS;c.dcache.ways=WAYS;c.dcache.mshrs=MSHRS;
-        c.dcache.wb_buffers=WBS;c.dcache.rfo_enable=RFO;return c;
+        c.lsu.cache_s0_delay=RESERVATION;c.dcache.wb_buffers=WBS;c.dcache.rfo_enable=RFO;return c;
     endfunction
     localparam o3_cfg_pkg::backend_cfg_t CFG=test_config();
     logic ld_req_valid_i[2],ld_req_ready_o[2];
@@ -58,6 +59,7 @@ module dcache_tb_top import o3_types_pkg::*; #(
     assign resp0=ld_resp_o[0];assign resp1=ld_resp_o[1];
     dcache #(.CFG(CFG)) dut(.pmp_i(pmp_test),.*);
     assign init_done=dut.init_done_q;
+    assign reservation_cycles_o=8'(CFG.lsu.cache_s0_delay);
     assign mon_ps_valid=dut.ps_valid_q;assign mon_ps_write=dut.ps_write;
     assign mon_ps_alloc=dut.ps_lane>=0;
     assign mon_probe_hold=dut.probe_hold;assign mon_probe_read=dut.probe_read;

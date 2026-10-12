@@ -71,8 +71,8 @@ class Bench:
         for retry in range(16):
             await self.step()
             if int(self.d.train_free_o.value)==4:
-                # T0/T1/T2 update still in flight after queue becomes empty.
-                for _ in range(3): await self.step()
+                # Training row capture/update/write may remain after the queue becomes empty.
+                for _ in range(4): await self.step()
                 return
         raise AssertionError('training queue failed to drain')
 

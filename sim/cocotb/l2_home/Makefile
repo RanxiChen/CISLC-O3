@@ -11,7 +11,7 @@ VERILOG_SOURCES := $(REPO_ROOT)/rtl/common/o3_isa_pkg.sv $(REPO_ROOT)/rtl/common
 SIM_BUILD ?= $(CURDIR)/sim_build/s$(SETS)-w$(WAYS)-n$(SLOTS)
 COCOTB_RESULTS_FILE ?= $(CURDIR)/results.xml
 COMPILE_ARGS += --timing --assert -Wno-fatal -GSETS=$(SETS) -GWAYS=$(WAYS) -GSLOTS=$(SLOTS)
-DIRECTED := gets_miss_and_none_hit,getm_miss_and_none_hit,shared_upgrade_acke,clean_put,dirty_put,read_miss_and_hit,read_unique_down_latest,replacement_unique_inv_dirty_axi,same_set_serialization,axi_read_error_not_installed
+DIRECTED := gets_miss_and_none_hit,getm_miss_and_none_hit,shared_upgrade_acke,clean_put,dirty_put,read_miss_and_hit,read_unique_down_latest,replacement_unique_inv_dirty_axi,same_set_serialization,axi_read_error_not_installed,client_payload_fifo_reuse_with_response_backpressure
 ifeq ($(SETS)-$(WAYS)-$(SLOTS),2-2-2)
 COCOTB_TESTCASE ?= $(DIRECTED),random_seed_51,random_seed_52
 else

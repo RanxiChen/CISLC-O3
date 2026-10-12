@@ -1,0 +1,3 @@
+Deferred 700-cycle seed model for complete immutable uop payloads across multiwriter bank reuse, independent issue ready, reset and branch cancellation/resolution. Default INT ALU source-independent instructions isolate storage/ownership; existing FU/domain/wakeup tests remain separate and unchanged. No functional run in synthesis-only refactor.
+
+Additional deferred 900-cycle oldest-available model covers mixed ALU/MUL/fused-MUL/DIV candidates, changing per-FU availability, independent partial output acceptance, full opaque payload, branch resolve/kill and reset. Its reference walks age order with FU budgets, independent of the hardware candidate-gather/rank structure.

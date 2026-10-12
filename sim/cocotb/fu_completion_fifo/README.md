@@ -1,6 +1,10 @@
-# L6 fu_completion_fifo 定向验证
+既有depth2定向用例保持不变，新增900周期seed105端口scoreboard检查固定payload槽碎片化、双结果、背压、kill/correct、pipeline释放、reset及提前通知。
 
-Alan：`make -C sim/cocotb/fu_completion_fifo`。
+重构完成后执行：
 
-只测试接口、身份、取消、握手和少量典型/边界运算。不运行随机算术或新增 Spike 随机门禁。
-测试中 wake 必须指向下一拍可见的 FIFO 头；背压期间的结果持续可见。
+```sh
+make SIM=verilator FIFO_DEPTH=2
+make SIM=verilator FIFO_DEPTH=8 COCOTB_TEST_FILTER=stationary_payload_credit_conservation
+```
+
+目前仅编写，未执行功能仿真。执行前按共享主机配置重新预检。

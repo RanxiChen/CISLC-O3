@@ -31,6 +31,7 @@ class Bench:
         self.dut = dut
         self.seed = seed
         self.cycle = 0
+        self.pending_train = Train()
         self.model = UbtbModel(
             vaddr_bits=len(dut.lookup_pc_i),
             region_bytes=value(dut.cfg_region_bytes_o),
@@ -101,7 +102,10 @@ class Bench:
         # training updates the table. Then the same still-driven query sees new.
         await Timer(1, unit="ns")
         self.dut.clk_i.value = 1
-        self.model.tick(inputs)
+        # Keep the independent old state-transition oracle. Only its application
+        # time is shifted by the newly authorized T0/T1 training boundary.
+        self.model.tick(Inputs(rst=inputs.rst,train=self.pending_train))
+        self.pending_train=Train() if inputs.rst else inputs.train
         await Timer(1, unit="ns")
         await ReadOnly()
         after = self.observe()
@@ -184,13 +188,13 @@ async def directed_contract(dut):
     assert out.pred.ras_action == RAS_POP and out.pred.next_pc == 0xB000
 
     # Unlike the registered main BTB, a combinational query changes at the
-    # training edge: before = old target, after = new target.
+    # T0 selection edge leaves the target intact; T1 writes on the next edge.
     before, after = await b.step(Inputs(query_valid=True, query_pc=a,
                                         train=Train(valid=True, pc=a,
                                                     cfi_valid=True, cfi_slot=6,
                                                     cfi_type=CFI_JALR,
                                                     target=0xC000)))
-    assert before.pred.next_pc == 0xB000 and after.pred.next_pc == 0xC000
+    assert before.pred.next_pc == 0xB000 and after.pred.next_pc == 0xB000
     _, out = await b.step(Inputs(query_valid=True, query_pc=a, stall=True,
                                  train=Train(valid=True, pc=a, cfi_valid=True,
                                              cfi_slot=6, cfi_type=CFI_JALR,
@@ -265,6 +269,8 @@ async def seeded_transactions(dut):
             train=train,
         ))
 
+    await b.step(Inputs()) # Apply and check the final pending training packet.
+
 
 @cocotb.test()
 async def not_taken_new_regions_do_not_evict(dut):
@@ -290,3 +296,28 @@ async def not_taken_new_regions_do_not_evict(dut):
     for pc in bases[1:]:
         _, out = await b.step(Inputs(query_valid=True, query_pc=pc))
         assert out.hit
+
+
+@cocotb.test()
+async def continuous_training_adjacent_owners_replacement_and_alias(dut):
+    seed=int(os.environ.get("TEST_SEED","1"),0)+105
+    b=await new_bench(dut,seed)
+    rng=random.Random(seed);region=b.model.region_bytes
+    bases=[0x10000+n*region for n in range(2*b.model.entries)]
+    for cycle in range(1000):
+        # Long same-owner runs exercise confidence/target RAW forwarding. Full
+        # replacement waves exercise pending valid/tag/RR plans without bubbles.
+        pc=bases[(cycle//16) % len(bases)] if cycle%100<64 else bases[cycle%len(bases)]
+        query_pc=pc
+        if cycle%9==0: query_pc^=(1<<b.model.shift)^(1<<(b.model.shift+b.model.tag_bits))
+        taken=cycle%5!=0;kind=CFI_BR if cycle%100<64 else rng.choice((CFI_BR,CFI_JAL,CFI_JALR))
+        slot=(cycle//16)%b.model.slots
+        train=Train(valid=True,pc=pc,br_commit_mask=1<<slot,cfi_valid=taken,
+                    cfi_slot=slot,cfi_type=kind,target=0x80000000+cycle*16,ras_action=cycle%3)
+        before,after=await b.step(Inputs(query_valid=True,query_pc=query_pc,
+                                       stall=cycle%17==0,train=train))
+        assert before.ready and after.ready,(cycle,"training II1 admission")
+    await b.step(Inputs(query_valid=True,query_pc=pc))
+    await b.step(Inputs(rst=True,query_valid=True,query_pc=pc))
+    _,out=await b.step(Inputs(query_valid=True,query_pc=pc))
+    assert not out.hit

@@ -88,6 +88,8 @@ module csr_file
     logic [4:0] fflags_q;
     pmp_entry_t [PMP_N-1:0] pmp_q,pmp_next;
     pmp_dec_t [PMP_N-1:0] pmp_dec_q;
+    logic [53:0] selected_pmp_old,selected_pmp_new;
+    logic selected_pmp_address;
     xlate_epoch_t epoch_q;
     logic [63:0] old_value,modify_value,status_value,mip_value,rmw_value;
     logic implemented,access_illegal,hpm_implemented,overflow;
@@ -214,12 +216,22 @@ module csr_file
                 end
             end
         end
-        pmp_change=pmp_next!=pmp_q;
+        // Only the selected CSR can mutate PMP: compare its effective word.
+        // Address comparison keeps raw low bits, including architecturally
+        // hidden bits retained for future mode changes and TOR lock rules.
+        selected_pmp_old='0;selected_pmp_new='0;selected_pmp_address=0;
+        for(int n=0;n<PMP_N;n++) if(req_i.addr==12'(12'h3b0+n)) begin
+            selected_pmp_address=1;
+            selected_pmp_old=pmp_q[n].addr;selected_pmp_new=pmp_next[n].addr;
+        end
         if(req_i.addr inside {12'h3a0,12'h3a2}) begin
             write_value_o=0;
             for(int n=0;n<8;n++) write_value_o[n*8+:8]=pmp_next[n+(req_i.addr==12'h3a2 ? 8 : 0)].cfg;
         end
         for(int n=0;n<PMP_N;n++) if(req_i.addr==12'(12'h3b0+n)) write_value_o=64'(pmp_addr_read(pmp_next[n]));
+        pmp_change=csr_write &&
+            (((req_i.addr inside {12'h3a0,12'h3a2}) && write_value_o!=old_value) ||
+             (selected_pmp_address && selected_pmp_old!=selected_pmp_new));
         satp_write=csr_write && req_i.addr==12'h180 && (modify_value[63:60] inside {0,8});
         adue_change=csr_write && req_i.addr==12'h30a && write_value_o[61]!=menvcfg_q[61];
         resp_o='0;resp_o.valid=req_valid_i;resp_o.rdata=old_value;

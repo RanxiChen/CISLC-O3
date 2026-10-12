@@ -6,8 +6,9 @@
  * Checkpoints include older/self destinations, exclude younger lanes, and use the
  * same branch tag in both domains. Global flush restores committed state including
  * actual same-boundary retirement. Misprediction restores the selected snapshot.
- * 当前实现状态：闭环简化（L9）；single-cycle rename retained (B42), lint/测试未运行。
- * N: read speculative maps with older-lane bypass. N edge: update accepted mappings,
+ * backend disables INTRA_GROUP_BYPASS: R1 supplies registered dependency selectors.
+ * The default retains the standalone map-table interface and its existing tests.
+ * N: read speculative maps (optional older-lane bypass). N edge: update accepted mappings,
  * checkpoint snapshots and retired committed mappings, or apply recovery. N+1: new maps.
  */
 module rename_map_table
@@ -15,6 +16,7 @@ module rename_map_table
 #(
     parameter  o3_cfg_pkg::backend_cfg_t CFG,
     parameter  o3_types_pkg::reg_domain_e DOMAIN,     // RD_INT / RD_FP，无默认值
+    parameter bit INTRA_GROUP_BYPASS = 1'b1,
     localparam int MACHINE_WIDTH = BACKEND_MACHINE_WIDTH,
     localparam int NUM_ARCH_REGS = o3_isa_pkg::NUM_ARCH_REGS,
     localparam int NUM_PHYS_REGS = (DOMAIN == o3_types_pkg::RD_FP) ? CFG.rename.fp_phys_regs
@@ -80,7 +82,7 @@ module rename_map_table
             if (lane_valid_i[lane] && rs1_read_en_i[lane] && (!HAS_ZERO_REG || rs1_addr_i[lane] != '0)) begin
                 src1_preg_o[lane] = speculative_map_q[rs1_addr_i[lane]];
                 for (int older = 0; older < lane; older++) begin
-                    if (lane_valid_i[older] && rd_write_en_i[older]
+                    if (INTRA_GROUP_BYPASS && lane_valid_i[older] && rd_write_en_i[older]
                      && (!HAS_ZERO_REG || rd_addr_i[older] != '0) && (rd_addr_i[older] == rs1_addr_i[lane])) begin
                         src1_preg_o[lane] = new_dst_preg_i[older];
                         src1_from_older_lane_o[lane] = 1'b1;
@@ -91,7 +93,7 @@ module rename_map_table
             if (lane_valid_i[lane] && rs2_read_en_i[lane] && (!HAS_ZERO_REG || rs2_addr_i[lane] != '0)) begin
                 src2_preg_o[lane] = speculative_map_q[rs2_addr_i[lane]];
                 for (int older = 0; older < lane; older++) begin
-                    if (lane_valid_i[older] && rd_write_en_i[older]
+                    if (INTRA_GROUP_BYPASS && lane_valid_i[older] && rd_write_en_i[older]
                      && (!HAS_ZERO_REG || rd_addr_i[older] != '0) && (rd_addr_i[older] == rs2_addr_i[lane])) begin
                         src2_preg_o[lane] = new_dst_preg_i[older];
                         src2_from_older_lane_o[lane] = 1'b1;
@@ -102,7 +104,7 @@ module rename_map_table
             if (lane_valid_i[lane] && rs3_read_en_i[lane] && (!HAS_ZERO_REG || rs3_addr_i[lane] != '0)) begin
                 src3_preg_o[lane] = speculative_map_q[rs3_addr_i[lane]];
                 for (int older = 0; older < lane; older++) begin
-                    if (lane_valid_i[older] && rd_write_en_i[older]
+                    if (INTRA_GROUP_BYPASS && lane_valid_i[older] && rd_write_en_i[older]
                      && (!HAS_ZERO_REG || rd_addr_i[older] != '0) && (rd_addr_i[older] == rs3_addr_i[lane])) begin
                         src3_preg_o[lane] = new_dst_preg_i[older];
                         src3_from_older_lane_o[lane] = 1'b1;
@@ -113,7 +115,7 @@ module rename_map_table
             if (lane_valid_i[lane] && rd_write_en_i[lane] && (!HAS_ZERO_REG || rd_addr_i[lane] != '0)) begin
                 old_dst_preg_o[lane] = speculative_map_q[rd_addr_i[lane]];
                 for (int older = 0; older < lane; older++) begin
-                    if (lane_valid_i[older] && rd_write_en_i[older]
+                    if (INTRA_GROUP_BYPASS && lane_valid_i[older] && rd_write_en_i[older]
                      && (!HAS_ZERO_REG || rd_addr_i[older] != '0) && (rd_addr_i[older] == rd_addr_i[lane])) begin
                         old_dst_preg_o[lane] = new_dst_preg_i[older];
                     end

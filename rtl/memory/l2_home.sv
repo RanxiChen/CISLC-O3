@@ -55,16 +55,20 @@ module l2_home import o3_types_pkg::*; #(
     // Read-only verification view; storage lives in the per-way RAMs below.
     meta_t meta_q[SETS][WAYS];
 `endif
-    logic [WAYS-2:0] plru_q[SETS],plru_read_q,s2_plru_q;
+    (* ram_style="distributed" *) logic [WAYS-2:0] plru_q[SETS];
+    logic [WAYS-2:0] plru_read_q,s2_plru_q;
     (* ram_style="block" *) coh_data_t data_q[SETS*WAYS];coh_data_t data_read_q;
-    logic init_done_q;int init_set_q;
-    pipe_t s0,s1_q,s2_q;logic s0_valid,s1_valid_q,s2_valid_q;
+    logic init_done_q;logic [SW-1:0] init_set_q;
+    pipe_t s0,s1_control_q,s1_q,s2_q;logic s0_valid,s1_valid_q,s2_valid_q;
     logic s1_hit,s2_hit_q;int s1_way,s2_way_q,victim_way;
-    logic in_pipe_q[3],slot_wait_q[3];int req_rr_q,put_rr_q,task_rr_q;
+    logic in_pipe_q[3],slot_wait_q[3];
+    logic [1:0] req_rr_q;
+    logic [(CFG.l2.put_buffers>1 ? $clog2(CFG.l2.put_buffers):1)-1:0] put_rr_q;
+    logic [(N>1 ? $clog2(N):1)-1:0] task_rr_q;
     logic put_valid_q[CFG.l2.put_buffers],put_pipe_q[CFG.l2.put_buffers];
     coh_rsp_up_t put_q[CFG.l2.put_buffers];
     logic answer_valid_q;coh_rsp_up_t answer_q;
-    logic task_valid[N],task_grant[N],protected_set_valid[N];l2_work_t task_kind[N];logic [SW-1:0] protected_set[N];
+    logic task_valid[N],task_grant[N],protected_set_valid[N];l2_work_t task_kind;logic [L2_SLOT_W-1:0] task_select;logic [SW-1:0] protected_set[N];
     logic slot_free,slot_alloc,slot_done,slot_released; l2_work_t alloc_work;
     l2_done_e done_result;logic done_owner;
     logic probe_valid,probe_ready,probe_collected,probe_release,probe_active;
@@ -74,7 +78,13 @@ module l2_home import o3_types_pkg::*; #(
     logic wb_free,wb_push;coh_addr_t wb_addr;coh_data_t wb_data;
     coh_req_t req[3];logic req_valid[3],req_ready[3],rsp_ready[3];
     logic rsp_valid[3];coh_rsp_down_t rsp[3];
-    coh_rsp_down_t out_q[3][6];int out_head_q[3],out_tail_q[3],out_count_q[3];
+    coh_rsp_down_t out_read[3];
+    localparam int OUT_MAX=(o3_cfg_pkg::O3_CFG.be.dcache.mshrs+CFG.l2.put_buffers)>
+        o3_cfg_pkg::O3_CFG.fe.icache.mshrs ? o3_cfg_pkg::O3_CFG.be.dcache.mshrs+CFG.l2.put_buffers:
+        o3_cfg_pkg::O3_CFG.fe.icache.mshrs;
+    localparam int OUT_AW=OUT_MAX>1 ? $clog2(OUT_MAX):1,OUT_CW=$clog2(OUT_MAX+1);
+    logic [OUT_AW-1:0] out_head_q[3],out_tail_q[3];
+    logic [OUT_CW-1:0] out_count_q[3];
     logic rsp_push;coh_rsp_down_t rsp_new;int rsp_client;
     logic meta_write,data_write,plru_write;meta_t meta_new;coh_data_t data_new;
     int write_way,plru_way;logic accept_req,reject_req;
@@ -109,7 +119,7 @@ module l2_home import o3_types_pkg::*; #(
     assign dma_resp_valid_o=rsp_valid[2];assign dma_resp_o=rsp[2];
     assign rsp_up_ready_o=1;
     l2_slots #(.CFG(CFG)) u_slots(.clk(clk),.rst(rst),.alloc_i(slot_alloc),.alloc_work_i(alloc_work),
-        .free_o(slot_free),.task_valid_o(task_valid),.task_o(task_kind),.task_grant_i(task_grant),
+        .free_o(slot_free),.task_valid_o(task_valid),.task_o(task_kind),.task_select_i(task_select),.task_grant_i(task_grant),
         .done_i(slot_done),.done_slot_i(s2_q.work.slot),.done_result_i(done_result),.done_owner_i(done_owner),
         .protected_o(protected_set_valid),.protected_set_o(protected_set),.released_o(slot_released),
         .probe_valid_o(probe_valid),.probe_ready_i(probe_ready),.probe_o(probe_work),
@@ -153,6 +163,18 @@ module l2_home import o3_types_pkg::*; #(
         .m_axi_rdata(m_axi_rdata),
         .m_axi_rresp(m_axi_rresp),
         .m_axi_rlast(m_axi_rlast));
+    logic task_pick_valid;
+    // Select from narrow registered ownership/set metadata before reading one
+    // task payload. This selection is independent of the returned RAM word.
+    always_comb begin
+        task_pick_valid=0;task_select='0;
+        for(int d=0;d<N;d++) begin
+            int n;n=(task_rr_q+d)%N;
+            if(!task_pick_valid && task_valid[n] && !in_flight(protected_set[n])) begin
+                task_pick_valid=1;task_select=L2_SLOT_W'(n);
+            end
+        end
+    end
     // S0 priority classes. An in-pipe Put cannot be selected twice.
     always_comb begin
         int chosen,n,c;chosen=-1;n=0;c=0;s0='0;s0_valid=0;task_grant='{default:0};
@@ -165,11 +187,9 @@ module l2_home import o3_types_pkg::*; #(
                 s0_valid=1;s0.kind=PUT_TASK;s0.put=put_q[chosen];s0.work.req.addr=put_q[chosen].addr;
                 s0.work.client=0;s0.set_idx=SW'(put_q[chosen].addr);
             end else begin
-                for(int d=0;d<N;d++) begin n=(task_rr_q+d)%N;
-                    if(chosen<0 && task_valid[n] && !in_flight(SW'(task_kind[n].req.addr))) chosen=n;
-                end
+                if(task_pick_valid) chosen=int'(task_select);
                 if(chosen>=0) begin
-                    s0_valid=1;s0.kind=SLOT_TASK;s0.work=task_kind[chosen];s0.set_idx=SW'(task_kind[chosen].req.addr);task_grant[chosen]=1;
+                    s0_valid=1;s0.kind=SLOT_TASK;s0.work.slot=task_select;s0.set_idx=protected_set[chosen];task_grant[chosen]=1;
                 end else begin
                     for(int d=0;d<3;d++) begin c=(req_rr_q+d)%3;
                         if(chosen<0 && req_valid[c] && !in_pipe_q[c] && !slot_wait_q[c] && !protected_line(SW'(req[c].addr))) chosen=c;
@@ -178,6 +198,12 @@ module l2_home import o3_types_pkg::*; #(
                 end
             end
         end
+    end
+    // S0 captures the narrow ownership descriptor while the slots RAM and
+    // directory RAM read in parallel. Their registered outputs are both S1.
+    always_comb begin
+        s1_q=s1_control_q;
+        if(s1_control_q.kind==SLOT_TASK) s1_q.work=task_kind;
     end
     always_comb begin
         s1_hit=0;s1_way=0;
@@ -280,7 +306,7 @@ module l2_home import o3_types_pkg::*; #(
         probe_release=consume_answer;
         for(int c=0;c<3;c++) begin
             req_ready[c]=s2_valid_q && s2_q.kind==NEW_REQ && int'(s2_q.work.client)==c && accept_req;
-            rsp_valid[c]=out_count_q[c]!=0;rsp[c]=out_q[c][out_head_q[c]];
+            rsp_valid[c]=out_count_q[c]!=0;rsp[c]=out_read[c];
         end
         perf_o='0;
         perf_o[BE_DMA_LINE_TXN]=BE_PERF_INC_W'(req_ready[2]);
@@ -312,21 +338,48 @@ module l2_home import o3_types_pkg::*; #(
         for(genvar s=0;s<SETS;s++) assign meta_q[s][w]=meta_t'(mem[s]);
 `endif
     end
+    // PLRU has the same S0 synchronous read boundary as directory metadata.
+    // Initialization and S2 updates share one packed write port. No reset is
+    // applied to memory/read data; valid S1/S2 ownership gates all consumers.
+    logic plru_write_en;logic [SW-1:0] plru_write_addr;
+    logic [WAYS-2:0] plru_write_word;
+    assign plru_write_en=!rst && (!init_done_q || plru_write);
+    assign plru_write_addr=plru_write ? s2_q.set_idx:init_set_q;
+    assign plru_write_word=plru_write ? touch(s2_plru_q,plru_way):'0;
+    always_ff @(posedge clk) begin
+        if(!rst && s0_valid) plru_read_q<=plru_q[s0.set_idx];
+        if(plru_write_en) plru_q[plru_write_addr]<=plru_write_word;
+`ifndef SYNTHESIS
+        if(!rst) assert(!plru_write || init_done_q)
+            else $fatal(1,"L2 PLRU update cannot overlap reset initialization");
+`endif
+    end
+    // Each client owns a separate single-writer response payload RAM. The
+    // circular FIFO metadata is unchanged; no additional stage or arbitration.
+    for(genvar c=0;c<3;c++) begin : g_output_payload
+        localparam int DEPTH=fifo_depth(c),AW=(DEPTH>1 ? $clog2(DEPTH):1);
+        (* ram_style="distributed" *) logic [$bits(coh_rsp_down_t)-1:0] mem[DEPTH];
+        if(DEPTH==1) begin
+            assign out_read[c]=coh_rsp_down_t'(mem[0]);
+            always_ff @(posedge clk) if(!rst && rsp_push && rsp_client==c) mem[0]<=rsp_new;
+        end else begin
+            assign out_read[c]=coh_rsp_down_t'(mem[AW'(out_head_q[c])]);
+            always_ff @(posedge clk) if(!rst && rsp_push && rsp_client==c) mem[AW'(out_tail_q[c])]<=rsp_new;
+        end
+    end
     always_ff @(posedge clk) begin
         if(rst) begin
-            init_done_q<=0;init_set_q<=0;s1_valid_q<=0;s2_valid_q<=0;s1_q<='0;s2_q<='0;
-            s2_meta_q<='{default:'0};plru_read_q<=0;s2_plru_q<=0;data_read_q<=0;
+            init_done_q<=0;init_set_q<=0;s1_valid_q<=0;s2_valid_q<=0;s1_control_q<='0;s2_q<='0;
+            s2_meta_q<='{default:'0};s2_plru_q<=0;data_read_q<=0;
             s2_hit_q<=0;s2_way_q<=0;in_pipe_q<='{default:0};slot_wait_q<='{default:0};
             req_rr_q<=0;put_rr_q<=0;task_rr_q<=0;put_valid_q<='{default:0};put_pipe_q<='{default:0};put_q<='{default:'0};
             answer_valid_q<=0;answer_q<='0;out_head_q<='{default:0};out_tail_q<='{default:0};out_count_q<='{default:0};
         end else begin
             if(!init_done_q) begin
-                plru_q[init_set_q]<=0;
                 if(init_set_q==SETS-1) init_done_q<=1;else init_set_q<=init_set_q+1;
             end
-            s1_valid_q<=s0_valid;s1_q<=s0;
+            s1_valid_q<=s0_valid;s1_control_q<=s0;
             if(s0_valid) begin
-                plru_read_q<=plru_q[s0.set_idx];
                 case(s0.kind)
                     NEW_REQ:begin in_pipe_q[s0.work.client]<=1;req_rr_q<=(int'(s0.work.client)+1)%3;end
                     PUT_TASK:begin put_pipe_q[s0.put.id]<=1;put_rr_q<=(int'(s0.put.id)+1)%CFG.l2.put_buffers;end
@@ -341,7 +394,6 @@ module l2_home import o3_types_pkg::*; #(
                 assert((meta_new.state==DIR_NONE)==!meta_new.sharer);
             end
             if(data_write) data_q[int'(s2_q.set_idx)*WAYS+write_way]<=data_new;
-            if(plru_write) plru_q[s2_q.set_idx]<=touch(s2_plru_q,plru_way);
             if(s2_valid_q && s2_q.kind==NEW_REQ) begin
                 in_pipe_q[s2_q.work.client]<=0;
                 if(reject_req) slot_wait_q[s2_q.work.client]<=1;
@@ -358,7 +410,7 @@ module l2_home import o3_types_pkg::*; #(
             for(int c=0;c<3;c++) begin
                 if(rsp_valid[c] && rsp_ready[c]) out_head_q[c]<=(out_head_q[c]+1)%fifo_depth(c);
                 if(rsp_push && rsp_client==c) begin
-                    assert(out_count_q[c]<fifo_depth(c));out_q[c][out_tail_q[c]]<=rsp_new;
+                    assert(out_count_q[c]<fifo_depth(c));
                     out_tail_q[c]<=(out_tail_q[c]+1)%fifo_depth(c);
                 end
                 out_count_q[c]<=out_count_q[c]+int'(rsp_push && rsp_client==c)-int'(rsp_valid[c] && rsp_ready[c]);

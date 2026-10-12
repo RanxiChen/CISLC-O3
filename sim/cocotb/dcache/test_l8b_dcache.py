@@ -40,7 +40,7 @@ def atomic_req(addr, op, data=0, size=3, **kwargs):
 
 async def attempt(e, request):
     await e.until(lambda: not int(e.d.full_line_busy_o.value) and not int(e.d.internal_busy_o.value))
-    await e.tick(); await e.tick()
+    for _ in range(e.reservation): await e.tick()
     before = len(e.responses)
     e.cpu[request.lane] = request
     for _ in range(12):

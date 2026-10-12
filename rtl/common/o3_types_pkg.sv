@@ -1112,7 +1112,8 @@ package o3_types_pkg;
         logic [FFLAGS_W-1:0] fflags;     // 随 ROB 保存，退休时按序并入（B15）
     } fpu_resp_t;
 
-    // 统一写回候选：各结果槽保持到获得目的域写口为止。
+    // 统一写回候选：各结果槽保持到写回仲裁/transport接受所有权；
+    // 下一W1级获得实际目的域写口时，才同时更新PRF ready与ROB complete。
     typedef struct packed {
         logic                valid;
         fu_tag_t             tag;
@@ -1123,12 +1124,13 @@ package o3_types_pkg;
     // ------------------------------------------------------------
     // 提前唤醒与 FU 完成 FIFO（B33）
     // ------------------------------------------------------------
-    // 唤醒承诺：对结果交付时间已确定的流水 FU，在结果可被 bypass 前一拍广播目的 preg，
-    // 让依赖者被提前安排。承诺一经发出不得因写回仲裁推迟而失效：
+    // 2026-10-11：通知用于提前调度到 FU/MEM 的读前 buffer，不直接授权读数据。
+    // FU 在确定下一拍进入结果保持槽/FIFO 时广播目的 preg（包括 FIFO 尾项）。
+    // buffer 必须逐源重查 PRF ready 或有效 bypass，满足后才参与读口仲裁。
     // - 不可停顿流水 FU 在接受请求时必须已为该结果在完成 FIFO 中预留一项；
     // - 结果若未赢得写口，留在 FIFO 头，作为 bypass 源继续对已安排的消费者可见；
-    // - FIFO 中尚不可交付（非头部、或尚未到达）的条目不能发出唤醒。
-    // memory 不强求提前唤醒；迭代除法只有在结束时间已确定时才可发出。
+    // - 尾项可以通知调度，但只允许实际可交付的完成头参与 bypass。
+    // load 只在成功结果将入 FIFO 时通知；迭代除法只在 done/fast 已确定时通知。
     typedef struct packed {
         logic        valid;
         reg_domain_e dom;
@@ -1137,7 +1139,8 @@ package o3_types_pkg;
     } wake_promise_t;
 
     // 完成 FIFO 头的 bypass 源：头部已选结果可直接交付消费者，不要求先写 PRF（B33）。
-    // valid 期间数据稳定；赢得写口的同一拍完成 PRF 写入，下一拍消费者改由 PRF 读取——
+    // valid期间数据稳定；FU头移交W0/W1 transport后，其真实头数据继续前递；
+    // W1赢得实际写口的同一拍完成PRF写入，下一拍消费者改由PRF读取——
     // 由 PRF 写入与 bypass 退出的交接保证没有可见性空洞（具体交接拍数待 PRF 读写时序确定）。
     typedef struct packed {
         logic             valid;
@@ -1230,6 +1233,16 @@ package o3_types_pkg;
         logic [DC_WAY_W-1:0] way; logic wb_wait; coh_id_t wb_id;
         coh_data_t refill; logic err,grant_e,ack_e;
     } dc_line_txn_t;
+    // Array observers carry line ownership, not cache-line payload. Wide data
+    // is available only from the selected INSTALL / Put read port.
+    typedef struct packed {
+        coh_addr_t line_addr; logic is_getm, upgrade, atomic;
+        logic [DC_WAY_W-1:0] way; logic wb_wait; coh_id_t wb_id;
+        logic err,grant_e,ack_e;
+    } dc_line_meta_t;
+    typedef struct packed {
+        coh_addr_t line_addr; logic has_data; logic [DC_WAY_W-1:0] way;
+    } dc_wb_meta_t;
     typedef enum logic [2:0] {DM_IDLE,DM_WB_READ,DM_SEND,DM_WAIT,DM_INSTALL} dc_mshr_state_e;
     typedef struct packed {
         coh_addr_t line_addr; logic has_data; logic [DC_WAY_W-1:0] way;

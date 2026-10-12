@@ -9,6 +9,13 @@ module rob_tb_top import o3_pkg::*; #(
                                  ? o3_types_pkg::INT_PREGS : o3_types_pkg::FP_PREGS,
     localparam int RETIRE_WIDTH = o3_cfg_pkg::O3_CFG.core.commit_width
 ) (
+    input logic meta_mode_i,commit_block_i,succ_valid_i,
+    input o3_types_pkg::vaddr_t meta_alloc_pc_i[MACHINE_WIDTH],succ_pc_i,
+    input logic [2:0] meta_alloc_len_i[MACHINE_WIDTH],
+    output o3_types_pkg::vaddr_t meta_pc_o[RETIRE_WIDTH],meta_succ_o[RETIRE_WIDTH],
+    output o3_types_pkg::exc_info_t meta_exc_o[RETIRE_WIDTH],
+    output logic [$bits(o3_types_pkg::exc_info_t)-1:0] fmt_exc_info_t_valid,fmt_exc_info_t_cause,fmt_exc_info_t_tval,
+    output logic [31:0] cfg_ftq_o,cfg_ftq_gens_o,
     input logic d_mark_i,d_clear_i,
     input o3_types_pkg::rob_idx_t d_idx_i,
     input  logic clk,
@@ -75,17 +82,25 @@ module rob_tb_top import o3_pkg::*; #(
     // 队头信息：串行化指令（CSR/FENCE/FENCE.I/SFENCE/AMO/MMIO/xRET/ECALL）在队头执行
     output logic                       t_head_valid_o,
     output o3_types_pkg::rob_commit_t  t_head_o,
+    output logic t_head_csr_o, t_head_sfence_o,
     input  logic                       t_head_serial_done_i,   // 队头串行操作已完成，可退休
     // 每条提交指令的完整信息，送 commit_ctrl
     output o3_types_pkg::rob_commit_t  t_commit_o         [RETIRE_WIDTH-1:0],
     // 提交端整体清空（异常/xRET/系统重定向）：使用 committed map 恢复（未设计）
     input  logic                       t_flush_all_i
 ,
+output logic [$bits(o3_types_pkg::uop_ext_t)-1:0] fmt_uop_ext_t_csr_op, fmt_uop_ext_t_sys_op,
 output logic [$bits(o3_types_pkg::ftq_id_t)-1:0] fmt_ftq_id_t_idx,
 output logic [$bits(o3_types_pkg::ftq_id_t)-1:0] fmt_ftq_id_t_gen,
 output logic [31:0] cfg_width_o, cfg_depth_o, cfg_rob_o, cfg_pregs_o, cfg_read_ports_o, cfg_tags_o,
 output branch_mask_t mask_obs_o [NUM_ROB_ENTRIES-1:0]
 );
+o3_types_pkg::vaddr_t dut_alloc_pc [MACHINE_WIDTH-1:0];
+logic [2:0] dut_alloc_len [MACHINE_WIDTH-1:0];
+for (genvar lane=0; lane<MACHINE_WIDTH; lane++) begin : g_meta_input
+    assign dut_alloc_pc[lane] = meta_mode_i ? meta_alloc_pc_i[lane] : '0;
+    assign dut_alloc_len[lane] = meta_mode_i ? meta_alloc_len_i[lane] : 3'd4;
+end
 rob #(.CFG(CFG), .COMPLETE_WIDTH(COMPLETE_WIDTH)) dut (
 .t_d_mark_valid_i(d_mark_i),.t_d_clear_valid_i(d_clear_i),.t_d_idx_i(d_idx_i),
 .clk(clk),
@@ -133,7 +148,9 @@ rob #(.CFG(CFG), .COMPLETE_WIDTH(COMPLETE_WIDTH)) dut (
 .retire_ftq_idx_o(retire_ftq_idx_o),
 .retire_ftq_slot_o(retire_ftq_slot_o),
 .retire_ftq_last_o(retire_ftq_last_o),
-.t_alloc_inst_len_i('{default:3'd4}),
+.t_alloc_pc_i(dut_alloc_pc),
+.t_alloc_inst_len_i(dut_alloc_len),
+.t_succ_valid_i(meta_mode_i && succ_valid_i),.t_succ_pc_i(succ_pc_i),.t_commit_block_i(commit_block_i),
 .t_alloc_exc_i(t_alloc_exc_i),
 .t_alloc_ext_i(t_alloc_ext_i),
 .t_exc_valid_i(t_exc_valid_i),
@@ -143,6 +160,7 @@ rob #(.CFG(CFG), .COMPLETE_WIDTH(COMPLETE_WIDTH)) dut (
 .t_fflags_i(t_fflags_i),
 .t_head_valid_o(t_head_valid_o),
 .t_head_o(t_head_o),
+.t_head_csr_o(t_head_csr_o),.t_head_sfence_o(t_head_sfence_o),
 .t_head_serial_done_i(t_head_serial_done_i),
 .t_commit_o(t_commit_o),
 .t_flush_all_i(t_flush_all_i)
@@ -156,4 +174,21 @@ assign cfg_pregs_o=CFG.rename.int_phys_regs;
 assign cfg_read_ports_o=CFG.exec.int_prf_read_ports;
 assign cfg_tags_o=CFG.rename.checkpoints;
 for(genvar n=0;n<NUM_ROB_ENTRIES;n++) assign mask_obs_o[n]=dut.entry_branch_mask_q[n];
+assign cfg_ftq_o=o3_cfg_pkg::O3_CFG.fe.ftq.depth;
+assign cfg_ftq_gens_o=1 << o3_cfg_pkg::O3_CFG.fe.ftq.gen_bits;
+always_comb begin o3_types_pkg::exc_info_t v;v='0;v.valid='1;fmt_exc_info_t_valid=v;end
+always_comb begin o3_types_pkg::exc_info_t v;v='0;v.cause=o3_isa_pkg::exception_cause_t'('1);fmt_exc_info_t_cause=v;end
+always_comb begin o3_types_pkg::exc_info_t v;v='0;v.tval='1;fmt_exc_info_t_tval=v;end
+for(genvar p=0;p<RETIRE_WIDTH;p++) begin : g_meta_observation
+    assign meta_pc_o[p]=t_commit_o[p].pc;
+    assign meta_succ_o[p]=t_commit_o[p].succ_pc;
+    assign meta_exc_o[p]=t_commit_o[p].exc;
+end
+always_comb begin o3_types_pkg::uop_ext_t v;v='0;v.csr_op=o3_types_pkg::csr_op_e'('1);fmt_uop_ext_t_csr_op=v;end
+always_comb begin o3_types_pkg::uop_ext_t v;v='0;v.sys_op=o3_types_pkg::sys_op_e'('1);fmt_uop_ext_t_sys_op=v;end
+// Both views must agree even for stale invalid rows and on reset/reuse.
+always_ff @(posedge clk) if (!rst) begin
+    assert(t_head_csr_o == (t_head_o.ext.csr_op != o3_types_pkg::CSROP_NONE));
+    assert(t_head_sfence_o == (t_head_o.sys_op == o3_types_pkg::SYSOP_SFENCE_VMA));
+end
 endmodule

@@ -1,17 +1,20 @@
 /**
+ * Rename to Dispatch Queue: stationary payload, indexed ownership order.
+ * Rename writers store complete uops in replicated BRAM banks; mutable branch
+ * masks, validity, writer identity and order remain narrow registered metadata.
+ * Correct resolution clears the resolved bit; misprediction removes dependent
+ * younger rows. INT/MEM/BR/FP dispatch consumes only the oldest accepted prefix.
  *
- * 【2026-10-02 框架：目标机制与缺口】
- * - 入队宽度为 rename 宽度（B42 为 4），出队宽度为 dispatch 宽度（待定）。
- * - 下文“当前只由旧整数Dispatch消费”已过时：现由 dispatch_stage 分流到三类 IQ。
- * Rename to Dispatch Queue
+ * Cycle N: present the current head; compute next ownership order. At the edge,
+ * BRAM reads that next head and each accepted writer captures its new payload.
+ * Registered writer/head collision bits bypass unspecified BRAM collision data.
+ * Cycle N+1: expose the new head with updated masks and the exact matching payload.
+ * No added public dequeue cycle, capacity, borrowed consume credit or FSM.
+ * Unused head replicas still read each edge; public count masks their outputs.
  *
- * 按单条renamed uop连续保存，解耦Rename资源分配和后续Dispatch/IQ背压。
- * 正确解析分支时清除对应branch bit；误预测时压缩删除所有依赖该分支的年轻uop。
- * dispatch_stage 按最老前缀向 INT/MEM/BR IQ 分流。
- * 周期N组合阶段展示最老前缀并形成压缩后的next状态；上升沿原子读写或恢复；
- * 周期N+1对外看到更新后的连续队列。
+ * 当前实现状态：目标存储重实现；功能验证待后端重构后统一进行。
+ * 测试：sim/cocotb/rename_dispatch_queue/；原600/700黄金和规模保留。
  */
-// 当前实现状态：闭环简化（L3）；正确解析不停顿，四宽合同。测试：sim/cocotb/rename_dispatch_queue/。
 module rename_dispatch_queue
     import o3_pkg::*;
 #(
@@ -39,7 +42,10 @@ module rename_dispatch_queue
     typedef logic [INDEX_WIDTH-1:0] index_t;
     // Payload stays in its allocated slot. Only these narrow indices move
     // when consuming or selectively deleting instructions.
-    renamed_uop_t payload_q [DEPTH];
+    localparam int WRITER_W=ENQ_WIDTH>1 ? $clog2(ENQ_WIDTH):1;
+    logic [WRITER_W-1:0] writer_q[DEPTH];
+    logic [$bits(renamed_uop_t)-1:0] bank_read[ENQ_WIDTH][DEQ_WIDTH];
+    renamed_uop_t payload_read[DEQ_WIDTH];
     branch_mask_t mask_q [DEPTH];
     logic payload_valid_q [DEPTH];
     index_t order_q [DEPTH], order_next [DEPTH];
@@ -52,6 +58,52 @@ module rename_dispatch_queue
     logic [COUNT_WIDTH-1:0] survivor_count;
     localparam int UOP_BITS = $bits(renamed_uop_t);
 
+    // Synchronous next-head prefetch keeps the old public queue edges. A
+    // write data register is shared by all read replicas of the same writer;
+    // narrow collision bits choose it for new heads after the ownership edge.
+    logic [UOP_BITS-1:0] write_data_q[ENQ_WIDTH];
+    logic bank_collision_q[ENQ_WIDTH][DEQ_WIDTH];
+    for(genvar wb=0;wb<ENQ_WIDTH;wb++) begin : g_write_bank
+        always_ff @(posedge clk) if(!rst && append[wb])
+            write_data_q[wb]<=UOP_BITS'(enq_uop_i[wb]);
+        for(genvar rp=0;rp<DEQ_WIDTH;rp++) begin : g_read_replica
+            (* ram_style="block" *) logic [UOP_BITS-1:0] mem[DEPTH];
+            always_ff @(posedge clk) begin
+                if(rst) bank_collision_q[wb][rp]<=0;
+                else begin
+                    bank_collision_q[wb][rp]<=append[wb] && survivor_count+COUNT_WIDTH'(wb)==COUNT_WIDTH'(rp);
+                    if(append[wb]) mem[alloc_index[wb]]<=UOP_BITS'(enq_uop_i[wb]);
+                    begin
+                        // Every head replica prefetches each edge. Unused heads
+                        // remain hidden by the registered public count, so no
+                        // late count_next predicate needs to drive BRAM enable.
+                        bank_read[wb][rp]<=mem[order_next[rp]];
+`ifndef SYNTHESIS
+                        // Appends follow the survivor prefix, so an incoming
+                        // writer's public head rank identifies its collision
+                        // before physical order routing. Check that equivalence.
+                        if(int'(count_next)>rp)
+                            assert((append[wb] && survivor_count+COUNT_WIDTH'(wb)==COUNT_WIDTH'(rp)) ==
+                                (append[wb] && alloc_index[wb]==order_next[rp]))
+                                else $fatal(1,"RDQ next-head write collision lost physical ownership");
+                        // Caller-owned bypass must mask FPGA collision data.
+                        if(append[wb] && alloc_index[wb]==order_next[rp])
+                            bank_read[wb][rp]<=~mem[order_next[rp]];
+`endif
+                    end
+                end
+            end
+        end
+    end
+    for(genvar rp=0;rp<DEQ_WIDTH;rp++) begin : g_payload_read
+        always_comb begin
+            payload_read[rp]='0;
+            for(int wb=0;wb<ENQ_WIDTH;wb++)
+                payload_read[rp]|=renamed_uop_t'((bank_collision_q[wb][rp] ? write_data_q[wb]:bank_read[wb][rp]) &
+                    {UOP_BITS{writer_q[order_q[rp]]==WRITER_W'(wb)}});
+        end
+    end
+
     assign free_count_o = COUNT_WIDTH'(DEPTH) - count_q;
     assign deq_count_o = (count_q >= COUNT_WIDTH'(DEQ_WIDTH))
                        ? DEQ_COUNT_WIDTH'(DEQ_WIDTH)
@@ -61,7 +113,7 @@ module rename_dispatch_queue
         deq_uop_o = '{default: '0};
         for (int lane = 0; lane < DEQ_WIDTH; lane++) begin
             if (lane < int'(deq_count_o)) begin
-                deq_uop_o[lane] = payload_q[order_q[lane]];
+                deq_uop_o[lane] = payload_read[lane];
                 deq_uop_o[lane].branch_mask = mask_q[order_q[lane]];
             end
         end
@@ -137,9 +189,9 @@ module rename_dispatch_queue
             if (!rst) begin
                 if (resolution_valid_i) mask_q[slot][resolution_tag_i] <= 1'b0;
                 if (write_valid) begin
-                    payload_q[slot] <= write_data;
+                    for(int wb=0;wb<ENQ_WIDTH;wb++) if(append[wb] && alloc_index[wb]==index_t'(slot))
+                        writer_q[slot]<=WRITER_W'(wb);
                     // Store the changing branch mask separately from payload.
-                    payload_q[slot].branch_mask <= '0;
                     payload_valid_q[slot] <= write_data.valid;
                     mask_q[slot] <= resolution_valid_i
                         ? write_data.branch_mask & ~(branch_mask_t'(1) << resolution_tag_i)

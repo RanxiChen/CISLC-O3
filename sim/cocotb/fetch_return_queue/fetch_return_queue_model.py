@@ -11,6 +11,8 @@ class Inputs:
  response_idx: int=0
  response_id: int=0
  response_data: int=0
+ response_exc: bool=False
+ response_cause: int=0
  brief_done: bool=False
  brief_id: int=0
  deq_ready: bool=False
@@ -30,6 +32,8 @@ class Entry:
  pc: int
  data: int|None=None
  zombie: bool=False
+ exc_valid: bool=False
+ exc_cause: int=0
 class ReturnModel:
  def __init__(self,depth=32):self.depth=depth;self.slots=[None]*8;self.order=[];self.output=None
  @property
@@ -65,7 +69,7 @@ class ReturnModel:
   if i.response:
    e=self.slots[i.response_idx];assert e is not None and e.data is None and e.ftq_id==i.response_id
    if e.zombie:self.slots[i.response_idx]=None
-   else:e.data=i.response_data
+   else:e.data=i.response_data;e.exc_valid=i.response_exc;e.exc_cause=i.response_cause
   if i.kill:
    kept=[];suffix=False
    for s in self.order:

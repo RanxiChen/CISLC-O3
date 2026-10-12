@@ -53,3 +53,33 @@ async def simultaneous_pte_and_dma_mark_both_lines_including_completion_edge(d):
     await tick(d);clear(d,INPUTS)
     assert val(d.order_obs_o[0]) and val(d.order_obs_o[1])
     assert val(d.rob_order_flush_o)==6
+
+
+@cocotb.test()
+async def direct_retirement_order_preserves_wrap_and_same_cycle_kill(d):
+    await reset(d,INPUTS)
+    rob_entries=val(d.cfg_rob_o)
+    ids=await allocate(d,[0,1],[rob_entries-1,0])
+    for n,rob in enumerate([rob_entries-1,0]):
+        d.capture_valid_i[0].value=1
+        d.capture_i[0].value=capture(d,ids[n],0x80003000+n*8,rob=rob,mask=n)
+        await tick(d)
+    clear(d,INPUTS)
+    for n in range(2):
+        d.update_valid_i[0].value=1
+        d.update_i[0].value=update(d,ids[n],1,0,0)|codec(d,'update',paddr=0x80003000+n*8)
+        await tick(d)
+    clear(d,INPUTS)
+    d.dma_invalidate_i.value=1;d.dma_line_i.value=0x80003000>>6
+    d.rob_head_i.value=rob_entries-1
+    await settle()
+    assert val(d.retire_order_flush_o)==3 and val(d.order_flush_o)
+    d.rob_head_i.value=rob_entries-2
+    await settle();assert val(d.retire_order_flush_o)==6 and not val(d.order_flush_o)
+    d.rob_head_i.value=rob_entries-1
+    d.resolution_valid_i.value=1;d.resolution_mispredict_i.value=1
+    d.resolution_tag_i.value=0;d.restore_tail_i.value=1
+    await settle()
+    assert val(d.retire_order_flush_o)==1 # cancelled younger owner cannot block lane1
+    await tick(d);clear(d,INPUTS);d.rob_head_i.value=rob_entries-1
+    await settle();assert val(d.retire_order_flush_o)==1

@@ -15,6 +15,7 @@ module rename_stage_tb_top import o3_pkg::*; #(
     input logic recovery_block_i,
 
     input logic [$clog2(NUM_PHYS_REGS+1)-1:0] preg_free_count_i,
+    input logic [$clog2(NUM_FP_PHYS_REGS+1)-1:0] fp_preg_free_count_i,
     input logic [$clog2(NUM_ROB_ENTRIES+1)-1:0] rob_free_count_i,
     input logic [$clog2(LQ_DEPTH+1)-1:0] lq_free_count_i,
     input logic [$clog2(SQ_DEPTH+1)-1:0] sq_free_count_i,
@@ -25,6 +26,7 @@ module rename_stage_tb_top import o3_pkg::*; #(
 
     input logic [PREG_IDX_WIDTH-1:0] src1_preg_i [WIDTH-1:0],
     input logic [PREG_IDX_WIDTH-1:0] src2_preg_i [WIDTH-1:0],
+    input logic [PREG_IDX_WIDTH-1:0] src3_preg_i [WIDTH-1:0],
     input logic [PREG_IDX_WIDTH-1:0] old_dst_preg_i [WIDTH-1:0],
     input logic [PREG_IDX_WIDTH-1:0] new_dst_preg_i [WIDTH-1:0],
     input logic [$clog2(NUM_ROB_ENTRIES)-1:0] rob_idx_i [WIDTH-1:0],
@@ -67,6 +69,7 @@ output logic [$bits(renamed_uop_t)-1:0] fmt_renamed_uop_t_is_store,
 output logic [$bits(renamed_uop_t)-1:0] fmt_renamed_uop_t_rd,
 output logic [$bits(renamed_uop_t)-1:0] fmt_renamed_uop_t_rd_write_en,
 output logic [$bits(renamed_uop_t)-1:0] fmt_renamed_uop_t_dst_preg,
+output logic [$bits(decoded_uop_t)-1:0] fmt_decoded_uop_t_ext_rd_dom,fmt_decoded_uop_t_ext_fuse_role,
 output logic [31:0] cfg_width_o, cfg_depth_o, cfg_rob_o, cfg_pregs_o, cfg_read_ports_o, cfg_tags_o
 );
 rename_stage #(.CFG(CFG)) dut (
@@ -74,6 +77,7 @@ rename_stage #(.CFG(CFG)) dut (
 .visible_count_i(visible_count_i),
 .recovery_block_i(recovery_block_i),
 .preg_free_count_i(preg_free_count_i),
+.fp_preg_free_count_i(fp_preg_free_count_i),
 .rob_free_count_i(rob_free_count_i),
 .lq_free_count_i(lq_free_count_i),
 .sq_free_count_i(sq_free_count_i),
@@ -83,6 +87,7 @@ rename_stage #(.CFG(CFG)) dut (
 .checkpoint_tag_i(checkpoint_tag_i),
 .src1_preg_i(src1_preg_i),
 .src2_preg_i(src2_preg_i),
+.src3_preg_i(src3_preg_i),
 .old_dst_preg_i(old_dst_preg_i),
 .new_dst_preg_i(new_dst_preg_i),
 .rob_idx_i(rob_idx_i),
@@ -124,6 +129,8 @@ always_comb begin renamed_uop_t v; v='0; v.is_store='1; fmt_renamed_uop_t_is_sto
 always_comb begin renamed_uop_t v; v='0; v.rd='1; fmt_renamed_uop_t_rd=v; end
 always_comb begin renamed_uop_t v; v='0; v.rd_write_en='1; fmt_renamed_uop_t_rd_write_en=v; end
 always_comb begin renamed_uop_t v; v='0; v.dst_preg='1; fmt_renamed_uop_t_dst_preg=v; end
+always_comb begin decoded_uop_t v; v='0; v.ext.rd_dom=o3_types_pkg::reg_domain_e'('1); fmt_decoded_uop_t_ext_rd_dom=v; end
+always_comb begin decoded_uop_t v; v='0; v.ext.fuse_role=o3_types_pkg::fuse_role_e'('1); fmt_decoded_uop_t_ext_fuse_role=v; end
 assign cfg_width_o=BACKEND_MACHINE_WIDTH;
 assign cfg_depth_o=CFG.rename.rdq_depth;
 assign cfg_rob_o=CFG.rob.entries;

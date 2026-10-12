@@ -1,6 +1,6 @@
 # X5 migration removes DTCM; all values and random scales retained.
 def zero_new_inputs(d):
-    for n in ['kind_i','heu_done_i','heu_done_idx_i','rob_head_i','flush_all_i','execute1_valid','execute1_idx','execute1_addr','execute1_data','execute1_mask','query1_valid','query1_rob','query1_addr','query1_mask','dc_retry','dc_reason','dc_wake_i']:
+    for n in ['opaque_mode_i','kind_i','heu_done_i','heu_done_idx_i','rob_head_i','flush_all_i','execute1_valid','execute1_idx','execute1_addr','execute1_data','execute1_mask','query1_valid','query1_rob','query1_addr','query1_mask','dc_retry','dc_reason','dc_wake_i','multi_mode_i','multi_alloc_count_i','multi_commit_count_i','resolution_valid_i','resolution_mispredict_i','resolution_tag_i','restore_tail_i','replay_capture_valid_i','replay_update_valid_i','replay_ready_i','replay_tlb_wake_i','replay_ad_wake_i']:
         getattr(d,n).value=0
 
 import cocotb
@@ -194,23 +194,28 @@ async def four_store_commit_and_recovery_old_execute_drain_random_delays(d):
     array(d.multi_rob_i,[0]*len(d.multi_rob_i));array(d.multi_mask_i,[0]*len(d.multi_mask_i));array(d.multi_commit_idx_i,[0]*len(d.multi_commit_idx_i))
     zero_new_inputs(d)
     d.rst.value=1;await tick(d);d.rst.value=0;await settle()
-    w=val(d.cfg_width_o);depth=val(d.cfg_depth_o);assert w==4
+    w=val(d.cfg_width_o);depth=val(d.cfg_depth_o);rob_depth=val(d.cfg_rob_o);cases=4
+    assert w>=3
     # Every batch is independent and exercises four-lane identity/wrap; some
     # batches recover while older store0 executes and commits.
     for batch in range(80):
-        d.multi_mode_i.value=1;d.multi_alloc_count_i.value=w
-        array(d.multi_rob_i,[(batch*w+n)%64 for n in range(w)])
-        kill=batch%2==0
-        array(d.multi_mask_i,[0,0,1,1] if kill else [0]*w)
-        await settle();ids=[val(d.multi_alloc_idx_o[n]) for n in range(w)]
-        assert len(set(ids))==w
-        await tick(d);d.multi_alloc_count_i.value=0
+        d.multi_mode_i.value=1
+        kill=batch%2==0;ids=[]
+        masks=[0,0,1,1] if kill else [0]*cases
+        for start in range(0,cases,w):
+            count=min(w,cases-start);d.multi_alloc_count_i.value=count
+            array(d.multi_rob_i,[(batch*cases+start+n)%rob_depth for n in range(count)]+[0]*(w-count))
+            array(d.multi_mask_i,masks[start:start+count]+[0]*(w-count))
+            await settle();ids += [val(d.multi_alloc_idx_o[n]) for n in range(count)]
+            await tick(d)
+        assert len(set(ids))==cases
+        d.multi_alloc_count_i.value=0
         if kill:
             d.resolution_valid_i.value=1;d.resolution_mispredict_i.value=1;d.resolution_tag_i.value=0
             d.restore_tail_i.value=(ids[1]+1)%depth
         # Old execute and commit survive the M edge, remaining old store
         # executes next; C interleaves ordinary execute and multi commit.
-        count=2 if kill else w
+        count=2 if kill else cases
         for n in range(count):
             d.execute_valid.value=1;d.execute_idx.value=ids[n]
             d.execute_addr.value=0x80010000+8*n;d.execute_data.value=batch*10+n;d.execute_mask.value=0xff
@@ -221,9 +226,11 @@ async def four_store_commit_and_recovery_old_execute_drain_random_delays(d):
             d.resolution_valid_i.value=0;d.resolution_mispredict_i.value=0
         d.execute_valid.value=0
         d.resolution_valid_i.value=1;d.resolution_mispredict_i.value=0;d.resolution_tag_i.value=1
-        d.multi_commit_count_i.value=count
-        array(d.multi_commit_idx_i,ids[:count]+[0]*(w-count))
-        await tick(d);d.multi_commit_count_i.value=0;d.resolution_valid_i.value=0
+        for start in range(0,count,w):
+            chunk=min(w,count-start);d.multi_commit_count_i.value=chunk
+            array(d.multi_commit_idx_i,ids[start:start+chunk]+[0]*(w-chunk))
+            await tick(d)
+        d.multi_commit_count_i.value=0;d.resolution_valid_i.value=0
         for n in range(count):
             for delay in range(rng.randrange(1,6)):
                 await settle();assert val(d.dc_req_valid)==1,(seed,batch,n,delay)
@@ -280,7 +287,7 @@ async def dual_sta_and_dual_query_exact_forwarding(d):
         getattr(d,n).value=0
     d.multi_mode_i.value=1;d.multi_alloc_count_i.value=0;d.multi_commit_count_i.value=0
     d.rst.value=1;await tick(d);d.rst.value=0
-    d.multi_alloc_count_i.value=2;array(d.multi_rob_i,[1,2,0,0]);array(d.multi_mask_i,[0]*4)
+    d.multi_alloc_count_i.value=2;array(d.multi_rob_i,[1,2]+[0]*(val(d.cfg_width_o)-2));array(d.multi_mask_i,[0]*val(d.cfg_width_o))
     await settle();ids=[val(d.multi_alloc_idx_o[n]) for n in range(2)]
     await tick(d);d.multi_alloc_count_i.value=0
     d.execute_valid.value=1;d.execute_idx.value=ids[0];d.execute_addr.value=0x80010000;d.execute_data.value=0x1122334455667788;d.execute_mask.value=255
@@ -292,3 +299,136 @@ async def dual_sta_and_dual_query_exact_forwarding(d):
     await settle()
     assert (val(d.query_block),val(d.query_forward_valid),val(d.query_forward_data))==(0,1,0x1122334455667788)
     assert (val(d.query1_block),val(d.query1_forward_valid),val(d.query1_forward_data))==(0,1,0xaabbccddeeff0011)
+
+
+@cocotb.test()
+async def oldest_two_replay_payload_backpressure_and_cancel(d):
+    import os, random
+    from l3_contract import val, settle, tick, array
+    rng=random.Random(int(os.getenv('TEST_SEED','1')))
+    for n in ['clk','alloc_valid','alloc_rob','execute_valid','query_valid','commit_valid','dc_req_ready','dc_resp_valid','local_drain_ready']:
+        getattr(d,n).value=0
+    zero_new_inputs(d)
+    d.rst.value=1;await tick(d);d.rst.value=0
+    depth=val(d.cfg_depth_o);width=val(d.cfg_width_o)
+    # Use complete SQ transactions, including head advancement, so selected
+    # physical slots wrap. Each round has six independent captured stores.
+    for batch in range(40):
+        ids=[];payload={};d.multi_mode_i.value=1
+        for start in range(0,6,width):
+            count=min(width,6-start)
+            d.multi_alloc_count_i.value=count
+            array(d.multi_rob_i,[start+n for n in range(count)]+[0]*(width-count))
+            array(d.multi_mask_i,[1 if start+n>=4 else 0 for n in range(count)]+[0]*(width-count))
+            await settle();ids += [val(d.multi_alloc_idx_o[n]) for n in range(count)]
+            await tick(d)
+        d.multi_alloc_count_i.value=0
+        for start in range(0,6,2):
+            array(d.replay_capture_idx_i,ids[start:start+2])
+            array(d.replay_capture_rob_i,[start,start+1])
+            values=[rng.getrandbits(64),rng.getrandbits(64)]
+            array(d.replay_capture_data_i,values)
+            payload.update({ids[start+n]:(start+n,values[n]) for n in range(2)})
+            d.replay_capture_valid_i.value=3;await tick(d)
+        d.replay_capture_valid_i.value=0
+        # Publish in reverse order. Selection must follow allocation age,
+        # regardless of response arrival order or physical slot numbering.
+        for start in [4,2,0]:
+            array(d.replay_update_idx_i,ids[start:start+2]);array(d.replay_reason_i,[3,10] if start==0 else [9,9])
+            d.replay_update_valid_i.value=3;await tick(d)
+        d.replay_update_valid_i.value=0
+        d.replay_tlb_wake_i.value=1;d.replay_ad_wake_i.value=1
+        await tick(d);d.replay_tlb_wake_i.value=0;d.replay_ad_wake_i.value=0
+        pending=ids[:]
+        for cycle in range(60):
+            kill=cycle==2
+            d.resolution_valid_i.value=int(kill or cycle==1)
+            d.resolution_mispredict_i.value=int(kill)
+            d.resolution_tag_i.value=0 if kill else 1
+            d.restore_tail_i.value=(ids[3]+1)%depth
+            if kill:pending=[idx for idx in pending if payload[idx][0]<4]
+            ready=rng.randrange(4);d.replay_ready_i.value=ready
+            await settle()
+            seen=[]
+            for port in range(2):
+                if val(d.replay_valid_o)&(1<<port):
+                    idx=val(d.replay_idx_o[port]);seen.append(idx)
+                    assert (val(d.replay_rob_o[port]),val(d.replay_data_o[port]))==payload[idx],(batch,cycle,port)
+                    assert val(d.replay_mask_o[port])==(1 if payload[idx][0]>=4 else 0)
+            assert seen==pending[:2],(batch,cycle,seen,pending)
+            accepted=[idx for port,idx in enumerate(seen) if ready&(1<<port)]
+            await tick(d);pending=[idx for idx in pending if idx not in accepted]
+            if cycle>=2 and not pending:break
+        else:assert False,('replay did not drain',batch,pending)
+        d.resolution_valid_i.value=0;d.resolution_mispredict_i.value=0;d.replay_ready_i.value=0
+        # Execute/commit/drain the surviving four in order; advances head and
+        # tail without hiding wrap behind reset. Killed payload must stay dead.
+        for idx in ids[:4]:
+            d.execute_valid.value=1;d.execute_idx.value=idx;d.execute_addr.value=0x80020000+8*payload[idx][0]
+            d.execute_data.value=payload[idx][1];d.execute_mask.value=255
+            await tick(d);d.execute_valid.value=0
+            d.multi_commit_count_i.value=1;d.multi_commit_idx_i[0].value=idx
+            await tick(d);d.multi_commit_count_i.value=0
+            d.dc_req_ready.value=1;await settle();assert val(d.dc_req_idx)==idx and val(d.dc_req_valid)
+            await tick(d);d.dc_req_ready.value=0;d.dc_resp_valid.value=1;d.dc_resp_idx.value=idx
+            await tick(d);d.dc_resp_valid.value=0
+        await settle();assert val(d.free_count_o)==depth and val(d.replay_valid_o)==0
+    # Reset/cancel invalidate capture owners independently of stored payload.
+    d.flush_all_i.value=1;await settle();assert val(d.replay_valid_o)==0
+    await tick(d);d.flush_all_i.value=0
+
+
+@cocotb.test()
+async def full_sta_capture_ram_payload_reuse_and_held_replay(d):
+    import os,random
+    from l3_contract import val,settle,tick,array,codec,clear
+    rng=random.Random(int(os.getenv('TEST_SEED','1'))+505)
+    names=['clk','alloc_valid','alloc_rob','execute_valid','query_valid','commit_valid','dc_req_ready','dc_resp_valid','local_drain_ready']
+    await clear_initial(d,names)
+    width=val(d.cfg_width_o);depth=val(d.cfg_depth_o)
+    masks={f:val(getattr(d,'fmt_payload_'+f.replace('.','_'))) for f in ['uop.sq_idx','uop.rob_idx','uop.valid','uop.branch_mask','wait_reason']}
+    def replace(raw,**values):
+        mask=0
+        for f in values:mask|=masks[f]
+        return (raw&~mask)|codec(d,'payload',**values)
+    for batch in range(160):
+        if batch%19==0:
+            d.rst.value=1;await tick(d);d.rst.value=0
+        d.multi_mode_i.value=1;d.multi_alloc_count_i.value=2
+        array(d.multi_rob_i,[0,1]+[0]*(width-2));array(d.multi_mask_i,[0]*width)
+        await settle();ids=[val(d.multi_alloc_idx_o[p]) for p in range(2)]
+        await tick(d);d.multi_alloc_count_i.value=0;d.opaque_mode_i.value=1
+        records=[replace(rng.getrandbits(len(d.opaque_capture_i[p])),**{'uop.sq_idx':idx,'uop.rob_idx':p,
+            'uop.valid':1,'uop.branch_mask':0,'wait_reason':0}) for p,idx in enumerate(ids)]
+        array(d.opaque_capture_i,records);d.replay_capture_valid_i.value=3
+        if batch%5==0:
+            winner=replace(records[1],**{'uop.sq_idx':ids[0],'uop.rob_idx':0})
+            d.opaque_capture_i[1].value=winner;records[0]=winner
+            await tick(d);d.replay_capture_valid_i.value=1;d.opaque_capture_i[0].value=records[1]
+        await tick(d);d.replay_capture_valid_i.value=0
+        array(d.replay_update_idx_i,ids);array(d.replay_reason_i,[7,8]);d.replay_update_valid_i.value=3
+        records=[replace(raw,wait_reason=reason) for raw,reason in zip(records,[7,8])]
+        await tick(d);d.replay_update_valid_i.value=0
+        for held in range(4):
+            await settle()
+            assert val(d.replay_valid_o)==3 and [val(d.opaque_replay_o[p]) for p in range(2)]==records,(batch,held)
+            await tick(d)
+        d.replay_ready_i.value=3;await tick(d);d.replay_ready_i.value=0
+        # Head-only kinds release through their own ordered commit handshake;
+        # use that path to exercise physical wrap without a fake SQ reset.
+        d.kind_i.value=1
+        d.execute_valid.value=1;d.execute_idx.value=ids[0]
+        d.execute1_valid.value=1;d.execute1_idx.value=ids[1]
+        await tick(d);d.execute_valid.value=0;d.execute1_valid.value=0
+        for p,idx in enumerate(ids):
+            d.rob_head_i.value=p;await settle()
+            assert val(d.heu_valid_o)==1 and val(d.heu_entry_o)==records[p],(batch,p,'HEU opaque payload')
+            d.multi_commit_count_i.value=1;d.multi_commit_idx_i[0].value=idx
+            await tick(d);d.multi_commit_count_i.value=0
+        d.kind_i.value=0
+        assert val(d.free_count_o)==depth
+
+
+async def clear_initial(d,names):
+    from l3_contract import clear,tick
+    clear(d,names);zero_new_inputs(d);d.rst.value=1;await tick(d);d.rst.value=0

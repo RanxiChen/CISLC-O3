@@ -1,13 +1,14 @@
 /** L8a L1D: two unstalled S0/S1/S2 lanes, eight word banks, line-only
  * MSHRs, exact clean/dirty Put, one PS and one SNP. All line operations
- * reserve their S0 bank slot two cycles in advance. Replay leaves S2.
+ * reserve their S0 bank slot CFG.lsu.cache_s0_delay cycles in advance. Replay leaves S2.
  * 当前实现状态：目标实现；L11独立PMA读写权限拒绝ROM写，新增功能测试待补。 */
 module dcache import o3_types_pkg::*; #(
     parameter o3_cfg_pkg::backend_cfg_t CFG,localparam int P=CFG.lsu.agu_pipes,
     localparam int SETS=CFG.dcache.sets,WAYS=CFG.dcache.ways,BANKS=CFG.dcache.banks,
     localparam int SW=$clog2(SETS),WW=$clog2(WAYS),TW=MEM_PADDR_W-6-SW,
     localparam int N=CFG.dcache.mshrs,WN=CFG.dcache.wb_buffers,
-    localparam int IP=CFG.lsu.mem_pipes-1
+    localparam int IP=CFG.lsu.mem_pipes-1,
+    localparam int RESERVATION=CFG.lsu.cache_s0_delay,LAST=RESERVATION-1
 )(input logic clk,rst,
     input logic ld_req_valid_i[P],output logic ld_req_ready_o[P],input dcache_req_t ld_req_i[P],
     input dcache_req_t ld_s1_i[P],output dcache_resp_t ld_resp_o[P],
@@ -16,7 +17,7 @@ module dcache import o3_types_pkg::*; #(
     output logic dma_invalidate_o,output coh_addr_t dma_line_o,output logic irreversible_o,
     output logic pte_a_write_o,output coh_addr_t pte_a_line_o,
     input logic flush_i,resolution_valid_i,resolution_mispredict_i,input br_tag_t resolution_tag_i,
-    // Reservations for LSU's IS stage; the CPU S0 request arrives two cycles later.
+    // Reservations for LSU's IS stage; the CPU S0 request arrives CFG.lsu.cache_s0_delay cycles later.
     output logic full_line_busy_o,output logic internal_busy_o,
     input logic st_req_valid_i,output logic st_req_ready_o,input dcache_req_t st_req_i,output dcache_resp_t st_resp_o,
     input logic ptw_req_valid_i,output logic ptw_req_ready_o,input dcache_req_t ptw_req_i,output dcache_resp_t ptw_resp_o,
@@ -28,6 +29,7 @@ module dcache import o3_types_pkg::*; #(
     output logic rsp_up_valid_o,input logic rsp_up_ready_i,output coh_rsp_up_t rsp_up_o,
     input logic snp_valid_i,output logic snp_ready_o,input coh_snp_t snp_i,
     output logic idle_o,output fatal_evt_t fatal_o,output be_perf_t perf_o);
+    initial assert(RESERVATION>=2) else $fatal(1,"DCache reservation must cover RR/AG");
     typedef struct packed {coh_state_e state;logic [TW-1:0] tag;} tag_t;
 `ifndef SYNTHESIS
     // Read-only verification view of the physical per-lane/per-way RAMs.
@@ -40,7 +42,7 @@ module dcache import o3_types_pkg::*; #(
     logic [63:0] bank_read_q[BANKS][WAYS],s2_words_q[P][2][WAYS];
     typedef enum logic [1:0] {LINE_NONE,LINE_PROBE,LINE_INSTALL,LINE_WB} line_kind_t;
     typedef struct packed {line_kind_t kind;coh_addr_t addr;coh_id_t id;logic [DC_WAY_W-1:0] way;dc_line_txn_t txn;} line_op_t;
-    line_op_t line_choose,line_launch_q[2],line_read_q,line_result_q;
+    line_op_t line_choose,line_launch_q[RESERVATION],line_read_q,line_result_q;
     coh_data_t line_data_q;coh_state_e line_state_q;int line_way_q;
     logic ps_valid_q;dcache_req_t ps_req_q;pte_ad_req_t ps_ad_q;logic ps_internal_q;
     int ps_way_q;logic ps_is_ad_q,ps_write; dcache_resp_t ps_resp_q;
@@ -50,21 +52,21 @@ module dcache import o3_types_pkg::*; #(
     logic atomic_hold_q;coh_addr_t atomic_line_q;int unsigned atomic_timer_q;
     logic [N-1:0] atomic_live_q;
     logic [63:0] amo_new[P];
-    dc_mshr_state_e ms_state[N];dc_line_txn_t ms_txn[N];
+    dc_mshr_state_e ms_state[N];dc_line_meta_t ms_txn[N];
     logic ms_free,ms_alloc,ms_install,ms_install_issue,ms_install_done,ms_free_pulse;
     coh_id_t ms_free_id,ms_install_id;dc_line_txn_t alloc_txn,install_txn;
     logic [$clog2(N+1)-1:0] ms_free_count;
     logic wb_free,wb_alloc,wb_read,wb_issue,wb_done,wb_free_pulse,wb_put,wb_put_ready;
-    coh_id_t wb_free_id,wb_read_id;dc_wb_t alloc_wb,wb_read_meta,wb_meta[WN];logic wb_valid[WN];
+    coh_id_t wb_free_id,wb_read_id;dc_wb_t alloc_wb;dc_wb_meta_t wb_read_meta,wb_meta[WN];logic wb_valid[WN];
     coh_rsp_up_t wb_put_msg;
     logic probe_pending,probe_hold,probe_read,probe_issue,probe_done,probe_ack,probe_ack_ready;
     coh_snp_t probe_snp;coh_rsp_up_t probe_ack_msg;
     logic up_held_q,up_probe_q;logic choose_probe;
-    dcache_req_t internal_req_q,internal_choose,internal_launch_q[2];
-    pte_ad_req_t internal_ad_q,internal_ad_launch_q[2],internal_ad_choose;
+    dcache_req_t internal_req_q,internal_choose,internal_launch_q[RESERVATION];
+    pte_ad_req_t internal_ad_q,internal_ad_launch_q[RESERVATION],internal_ad_choose;
     logic internal_valid_q,internal_inpipe_q,internal_wait_q;
     ld_wait_e internal_reason_q;coh_id_t internal_mshr_q;
-    logic internal_fire,internal_finish,internal_launch_valid_q[2],internal_select;
+    logic internal_fire,internal_finish,internal_launch_valid_q[RESERVATION],internal_select;
     dcache_resp_t decision[P];int hit_way[P];logic hit[P];coh_state_e hit_state[P];
     int alloc_lane,alloc_way,ps_lane;logic upgrade,alloc_victim,external_mutation;
     logic [SW-1:0] mutation_set;logic tag_change;int tag_way;tag_t tag_new;
@@ -131,7 +133,7 @@ module dcache import o3_types_pkg::*; #(
         .req_valid_o(l2_req_valid_o),.req_ready_i(l2_req_ready_i),.req_o(l2_req_o),
         .rsp_valid_i(l2_resp_valid_i && l2_resp_i.op!=COH_PUTACK),.rsp_i(l2_resp_i),
         .install_valid_o(ms_install),.install_id_o(ms_install_id),.install_o(install_txn),
-        .install_issue_i(ms_install_issue),.install_done_i(ms_install_done),.install_done_id_i(line_launch_q[1].id),
+        .install_issue_i(ms_install_issue),.install_done_i(ms_install_done),.install_done_id_i(line_launch_q[LAST].id),
         .mshr_free_o(ms_free_pulse));
     dcache_writeback #(.CFG(CFG)) u_wb(.clk(clk),.rst(rst),.alloc_i(wb_alloc),.alloc_wb_i(alloc_wb),
         .free_o(wb_free),.free_id_o(wb_free_id),.valid_o(wb_valid),.wb_o(wb_meta),
@@ -163,14 +165,17 @@ module dcache import o3_types_pkg::*; #(
             probe_hold|=s1_q[p].valid && s1_q[p].req.write && coh_addr_t'(s1_q[p].req.paddr>>6)==probe_snp.addr;
             probe_hold|=s2_q[p].valid && s2_q[p].req.write && coh_addr_t'(s2_q[p].req.paddr>>6)==probe_snp.addr;
         end
-        for(int l=0;l<2;l++) probe_hold|=internal_launch_valid_q[l] && internal_launch_q[l].write &&
+        for(int l=0;l<RESERVATION;l++) probe_hold|=internal_launch_valid_q[l] && internal_launch_q[l].write &&
             coh_addr_t'(internal_launch_q[l].paddr>>6)==probe_snp.addr;
     end
     // Choose a future bank slot. INSTALL writes at the reserved S0 edge;
     // PROBE/WB synchronously read all banks and complete at S2.
     always_comb begin
+        logic line_reserved;
+        line_reserved=0;
+        for(int l=0;l<RESERVATION;l++) line_reserved|=line_launch_q[l].kind!=LINE_NONE;
         line_choose='0;
-        if(init_done_q && line_launch_q[0].kind==LINE_NONE && line_launch_q[1].kind==LINE_NONE &&
+        if(init_done_q && !line_reserved &&
             line_read_q.kind==LINE_NONE && line_result_q.kind==LINE_NONE && !ps_valid_q &&
             !internal_inpipe_q) begin
             if(probe_read) begin line_choose.kind=LINE_PROBE;line_choose.addr=probe_snp.addr;end
@@ -199,10 +204,7 @@ module dcache import o3_types_pkg::*; #(
         end
         internal_choose.vaddr=64'(internal_choose.paddr);
         internal_choose.priv=1;
-        internal_choose.permission=dc_permissions(internal_choose,pmp_i,2'd1);
-        if(internal_choose.src==DC_SRC_STORE_DRAIN) begin
-            internal_choose.permission.pmp_ok=1; // reuse STA authorization
-        end
+        internal_choose.permission='0; // I0 owns raw PA; I1 qualifies it below
         internal_busy_o=!init_done_q || internal_select;
         ptw_req_ready_o=internal_select && !internal_valid_q && ptw_req_valid_i;
         pte_ad_req_ready_o=internal_select && !internal_valid_q && !ptw_req_valid_i && pte_ad_req_valid_i;
@@ -212,10 +214,10 @@ module dcache import o3_types_pkg::*; #(
     always_comb begin
         for(int p=0;p<P;p++) begin
             s0[p]='0;s0[p].valid=ld_req_valid_i[p] && !killed(ld_req_i[p]);s0[p].req=ld_req_i[p];
-            ld_req_ready_o[p]=init_done_q && line_launch_q[1].kind==LINE_NONE && !(p==IP && internal_launch_valid_q[1]);
+            ld_req_ready_o[p]=init_done_q && line_launch_q[LAST].kind==LINE_NONE && !(p==IP && internal_launch_valid_q[LAST]);
         end
-        if(internal_launch_valid_q[1]) begin
-            s0[IP]='0;s0[IP].valid=1;s0[IP].req=internal_launch_q[1];s0[IP].ad=internal_ad_launch_q[1];s0[IP].internal=1;
+        if(internal_launch_valid_q[LAST]) begin
+            s0[IP]='0;s0[IP].valid=1;s0[IP].req=internal_launch_q[LAST];s0[IP].ad=internal_ad_launch_q[LAST];s0[IP].internal=1;
         end
         // Store-word hazards include both touched words for unaligned loads.
         for(int p=0;p<P;p++) begin
@@ -243,8 +245,8 @@ module dcache import o3_types_pkg::*; #(
             if(s0[0].valid && s0[1].valid && (m0&m1)!=0 && SW'(s0[0].req.vaddr>>6)!=SW'(s0[1].req.vaddr>>6)) s0[younger].bank=1;
         end
     end
-    assign ps_write=ps_valid_q && line_launch_q[1].kind==LINE_NONE;
-    assign ms_install_done=line_launch_q[1].kind==LINE_INSTALL;
+    assign ps_write=ps_valid_q && line_launch_q[LAST].kind==LINE_NONE;
+    assign ms_install_done=line_launch_q[LAST].kind==LINE_INSTALL;
     assign probe_done=line_result_q.kind==LINE_PROBE;
     assign wb_done=line_result_q.kind==LINE_WB;
     // Existing tags mutate before S2 may use an older snapshot.
@@ -253,11 +255,11 @@ module dcache import o3_types_pkg::*; #(
         // A probe reservation also protects its tag snapshot from an older
         // S2 allocation. Otherwise a dirty victim Put can race the Down ack.
         if(line_choose.kind==LINE_PROBE) begin external_mutation=1;mutation_set=SW'(line_choose.addr);end
-        if(line_launch_q[0].kind==LINE_PROBE) begin external_mutation=1;mutation_set=SW'(line_launch_q[0].addr);end
-        if(line_launch_q[1].kind==LINE_PROBE) begin external_mutation=1;mutation_set=SW'(line_launch_q[1].addr);end
+        for(int l=0;l<RESERVATION;l++)
+            if(line_launch_q[l].kind==LINE_PROBE) begin external_mutation=1;mutation_set=SW'(line_launch_q[l].addr);end
         if(line_read_q.kind==LINE_PROBE) begin external_mutation=1;mutation_set=SW'(line_read_q.addr);end
         if(probe_done) begin external_mutation=1;mutation_set=SW'(line_result_q.addr);end
-        if(ms_install_done) begin external_mutation=1;mutation_set=SW'(line_launch_q[1].addr);end
+        if(ms_install_done) begin external_mutation=1;mutation_set=SW'(line_launch_q[LAST].addr);end
         if(ps_write) begin external_mutation=1;mutation_set=SW'(ps_req_q.paddr>>6);end
     end
     always_comb begin
@@ -330,7 +332,7 @@ module dcache import o3_types_pkg::*; #(
                     if((!hit[p] || hit_state[p]==COH_S) && same_ms<0 && !same_wb && can_alloc) alloc_lane=p;
                 end else if(hit[p] && (!want_m || hit_state[p]==COH_E || hit_state[p]==COH_M)) begin
                     if(want_m && !(s2_q[p].req.src==DC_SRC_AMO && s2_q[p].req.amo_op==AMO_LR)) begin
-                        if(ps_valid_q || ps_lane>=0 || external_mutation || line_launch_q[0].kind!=LINE_NONE) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_CONFLICT;end
+                        if(ps_valid_q || ps_lane>=0 || external_mutation || line_launch_q[LAST-1].kind!=LINE_NONE) begin decision[p].status=DC_REPLAY;decision[p].reason=LDW_CONFLICT;end
                         else if(s2_q[p].req.src==DC_SRC_PTE_AD &&
                             (s2_q[p].ad.epoch!=cur_epoch_i || s2_words_q[p][0][hit_way[p]]!=s2_q[p].ad.expected_pte)) decision[p].sc_fail=1;
                         else ps_lane=p;
@@ -379,7 +381,7 @@ module dcache import o3_types_pkg::*; #(
             else if(ps_req_q.head) ld_resp_o[IP]=ps_resp_q;
             else begin st_resp_o='0;st_resp_o.valid=1;st_resp_o.src=DC_SRC_STORE_DRAIN;st_resp_o.sq_idx=ps_req_q.sq_idx;end
         end
-        wake_o='{valid:ms_install_done,mshr_id:line_launch_q[1].id,err:line_launch_q[1].txn.err,
+        wake_o='{valid:ms_install_done,mshr_id:line_launch_q[LAST].id,err:line_launch_q[LAST].txn.err,
             mshr_free:ms_free_pulse,wb_free:wb_free_pulse};
         perf_o='0;
         perf_o[BE_RSV_PROBE_HOLD_CYCLE]=BE_PERF_INC_W'(probe_pending && rsv_window && rsv_line==probe_snp.addr);
@@ -416,9 +418,9 @@ module dcache import o3_types_pkg::*; #(
             tag_new='{state:(probe_snp.op==COH_INV ? COH_I:COH_S),tag:TW'(line_result_q.addr>>SW)};
         end
         if(ms_install_done) begin
-            tag_change=1;tag_set=SW'(line_launch_q[1].addr);tag_way=int'(line_launch_q[1].way);
-            tag_new='{state:(line_launch_q[1].txn.err ? COH_I:line_launch_q[1].txn.grant_e ? COH_E:COH_S),
-                tag:TW'(line_launch_q[1].addr>>SW)};
+            tag_change=1;tag_set=SW'(line_launch_q[LAST].addr);tag_way=int'(line_launch_q[LAST].way);
+            tag_new='{state:(line_launch_q[LAST].txn.err ? COH_I:line_launch_q[LAST].txn.grant_e ? COH_E:COH_S),
+                tag:TW'(line_launch_q[LAST].addr>>SW)};
         end
     end
     // CPU and PROBE/WB reads share the already-reserved S0 memory port.
@@ -429,12 +431,12 @@ module dcache import o3_types_pkg::*; #(
     logic [7:0] bank_write_mask[BANKS];logic [63:0] bank_write_data[BANKS];
     logic [SW-1:0] bank_write_addr;int bank_write_way;
     always_comb begin
-        line_ram_read=line_launch_q[1].kind==LINE_PROBE || line_launch_q[1].kind==LINE_WB;
+        line_ram_read=line_launch_q[LAST].kind==LINE_PROBE || line_launch_q[LAST].kind==LINE_WB;
         for(int p=0;p<P;p++) begin
             tag_read_en[p]=s0[p].valid;
             tag_read_addr[p]=SW'(s0[p].req.vaddr>>6);
             if(p==0 && line_ram_read) begin
-                tag_read_en[p]=1;tag_read_addr[p]=SW'(line_launch_q[1].addr);
+                tag_read_en[p]=1;tag_read_addr[p]=SW'(line_launch_q[LAST].addr);
             end
         end
         for(int b=0;b<BANKS;b++) begin
@@ -445,12 +447,12 @@ module dcache import o3_types_pkg::*; #(
                   (int'(s0[p].req.vaddr[5:3])+1)%BANKS==b))) begin
                 bank_read_en[b]=1;bank_read_addr[b]=SW'(s0[p].req.vaddr>>6);
             end
-            if(line_ram_read) begin bank_read_en[b]=1;bank_read_addr[b]=SW'(line_launch_q[1].addr);end
-            bank_write_mask[b]='0;bank_write_data[b]=line_launch_q[1].txn.refill[b*64+:64];
-            if(ms_install_done && !line_launch_q[1].txn.err && !line_launch_q[1].txn.ack_e)
+            if(line_ram_read) begin bank_read_en[b]=1;bank_read_addr[b]=SW'(line_launch_q[LAST].addr);end
+            bank_write_mask[b]='0;bank_write_data[b]=line_launch_q[LAST].txn.refill[b*64+:64];
+            if(ms_install_done && !line_launch_q[LAST].txn.err && !line_launch_q[LAST].txn.ack_e)
                 bank_write_mask[b]='1;
         end
-        bank_write_addr=SW'(line_launch_q[1].addr);bank_write_way=int'(line_launch_q[1].way);
+        bank_write_addr=SW'(line_launch_q[LAST].addr);bank_write_way=int'(line_launch_q[LAST].way);
         if(ps_write) begin
             bank_write_addr=SW'(ps_req_q.paddr>>6);bank_write_way=ps_way_q;
             for(int b=0;b<BANKS;b++) begin
@@ -518,7 +520,7 @@ module dcache import o3_types_pkg::*; #(
             for(int p=0;p<P;p++) if(decision[p].valid && decision[p].status==DC_MISS_WAIT &&
                 s2_q[p].req.src==DC_SRC_AMO && ms_state[decision[p].mshr_id]!=DM_IDLE &&
                 ms_txn[decision[p].mshr_id].atomic) atomic_live_q[decision[p].mshr_id]<=1;
-            if(ms_install_done) atomic_live_q[line_launch_q[1].id]<=0;
+            if(ms_install_done) atomic_live_q[line_launch_q[LAST].id]<=0;
             if(flush_i) atomic_live_q<='0;
             if(atomic_hold_q) begin
                 atomic_timer_q<=atomic_timer_q+1;
@@ -527,19 +529,32 @@ module dcache import o3_types_pkg::*; #(
                     !s2_q[p].req.check_only && coh_addr_t'(s2_q[p].req.paddr>>6)==atomic_line_q) atomic_hold_q<=0;
                 if(flush_i) atomic_hold_q<=0;
             end
-            if(ms_install_done && line_launch_q[1].txn.atomic && atomic_live_q[line_launch_q[1].id] &&
-                !line_launch_q[1].txn.err && !flush_i) begin
-                atomic_hold_q<=1;atomic_timer_q<=0;atomic_line_q<=line_launch_q[1].addr;
+            if(ms_install_done && line_launch_q[LAST].txn.atomic && atomic_live_q[line_launch_q[LAST].id] &&
+                !line_launch_q[LAST].txn.err && !flush_i) begin
+                atomic_hold_q<=1;atomic_timer_q<=0;atomic_line_q<=line_launch_q[LAST].addr;
             end
             if(!init_done_q) begin
                 for(int w=0;w<WAYS;w++) begin locked_q[init_q][w]<=0;rfo_q[init_q][w]<=0;end
                 plru_q[init_q]<=0;
                 if(init_q==SETS-1) init_done_q<=1;else init_q<=init_q+1;
             end
-            line_launch_q[0]<=line_choose;line_launch_q[1]<=line_launch_q[0];
-            internal_launch_valid_q[0]<=internal_fire;internal_launch_valid_q[1]<=internal_launch_valid_q[0];
-            internal_launch_q[0]<=internal_choose;internal_launch_q[1]<=internal_launch_q[0];
-            internal_ad_launch_q[0]<=internal_ad_choose;internal_ad_launch_q[1]<=internal_ad_launch_q[0];
+            line_launch_q[0]<=line_choose;
+            internal_launch_valid_q[0]<=internal_fire;
+            internal_launch_q[0]<=internal_choose;
+            internal_ad_launch_q[0]<=internal_ad_choose;
+            for(int l=1;l<RESERVATION;l++) begin
+                line_launch_q[l]<=line_launch_q[l-1];
+                internal_launch_valid_q[l]<=internal_launch_valid_q[l-1];
+                internal_launch_q[l]<=internal_launch_q[l-1];
+                internal_ad_launch_q[l]<=internal_ad_launch_q[l-1];
+                // I0 selection/ownership -> I1 physical qualification. Reuse
+                // the reservation transport boundary; no new cache latency.
+                if(l==1) begin
+                    internal_launch_q[l].permission<=dc_permissions(internal_launch_q[0],pmp_i,2'd1);
+                    if(internal_launch_q[0].src==DC_SRC_STORE_DRAIN)
+                        internal_launch_q[l].permission.pmp_ok<=1; // reuse STA authorization
+                end
+            end
             if(internal_fire) begin
                 internal_valid_q<=1;internal_inpipe_q<=1;internal_wait_q<=0;
                 internal_req_q<=internal_choose;internal_ad_q<=internal_ad_choose;
@@ -572,7 +587,7 @@ module dcache import o3_types_pkg::*; #(
                     if(decision[p].status==DC_ERROR || s2_q[p].req.src==DC_SRC_STORE_DRAIN) begin internal_valid_q<=0;internal_wait_q<=0;end
                 end
             end
-            line_read_q<=line_launch_q[1];line_result_q<=line_read_q;
+            line_read_q<=line_launch_q[LAST];line_result_q<=line_read_q;
             if(line_read_q.kind==LINE_PROBE || line_read_q.kind==LINE_WB) begin
                 int w;w=int'(line_read_q.way);line_state_q<=COH_I;
                 if(line_read_q.kind==LINE_PROBE) begin w=0;
@@ -584,9 +599,9 @@ module dcache import o3_types_pkg::*; #(
                 for(int b=0;b<BANKS;b++) line_data_q[b*64+:64]<=bank_read_q[b][w];
             end
             if(ms_install_done) begin
-                locked_q[SW'(line_launch_q[1].addr)][line_launch_q[1].way]<=0;
-                if(!line_launch_q[1].txn.err) begin
-                    plru_q[SW'(line_launch_q[1].addr)]<=touch(plru_q[SW'(line_launch_q[1].addr)],int'(line_launch_q[1].way));
+                locked_q[SW'(line_launch_q[LAST].addr)][line_launch_q[LAST].way]<=0;
+                if(!line_launch_q[LAST].txn.err) begin
+                    plru_q[SW'(line_launch_q[LAST].addr)]<=touch(plru_q[SW'(line_launch_q[LAST].addr)],int'(line_launch_q[LAST].way));
                 end
             end
             if(ps_write) begin

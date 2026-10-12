@@ -1,0 +1,1 @@
+Deferred 500-cycle command-stage model: full address/ASID/zero-register qualifiers, consecutive requests, reset and flush. Integration must separately verify precise SFENCE head ownership, real DTLB/PTW acknowledgement and frontend completion; this unit does not own that protocol.

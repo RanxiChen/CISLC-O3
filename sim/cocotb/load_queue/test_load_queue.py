@@ -24,14 +24,19 @@ def update(d,idx,gen,status=REPLAY,reason=CONFLICT,mshr=0):
 
 
 async def allocate(d,masks,robs=None):
-    w=val(d.cfg_width_o)
-    array(d.alloc_req_i,[int(n<len(masks)) for n in range(w)])
-    array(d.alloc_branch_mask_i,masks+[0]*(w-len(masks)))
-    array(d.alloc_rob_idx_i,(robs or list(range(len(masks))))+[0]*(w-len(masks)))
-    d.alloc_fire_i.value=1
-    await settle()
-    ids=[val(d.alloc_idx_o[n]) for n in range(len(masks))]
-    await tick(d)
+    # Preserve all original case instructions when the logical width is three;
+    # emit additional legal bundles rather than dropping the fourth instruction.
+    w=val(d.cfg_width_o);robs=list(range(len(masks))) if robs is None else robs
+    ids=[]
+    for first in range(0,len(masks),w):
+        chunk=masks[first:first+w];owners=robs[first:first+w]
+        array(d.alloc_req_i,[int(n<len(chunk)) for n in range(w)])
+        array(d.alloc_branch_mask_i,chunk+[0]*(w-len(chunk)))
+        array(d.alloc_rob_idx_i,owners+[0]*(w-len(chunk)))
+        d.alloc_fire_i.value=1
+        await settle()
+        ids.extend(val(d.alloc_idx_o[n]) for n in range(len(chunk)))
+        await tick(d)
     d.alloc_fire_i.value=0;array(d.alloc_req_i,[0]*w)
     return ids
 
@@ -209,3 +214,53 @@ async def lq_cancelled_load_ignores_late_wake_and_update(d):
     assert val(d.gen_obs_o[0])==2
     d.update_valid_i[0].value=1;d.update_i[0].value=update(d,0,1)
     await tick(d);assert not replay_ids(d) and not val(d.ready_obs_o[0])
+
+
+@cocotb.test()
+async def stationary_capture_payload_survives_waits_reuse_and_head_handoff(d):
+    rng=random.Random(int(os.getenv('TEST_SEED','1'))+405)
+    await reset(d,INPUTS);pipes=val(d.cfg_pipes_o)
+    fields=['uop.lq_idx','uop.branch_mask','uop.rob_idx','uop.valid','wait_reason','mshr_id','exc','tag.idx','tag.gen']
+    masks={f:val(getattr(d,'fmt_capture_'+f.replace('.','_'))) for f in fields}
+    def replace(raw,**values):
+        mask=0
+        for f in values:mask|=masks[f]
+        return (raw & ~mask)|codec(d,'capture',**values)
+    def make(idx,rob):
+        return replace(rng.getrandbits(len(d.capture_i[0])),**{'uop.lq_idx':idx,'uop.rob_idx':rob,
+            'uop.valid':1,'uop.branch_mask':0,'wait_reason':0,'mshr_id':0,'exc':0,'tag.idx':idx,
+            'tag.gen':val(d.gen_obs_o[idx])})
+    for batch in range(160):
+        clear(d,INPUTS)
+        if batch%19==0:
+            d.rst.value=1;await tick(d);d.rst.value=0
+        ids=await allocate(d,[0]*pipes,[(batch+p)%val(d.cfg_rob_o) for p in range(pipes)])
+        records=[make(idx,(batch+p)%val(d.cfg_rob_o)) for p,idx in enumerate(ids)]
+        array(d.capture_valid_i,[1]*pipes);array(d.capture_i,records)
+        if batch%5==0 and pipes>1:
+            # Two writers target one owner: last capture wins, then the other
+            # owner gets a later capture from the opposite physical writer.
+            winner=make(ids[0],batch%val(d.cfg_rob_o));d.capture_i[pipes-1].value=winner
+            records[0]=winner
+            await tick(d);clear(d,INPUTS)
+            d.capture_valid_i[0].value=1;d.capture_i[0].value=records[1]
+        await tick(d);clear(d,INPUTS)
+        for p,idx in enumerate(ids):
+            d.update_valid_i[p].value=1;d.update_i[p].value=update(d,idx,val(d.gen_obs_o[idx]),REPLAY,CONFLICT)
+            records[p]=replace(records[p],wait_reason=CONFLICT,mshr_id=0,exc=0)
+        await tick(d);clear(d,INPUTS)
+        for held in range(4):
+            await settle()
+            assert replay_ids(d)==ids,(batch,held,'age order')
+            assert [val(d.replay_o[p]) for p in range(pipes)]==records,(batch,held,'full opaque payload')
+            await tick(d)
+        array(d.replay_ready_i,[1]*pipes);await tick(d);clear(d,INPUTS)
+        selected=batch%pipes;idx=ids[selected]
+        d.update_valid_i[0].value=1;d.update_i[0].value=update(d,idx,val(d.gen_obs_o[idx]),REPLAY,11)
+        records[selected]=replace(records[selected],wait_reason=11,mshr_id=0,exc=0)
+        await tick(d);clear(d,INPUTS)
+        d.rob_head_i.value=(batch+selected)%val(d.cfg_rob_o);await settle()
+        assert val(d.heu_valid_o)==1 and val(d.heu_entry_o)==records[selected],(batch,'HEU full payload')
+        d.heu_done_i.value=1;d.heu_done_idx_i.value=val(d.rob_head_i)
+        await tick(d);clear(d,INPUTS);d.release_count_i.value=pipes;await tick(d)
+        assert val(d.free_count_o)==val(d.cfg_depth_o)

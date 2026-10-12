@@ -7,8 +7,10 @@
  * canceled results are consumed for discard without completing a reused ROB entry.
  * L8b HEU uses extra source 5; CSR keeps the serialized head path in backend.
  * 当前实现状态：闭环简化（L9）；lint/测试未运行。
- * Pure combinational N grants; N edge updates PRF/ready/ROB with the same event;
- * N+1 ungranted producer heads still hold their numerical result and identity.
+ * W0 ranks and selects producer heads only when transport has registered credit.
+ * Edge W0 transfers results/identity to writeback_transport; W1 independently
+ * writes PRF/ready/ROB. Unselected heads and no-write completions remain held
+ * when transport is full. Cancellation discards never depend on admission.
  */
 module writeback_arbiter
     import o3_pkg::*;
@@ -22,7 +24,8 @@ module writeback_arbiter
     //   0 MUL、1 DIV、2 FP-MISC→INT（比较/分类）、3 FP-CONV→INT（F2I/FMV.X）、4 CSR、5 AMO/LR/SC
     localparam int NUM_EXTRA_SRC = 6
 ) (
-    input logic flush_all_i,
+    input logic flush_all_i,input logic admit_i=1'b1,
+    output logic [$clog2(NUM_ALUS+P+1+NUM_EXTRA_SRC)-1:0] write_source_o[PRF_WRITE_PORTS],
     input int_execute_result_t alu_result_i [NUM_ALUS-1:0],
     input load_result_t load_result_i[P],
     input branch_result_t branch_result_i,
@@ -119,12 +122,13 @@ module writeback_arbiter
             for (int node=LEAVES-1;node>0;node--)
                 counts[src][node]=counts[src][2*node]+counts[src][2*node+1];
             for (int port=0;port<PRF_WRITE_PORTS;port++)
-                grant_by_port[port][src]=candidate_valid[src] && port<NUM_SOURCES
+                grant_by_port[port][src]=admit_i && candidate_valid[src] && port<NUM_SOURCES
                     && counts[src][1]==RANK_W'(port);
         end
     end
 
     always_comb begin
+        write_source_o='{default:'0};
         selected = '{default: 1'b0};
         prf_wr_en_o = '{default: 1'b0};
         prf_wr_addr_o = '{default: '0};
@@ -136,6 +140,7 @@ module writeback_arbiter
             for (int src = 0; src < NUM_SOURCES; src++) begin
                 logic grant;
                 grant = grant_by_port[port][src];
+                write_source_o[port] |= $clog2(NUM_SOURCES)'(src) & {$clog2(NUM_SOURCES){grant}};
                 selected[src] |= grant;
                 prf_wr_en_o[port] |= grant;
                 prf_wr_addr_o[port] |= candidate_dst[src] & {PREG_IDX_WIDTH{grant}};
@@ -146,11 +151,11 @@ module writeback_arbiter
         for (int alu = 0; alu < NUM_ALUS; alu++) begin
             alu_consume_o[alu] = !alu_result_i[alu].valid
                               || killed(alu_result_i[alu].branch_mask)
-                              || !alu_result_i[alu].dst_write_en
+                              || (admit_i && !alu_result_i[alu].dst_write_en)
                               || selected[alu];
             complete_valid_o[alu] = alu_result_i[alu].valid
                                   && !killed(alu_result_i[alu].branch_mask)
-                                  && (!alu_result_i[alu].dst_write_en || selected[alu]);
+                                  && ((admit_i && !alu_result_i[alu].dst_write_en) || selected[alu]);
             complete_idx_o[alu] = alu_result_i[alu].rob_idx;
             complete_data_o[alu] = alu_result_i[alu].result;
         end
@@ -166,9 +171,9 @@ module writeback_arbiter
         end
         for(int e=0;e<NUM_EXTRA_SRC;e++) begin
             extra_consume_o[e]=!extra_src_i[e].valid || killed(extra_src_i[e].tag.br_mask) ||
-                !extra_src_i[e].tag.dst_write_en || selected[NUM_ALUS+P+1+e];
+                (admit_i && !extra_src_i[e].tag.dst_write_en) || selected[NUM_ALUS+P+1+e];
             extra_complete_valid_o[e]=extra_src_i[e].valid && !killed(extra_src_i[e].tag.br_mask) &&
-                (!extra_src_i[e].tag.dst_write_en || selected[NUM_ALUS+P+1+e]);
+                ((admit_i && !extra_src_i[e].tag.dst_write_en) || selected[NUM_ALUS+P+1+e]);
             extra_complete_idx_o[e]=extra_src_i[e].tag.rob_idx;
             extra_complete_data_o[e]=extra_src_i[e].data;
             extra_complete_fflags_o[e]=extra_src_i[e].fflags;

@@ -28,11 +28,13 @@ module load_store_unit_tb_top import o3_pkg::*; #(
     input o3_types_pkg::dcache_resp_t dc_resp_i[P],
     output logic store_complete_valid_o[P],output logic [ROB_IDX_WIDTH-1:0] store_complete_rob_idx_o[P],
     output load_result_t load_result_o[P],input logic load_result_ready_i[P],
+    output o3_types_pkg::wake_promise_t wake_o[P],
+    output o3_types_pkg::cpl_bypass_t bypass_o[P],
     output logic exc_valid_o[P],output logic [ROB_IDX_WIDTH-1:0] exc_rob_idx_o[P],
     output o3_types_pkg::exc_info_t exc_o[P],input logic exc_ready_i[P],
     input logic flush_all_i,resolution_valid_i,resolution_mispredict_i,input branch_tag_t resolution_tag_i,
     input o3_types_pkg::dmmu_csr_t csr_i,input o3_types_pkg::pmp_state_t pmp_i,
-    output logic [31:0] cfg_tags_o,cfg_rob_o,cfg_lq_o,
+    output logic [31:0] cfg_tags_o,cfg_rob_o,cfg_lq_o,cfg_fifo_o,
     output o3_types_pkg::dcache_resp_t fmt_response_valid,fmt_response_status,fmt_response_reason,
     fmt_response_mshr_id,fmt_response_lq_tag_idx,fmt_response_lq_tag_gen,fmt_response_rdata,fmt_response_exc,
     output mem_execute_uop_t fmt_uop_valid,fmt_uop_instruction_id,fmt_uop_rob_idx,fmt_uop_lq_idx,
@@ -53,6 +55,7 @@ module load_store_unit_tb_top import o3_pkg::*; #(
     output o3_types_pkg::dcache_req_t fmt_request_check_only,
     output o3_types_pkg::dcache_req_t fmt_request_bytes,
     output o3_types_pkg::dcache_req_t fmt_request_rob_idx,
+    output o3_types_pkg::wake_promise_t fmt_wake_valid,fmt_wake_preg,fmt_wake_br_mask,
     output o3_types_pkg::dcache_resp_t fmt_response_head,
     output o3_types_pkg::dcache_resp_t fmt_response_paddr,
     output o3_types_pkg::dcache_resp_t fmt_response_io);
@@ -63,8 +66,11 @@ module load_store_unit_tb_top import o3_pkg::*; #(
     end
     load_store_unit #(.CFG(CFG)) dut(.lq_tag_i(lq_tag_i),.dc_req_ready_i(dc_req_ready_i),
         .sfence_i('0),.sfence_done_o(),.rob_head_i('0),.sq_ad_wake_o(),.perf_o(),.*);
-    assign cfg_tags_o=CFG.rename.checkpoints;assign cfg_rob_o=CFG.rob.entries;assign cfg_lq_o=CFG.lsu.lq_depth;
+    assign cfg_fifo_o=CFG.lsu.ld_result_fifo;assign cfg_tags_o=CFG.rename.checkpoints;assign cfg_rob_o=CFG.rob.entries;assign cfg_lq_o=CFG.lsu.lq_depth;
     always_comb begin
+        fmt_wake_valid='0;fmt_wake_valid.valid='1;
+        fmt_wake_preg='0;fmt_wake_preg.preg='1;
+        fmt_wake_br_mask='0;fmt_wake_br_mask.br_mask='1;
         fmt_uop_valid='0;fmt_uop_valid.valid='1;
         fmt_uop_instruction_id='0;fmt_uop_instruction_id.instruction_id='1;
         fmt_uop_rob_idx='0;fmt_uop_rob_idx.rob_idx='1;

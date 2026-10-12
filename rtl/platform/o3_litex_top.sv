@@ -1,6 +1,7 @@
 /** O3 v1 platform boundary, including coherent SD DMA.
  * 当前实现状态：目标实现（L11）；功能测试与FPGA验证待后续阶段。
  * Flattened ports for LiteX Instance; no Breeze build/runtime dependency.
+ * Three/four-wide cores share four debug trace slots; unused slots are zero.
  */
 module o3_litex_top import o3_types_pkg::*; (
 
@@ -59,6 +60,7 @@ module o3_litex_top import o3_types_pkg::*; (
     output logic [255:0] retire_pc_o,
     output logic [127:0] retire_inst_o
 );
+    localparam int COMMIT_WIDTH=o3_cfg_pkg::O3_CFG.core.commit_width;
     dma_req_t dma_req; dma_resp_t dma_resp;
     logic dma_req_valid,dma_req_ready,dma_resp_valid,dma_resp_ready,done_unused;
     paddr_t axi_awaddr_full,axi_araddr_full;
@@ -67,7 +69,11 @@ module o3_litex_top import o3_types_pkg::*; (
     initial begin
         assert(o3_cfg_pkg::O3_CFG.be.l2.axi_data_bits==128);
         assert(o3_cfg_pkg::O3_CFG.be.l2.axi_id_bits==4);
-        assert(o3_cfg_pkg::O3_CFG.core.commit_width==4);
+        assert(COMMIT_WIDTH>=3 && COMMIT_WIDTH<=4);
+        assert(o3_cfg_pkg::O3_CFG.be.decode.width==o3_cfg_pkg::O3_CFG.fe.fetch.deliver_width);
+        assert(o3_cfg_pkg::O3_CFG.be.rename.width==o3_cfg_pkg::O3_CFG.be.decode.width);
+        assert(o3_cfg_pkg::O3_CFG.be.dispatch.width==o3_cfg_pkg::O3_CFG.be.rename.width);
+        assert(COMMIT_WIDTH==o3_cfg_pkg::O3_CFG.be.dispatch.width);
     end
     sd_dma_bridge u_sd_dma(
         .clk_i(clk_i),.rst_i(rst_i),.wb_adr_i(sd_dma_adr_i),.wb_dat_w_i(sd_dma_dat_w_i),
@@ -76,11 +82,17 @@ module o3_litex_top import o3_types_pkg::*; (
         .dma_req_valid_o(dma_req_valid),.dma_req_ready_i(dma_req_ready),.dma_req_o(dma_req),
         .dma_resp_valid_i(dma_resp_valid),.dma_resp_ready_o(dma_resp_ready),.dma_resp_i(dma_resp));
 `ifdef ENABLE_RETIRE_INFO
-    o3_pkg::retire_info_t retire_info [3:0];
+    o3_pkg::retire_info_t retire_info [COMMIT_WIDTH-1:0];
     for(genvar lane=0;lane<4;lane++) begin
-        assign retire_valid_o[lane]=retire_info[lane].valid;
-        assign retire_pc_o[lane*64+:64]=64'(retire_info[lane].pc);
-        assign retire_inst_o[lane*32+:32]=retire_info[lane].instruction;
+        if(lane<COMMIT_WIDTH) begin
+            assign retire_valid_o[lane]=retire_info[lane].valid;
+            assign retire_pc_o[lane*64+:64]=64'(retire_info[lane].pc);
+            assign retire_inst_o[lane*32+:32]=retire_info[lane].instruction;
+        end else begin
+            assign retire_valid_o[lane]=0;
+            assign retire_pc_o[lane*64+:64]='0;
+            assign retire_inst_o[lane*32+:32]='0;
+        end
     end
 `else
     // Production omits detailed retirement traces; scalar count remains live.

@@ -13,16 +13,13 @@
  * 例（B02 3.2）：I0 写 x5，I1 读 x5 写 x6。R1 只记录 I1.src1 依赖槽 0；R2 分配 p32/p33 后
  * 让 I1 源选 p32，而不是 RAT 中 x5 的旧映射。
  *
- * 当前实现状态：空壳。只有端口与注释，没有逻辑，输出未驱动。
- * 现有 rename 仍由 rename_map_table 内部做组内旁路（旧路径）。
+ * 当前实现状态：目标实现。四宽纯组合依赖预处理，接入实际 R1/R2 路径。
  *
  * 逐周期说明（目标）：本模块纯组合。
  * - 周期 N 组合：对 Decode Queue 展示的最老前缀计算依赖，送 rename_stage_buffer。
  * - 周期 N 上升沿：buffer 接受时 Decode Queue 移走对应指令，buffer 保存 uop 与依赖。
  *
- * 验证要点（B02 3.4，未执行）：RAW/WAW 链、同名多写、x0/无目的、0～6 条。
- *
- * 本阶段不写测试代码和仿真代码。
+ * 验证待后端重构后统一进行：RAW/WAW 链、同名多写、INT/FP、src3、x0/f0。
  */
 module rename_dep_r1
     import o3_pkg::*;
@@ -34,5 +31,35 @@ module rename_dep_r1
     input  logic [$clog2(WIDTH+1)-1:0]          count_i,
     output o3_types_pkg::r1_lane_dep_t          dep_o [WIDTH-1:0]
 );
-    // 未实现：按域比较的优先编码。
+    always_comb begin
+        for (int lane = 0; lane < WIDTH; lane++) begin
+            dep_o[lane] = '0;
+            if (lane < int'(count_i) && uop_i[lane].valid) begin
+                // Ascending scan: the nearest older writer wins for each operand.
+                for (int older = 0; older < lane; older++) begin
+                    if (older < int'(count_i) && uop_i[older].valid
+                        && uop_i[older].rd_write_en
+                        && (uop_i[older].ext.rd_dom == o3_types_pkg::RD_FP
+                            || uop_i[older].rd != '0)) begin
+                        if (uop_i[lane].rs1_read_en
+                            && uop_i[lane].ext.rs1_dom == uop_i[older].ext.rd_dom
+                            && uop_i[lane].rs1 == uop_i[older].rd)
+                            dep_o[lane].src1 = '{valid:1'b1, slot:o3_types_pkg::RENAME_SLOT_W'(older)};
+                        if (uop_i[lane].rs2_read_en
+                            && uop_i[lane].ext.rs2_dom == uop_i[older].ext.rd_dom
+                            && uop_i[lane].rs2 == uop_i[older].rd)
+                            dep_o[lane].src2 = '{valid:1'b1, slot:o3_types_pkg::RENAME_SLOT_W'(older)};
+                        if (uop_i[lane].ext.rs3_read_en
+                            && uop_i[lane].ext.rs3_dom == uop_i[older].ext.rd_dom
+                            && uop_i[lane].ext.rs3 == uop_i[older].rd)
+                            dep_o[lane].src3 = '{valid:1'b1, slot:o3_types_pkg::RENAME_SLOT_W'(older)};
+                        if (uop_i[lane].rd_write_en
+                            && uop_i[lane].ext.rd_dom == uop_i[older].ext.rd_dom
+                            && uop_i[lane].rd == uop_i[older].rd)
+                            dep_o[lane].rd_prev = '{valid:1'b1, slot:o3_types_pkg::RENAME_SLOT_W'(older)};
+                    end
+                end
+            end
+        end
+    end
 endmodule

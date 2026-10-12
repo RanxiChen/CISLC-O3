@@ -73,7 +73,31 @@ module ICache
     localparam int BANKS=CFG.icache.banks,WAYS=CFG.icache.ways,SETS=CFG.icache.sets/BANKS,
         SW=$clog2(SETS),TW=MEM_PADDR_W-7-SW,WAITERS=CFG.fetch.return_queue_depth;
     typedef struct packed {logic valid,pf;logic [TW-1:0] tag;} tag_t;
-    tag_t tags_q[BANKS][SETS][WAYS];
+    logic valid_q[BANKS][SETS][WAYS],pf_q[BANKS][SETS][WAYS];
+    tag_t request_tags[BANKS][WAYS],fill_tags[BANKS][WAYS],prefetch_tags[BANKS][WAYS];
+    // Reset/invalidation clear valid/prefetch metadata; stale RAM data is hidden.
+    // Reads observe the old tag at the request edge, with existing fill replay.
+    // Three explicit readers (request, fill lookup, prefetch lookup) share a
+    // sole fill writer. Valid/prefetch metadata remains independently mutable.
+    for(genvar b=0;b<BANKS;b++) begin : g_tag_bank
+        for(genvar w=0;w<WAYS;w++) begin : g_tag_way
+            for(genvar rp=0;rp<3;rp++) begin : g_replica
+                (* ram_style="distributed" *) logic [TW-1:0] mem[SETS];
+                logic [SW-1:0] index;
+                tag_t read_tag;
+                if(rp==0) assign index=SW'(selected_req.region_base>>7);
+                else if(rp==1) assign index=SW'(fill_line>>7);
+                else assign index=SW'(pf_pending_req_q.line_paddr>>7);
+                assign read_tag='{valid:valid_q[b][index][w],pf:pf_q[b][index][w],
+                    tag:(valid_q[b][index][w] ? mem[index]:'0)};
+                if(rp==0) assign request_tags[b][w]=read_tag;
+                else if(rp==1) assign fill_tags[b][w]=read_tag;
+                else assign prefetch_tags[b][w]=read_tag;
+                always_ff @(posedge clk) if(!rst && !inv_all_i && fill_done && !fill_error && fill_bank==b && fill_way==w)
+                    mem[fill_set]<=TW'(fill_line>>(7+SW));
+            end
+        end
+    end
     logic [WAYS-2:0] plru_q[BANKS][SETS];
     typedef struct packed {icache_req_t req;paddr_t pa;logic pf,af,stale;} query_t;
     query_t s1_q,s2_q,s3_q;logic v1_q,v2_q,v3_q,s1_ready,s2_ready,s3_ready;
@@ -323,12 +347,12 @@ module ICache
 
         fill_bank=int'(fill_line[6]);fill_set=int'(SW'(fill_line>>7));
         fill_way=victim(plru_q[fill_bank][fill_set]);
-        for(int w=WAYS-1;w>=0;w--) if(!tags_q[fill_bank][fill_set][w].valid) fill_way=w;
-        for(int w=0;w<WAYS;w++) if(tags_q[fill_bank][fill_set][w].valid && tags_q[fill_bank][fill_set][w].tag==TW'(fill_line>>(7+SW))) fill_way=w;
+        for(int w=WAYS-1;w>=0;w--) if(!fill_tags[fill_bank][w].valid) fill_way=w;
+        for(int w=0;w<WAYS;w++) if(fill_tags[fill_bank][w].valid && fill_tags[fill_bank][w].tag==TW'(fill_line>>(7+SW))) fill_way=w;
         alloc_valid=v3_q && !stale && !hit && !fault && free_waiter>=0;
         prefetch_hit=0;
-        for(int w=0;w<WAYS;w++) prefetch_hit|=tags_q[pf_pending_req_q.line_paddr[6]][SW'(pf_pending_req_q.line_paddr>>7)][w].valid &&
-            tags_q[pf_pending_req_q.line_paddr[6]][SW'(pf_pending_req_q.line_paddr>>7)][w].tag==TW'(pf_pending_req_q.line_paddr>>(7+SW));
+        for(int w=0;w<WAYS;w++) prefetch_hit|=prefetch_tags[pf_pending_req_q.line_paddr[6]][w].valid &&
+            prefetch_tags[pf_pending_req_q.line_paddr[6]][w].tag==TW'(pf_pending_req_q.line_paddr>>(7+SW));
         prefetch_bad=pf_bad_q || pf_pending_req_q.epoch!=csr_i.epoch || pmp_i.update;
         pf_req_ready_o=!rst && !inv_all_i && !xlate_kill_i && !pf_pending_q;
         pf_process_ready=prefetch_bad || prefetch_hit || probe_inflight ||
@@ -357,8 +381,8 @@ module ICache
     always_comb begin
         perf_o=tlb_perf | mshr_perf;
         perf_o[PE_PF_THROTTLED]=PERF_INC_W'(pf_req_valid_i && !pf_req_ready_o && !inv_all_i);
-        perf_o[PE_PF_USEFUL]=PERF_INC_W'(v3_q && !stale && hit && !fault && s3_complete && tags_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)][hit_way].pf);
-        perf_o[PE_PF_UNUSED_EVICT]=PERF_INC_W'(fill_done && !fill_error && tags_q[fill_bank][fill_set][fill_way].valid && tags_q[fill_bank][fill_set][fill_way].pf);perf_o[PE_ICACHE_DEMAND_HIT]=PERF_INC_W'(v3_q && !stale && hit && !fault && s3_complete);
+        perf_o[PE_PF_USEFUL]=PERF_INC_W'(v3_q && !stale && hit && !fault && s3_complete && pf_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)][hit_way]);
+        perf_o[PE_PF_UNUSED_EVICT]=PERF_INC_W'(fill_done && !fill_error && valid_q[fill_bank][fill_set][fill_way] && pf_q[fill_bank][fill_set][fill_way]);perf_o[PE_ICACHE_DEMAND_HIT]=PERF_INC_W'(v3_q && !stale && hit && !fault && s3_complete);
         perf_o[PE_ICACHE_DEMAND_MISS]=PERF_INC_W'(v3_q && !stale && !hit && !fault && s3_complete);
     end
     // Each bank/way has one synchronous read and one fill write port. Select
@@ -390,7 +414,7 @@ module ICache
             waiter_req_q<='{default:'0};waiter_line_q<='{default:'0};waiter_age_q<='{default:0};age_q<=0;
             inv_done_o<=0;pmp_update_done_o<=0;
             for(int b=0;b<BANKS;b++) for(int s=0;s<SETS;s++) begin
-                plru_q[b][s]<=0;for(int w=0;w<WAYS;w++) tags_q[b][s][w]<='0;
+                plru_q[b][s]<=0;for(int w=0;w<WAYS;w++) begin valid_q[b][s][w]<=0;pf_q[b][s][w]<=0;end
             end
         end else begin
             inv_done_o<=inv_all_i;pmp_update_done_o<=1;
@@ -419,7 +443,7 @@ module ICache
                 if(fire) begin
                     s1_q.req<=selected_req;s1_q.stale<=0;
                     for(int w=0;w<WAYS;w++) begin
-                        tag_read_q[w]<=tags_q[selected_req.region_base[6]][SW'(selected_req.region_base>>7)][w];
+                        tag_read_q[w]<=request_tags[selected_req.region_base[6]][w];
                     end
                 end
             end else if(fill_done && !fill_error && fill_bank==int'(s1_q.req.region_base[6]) &&
@@ -465,16 +489,16 @@ module ICache
                     waiter_ready_q[n]<=1;waiter_data_q[n]<=fill_data[int'(waiter_req_q[n].region_base[5:4])*FETCH_BYTES*8+:FETCH_BYTES*8];waiter_error_q[n]<=fill_error;
                 end
                 if(!fill_error) begin
-                    tags_q[fill_bank][fill_set][fill_way]<='{valid:1'b1,pf:fill_pf,tag:TW'(fill_line>>(7+SW))};
+                    valid_q[fill_bank][fill_set][fill_way]<=1'b1;pf_q[fill_bank][fill_set][fill_way]<=fill_pf;
                     plru_q[fill_bank][fill_set]<=touch(plru_q[fill_bank][fill_set],fill_way);
                 end
             end
-            if(v3_q && !stale && hit && !fault && s3_complete) tags_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)][hit_way].pf<=0;
+            if(v3_q && !stale && hit && !fault && s3_complete) pf_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)][hit_way]<=0;
             if(v3_q && !stale && hit && s3_complete) plru_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)]<=
                 touch(plru_q[s3_q.req.region_base[6]][SW'(s3_q.req.region_base>>7)],hit_way);
             if(inv_all_i) begin
                 assert(mshr_idle);v1_q<=0;v2_q<=0;v3_q<=0;retry_count_q<=0;retry_head_q<=0;retry_tail_q<=0;xlate_saved_q<=0;ingress_count_q<=0;ingress_head_q<=0;ingress_tail_q<=0;
-                for(int b=0;b<BANKS;b++) for(int s=0;s<SETS;s++) for(int w=0;w<WAYS;w++) tags_q[b][s][w]<='0;
+                for(int b=0;b<BANKS;b++) for(int s=0;s<SETS;s++) for(int w=0;w<WAYS;w++) begin valid_q[b][s][w]<=0;pf_q[b][s][w]<=0;end
             end
         end
     end

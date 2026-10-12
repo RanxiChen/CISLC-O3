@@ -8,6 +8,7 @@ module load_queue_tb_top import o3_pkg::*; #(
  input o3_types_pkg::coh_addr_t dma_line_i,pte_a_line_i,
  output logic order_flush_o,heu_valid_o,
  output logic [CFG.rob.entries-1:0] rob_order_flush_o,
+ output logic [o3_cfg_pkg::O3_CFG.core.commit_width-1:0] retire_order_flush_o,
  output lq_replay_t heu_entry_o,
  output logic order_obs_o[D],
     input logic alloc_req_i[W-1:0],input logic alloc_fire_i,

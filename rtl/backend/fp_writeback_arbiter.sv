@@ -1,9 +1,10 @@
 /**
- * L9 FP writeback: oldest-first two-port grant. Pure combinational arbitration.
- * N: filter cancellation, select sources and return consume; N edge: PRF/ready/ROB
- * accept the same grant. N+1: other candidates remain in producer holding slots.
+ * L9 FP writeback: oldest-first configured-port grants. Pure combinational arbitration.
+ * W0 filters/ranks sources and transfers selected heads to writeback_transport
+ * when registered credit is available. W1 alone writes PRF/ready/ROB;
+ * other candidates remain in producer holding slots.
  * Global flush forbids writes/completion in its own cycle; killed results are discarded.
- * B33 early wakeup for FP FUs is deferred to performance work; actual PRF writes wake IQs.
+ * B33 scheduling notices come from FP FUs; only actual grants mark PRF-ready/ROB-complete.
  * 当前实现状态：闭环简化（L9）；功能与 lint 未运行。
  */
 module fp_writeback_arbiter import o3_pkg::*; #(
@@ -11,7 +12,8 @@ module fp_writeback_arbiter import o3_pkg::*; #(
     localparam int WRITE_PORTS=CFG.exec.fp_prf_write_ports,
     parameter int NUM_SRC=CFG.exec.num_fma+CFG.exec.num_fdivsqrt+CFG.exec.num_fmisc+CFG.exec.num_fconv+CFG.lsu.agu_pipes
 ) (
-    input o3_types_pkg::wb_req_t src_i [NUM_SRC],
+    input o3_types_pkg::wb_req_t src_i [NUM_SRC],input logic admit_i=1'b1,
+    output logic [$clog2(NUM_SRC)-1:0] write_source_o[WRITE_PORTS],
     output logic consume_o [NUM_SRC],
     input logic [ROB_IDX_WIDTH-1:0] rob_head_i,
     input branch_resolution_t resolution_i,
@@ -50,12 +52,13 @@ module fp_writeback_arbiter import o3_pkg::*; #(
             for (int node=LEAVES-1;node>0;node--)
                 counts[src][node]=counts[src][2*node]+counts[src][2*node+1];
             for (int port=0;port<WRITE_PORTS;port++)
-                grant_by_port[port][src]=eligible[src] && port<NUM_SRC
+                grant_by_port[port][src]=admit_i && eligible[src] && port<NUM_SRC
                     && counts[src][1]==RANK_W'(port);
         end
     end
 
     always_comb begin
+        write_source_o='{default:'0};
         prf_wr_en_o='{default:0}; prf_wr_addr_o='{default:'0}; prf_wr_data_o='{default:'0};
         complete_valid_o='{default:0}; complete_idx_o='{default:'0};
         complete_data_o='{default:'0}; complete_fflags_o='{default:'0};
@@ -64,6 +67,7 @@ module fp_writeback_arbiter import o3_pkg::*; #(
             for (int s=0;s<NUM_SRC;s++) begin
                 logic grant;
                 grant = grant_by_port[p][s];
+                write_source_o[p] |= $clog2(NUM_SRC)'(s) & {$clog2(NUM_SRC){grant}};
                 consume_o[s] |= grant;
                 prf_wr_en_o[p] |= grant && src_i[s].tag.dst_write_en;
                 prf_wr_addr_o[p] |= src_i[s].tag.dst_preg & {PREG_IDX_WIDTH{grant}};

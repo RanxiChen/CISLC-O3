@@ -68,7 +68,7 @@ package o3_cfg_pkg;
     // ------------------------------------------------------------
     typedef struct packed {
         int unsigned region_bytes;        // 已定 16：16B 对齐预测/取指区域，8 个半字槽位（D03）
-        int unsigned deliver_width;       // 已定 4：按序每拍最多交付 4 条（第 16.2 节）
+        int unsigned deliver_width;       // 当前三宽候选；历史四宽见设计基线
         int unsigned return_queue_depth;  // 暂定 8：原始返回队列，参数化并测量占用（D15）
         int unsigned f0_slots;            // D35：F0 每拍最多输出的指令条数
         int unsigned f1_width;            // 待定：F1 每拍写入指令 buffer 的最大条数（第 10 节）
@@ -190,22 +190,23 @@ package o3_cfg_pkg;
     } dispatch_cfg_t;
 
     typedef struct packed {
-        int unsigned num_alu;             // 待定：整数 ALU 数（现状 4 不是基线决定）
+        int unsigned num_alu;             // 2026-10-11：两条对称 ALU，三宽资源候选
+        int unsigned int_issue_width;     // IQ selection width, independent of FU count
         int unsigned int_prf_read_ports;  // 待定：整数 PRF 读口
         int unsigned int_prf_write_ports; // 待定：整数 PRF 写口
-        int unsigned fp_prf_read_ports;   // L9: two three-source FP lanes + one FP store data port
-        int unsigned fp_prf_write_ports;  // L9: two oldest-first FP write ports
+        int unsigned fp_prf_read_ports;   // one/two three-source FP read sets plus independent MEM store ports
+        int unsigned fp_prf_write_ports;  // one/two oldest-first FP write ports
         int unsigned mul_stages;          // B43：DSP 乘法四级实际流水，O3 包装额外延迟另计
         int unsigned mul_result_slots;    // 待定：乘法完成 FIFO 深度。机制已定（B33）：接受请求时预留完成空间，
                                           // 流水不停顿，唤醒承诺不因写回推迟而失效；深度未冻结
         int unsigned cpl_fifo_depth;      // 待定：其他流水 FU（ALU 结果槽外的 FP 等）完成 FIFO 深度（B33），
                                           // 首版可统一取值，测量后按 FU 拆分
         int unsigned div_max_iters;       // 已定方向 32：radix-4 最多 32 次迭代，不是 FU 固定延迟（B21）
-        int unsigned num_fma;             // 已定 2：两个对称 FMA/ADDMUL FU（B14）
+        int unsigned num_fma;             // 2026-10-11：资源候选一个 FMA；支持恢复两个（B14/用户资源削减）
         int unsigned num_fdivsqrt;        // 已定 1（B14）
         int unsigned num_fmisc;           // 已定 1（B14）
         int unsigned num_fconv;           // 已定 1（B14）
-        int unsigned fpu_inflight_slots;  // L9: 8 identity slots per FP FU, retained through final termination
+        int unsigned fpu_inflight_slots;  // Base FP identity capacity; ADDMUL additionally covers DP7 + holding + admission slack
     } exec_cfg_t;
 
     typedef struct packed {
@@ -213,6 +214,7 @@ package o3_cfg_pkg;
         int unsigned sq_depth;            // 待定
         int unsigned mem_pipes;
         int unsigned ld_result_fifo;
+        int unsigned cache_s0_delay;       // RR/cache reservation to S0; AG + translation request/result stages
         int unsigned agu_pipes;           // 待定：“1 条 load + 1 条 load/store”只是建议（B03）
         bit heu_enable, split_enable, order_flush_enable;
         int unsigned lq_gen_bits;         // 待定：LQ 事务身份代际宽度；现有 1 位不足（B04）
@@ -286,22 +288,22 @@ package o3_cfg_pkg;
             mem_paddr_bits:    32,
             asid_bits:         16,
             xlate_epoch_bits:  8,
-            commit_width:      4,
+            commit_width:      3,
             hpm_counters:      8,
             pmp_entries:       16
         },
         fe: '{
             fetch: '{
                 region_bytes:            16,
-                deliver_width:           4,
+                deliver_width:           3,
                 return_queue_depth:      8,
                 f0_slots:                8,
                 f1_width:                8,
-                ibuf_depth:              32,
+                ibuf_depth:              16,
                 ibuf_req_free_threshold: 8
             },
             ftq: '{
-                depth:             32,
+                depth:             16,
                 gen_bits:          8,
                 train_queue_depth: 4
             },
@@ -310,8 +312,8 @@ package o3_cfg_pkg;
                 tag_bits: 12
             },
             btb: '{
-                sets:     512,
-                ways:     4,
+                sets:     256,
+                ways:     2,
                 tag_bits: 16
             },
             tage: '{
@@ -319,9 +321,9 @@ package o3_cfg_pkg;
                 event_window: 128,
                 fold_shift:   2,
                 hist_len:     '{4, 8, 16, 32, 64, 128},
-                index_bits:   '{10, 10, 10, 10, 10, 10},
+                index_bits:   '{9, 9, 9, 9, 9, 9},
                 tag_bits:     '{8, 8, 8, 8, 8, 8},
-                base_entries: 2048,
+                base_entries: 1024,
                 ctr_bits:     3,
                 useful_bits:  2,
                 meta_bits:    128
@@ -353,37 +355,39 @@ package o3_cfg_pkg;
         },
         be: '{
             decode: '{
-                width:       4,
-                queue_depth: 16
+                width:       3,
+                queue_depth: 8
             },
             rename: '{
-                width:         4,
-                int_phys_regs: 96,
+                width:         3,
+                int_phys_regs: 64,
                 fp_phys_regs:  64,
-                checkpoints:   16,
-                rdq_depth:     16
+                checkpoints:   4,
+                rdq_depth:     8
             },
             rob: '{
-                entries: 64
+                entries: 32
             },
             dispatch: '{
-                width:        4,
-                int_iq_depth: 16,
-                mem_iq_depth: 12,
-                br_iq_depth:  8,
-                fp_iq_depth:  12
+                width:        3,
+                int_iq_depth: 8,
+                mem_iq_depth: 8,
+                br_iq_depth:  4,
+                fp_iq_depth:  8
             },
             exec: '{
+                // Three-wide only after both four-wide resource candidates exceeded KU040.
                 num_alu:             2,
-                int_prf_read_ports:  6,
-                int_prf_write_ports: 3,
-                fp_prf_read_ports:   8,
-                fp_prf_write_ports:  2,
+                int_issue_width:     3,
+                int_prf_read_ports:  4,
+                int_prf_write_ports: 2,
+                fp_prf_read_ports:   5,
+                fp_prf_write_ports:  1,
                 mul_stages:          4,
                 mul_result_slots:    8,
                 cpl_fifo_depth:      8,
                 div_max_iters:       32,
-                num_fma:             2,
+                num_fma:             1,
                 num_fdivsqrt:        1,
                 num_fmisc:           1,
                 num_fconv:           1,
@@ -394,11 +398,12 @@ package o3_cfg_pkg;
                 sq_depth:    16,
                 agu_pipes:   2,
                 mem_pipes:   2,
-                ld_result_fifo: 2,
+                ld_result_fifo: 8,
+                cache_s0_delay: 3,
                 lq_gen_bits: 8, heu_enable:1, split_enable:1, order_flush_enable:1
             },
             dcache: '{
-                line_bytes:64, sets:64, ways:8, banks:8, mshrs:4,
+                line_bytes:64, sets:64, ways:4, banks:8, mshrs:4,
                 wb_buffers:2, mshr_reserve:1, rfo_enable:1, rsv_window:80, atomic_hold_max:16
             },
             mmu: '{
@@ -411,7 +416,7 @@ package o3_cfg_pkg;
                 ptw_slots:          1
             },
             l2: '{
-                sets:512, ways:8, line_bytes:64, slots:8,
+                sets:512, ways:4, line_bytes:64, slots:4,
                 put_buffers:2, mem_write_buffers:2, axi_id_bits:4, axi_data_bits:128
             },
             perf: '{

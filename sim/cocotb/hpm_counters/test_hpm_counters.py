@@ -136,7 +136,7 @@ async def mcycle_and_minstret_count(d):
     await tb.cycles(10)
     assert (await tb.peek(MCYCLE))[0] == 10
     total = 0
-    for r in [1, 4, 0, 3, 2]:
+    for r in [1, int(d.retire_width_o.value), 0, 3, 2]:
         d.retired_i.value = r
         total += r
         await tb.edge()
@@ -383,6 +383,38 @@ async def counter_wraps_at_64_bits(d):
 
 
 @cocotb.test()
+async def narrow_increment_carries_and_exact_overflow(d):
+    """Full-width arithmetic oracle, including carries at every chunk boundary.
+
+    Check the pre-edge overflow pulse separately from the post-edge count/OF;
+    registering events or the overflow pulse would fail these observations.
+    """
+    import random
+    tb = await setup(d)
+    inc_width = max(tb.few, tb.bew)
+    rng = random.Random(0xC105)
+    values = {0, MASK64}
+    for boundary in list(range(inc_width, 64, 16)) + [64]:
+        for offset in [-2, -1, 0, 1]:
+            values.add(((1 << boundary) + offset) & MASK64)
+    values.update(rng.getrandbits(64) for _ in range(32))
+    for value in sorted(values):
+        for inc in [0, 1, 2, (1 << tb.few) - 1]:
+            tb.drive_perf()
+            await tb.access(hpme(3), RW, 0x0101)  # OF clear, M counting enabled
+            await tb.access(hpmc(3), RW, value)
+            tb.drive_perf({1: inc})
+            await settle()
+            expected = value + inc
+            assert int(d.overflow_o.value) == (expected > MASK64), (value, inc)
+            assert (await tb.peek(hpmc(3)))[0] == value
+            await tb.edge()
+            tb.drive_perf()
+            assert (await tb.peek(hpmc(3)))[0] == (expected & MASK64), (value, inc)
+            assert (await tb.peek(hpme(3)))[0] >> 63 == (expected > MASK64)
+
+
+@cocotb.test()
 async def switch_live_sources_and_rmw_with_events(d):
     tb = await setup(d)
     await tb.access(hpme(3), RW, 0x0101)
@@ -501,3 +533,61 @@ async def overflow_uses_software_of_and_old_configuration(d):
     await tb.edge();tb.drive_perf();d.req_valid_i.value=0;d.write_i.value=0
     assert (await tb.peek(hpmc(3)))[0]==99
     assert (await tb.peek(hpme(3)))[0]==0x0101
+
+
+@cocotb.test()
+async def consecutive_events_forward_to_rmw_and_configuration_edges(d):
+    """Architected model checks each edge, including undrained event updates."""
+    import random
+    rng = random.Random(int(__import__('os').environ.get('TEST_SEED', '105')))
+    tb = await setup(d)
+    await tb.access(hpme(3), RW, 0x0101)
+    await clear_counters(tb)
+    expected, inhibited = 0, False
+    for cycle in range(1000):
+        inc = rng.randrange(1 << tb.few)
+        tb.drive_perf({1: inc})
+        assert (await tb.peek(hpmc(3)))[0] == expected, cycle
+        choice = rng.randrange(5)
+        if choice < 2:
+            op = RS if choice == 0 else RC
+            mask = rng.getrandbits(64)
+            old, illegal, written = await tb.access(hpmc(3), op, mask)
+            assert old == expected and not illegal, cycle
+            expected = (expected | mask) if op == RS else (expected & ~mask)
+            assert written == expected, cycle
+        elif choice == 2:
+            new_inhibit = bool(rng.randrange(2))
+            await tb.access(MINHIBIT, RW, 8 if new_inhibit else 0)
+            expected = (expected + (0 if inhibited else inc)) & MASK64
+            inhibited = new_inhibit
+        else:
+            await tb.edge()
+            expected = (expected + (0 if inhibited else inc)) & MASK64
+        assert (await tb.peek(hpmc(3)))[0] == expected, cycle
+    tb.drive_perf()
+    await tb.cycles(3)
+    assert (await tb.peek(hpmc(3)))[0] == expected
+
+
+@cocotb.test()
+async def pending_low_carry_preserves_exact_same_edge_overflow(d):
+    """Independent 64-bit architected oracle across two qualified increments."""
+    import random
+    rng=random.Random(105)
+    for transaction in range(192):
+        tb=await setup(d)
+        await tb.access(hpme(3),RW,0x0102)
+        maximum=(1<<tb.few)-1
+        first=rng.randrange(maximum+1);second=rng.randrange(maximum+1)
+        initial=(MASK64-rng.randrange(2*maximum+2))&MASK64
+        await tb.access(hpmc(3),RW,initial)
+        tb.drive_perf(fe={2:first});await tb.edge()
+        wrapped=(initial+first)>MASK64;view=(initial+first)&MASK64
+        tb.drive_perf(fe={2:second});await settle()
+        assert (await tb.peek(hpmc(3)))[0]==view
+        expected_wrap=view+second>MASK64
+        assert int(d.overflow_o.value)==int(expected_wrap and not wrapped),transaction
+        await tb.edge();tb.drive_perf()
+        assert (await tb.peek(hpmc(3)))[0]==((view+second)&MASK64)
+        assert ((await tb.peek(hpme(3)))[0]>>63)==int(wrapped or expected_wrap)

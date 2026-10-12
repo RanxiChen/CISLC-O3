@@ -30,6 +30,8 @@ class Bench:
         d.resp_rq_idx_i.value = i.response_idx
         d.resp_ftq_id_i.value = i.response_id
         d.resp_data_i.value = i.response_data
+        d.resp_exc_valid_i.value=int(i.response_exc)
+        d.resp_exc_cause_i.value=i.response_cause
         d.brief_slow_done_i.value = int(i.brief_done)
         d.brief_ftq_id_i.value = i.brief_id
         d.brief_slow_valid_i.value=int(i.slow_update)
@@ -59,6 +61,8 @@ class Bench:
             assert val(d.deq_ftq_id_o) == entry.ftq_id, context
             assert val(d.deq_region_base_o) == entry.pc, context
             assert val(d.deq_data_o) == entry.data, context
+            assert val(d.deq_exc_valid_o)==entry.exc_valid, context
+            assert val(d.deq_exc_cause_o)==entry.exc_cause, context
             assert val(d.deq_brief_id_o) == entry.ftq_id, context
 
     async def step(self, i):
@@ -173,3 +177,32 @@ async def held_snapshot_refresh_and_consecutive_delivery(dut):
  await b.step(Inputs(brief_done=True,brief_id=3,deq_ready=True))
  assert val(dut.deq_valid_o) and val(dut.deq_ftq_id_o)==3
  await b.step(Inputs(deq_ready=True));assert not val(dut.deq_valid_o)
+
+
+@cocotb.test()
+async def response_exception_payload_and_reused_slot(dut):
+    b=Bench(dut,105)
+    await b.step(Inputs(rst=True))
+    for ident,cause in ((1,12),(2,1),(3,0),(4,12)):
+        slot=b.model.free
+        await b.step(Inputs(reserve=True,reserve_id=ident,reserve_pc=0x1000+16*ident,
+                            response=True,response_idx=slot,response_id=ident,
+                            response_data=ident*0x102030405,response_exc=cause!=0,response_cause=cause))
+        await b.step(Inputs(brief_done=True,brief_id=ident))
+        for _ in range(4):
+            await b.step(Inputs(brief_done=True,brief_id=ident))
+            assert val(dut.deq_valid_o)
+        await b.step(Inputs(deq_ready=True))
+    # Pending killed response is discarded, then the same physical row receives
+    # a successful new-path response with no stale exception or data.
+    slot=b.model.free
+    await b.step(Inputs(reserve=True,reserve_id=5))
+    await b.step(Inputs(kill=True,kill_all=True))
+    await b.step(Inputs(response=True,response_idx=slot,response_id=5,
+                        response_data=0xdead,response_exc=True,response_cause=12))
+    assert not val(dut.deq_valid_o)
+    await b.step(Inputs(reserve=True,reserve_id=6,response=True,response_idx=slot,
+                        response_id=6,response_data=0xbeef))
+    await b.step(Inputs(brief_done=True,brief_id=6))
+    assert val(dut.deq_valid_o) and not val(dut.deq_exc_valid_o)
+    await b.step(Inputs(deq_ready=True))

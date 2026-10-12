@@ -484,3 +484,44 @@ async def cached_hit_latency_and_late_permission_update(d):
     for _ in range(10):
         obs=await h.tick();assert not obs['l2_req_valid']
     assert len(h.responses)==3
+
+
+@cocotb.test()
+async def tag_storage_reuse_after_invalidation_and_reset(d):
+    """Fresh fill data must replace retained tags across repeated ownership reuse."""
+    seed = int(os.environ.get("TEST_SEED", "105"))
+    rng = random.Random(seed)
+    h = Harness(d)
+    await h.reset()
+    region_bytes = int(d.cfg_region_bytes.value)
+    stride = int(d.cfg_sets_per_bank.value) * int(d.cfg_banks.value) * 64
+    ftq_mask = (1 << len(d.req_ftq_id)) - 1
+    rq_mask = (1 << len(d.req_rq_idx)) - 1
+    for batch in range(20):
+        for tag in range(int(d.cfg_ways.value) + 1):
+            line = 0x800A0000 + tag * stride
+            payload = bytes(rng.randrange(256) for _ in range(64))
+            offset = rng.randrange(64 // region_bytes) * region_bytes
+            before = len(h.responses)
+            fid, rid = (batch + tag) & ftq_mask, tag & rq_mask
+            await h.request(line + offset, fid, rid)
+            await h.accept_l2_request(line)
+            await h.refill(payload)
+            await h.expect_count(before + 1)
+            expected = int.from_bytes(payload[offset:offset + region_bytes], 'little')
+            assert h.responses[-1][1:] == (fid, rid, expected, 0), (seed, batch, tag)
+        for _ in range(10):
+            if int(d.idle.value):
+                break
+            await h.tick()
+        assert int(d.idle.value), (seed, batch)
+        if batch % 4 == 3:
+            d.rst.value = 1
+            await h.tick()
+            d.rst.value = 0
+            await h.tick()
+        else:
+            d.inv_all.value = 1
+            await h.tick()
+            d.inv_all.value = 0
+            await h.tick()

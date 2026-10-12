@@ -1,6 +1,7 @@
 module csr_file_tb_top import o3_types_pkg::*; (
  input logic clk,rst,req_valid_i,write_i,input logic [1:0] op_i,input logic [11:0] addr_i,
- input logic [63:0] data_i,input logic [2:0] retired_i,
+ input logic [63:0] data_i,input logic [$clog2(o3_cfg_pkg::O3_CFG.core.commit_width+1)-1:0] retired_i,
+ output logic [7:0] commit_width_o,
  input fe_perf_t fe_perf_i,input be_perf_t be_perf_i,
  input logic [63:0] mtime_i,
  input logic [3:0] irq_i,
@@ -19,6 +20,7 @@ module csr_file_tb_top import o3_types_pkg::*; (
  output logic [7:0] fe_w_o,be_w_o,
  input logic fp_valid_i,fp_dirty_i,input logic [4:0] fp_flags_i,
  output logic [2:0] frm_o,output logic [1:0] fs_o);
+ assign commit_width_o=o3_cfg_pkg::O3_CFG.core.commit_width;
  assign fe_w_o=PERF_INC_W;assign be_w_o=BE_PERF_INC_W;
  csr_req_t req;csr_resp_t resp;trap_req_t trap;
  irq_view_t irq_view;pmp_state_t pmp;fe_csr_t fe_csr;
